@@ -19,10 +19,23 @@
 
 @implementation VCAMConfiguration
 
++ (NSString *)storageDirectoryPath {
+    NSArray<NSURL *> *urls = [[NSFileManager defaultManager]
+        URLsForDirectory:NSApplicationSupportDirectory
+               inDomains:NSUserDomainMask];
+    NSString *applicationSupportPath = urls.firstObject.path;
+    if (applicationSupportPath.length == 0) {
+        applicationSupportPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
+    }
+    return [applicationSupportPath stringByAppendingPathComponent:@"VCAM"];
+}
+
 + (NSString *)configurationPath {
-    // This is user data on the real filesystem, not a jailbreak-owned file.
-    // Prefixing it with /var/jb (or a randomized roothide root) is incorrect.
-    return @"/var/mobile/Library/Preferences/com.codex.vcam.plist";
+    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"com.codex.vcam.plist"];
+}
+
++ (NSString *)mediaDirectoryPath {
+    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"Media"];
 }
 
 + (instancetype)loadCurrent {
@@ -36,6 +49,11 @@
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
+    if (![values isKindOfClass:NSDictionary.class]) {
+        // Retain compatibility with configurations installed over SSH by older builds.
+        values = [NSDictionary dictionaryWithContentsOfFile:
+            @"/var/mobile/Library/Preferences/com.codex.vcam.plist"];
+    }
     if (![values isKindOfClass:NSDictionary.class]) {
         return configuration;
     }

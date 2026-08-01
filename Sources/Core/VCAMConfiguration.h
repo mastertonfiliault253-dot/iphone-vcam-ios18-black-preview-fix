@@ -35,6 +35,7 @@ typedef NS_ENUM(NSInteger, VCAMContentMode) {
 
 + (instancetype)loadCurrent;
 + (NSString *)configurationPath;
++ (NSString *)mediaDirectoryPath;
 
 @end
 

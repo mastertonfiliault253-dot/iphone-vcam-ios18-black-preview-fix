@@ -63,11 +63,11 @@ final verifier for the system Camera process.
 ### On-device video picker
 
 Open the system Camera app and tap the floating `VCAM` button on the left side.
-Choose **选择相册视频** to import a video from Photos. The selected asset is
-copied to `/var/mobile/Media/VCAM/`, then the preference file is updated and the
-capture pipeline reloads without a respring. Choose **恢复真实相机** from the
-same menu to disable replacement. Cancelling the picker leaves the current
-source unchanged.
+Choose **选择相册视频** to import a video from Photos. The selected asset and
+picker-managed preference file are stored under Camera's writable Application
+Support directory, then the capture pipeline reloads without a respring. Choose
+**恢复真实相机** from the same menu to disable replacement. Cancelling the
+picker leaves the current source unchanged.
 
 ### Manual configuration
 

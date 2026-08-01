@@ -19,10 +19,24 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("PHPickerFilter.videosFilter", source)
         self.assertIn("loadFileRepresentationForTypeIdentifier", source)
-        self.assertIn('@"/var/mobile/Media/VCAM"', source)
+        self.assertIn("[VCAMConfiguration mediaDirectoryPath]", source)
+        self.assertIn("[VCAMConfiguration configurationPath]", source)
+        self.assertNotIn('@"/var/mobile/Media/VCAM"', source)
         self.assertIn('@"source": @"local"', source)
         self.assertIn('@"enabled": @YES', source)
         self.assertIn('CFSTR("com.codex.vcam/preferences.changed")', source)
+
+    def test_picker_storage_uses_the_camera_application_support_directory(self) -> None:
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("NSApplicationSupportDirectory", configuration)
+        self.assertIn("+ (NSString *)mediaDirectoryPath", configuration)
+        self.assertNotIn(
+            'return @"/var/mobile/Library/Preferences/com.codex.vcam.plist"',
+            configuration,
+        )
 
     def test_menu_can_restore_the_real_camera(self) -> None:
         source = (

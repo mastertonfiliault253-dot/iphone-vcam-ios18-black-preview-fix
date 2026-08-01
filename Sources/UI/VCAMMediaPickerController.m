@@ -1,9 +1,7 @@
 #import "VCAMMediaPickerController.h"
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
-
-static NSString *const VCAMPreferencesPath = @"/var/mobile/Library/Preferences/com.codex.vcam.plist";
-static NSString *const VCAMMediaDirectory = @"/var/mobile/Media/VCAM";
+#import "../Core/VCAMConfiguration.h"
 
 @interface VCAMMediaPickerController () <PHPickerViewControllerDelegate>
 @property(nonatomic, strong, nullable) UIButton *button;
@@ -170,7 +168,8 @@ static NSString *const VCAMMediaDirectory = @"/var/mobile/Media/VCAM";
 - (void)installVideoFromTemporaryURL:(NSURL *)temporaryURL suggestedName:(nullable NSString *)suggestedName {
     NSFileManager *manager = NSFileManager.defaultManager;
     NSError *error = nil;
-    NSURL *directory = [NSURL fileURLWithPath:VCAMMediaDirectory isDirectory:YES];
+    NSURL *directory = [NSURL fileURLWithPath:[VCAMConfiguration mediaDirectoryPath]
+                                  isDirectory:YES];
     if (![manager createDirectoryAtURL:directory
             withIntermediateDirectories:YES
                              attributes:nil
@@ -236,11 +235,19 @@ static NSString *const VCAMMediaDirectory = @"/var/mobile/Media/VCAM";
 }
 
 - (BOOL)updatePreferences:(NSDictionary<NSString *, id> *)changes {
+    NSString *preferencesPath = [VCAMConfiguration configurationPath];
+    NSString *parentDirectory = preferencesPath.stringByDeletingLastPathComponent;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:parentDirectory
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil]) {
+        return NO;
+    }
     NSMutableDictionary<NSString *, id> *preferences =
-        [[NSDictionary dictionaryWithContentsOfFile:VCAMPreferencesPath] mutableCopy];
+        [[NSDictionary dictionaryWithContentsOfFile:preferencesPath] mutableCopy];
     if (preferences == nil) preferences = [NSMutableDictionary dictionary];
     [preferences addEntriesFromDictionary:changes];
-    return [preferences writeToFile:VCAMPreferencesPath atomically:YES];
+    return [preferences writeToFile:preferencesPath atomically:YES];
 }
 
 - (void)postConfigurationChanged {
