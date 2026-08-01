@@ -1,59 +1,146 @@
-# iPhone-VCAM
+# VCAM Media Bridge (iOS 15–16 research build)
 
-基于 *Cydia Substrate* 的虚拟摄像头
+This branch refactors the original `wordgege/iPhone-VCAM` proof of concept into
+a small capture-hook interface backed by interchangeable local-media and OBS
+network sources. It is intended for testing software you own or are authorized
+to test. It does not hook Face ID, LocalAuthentication, liveness, KYC, or other
+authentication decisions.
 
-# 作用
+The upstream repository publishes source but contains no license file. Keep
+this derivative private unless the upstream author grants redistribution rights.
 
-替换 iOS 系统摄像头画面
+## Target
 
-## 生效软件
-- 支持绝大多数App
+- Primary device: iPhone SE (2nd generation, A13/arm64e)
+- Primary OS: iOS 16.5
+- Primary jailbreak: Dopamine 2.4.9 rootless (ElleKit)
+- Additional package schemes: rootful and roothide
 
-## 支持系统版本
+System-process arm64e binaries require a macOS/Xcode linker for the modern ABI.
+The included GitHub Actions workflow builds on macOS. Linux/WSL can still run
+the desktop tests and may build ordinary arm64 app injection, but it is not the
+final verifier for the system Camera process.
 
-- 开发测试版本为 iOS13.3、因为手上没有其他版本所以无法真机测试
-- 理论支持 iOS11.0 以上
-- iOS15可能出点问题，且目前iOS15越狱方案没有
+## Implemented in this branch
 
-# 开始使用
+- A single `VCAMFramePipeline` interface used by capture hooks.
+- Local still-image and looping video sources.
+- Local media audio-track replacement for `AVCaptureAudioDataOutput` consumers.
+- Video replacement for `AVCaptureVideoDataOutput` consumers.
+- Still-photo `pixelBuffer` and `fileDataRepresentation` replacement.
+- Aspect fit/fill/stretch, rotation, mirroring, target resolution, target pixel
+  format, and consumer timestamp matching.
+- Optional photo metadata merge.
+- Optional depth data loaded from the auxiliary depth/disparity payload of an
+  existing HEIC/JPEG/DNG file.
+- Optional pass-through of an already paired Live Photo still and MOV. The pair
+  must already contain matching Apple content identifiers.
+- PC OBS Virtual Camera to iPhone video using a local WebSocket/JPEG bridge.
+- Separate rootful, rootless, and roothide build schemes.
+- Fail-open behavior: invalid configuration, missing media, or a disconnected
+  OBS bridge leaves the real sample unchanged.
 
-## 安装
+## Not yet claimed as verified
 
-## 使用
-- 以下 **-** 符号表示 **音量减键**, **+** 表示 **音量加键**, 在一秒内切换点击以触发
+- System Camera preview and recording on iOS 16.5. The public AVFoundation
+  callbacks are hooked, but the Camera app can use private capture paths.
+- OBS audio. The wire format reserves PCM audio packet kind 2, but the current
+  desktop bridge sends video only.
+- Embedding replacement depth into every encoded output container. Consumers
+  reading `AVCapturePhoto.depthData` see the supplied value; container-level
+  verification still needs a device test.
+- Live Photo duration/display-time rewriting. Supply a valid pre-paired still
+  and MOV; arbitrary files do not become a valid Live Photo automatically.
+- Metadata callbacks from `AVCaptureMetadataOutput`. Put QR content in the
+  replacement image/video so the target app performs its normal detector path.
+- Device testing. A compiled package alone is not evidence that Camera, a video
+  call app, and a scanner app all use the same capture path.
 
-### 完整模式
-弹窗较多，有些软件会在弹窗后暂停运行
-- 快捷键 + -
-- 功能见按钮说明
-- 下载视频
-    - *每次下载完成后都会有系统的静音提示框弹出*
-    1. 视频文件
-        1. 在线视频地址，需要确保这个链接指向了一个可访问的视频
-        2. 如果文件损坏或不可播放或不受支持不会发生任何变化
-    2. 流式媒体(暂未支持)
+## Configuration
 
-### 便捷模式
-尽量减少弹窗以防止打断当前程序的运行状态  
-- 快捷键 - + 触发**选择视频**
-- 如果设置了**下载视频**功能，则此快捷键改为触发**下载视频**
-- 将**下载视频**的连接设置为空时，继续使用**选择视频**
-    - 下载完成后会有静音模式弹窗会弹出
-    - 如果远程文件不可用则禁用替换
+The tweak reads:
 
-# 常见问题
-- 以下 **-** 符号表示 **音量减键**, **+** 表示 **音量加键**, 在一秒内切换点击以触发
+`/var/mobile/Library/Preferences/com.codex.vcam.plist`
 
-## Q: 该怎样选择视频分辨率？
-A: 使用摄像头后 + -，将会出现详细信息。 当宽度大于高度时，表示视频的方向时旋转的，大部分情况下后置摄像头需要逆时针90度，前置摄像头顺时针90度，有时需要旋转并水平翻转。视频的具体方向因不同软件处理方式不同需要自行观察。**替换预览始终保持正确的方向**，*如果视频的宽高和提示的不一致时，可能出现画面与识别结果偏移、预览拉伸甚至闪退的情况*
-- 简单来说，替换视频的宽高必须和 + - 快捷键提示的 W, H一致，根据预览到的画面调整替换视频角度
+Generate a configuration on the PC:
 
-## Q: 拍照后画面旋转？
-A: 预览始终保持了正确的方向，部分软件会直接处理横向的图片，但是给用户预览的时候把预览旋转过来了
-- 简单来说，根据被旋转的方向，把替换视频提前往相反的方向旋转一次就好了
+```powershell
+python scripts\write-config.py --source local `
+  --media-path /var/mobile/Media/DCIM/vcam.mov `
+  --audio --mirror
+```
 
+Use `--metadata-json metadata.json`, `--depth-image-path ...`, and the paired
+`--live-photo-still-path ... --live-photo-movie-path ...` options for ordinary
+photo metadata, depth, and pre-paired Live Photo test assets.
 
+For OBS input:
 
-# TODO
-- 音频支持
-- 修复有些软件录像循环后失效问题
+```powershell
+python scripts\write-config.py --source obs `
+  --obs-url ws://192.168.1.20:8765
+```
+
+Copy the generated plist to the path above and post the Darwin notification
+`com.codex.vcam/preferences.changed`, or restart the target app.
+
+## OBS desktop bridge
+
+1. Install OBS Studio and start **Virtual Camera**.
+2. Install bridge dependencies:
+
+   ```powershell
+   python -m pip install -r desktop\requirements.txt
+   ```
+
+3. Start the bridge, trying another device index if OBS is not index 0:
+
+   ```powershell
+   python desktop\obs_bridge.py --device 0 --port 8765
+   ```
+
+4. Put the PC and iPhone on the same trusted LAN and use the PC LAN address in
+   `obsWebSocketURL`. Do not expose the bridge port to the internet; this first
+   protocol version has no authentication or encryption when using `ws://`.
+
+## Build
+
+With current Theos and an iOS SDK:
+
+```bash
+export THEOS=/path/to/theos
+./scripts/build-all.sh
+```
+
+RootHide requires `roothide/theos`; its official package scheme is
+`THEOS_PACKAGE_SCHEME=roothide`. The build script detects that module before
+attempting the third package.
+
+The repository path may contain spaces. `scripts/build-all.sh` automatically
+builds from a temporary no-space mirror and copies the packages back.
+
+Local build outputs in this checkout:
+
+- `iphoneos-arm`: rootful layout (`/Library/...`).
+- `iphoneos-arm64`: rootless layout (`/var/jb/Library/...`) for Dopamine.
+- `iphoneos-arm64e`: RootHide package built with `roothide/theos`.
+
+## Host tests
+
+```powershell
+python -m unittest discover -s tests -v
+python -m py_compile desktop\*.py scripts\*.py
+```
+
+## Device acceptance checklist
+
+Test each item with replacement disabled first, then enabled:
+
+1. Camera launch/close 20 times without a SpringBoard respring or watchdog kill.
+2. Front and rear previews in portrait and landscape.
+3. Still-photo output and saved orientation.
+4. Five-minute video recording with monotonic audio/video timestamps.
+5. A simple owned AVFoundation test app receiving video and audio buffers.
+6. OBS disconnect/reconnect while capture is active.
+7. Memory footprint after ten media loops.
+8. Uninstall restores the real camera without leftover configuration effects.

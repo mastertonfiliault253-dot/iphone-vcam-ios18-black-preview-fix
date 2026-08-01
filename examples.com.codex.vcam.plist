@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>enabled</key>
+    <true/>
+    <key>source</key>
+    <string>obs</string>
+    <key>obsWebSocketURL</key>
+    <string>ws://192.168.1.20:8765</string>
+    <key>mediaPath</key>
+    <string>/var/mobile/Media/DCIM/vcam.mov</string>
+    <key>depthImagePath</key>
+    <string>/var/mobile/Media/DCIM/vcam-depth.heic</string>
+    <key>livePhotoStillPath</key>
+    <string>/var/mobile/Media/DCIM/vcam-live.heic</string>
+    <key>livePhotoMoviePath</key>
+    <string>/var/mobile/Media/DCIM/vcam-live.mov</string>
+    <key>photoMetadata</key>
+    <dict>
+        <key>VCAMTestSource</key>
+        <string>OBS</string>
+    </dict>
+    <key>replaceAudio</key>
+    <false/>
+    <key>loopMedia</key>
+    <true/>
+    <key>contentMode</key>
+    <string>fill</string>
+    <key>rotationDegrees</key>
+    <integer>0</integer>
+    <key>mirrorHorizontally</key>
+    <false/>
+    <key>preferredFramesPerSecond</key>
+    <integer>30</integer>
+</dict>
+</plist>

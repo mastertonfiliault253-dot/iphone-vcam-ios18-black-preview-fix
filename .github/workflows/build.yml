@@ -1,0 +1,57 @@
+name: Build iOS packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/ios16-media-bridge"]
+  pull_request:
+
+jobs:
+  theos:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [rootful, rootless]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Theos
+        env:
+          THEOS: ${{ runner.temp }}/theos
+        run: |
+          brew install ldid xz
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          "$THEOS/bin/install-sdk" latest
+      - name: Build package
+        env:
+          THEOS: ${{ runner.temp }}/theos
+        run: |
+          if [[ "${{ matrix.scheme }}" == "rootless" ]]; then
+            make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          else
+            make clean package FINALPACKAGE=1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-${{ matrix.scheme }}
+          path: packages/*.deb
+
+  roothide:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install RootHide Theos
+        env:
+          THEOS: ${{ runner.temp }}/theos-roothide
+        run: |
+          brew install ldid xz
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          "$THEOS/bin/install-sdk" latest
+      - name: Build roothide package
+        env:
+          THEOS: ${{ runner.temp }}/theos-roothide
+        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-roothide
+          path: packages/*.deb

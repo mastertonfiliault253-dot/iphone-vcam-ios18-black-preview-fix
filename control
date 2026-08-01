@@ -1,9 +1,9 @@
-Package: com.if-she.cydia.vcam
-Name: VCAM4iOS
-Version: 0.0.1
+Package: com.codex.vcam
+Name: VCAM Media Bridge
+Version: 0.1.0
 Architecture: iphoneos-arm
-Description: VCAM4iOS
-Maintainer: trizau
-Author: trizau
+Description: Test media source replacement for AVFoundation camera and microphone pipelines.
+Maintainer: Local Build
+Author: Local Build
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000)
+Depends: firmware (>= 15.0), mobilesubstrate (>= 0.9.5000) | ellekit
