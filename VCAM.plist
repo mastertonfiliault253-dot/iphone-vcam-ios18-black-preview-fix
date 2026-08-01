@@ -3,8 +3,5 @@
         Bundles = (
             "com.apple.camera"
         );
-        Classes = (
-            "AVCaptureSession"
-        );
     };
 }

@@ -11,6 +11,13 @@ static const void *VCAMReplacementDepthDataKey = &VCAMReplacementDepthDataKey;
 static const void *VCAMReplacementMetadataKey = &VCAMReplacementMetadataKey;
 static const void *VCAMPreviewDriverKey = &VCAMPreviewDriverKey;
 
+static BOOL VCAMIsAllowedProcess(void) {
+    NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
+    NSString *processName = NSProcessInfo.processInfo.processName;
+    return [bundleIdentifier isEqualToString:@"com.apple.camera"] ||
+           [processName isEqualToString:@"Camera"];
+}
+
 static void VCAMInstallPreviewDriver(AVCaptureVideoPreviewLayer *layer) {
     if (layer == nil || objc_getAssociatedObject(layer, VCAMPreviewDriverKey) != nil) return;
     VCAMPreviewDriver *driver = [[VCAMPreviewDriver alloc] initWithPreviewLayer:layer];
@@ -259,6 +266,8 @@ static void VCAMHookRecordingDelegate(id delegate) {
     }
 }
 
+%group VCAMCameraHooks
+
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
@@ -319,9 +328,13 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 %end
 
+%end
+
 %ctor {
     @autoreleasepool {
-        [[VCAMFramePipeline sharedPipeline] reloadConfiguration];
+        if (!VCAMIsAllowedProcess()) return;
+        %init(VCAMCameraHooks);
+        [VCAMFramePipeline sharedPipeline];
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         [](CFNotificationCenterRef center, void *observer,
