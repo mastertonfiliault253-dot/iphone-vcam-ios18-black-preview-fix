@@ -25,6 +25,8 @@ final verifier for the system Camera process.
 
 - A single `VCAMFramePipeline` interface used by capture hooks.
 - Local still-image and looping video sources.
+- An in-Camera `VCAM` menu that imports one video from the system Photos picker,
+  switches to looping local playback, or restores the real camera immediately.
 - Local media audio-track replacement for `AVCaptureAudioDataOutput` consumers.
 - Video replacement for `AVCaptureVideoDataOutput` consumers.
 - Still-photo `pixelBuffer` and `fileDataRepresentation` replacement.
@@ -57,6 +59,17 @@ final verifier for the system Camera process.
   call app, and a scanner app all use the same capture path.
 
 ## Configuration
+
+### On-device video picker
+
+Open the system Camera app and tap the floating `VCAM` button on the left side.
+Choose **选择相册视频** to import a video from Photos. The selected asset is
+copied to `/var/mobile/Media/VCAM/`, then the preference file is updated and the
+capture pipeline reloads without a respring. Choose **恢复真实相机** from the
+same menu to disable replacement. Cancelling the picker leaves the current
+source unchanged.
+
+### Manual configuration
 
 The tweak reads:
 

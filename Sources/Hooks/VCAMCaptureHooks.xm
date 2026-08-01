@@ -3,6 +3,7 @@
 #import <substrate.h>
 #import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
+#import "../UI/VCAMMediaPickerController.h"
 #import "VCAMPreviewDriver.h"
 
 static const void *VCAMReplacementPixelBufferKey = &VCAMReplacementPixelBufferKey;
@@ -335,6 +336,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
         if (!VCAMIsAllowedProcess()) return;
         %init(VCAMCameraHooks);
         [VCAMFramePipeline sharedPipeline];
+        [[VCAMMediaPickerController sharedController] start];
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         [](CFNotificationCenterRef center, void *observer,
