@@ -25,8 +25,9 @@ final verifier for the system Camera process.
 
 - A single `VCAMFramePipeline` interface used by capture hooks.
 - Local still-image and looping video sources.
-- An in-Camera `VCAM` menu that imports one video from the system Photos picker,
-  switches to looping local playback, or restores the real camera immediately.
+- A draggable in-Camera VCAM dot and dark control panel with Photos/files/URL
+  import, OBS stream setup, rotation, mirroring, content mode, audio, looping,
+  source status, safe target selection, and immediate real-camera restore.
 - Local media audio-track replacement for `AVCaptureAudioDataOutput` consumers.
 - Video replacement for `AVCaptureVideoDataOutput` consumers.
 - Still-photo `pixelBuffer` and `fileDataRepresentation` replacement.
@@ -62,13 +63,18 @@ final verifier for the system Camera process.
 
 ### On-device video picker
 
-Open the system Camera app and tap the floating `VCAM` button on the left side.
-Choose **选择相册视频** to import a video from Photos. The selected asset and
+Open the system Camera app and tap the draggable floating video dot.
+Choose **从相册选择** to import a video from Photos. The selected asset and
 picker-managed preference file are stored in the first Camera-writable location
 found by a write probe (Application Support, Caches, then the process temporary
 directory), then the capture pipeline reloads without a respring. Choose
-**恢复真实相机** from the same menu to disable replacement. Cancelling the
+**恢复真实相机** from the same panel to disable replacement. Cancelling the
 picker leaves the current source unchanged.
+
+The package filter remains restricted to `com.apple.camera`. The target picker
+therefore reports Camera as the only safe target in this build; add specific
+third-party bundle identifiers to a reviewed package rather than injecting the
+tweak into every process.
 
 ### Manual configuration
 

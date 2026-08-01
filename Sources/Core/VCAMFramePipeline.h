@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)sharedPipeline;
 - (void)reloadConfiguration;
 - (BOOL)isEnabled;
+- (NSInteger)preferredFramesPerSecond;
 - (nullable CMSampleBufferRef)copyReplacementVideoForSample:(CMSampleBufferRef)sample
     CF_RETURNS_RETAINED;
 - (nullable CMSampleBufferRef)copyReplacementAudioForSample:(CMSampleBufferRef)sample

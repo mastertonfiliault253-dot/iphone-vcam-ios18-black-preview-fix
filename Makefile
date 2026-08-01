@@ -14,10 +14,11 @@ VCAM_FILES = \
 	Sources/Core/VCAMFrameRenderer.m \
 	Sources/Core/VCAMPhotoAuxiliaryData.m \
 	Sources/Hooks/VCAMPreviewDriver.m \
+	Sources/UI/VCAMControlPanelViewController.m \
 	Sources/UI/VCAMMediaPickerController.m \
 	Sources/Sources/VCAMLocalMediaSource.m \
 	Sources/Sources/VCAMOBSStreamSource.m
 VCAM_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
-VCAM_FRAMEWORKS = AVFoundation AudioToolbox CoreImage CoreMedia CoreVideo Foundation ImageIO PhotosUI QuartzCore UIKit
+VCAM_FRAMEWORKS = AVFoundation AudioToolbox CoreImage CoreMedia CoreVideo Foundation ImageIO PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 include $(THEOS_MAKE_PATH)/tweak.mk

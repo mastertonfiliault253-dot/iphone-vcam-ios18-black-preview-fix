@@ -66,6 +66,97 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("kCMSampleAttachmentKey_DisplayImmediately", source)
 
+    def test_floating_entry_opens_a_native_control_panel(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+        panel = (
+            ROOT / "Sources" / "UI" / "VCAMControlPanelViewController.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VCAMControlPanelViewController.m", makefile)
+        self.assertIn("UIPanGestureRecognizer", picker)
+        self.assertIn("cornerRadius = 24.0", picker)
+        self.assertIn("VCAMControlPanelViewController", picker)
+        self.assertIn("UIScrollView", panel)
+        self.assertIn("accessibilityLabel", panel)
+        self.assertIn("minimumScaleFactor", panel)
+
+    def test_control_panel_connects_every_source_action(self) -> None:
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+        panel = (
+            ROOT / "Sources" / "UI" / "VCAMControlPanelViewController.m"
+        ).read_text(encoding="utf-8")
+
+        for action in (
+            "presentVideoPicker",
+            "presentDocumentPicker",
+            "promptForOnlineVideo",
+            "promptForLiveStream",
+            "rotateClockwise",
+            "rotateCounterClockwise",
+            "toggleMirror",
+            "toggleAudioReplacement",
+            "cycleContentMode",
+            "restoreRealCamera",
+            "presentTargetSelector",
+        ):
+            self.assertIn(action, picker)
+        for title in (
+            "从相册选择",
+            "从文件选择",
+            "在线源下载",
+            "输入直播流",
+            "顺时针旋转",
+            "逆时针旋转",
+            "选择替换软件和进程",
+        ):
+            self.assertIn(title, panel)
+
+    def test_preview_hot_path_reuses_buffers_and_template(self) -> None:
+        renderer = (
+            ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m"
+        ).read_text(encoding="utf-8")
+        pipeline = (
+            ROOT / "Sources" / "Core" / "VCAMFramePipeline.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CVPixelBufferPoolCreate", renderer)
+        self.assertIn("CVPixelBufferPoolCreatePixelBuffer", renderer)
+        self.assertIn("CGColorSpaceCreateDeviceRGB", renderer)
+        self.assertIn("_previewTemplateSample", pipeline)
+        self.assertIn("CMSampleBufferCreateCopyWithNewTiming", pipeline)
+
+    def test_import_preserves_source_cadence_and_reuses_rendered_frame(self) -> None:
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+        source = (
+            ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
+        ).read_text(encoding="utf-8")
+        preview = (
+            ROOT / "Sources" / "Hooks" / "VCAMPreviewDriver.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("nominalFrameRate", picker)
+        self.assertIn('@"preferredFramesPerSecond"', picker)
+        self.assertIn("_lastRenderedVideoSample", source)
+        self.assertIn("CMTimeCompare", source)
+        self.assertIn("preferredFramesPerSecond", preview)
+
+    def test_rotation_action_is_quarter_turn_and_immediately_reloads(self) -> None:
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("rotationDegrees", picker)
+        self.assertIn("changeRotationBy:90", picker)
+        self.assertIn("changeRotationBy:270", picker)
+        self.assertIn("[self postConfigurationChanged]", picker)
+
 
 if __name__ == "__main__":
     unittest.main()

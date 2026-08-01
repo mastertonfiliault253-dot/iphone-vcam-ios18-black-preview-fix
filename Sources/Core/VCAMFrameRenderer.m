@@ -1,7 +1,14 @@
 #import "VCAMFrameRenderer.h"
 #import <CoreVideo/CoreVideo.h>
 
-@interface VCAMFrameRenderer ()
+@interface VCAMFrameRenderer () {
+    CVPixelBufferPoolRef _pixelBufferPool;
+    CMVideoFormatDescriptionRef _formatDescription;
+    CGColorSpaceRef _colorSpace;
+    size_t _poolWidth;
+    size_t _poolHeight;
+    OSType _poolPixelFormat;
+}
 @property(nonatomic, strong) CIContext *context;
 @end
 
@@ -11,8 +18,49 @@
     self = [super init];
     if (self) {
         _context = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
+        _colorSpace = CGColorSpaceCreateDeviceRGB();
     }
     return self;
+}
+
+- (void)dealloc {
+    if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
+    if (_formatDescription != NULL) CFRelease(_formatDescription);
+    if (_colorSpace != NULL) CGColorSpaceRelease(_colorSpace);
+}
+
+- (BOOL)preparePoolForWidth:(size_t)width height:(size_t)height pixelFormat:(OSType)pixelFormat {
+    if (_pixelBufferPool != NULL && _poolWidth == width && _poolHeight == height &&
+        _poolPixelFormat == pixelFormat) {
+        return YES;
+    }
+    if (_pixelBufferPool != NULL) {
+        CVPixelBufferPoolRelease(_pixelBufferPool);
+        _pixelBufferPool = NULL;
+    }
+    if (_formatDescription != NULL) {
+        CFRelease(_formatDescription);
+        _formatDescription = NULL;
+    }
+    NSDictionary *poolAttributes = @{
+        (id)kCVPixelBufferPoolMinimumBufferCountKey: @4,
+    };
+    NSDictionary *pixelAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
+        (id)kCVPixelBufferWidthKey: @(width),
+        (id)kCVPixelBufferHeightKey: @(height),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+    };
+    CVReturn status = CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                               (__bridge CFDictionaryRef)poolAttributes,
+                                               (__bridge CFDictionaryRef)pixelAttributes,
+                                               &_pixelBufferPool);
+    if (status != kCVReturnSuccess) return NO;
+    _poolWidth = width;
+    _poolHeight = height;
+    _poolPixelFormat = pixelFormat;
+    return YES;
 }
 
 - (CMSampleBufferRef)copySampleFromImage:(CIImage *)image
@@ -26,41 +74,34 @@
     const size_t width = CVPixelBufferGetWidth(templateImage);
     const size_t height = CVPixelBufferGetHeight(templateImage);
     const OSType pixelFormat = CVPixelBufferGetPixelFormatType(templateImage);
-    NSDictionary *attributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
-        (id)kCVPixelBufferWidthKey: @(width),
-        (id)kCVPixelBufferHeightKey: @(height),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-    };
-
     CVPixelBufferRef output = NULL;
-    if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat,
-                            (__bridge CFDictionaryRef)attributes, &output) != kCVReturnSuccess) {
+    if (![self preparePoolForWidth:width height:height pixelFormat:pixelFormat] ||
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _pixelBufferPool, &output) != kCVReturnSuccess) {
         return NULL;
     }
 
     CIImage *renderImage = [self transformedImage:image
                                            target:CGRectMake(0, 0, width, height)
                                     configuration:configuration];
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
     [self.context render:renderImage
          toCVPixelBuffer:output
                   bounds:CGRectMake(0, 0, width, height)
-              colorSpace:colorSpace];
-    CGColorSpaceRelease(colorSpace);
+              colorSpace:_colorSpace];
 
-    CMVideoFormatDescriptionRef format = NULL;
     CMSampleBufferRef sample = NULL;
     CMSampleTimingInfo timing = {
         .duration = CMSampleBufferGetDuration(templateBuffer),
         .presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(templateBuffer),
         .decodeTimeStamp = CMSampleBufferGetDecodeTimeStamp(templateBuffer),
     };
-    OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, output, &format);
-    if (status == noErr) {
+    OSStatus status = noErr;
+    if (_formatDescription == NULL) {
+        status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, output,
+                                                               &_formatDescription);
+    }
+    if (status == noErr && _formatDescription != NULL) {
         status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, output, true, NULL, NULL,
-                                                    format, &timing, &sample);
+                                                    _formatDescription, &timing, &sample);
     }
     if (status == noErr && sample != NULL) {
         CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(templateBuffer, false);
@@ -75,7 +116,6 @@
         }
     }
 
-    if (format != NULL) CFRelease(format);
     CVPixelBufferRelease(output);
     return sample;
 }

@@ -10,6 +10,8 @@
 
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _latestVideoSample;
+    CMSampleBufferRef _previewTemplateSample;
+    CGSize _previewTemplateSize;
     CFTimeInterval _latestVideoHostTime;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
@@ -21,6 +23,11 @@
 @end
 
 @implementation VCAMFramePipeline
+
+- (void)dealloc {
+    if (_latestVideoSample != NULL) CFRelease(_latestVideoSample);
+    if (_previewTemplateSample != NULL) CFRelease(_previewTemplateSample);
+}
 
 + (instancetype)sharedPipeline {
     static VCAMFramePipeline *pipeline;
@@ -48,6 +55,11 @@
             CFRelease(self->_latestVideoSample);
             self->_latestVideoSample = NULL;
         }
+        if (self->_previewTemplateSample != NULL) {
+            CFRelease(self->_previewTemplateSample);
+            self->_previewTemplateSample = NULL;
+        }
+        self->_previewTemplateSize = CGSizeZero;
         self.configuration = [VCAMConfiguration loadCurrent];
         self.photoAuxiliaryData = [[VCAMPhotoAuxiliaryData alloc] initWithConfiguration:self.configuration];
         if (!self.configuration.enabled) return;
@@ -72,10 +84,63 @@
     });
 }
 
+- (CMSampleBufferRef)copyPreviewTemplateForSize:(CGSize)size {
+    size_t width = (size_t)MAX(1.0, round(size.width));
+    size_t height = (size_t)MAX(1.0, round(size.height));
+    BOOL dimensionsChanged = _previewTemplateSample == NULL ||
+        (size_t)_previewTemplateSize.width != width || (size_t)_previewTemplateSize.height != height;
+    if (dimensionsChanged) {
+        if (_previewTemplateSample != NULL) CFRelease(_previewTemplateSample);
+        _previewTemplateSample = NULL;
+        _previewTemplateSize = CGSizeMake(width, height);
+
+        CVPixelBufferRef pixelBuffer = NULL;
+        NSDictionary *attributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(width),
+            (id)kCVPixelBufferHeightKey: @(height),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                                (__bridge CFDictionaryRef)attributes, &pixelBuffer) != kCVReturnSuccess) {
+            return NULL;
+        }
+        CMVideoFormatDescriptionRef format = NULL;
+        CMSampleTimingInfo initialTiming = {
+            .duration = CMTimeMake(1, (int32_t)self.configuration.preferredFramesPerSecond),
+            .presentationTimeStamp = kCMTimeZero,
+            .decodeTimeStamp = kCMTimeInvalid,
+        };
+        if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &format) == noErr) {
+            CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true, NULL, NULL,
+                                               format, &initialTiming, &_previewTemplateSample);
+        }
+        if (format != NULL) CFRelease(format);
+        CVPixelBufferRelease(pixelBuffer);
+    }
+    if (_previewTemplateSample == NULL) return NULL;
+
+    CMSampleTimingInfo timing = {
+        .duration = CMTimeMake(1, (int32_t)self.configuration.preferredFramesPerSecond),
+        .presentationTimeStamp = CMClockGetTime(CMClockGetHostTimeClock()),
+        .decodeTimeStamp = kCMTimeInvalid,
+    };
+    CMSampleBufferRef retimed = NULL;
+    CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, _previewTemplateSample, 1, &timing,
+                                          &retimed);
+    return retimed;
+}
+
 - (BOOL)isEnabled {
     __block BOOL enabled;
     dispatch_sync(self.stateQueue, ^{ enabled = self.configuration.enabled && self.source != nil; });
     return enabled;
+}
+
+- (NSInteger)preferredFramesPerSecond {
+    __block NSInteger framesPerSecond;
+    dispatch_sync(self.stateQueue, ^{ framesPerSecond = self.configuration.preferredFramesPerSecond; });
+    return MAX(1, MIN(60, framesPerSecond));
 }
 
 - (CMSampleBufferRef)copyReplacementVideoForSample:(CMSampleBufferRef)sample {
@@ -106,28 +171,7 @@
         }
         if (self.source == nil || size.width < 1 || size.height < 1) return;
 
-        CVPixelBufferRef pixelBuffer = NULL;
-        NSDictionary *attributes = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-            (id)kCVPixelBufferWidthKey: @((NSInteger)size.width),
-            (id)kCVPixelBufferHeightKey: @((NSInteger)size.height),
-            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        };
-        if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)size.width, (size_t)size.height,
-                                kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)attributes,
-                                &pixelBuffer) != kCVReturnSuccess) return;
-
-        CMVideoFormatDescriptionRef format = NULL;
-        CMSampleBufferRef template = NULL;
-        CMSampleTimingInfo timing = {
-            .duration = CMTimeMake(1, (int32_t)self.configuration.preferredFramesPerSecond),
-            .presentationTimeStamp = CMClockGetTime(CMClockGetHostTimeClock()),
-            .decodeTimeStamp = kCMTimeInvalid,
-        };
-        if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &format) == noErr) {
-            CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true, NULL, NULL,
-                                               format, &timing, &template);
-        }
+        CMSampleBufferRef template = [self copyPreviewTemplateForSize:size];
         if (template != NULL) {
             result = [self.source copyVideoSampleForTemplate:template];
             if (result != NULL) {
@@ -136,8 +180,6 @@
             }
             CFRelease(template);
         }
-        if (format != NULL) CFRelease(format);
-        CVPixelBufferRelease(pixelBuffer);
     });
     return result;
 }

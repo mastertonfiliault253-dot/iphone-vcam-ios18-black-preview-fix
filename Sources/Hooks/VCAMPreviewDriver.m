@@ -7,6 +7,7 @@
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic) dispatch_queue_t frameQueue;
 @property(atomic) BOOL frameInFlight;
+@property(nonatomic) NSInteger configuredFramesPerSecond;
 @end
 
 
@@ -27,6 +28,7 @@
         } else {
             _displayLink.preferredFramesPerSecond = 30;
         }
+        _configuredFramesPerSecond = 30;
         [_displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
     return self;
@@ -46,6 +48,18 @@
     self.replacementLayer.frame = preview.bounds;
     self.replacementLayer.videoGravity = preview.videoGravity;
     VCAMFramePipeline *pipeline = [VCAMFramePipeline sharedPipeline];
+    NSInteger preferredFramesPerSecond = [pipeline preferredFramesPerSecond];
+    if (preferredFramesPerSecond != self.configuredFramesPerSecond) {
+        self.configuredFramesPerSecond = preferredFramesPerSecond;
+        if (@available(iOS 15.0, *)) {
+            NSInteger minimum = MIN(15, preferredFramesPerSecond);
+            displayLink.preferredFrameRateRange = CAFrameRateRangeMake(minimum,
+                                                                       preferredFramesPerSecond,
+                                                                       preferredFramesPerSecond);
+        } else {
+            displayLink.preferredFramesPerSecond = preferredFramesPerSecond;
+        }
+    }
     if (![pipeline isEnabled]) {
         self.replacementLayer.hidden = YES;
         [self.replacementLayer flushAndRemoveImage];

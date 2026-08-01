@@ -6,6 +6,11 @@
 @interface VCAMLocalMediaSource () {
     CMSampleBufferRef _currentVideoSample;
     CMSampleBufferRef _nextVideoSample;
+    CMSampleBufferRef _lastRenderedVideoSample;
+    CMTime _lastRenderedSourcePTS;
+    size_t _lastRenderedWidth;
+    size_t _lastRenderedHeight;
+    OSType _lastRenderedPixelFormat;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -33,6 +38,7 @@
         _renderer = renderer;
         _videoTransform = CGAffineTransformIdentity;
         _firstVideoPTS = kCMTimeInvalid;
+        _lastRenderedSourcePTS = kCMTimeInvalid;
     }
     return self;
 }
@@ -81,10 +87,16 @@
 - (void)resetVideoPlaybackState {
     if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
     if (_nextVideoSample != NULL) CFRelease(_nextVideoSample);
+    if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);
     _currentVideoSample = NULL;
     _nextVideoSample = NULL;
+    _lastRenderedVideoSample = NULL;
     self.firstVideoPTS = kCMTimeInvalid;
     self.videoPlaybackStartHostTime = 0;
+    _lastRenderedSourcePTS = kCMTimeInvalid;
+    _lastRenderedWidth = 0;
+    _lastRenderedHeight = 0;
+    _lastRenderedPixelFormat = 0;
 }
 
 - (BOOL)hasVideoAsset {
@@ -201,12 +213,41 @@
         CMSampleBufferRef decoded = [self copyPacedDecodedVideoSample];
         if (decoded == NULL) return NULL;
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(decoded);
+        CVImageBufferRef templateImage = CMSampleBufferGetImageBuffer(templateBuffer);
+        CMTime sourcePTS = CMSampleBufferGetPresentationTimeStamp(decoded);
+        size_t width = templateImage == NULL ? 0 : CVPixelBufferGetWidth(templateImage);
+        size_t height = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
+        OSType pixelFormat = templateImage == NULL ? 0 : CVPixelBufferGetPixelFormatType(templateImage);
+        if (_lastRenderedVideoSample != NULL && CMTIME_IS_VALID(sourcePTS) &&
+            CMTIME_IS_VALID(_lastRenderedSourcePTS) && CMTimeCompare(sourcePTS, _lastRenderedSourcePTS) == 0 &&
+            width == _lastRenderedWidth && height == _lastRenderedHeight &&
+            pixelFormat == _lastRenderedPixelFormat) {
+            CMSampleTimingInfo timing = {
+                .duration = CMSampleBufferGetDuration(templateBuffer),
+                .presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(templateBuffer),
+                .decodeTimeStamp = CMSampleBufferGetDecodeTimeStamp(templateBuffer),
+            };
+            CMSampleBufferRef retimed = NULL;
+            CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, _lastRenderedVideoSample,
+                                                  1, &timing, &retimed);
+            CFRelease(decoded);
+            return retimed;
+        }
         CIImage *image = imageBuffer == NULL ? nil : [CIImage imageWithCVImageBuffer:imageBuffer];
         if (image != nil && !CGAffineTransformIsIdentity(self.videoTransform)) {
             image = [image imageByApplyingTransform:self.videoTransform];
         }
         CMSampleBufferRef rendered = image == nil ? NULL :
             [self.renderer copySampleFromImage:image template:templateBuffer configuration:self.configuration];
+        if (rendered != NULL) {
+            if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);
+            _lastRenderedVideoSample = NULL;
+            CMSampleBufferCreateCopy(kCFAllocatorDefault, rendered, &_lastRenderedVideoSample);
+            _lastRenderedSourcePTS = sourcePTS;
+            _lastRenderedWidth = width;
+            _lastRenderedHeight = height;
+            _lastRenderedPixelFormat = pixelFormat;
+        }
         CFRelease(decoded);
         return rendered;
     }
