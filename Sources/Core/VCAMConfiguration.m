@@ -20,14 +20,40 @@
 @implementation VCAMConfiguration
 
 + (NSString *)storageDirectoryPath {
-    NSArray<NSURL *> *urls = [[NSFileManager defaultManager]
-        URLsForDirectory:NSApplicationSupportDirectory
-               inDomains:NSUserDomainMask];
-    NSString *applicationSupportPath = urls.firstObject.path;
-    if (applicationSupportPath.length == 0) {
-        applicationSupportPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
-    }
-    return [applicationSupportPath stringByAppendingPathComponent:@"VCAM"];
+    static NSString *resolvedPath;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *manager = NSFileManager.defaultManager;
+        NSMutableArray<NSString *> *basePaths = [NSMutableArray array];
+        for (NSNumber *directoryValue in @[@(NSApplicationSupportDirectory), @(NSCachesDirectory)]) {
+            NSArray<NSURL *> *urls = [manager URLsForDirectory:directoryValue.unsignedIntegerValue
+                                                     inDomains:NSUserDomainMask];
+            if (urls.firstObject.path.length > 0) [basePaths addObject:urls.firstObject.path];
+        }
+        if (NSTemporaryDirectory().length > 0) [basePaths addObject:NSTemporaryDirectory()];
+
+        for (NSString *basePath in [NSOrderedSet orderedSetWithArray:basePaths]) {
+            NSString *candidate = [basePath stringByAppendingPathComponent:@"VCAM"];
+            NSError *error = nil;
+            if (![manager createDirectoryAtPath:candidate
+                     withIntermediateDirectories:YES
+                                      attributes:nil
+                                           error:&error]) {
+                continue;
+            }
+            NSString *probePath = [candidate stringByAppendingPathComponent:@".write-probe"];
+            NSData *probe = [@"VCAM" dataUsingEncoding:NSUTF8StringEncoding];
+            if ([probe writeToFile:probePath options:NSDataWritingAtomic error:&error]) {
+                [manager removeItemAtPath:probePath error:nil];
+                resolvedPath = candidate;
+                break;
+            }
+        }
+        if (resolvedPath == nil) {
+            resolvedPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"VCAM"];
+        }
+    });
+    return resolvedPath;
 }
 
 + (NSString *)configurationPath {

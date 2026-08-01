@@ -64,8 +64,9 @@ final verifier for the system Camera process.
 
 Open the system Camera app and tap the floating `VCAM` button on the left side.
 Choose **选择相册视频** to import a video from Photos. The selected asset and
-picker-managed preference file are stored under Camera's writable Application
-Support directory, then the capture pipeline reloads without a respring. Choose
+picker-managed preference file are stored in the first Camera-writable location
+found by a write probe (Application Support, Caches, then the process temporary
+directory), then the capture pipeline reloads without a respring. Choose
 **恢复真实相机** from the same menu to disable replacement. Cancelling the
 picker leaves the current source unchanged.
 

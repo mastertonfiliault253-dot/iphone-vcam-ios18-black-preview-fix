@@ -26,12 +26,15 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"enabled": @YES', source)
         self.assertIn('CFSTR("com.codex.vcam/preferences.changed")', source)
 
-    def test_picker_storage_uses_the_camera_application_support_directory(self) -> None:
+    def test_picker_storage_probes_camera_writable_directories(self) -> None:
         configuration = (
             ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
         ).read_text(encoding="utf-8")
 
         self.assertIn("NSApplicationSupportDirectory", configuration)
+        self.assertIn("NSCachesDirectory", configuration)
+        self.assertIn("NSTemporaryDirectory()", configuration)
+        self.assertIn('@".write-probe"', configuration)
         self.assertIn("+ (NSString *)mediaDirectoryPath", configuration)
         self.assertNotIn(
             'return @"/var/mobile/Library/Preferences/com.codex.vcam.plist"',
