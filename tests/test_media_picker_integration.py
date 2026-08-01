@@ -49,6 +49,23 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"source": @"camera"', source)
         self.assertIn('@"enabled": @NO', source)
 
+    def test_local_video_honors_track_orientation_and_media_clock(self) -> None:
+        source = (
+            ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("videoTrack.preferredTransform", source)
+        self.assertIn("CACurrentMediaTime()", source)
+        self.assertIn("CMSampleBufferGetPresentationTimeStamp", source)
+        self.assertIn("_nextVideoSample", source)
+
+    def test_preview_samples_are_displayed_immediately(self) -> None:
+        source = (
+            ROOT / "Sources" / "Hooks" / "VCAMPreviewDriver.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("kCMSampleAttachmentKey_DisplayImmediately", source)
+
 
 if __name__ == "__main__":
     unittest.main()

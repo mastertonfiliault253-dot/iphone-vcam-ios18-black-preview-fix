@@ -1,8 +1,12 @@
 #import "VCAMLocalMediaSource.h"
 #import <ImageIO/ImageIO.h>
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
-@interface VCAMLocalMediaSource ()
+@interface VCAMLocalMediaSource () {
+    CMSampleBufferRef _currentVideoSample;
+    CMSampleBufferRef _nextVideoSample;
+}
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) CIImage *stillImage;
@@ -14,6 +18,9 @@
 @property(nonatomic) Float64 audioSampleRate;
 @property(nonatomic) UInt32 audioChannelCount;
 @property(nonatomic) BOOL running;
+@property(nonatomic) CGAffineTransform videoTransform;
+@property(nonatomic) CMTime firstVideoPTS;
+@property(nonatomic) CFTimeInterval videoPlaybackStartHostTime;
 @end
 
 @implementation VCAMLocalMediaSource
@@ -24,6 +31,8 @@
     if (self) {
         _configuration = configuration;
         _renderer = renderer;
+        _videoTransform = CGAffineTransformIdentity;
+        _firstVideoPTS = kCMTimeInvalid;
     }
     return self;
 }
@@ -60,8 +69,22 @@
         self.audioReader = nil;
         self.videoOutput = nil;
         self.audioOutput = nil;
+        [self resetVideoPlaybackState];
         self.running = NO;
     }
+}
+
+- (void)dealloc {
+    [self resetVideoPlaybackState];
+}
+
+- (void)resetVideoPlaybackState {
+    if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
+    if (_nextVideoSample != NULL) CFRelease(_nextVideoSample);
+    _currentVideoSample = NULL;
+    _nextVideoSample = NULL;
+    self.firstVideoPTS = kCMTimeInvalid;
+    self.videoPlaybackStartHostTime = 0;
 }
 
 - (BOOL)hasVideoAsset {
@@ -70,6 +93,7 @@
 
 - (BOOL)rebuildVideoReader:(NSError **)error {
     [self.videoReader cancelReading];
+    [self resetVideoPlaybackState];
     AVAssetTrack *videoTrack = [[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     if (videoTrack == nil) {
         if (error != NULL) {
@@ -79,6 +103,7 @@
         }
         return NO;
     }
+    self.videoTransform = videoTrack.preferredTransform;
 
     AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:self.asset error:error];
     if (reader == nil) return NO;
@@ -100,6 +125,36 @@
     self.videoReader = reader;
     self.videoOutput = videoOutput;
     return YES;
+}
+
+- (CMSampleBufferRef)copyPacedDecodedVideoSample {
+    if (_currentVideoSample == NULL) {
+        _currentVideoSample = [self.videoOutput copyNextSampleBuffer];
+        if (_currentVideoSample == NULL) return NULL;
+        self.firstVideoPTS = CMSampleBufferGetPresentationTimeStamp(_currentVideoSample);
+        self.videoPlaybackStartHostTime = CACurrentMediaTime();
+        _nextVideoSample = [self.videoOutput copyNextSampleBuffer];
+    }
+
+    CFTimeInterval elapsed = MAX(0, CACurrentMediaTime() - self.videoPlaybackStartHostTime);
+    while (_nextVideoSample != NULL) {
+        CMTime nextPTS = CMSampleBufferGetPresentationTimeStamp(_nextVideoSample);
+        Float64 nextTime = CMTimeGetSeconds(CMTimeSubtract(nextPTS, self.firstVideoPTS));
+        if (!isfinite(nextTime) || nextTime > elapsed) break;
+        CFRelease(_currentVideoSample);
+        _currentVideoSample = _nextVideoSample;
+        _nextVideoSample = [self.videoOutput copyNextSampleBuffer];
+    }
+
+    Float64 duration = CMTimeGetSeconds(self.asset.duration);
+    if (_nextVideoSample == NULL && self.configuration.loopMedia &&
+        isfinite(duration) && duration > 0.001 && elapsed >= duration) {
+        if ([self rebuildVideoReader:nil]) return [self copyPacedDecodedVideoSample];
+    }
+
+    CMSampleBufferRef copy = NULL;
+    CMSampleBufferCreateCopy(kCFAllocatorDefault, _currentVideoSample, &copy);
+    return copy;
 }
 
 - (BOOL)rebuildAudioReaderForSampleRate:(Float64)sampleRate
@@ -143,14 +198,13 @@
                                         configuration:self.configuration];
         }
 
-        CMSampleBufferRef decoded = [self.videoOutput copyNextSampleBuffer];
-        if (decoded == NULL && self.configuration.loopMedia) {
-            [self rebuildVideoReader:nil];
-            decoded = [self.videoOutput copyNextSampleBuffer];
-        }
+        CMSampleBufferRef decoded = [self copyPacedDecodedVideoSample];
         if (decoded == NULL) return NULL;
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(decoded);
         CIImage *image = imageBuffer == NULL ? nil : [CIImage imageWithCVImageBuffer:imageBuffer];
+        if (image != nil && !CGAffineTransformIsIdentity(self.videoTransform)) {
+            image = [image imageByApplyingTransform:self.videoTransform];
+        }
         CMSampleBufferRef rendered = image == nil ? NULL :
             [self.renderer copySampleFromImage:image template:templateBuffer configuration:self.configuration];
         CFRelease(decoded);

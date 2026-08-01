@@ -69,6 +69,14 @@
                     [self.replacementLayer flush];
                 }
                 if (self.replacementLayer.readyForMoreMediaData) {
+                    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
+                    if (attachments != NULL && CFArrayGetCount(attachments) > 0) {
+                        CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)
+                            CFArrayGetValueAtIndex(attachments, 0);
+                        CFDictionarySetValue(attachment,
+                                             kCMSampleAttachmentKey_DisplayImmediately,
+                                             kCFBooleanTrue);
+                    }
                     [self.replacementLayer enqueueSampleBuffer:sample];
                 }
                 CFRelease(sample);
