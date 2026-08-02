@@ -14,6 +14,7 @@
 @property(nonatomic, copy, readwrite, nullable) NSString *livePhotoMoviePath;
 @property(nonatomic, copy, readwrite) NSDictionary<NSString *, id> *photoMetadata;
 @property(nonatomic, copy, readwrite, nullable) NSURL *obsWebSocketURL;
+@property(nonatomic, copy, readwrite, nullable) NSURL *rtspURL;
 @property(nonatomic, readwrite) NSInteger preferredFramesPerSecond;
 @end
 
@@ -96,6 +97,8 @@
         configuration.sourceKind = VCAMSourceKindLocalMedia;
     } else if ([source isEqualToString:@"obs"]) {
         configuration.sourceKind = VCAMSourceKindOBSWebSocket;
+    } else if ([source isEqualToString:@"rtsp"]) {
+        configuration.sourceKind = VCAMSourceKindRTSP;
     } else {
         configuration.sourceKind = VCAMSourceKindCamera;
     }
@@ -134,6 +137,11 @@
     if ([obsURL.scheme.lowercaseString isEqualToString:@"ws"] ||
         [obsURL.scheme.lowercaseString isEqualToString:@"wss"]) {
         configuration.obsWebSocketURL = obsURL;
+    }
+    NSString *rtspURLString = values[@"rtspURL"];
+    NSURL *rtspURL = [rtspURLString isKindOfClass:NSString.class] ? [NSURL URLWithString:rtspURLString] : nil;
+    if ([rtspURL.scheme.lowercaseString isEqualToString:@"rtsp"]) {
+        configuration.rtspURL = rtspURL;
     }
     return configuration;
 }

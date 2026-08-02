@@ -11,13 +11,14 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("com.codex.vcam.plist"))
-    parser.add_argument("--source", choices=("camera", "local", "obs"), required=True)
+    parser.add_argument("--source", choices=("camera", "local", "obs", "rtsp"), required=True)
     parser.add_argument("--media-path")
     parser.add_argument("--depth-image-path")
     parser.add_argument("--live-photo-still-path")
     parser.add_argument("--live-photo-movie-path")
     parser.add_argument("--metadata-json", type=Path, help="JSON object merged into AVCapturePhoto metadata")
     parser.add_argument("--obs-url")
+    parser.add_argument("--rtsp-url")
     parser.add_argument("--audio", action="store_true")
     parser.add_argument("--no-loop", action="store_true")
     parser.add_argument("--mirror", action="store_true")
@@ -33,6 +34,8 @@ def main() -> None:
         raise SystemExit("--media-path is required for --source local")
     if args.source == "obs" and not args.obs_url:
         raise SystemExit("--obs-url is required for --source obs")
+    if args.source == "rtsp" and not args.rtsp_url:
+        raise SystemExit("--rtsp-url is required for --source rtsp")
     values = {
         "enabled": args.source != "camera",
         "source": args.source,
@@ -54,6 +57,8 @@ def main() -> None:
         values["livePhotoMoviePath"] = args.live_photo_movie_path
     if args.obs_url:
         values["obsWebSocketURL"] = args.obs_url
+    if args.rtsp_url:
+        values["rtspURL"] = args.rtsp_url
     if args.metadata_json:
         metadata = json.loads(args.metadata_json.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):

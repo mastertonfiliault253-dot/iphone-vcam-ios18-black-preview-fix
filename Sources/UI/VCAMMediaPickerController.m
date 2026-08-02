@@ -135,6 +135,9 @@
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"直播流已启用";
         detail = [NSString stringWithFormat:@"%@\n目标：系统相机 Camera", values[@"obsWebSocketURL"] ?: @"未设置地址"];
+    } else if (enabled && [source isEqualToString:@"rtsp"]) {
+        sourceTitle = @"RTSP 直连已启用";
+        detail = [NSString stringWithFormat:@"%@\n目标：系统相机 Camera", values[@"rtspURL"] ?: @"未设置地址"];
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
@@ -331,27 +334,33 @@
 - (void)promptForLiveStream {
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"输入直播流"
-                                                                   message:@"输入电脑 VCAM OBS Bridge 的 WebSocket 地址"
+                                                                   message:@"输入 ws:// 电脑桥接地址，或 rtsp:// 手机直连地址"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = values[@"obsWebSocketURL"] ?: @"ws://192.168.2.1:8765";
+        field.text = values[@"rtspURL"] ?: values[@"obsWebSocketURL"] ?: @"rtsp://192.168.2.1:8554/live";
         field.keyboardType = UIKeyboardTypeURL;
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"启用" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         NSURL *url = [NSURL URLWithString:alert.textFields.firstObject.text ?: @""];
-        if (![@[@"ws", @"wss"] containsObject:url.scheme.lowercaseString]) {
-            [self showMessage:@"直播流地址必须以 ws:// 或 wss:// 开头" error:YES];
+        NSString *scheme = url.scheme.lowercaseString;
+        BOOL isWebSocket = [@[@"ws", @"wss"] containsObject:scheme];
+        BOOL isRTSP = [scheme isEqualToString:@"rtsp"];
+        if (!isWebSocket && !isRTSP) {
+            [self showMessage:@"直播流地址必须以 ws://、wss:// 或 rtsp:// 开头" error:YES];
             return;
         }
-        if (![self updatePreferences:@{@"source": @"obs", @"enabled": @YES,
-                                      @"obsWebSocketURL": url.absoluteString}]) {
+        NSDictionary *updates = isRTSP ?
+            @{@"source": @"rtsp", @"enabled": @YES, @"rtspURL": url.absoluteString} :
+            @{@"source": @"obs", @"enabled": @YES, @"obsWebSocketURL": url.absoluteString};
+        if (![self updatePreferences:updates]) {
             [self showMessage:@"直播流配置写入失败" error:YES];
             return;
         }
         [self postConfigurationChanged];
-        [self showMessage:@"已切换到直播流；断线时会自动回退真实画面" error:NO];
+        [self showMessage:isRTSP ? @"已切换到手机直连 RTSP（TCP + VideoToolbox 硬解）" :
+                                      @"已切换到电脑 WebSocket 直播流" error:NO];
     }]];
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
 }

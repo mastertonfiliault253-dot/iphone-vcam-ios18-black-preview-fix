@@ -106,6 +106,15 @@ Copy the generated plist to the path above and post the Darwin notification
 
 ## OBS / RTSP desktop bridge
 
+The control panel accepts either a `ws://` bridge address or a direct
+`rtsp://` address. Direct RTSP uses FFmpeg for RTSP/RTP demuxing and
+VideoToolbox hardware decoding on the phone; TCP transport, low-delay mode,
+latest-frame delivery, and automatic reconnect are enabled.
+
+The iOS package links a minimal LGPL FFmpeg 7.1.1 build containing only the
+RTSP, H.264/HEVC, and VideoToolbox pieces needed by this feature. The pinned
+source build is reproducible through `scripts/build-ffmpeg-ios.sh`.
+
 1. Install OBS Studio and start **Virtual Camera**.
 2. Install bridge dependencies:
 

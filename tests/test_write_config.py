@@ -7,6 +7,29 @@ import unittest
 
 
 class WriteConfigTests(unittest.TestCase):
+    def test_direct_rtsp_configuration_is_valid_plist(self) -> None:
+        script = pathlib.Path(__file__).parents[1] / "scripts" / "write-config.py"
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "vcam.plist"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--output",
+                    str(output),
+                    "--source",
+                    "rtsp",
+                    "--rtsp-url",
+                    "rtsp://192.168.2.10:8554/live",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            values = plistlib.loads(output.read_bytes())
+            self.assertEqual(values["source"], "rtsp")
+            self.assertEqual(values["rtspURL"], "rtsp://192.168.2.10:8554/live")
+
     def test_obs_configuration_is_valid_plist(self) -> None:
         script = pathlib.Path(__file__).parents[1] / "scripts" / "write-config.py"
         with tempfile.TemporaryDirectory() as directory:

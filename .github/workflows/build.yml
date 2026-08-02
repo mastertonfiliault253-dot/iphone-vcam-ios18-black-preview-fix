@@ -27,6 +27,7 @@ jobs:
         env:
           THEOS: ${{ runner.temp }}/theos
         run: |
+          ./scripts/build-ffmpeg-ios.sh
           if [[ "${{ matrix.scheme }}" == "rootless" ]]; then
             make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           else
@@ -52,7 +53,9 @@ jobs:
       - name: Build roothide package
         env:
           THEOS: ${{ runner.temp }}/theos-roothide
-        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+        run: |
+          ./scripts/build-ffmpeg-ios.sh
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-roothide

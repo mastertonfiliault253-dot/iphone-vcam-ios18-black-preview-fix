@@ -8,6 +8,8 @@
     <string>obs</string>
     <key>obsWebSocketURL</key>
     <string>ws://192.168.1.20:8765</string>
+    <key>rtspURL</key>
+    <string>rtsp://192.168.1.20:8554/live</string>
     <key>mediaPath</key>
     <string>/var/mobile/Media/DCIM/vcam.mov</string>
     <key>depthImagePath</key>
