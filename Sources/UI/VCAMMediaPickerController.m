@@ -5,6 +5,8 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../Core/VCAMConfiguration.h"
 
+extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void);
+
 @interface VCAMMediaPickerController () <PHPickerViewControllerDelegate,
                                           UIDocumentPickerDelegate,
                                           VCAMControlPanelDelegate>
@@ -144,6 +146,10 @@
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
               values[@"preferredFramesPerSecond"] ?: @30];
+    NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot();
+    detail = [detail stringByAppendingFormat:@"\n诊断 Hook：拍照请求 %@ / 回调 %@；录像开始 %@ / 完成 %@",
+              captureDiagnostics[@"photoRequest"], captureDiagnostics[@"photoCallback"],
+              captureDiagnostics[@"recordingStart"], captureDiagnostics[@"recordingFinish"]];
     return @{
         @"source": sourceTitle,
         @"detail": detail,

@@ -1,5 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
+#import <stdatomic.h>
 #import <substrate.h>
 #import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
@@ -11,6 +12,19 @@ static const void *VCAMReplacementPhotoDataKey = &VCAMReplacementPhotoDataKey;
 static const void *VCAMReplacementDepthDataKey = &VCAMReplacementDepthDataKey;
 static const void *VCAMReplacementMetadataKey = &VCAMReplacementMetadataKey;
 static const void *VCAMPreviewDriverKey = &VCAMPreviewDriverKey;
+static _Atomic(uint64_t) VCAMPhotoRequestCount;
+static _Atomic(uint64_t) VCAMPhotoCallbackCount;
+static _Atomic(uint64_t) VCAMRecordingStartCount;
+static _Atomic(uint64_t) VCAMRecordingFinishCount;
+
+NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) {
+    return @{
+        @"photoRequest": @(atomic_load_explicit(&VCAMPhotoRequestCount, memory_order_relaxed)),
+        @"photoCallback": @(atomic_load_explicit(&VCAMPhotoCallbackCount, memory_order_relaxed)),
+        @"recordingStart": @(atomic_load_explicit(&VCAMRecordingStartCount, memory_order_relaxed)),
+        @"recordingFinish": @(atomic_load_explicit(&VCAMRecordingFinishCount, memory_order_relaxed)),
+    };
+}
 
 static BOOL VCAMIsAllowedProcess(void) {
     NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
@@ -179,6 +193,7 @@ static void VCAMHookPhotoDelegate(id delegate) {
                                                        AVCapturePhotoOutput *output,
                                                        AVCapturePhoto *photo,
                                                        NSError *error) {
+            atomic_fetch_add_explicit(&VCAMPhotoCallbackCount, 1, memory_order_relaxed);
             VCAMHookPhotoClass(object_getClass(photo));
             VCAMAttachReplacementToPhoto(photo);
             original(receiver, selector, output, photo, error);
@@ -249,6 +264,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
                                                        NSURL *outputURL,
                                                        NSArray<AVCaptureConnection *> *connections,
                                                        NSError *error) {
+            atomic_fetch_add_explicit(&VCAMRecordingFinishCount, 1, memory_order_relaxed);
             NSError *replacementError = nil;
             NSString *replacementPath = [[VCAMFramePipeline sharedPipeline] localRecordingReplacementPath];
             NSURL *recordedOBSFile = [[VCAMFramePipeline sharedPipeline] finishReplacementRecording];
@@ -300,6 +316,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 - (void)capturePhotoWithSettings:(AVCapturePhotoSettings *)settings
                          delegate:(id<AVCapturePhotoCaptureDelegate>)delegate {
+    atomic_fetch_add_explicit(&VCAMPhotoRequestCount, 1, memory_order_relaxed);
     VCAMHookPhotoDelegate(delegate);
     if (settings.livePhotoMovieFileURL != nil) VCAMHookLivePhotoDelegate(delegate);
     %orig;
@@ -322,6 +339,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 - (void)startRecordingToOutputFileURL:(NSURL *)outputFileURL
                     recordingDelegate:(id<AVCaptureFileOutputRecordingDelegate>)delegate {
+    atomic_fetch_add_explicit(&VCAMRecordingStartCount, 1, memory_order_relaxed);
     VCAMHookRecordingDelegate(delegate);
     [[VCAMFramePipeline sharedPipeline] startReplacementRecording];
     %orig;
