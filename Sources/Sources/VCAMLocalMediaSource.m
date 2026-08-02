@@ -2,6 +2,14 @@
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <os/log.h>
+
+static os_log_t VCAMDiagnosticLog(void) {
+    static os_log_t log;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ log = os_log_create("com.codex.vcam", "diagnostics"); });
+    return log;
+}
 
 @interface VCAMLocalMediaSource () {
     CVPixelBufferRef _currentPlayerPixelBuffer;
@@ -11,6 +19,18 @@
     size_t _lastRenderedWidth;
     size_t _lastRenderedHeight;
     OSType _lastRenderedPixelFormat;
+    NSUInteger _diagnosticCallbacks;
+    NSUInteger _diagnosticNewFrames;
+    NSUInteger _diagnosticMisses;
+    NSUInteger _diagnosticOutputReconfigurations;
+    NSUInteger _diagnosticTemplateSwitches;
+    NSUInteger _diagnosticCacheHits;
+    NSUInteger _diagnosticRenders;
+    CFTimeInterval _diagnosticWindowStart;
+    CFTimeInterval _diagnosticRenderTotal;
+    CFTimeInterval _diagnosticRenderMaximum;
+    CMTime _diagnosticWindowItemStart;
+    OSType _diagnosticLastTemplateFormat;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -39,6 +59,7 @@
         _videoTransform = CGAffineTransformIdentity;
         _currentPlayerItemTime = kCMTimeInvalid;
         _lastRenderedSourcePTS = kCMTimeInvalid;
+        _diagnosticWindowItemStart = kCMTimeInvalid;
     }
     return self;
 }
@@ -122,6 +143,7 @@
 }
 
 - (void)configurePlayerVideoOutputForPixelFormat:(OSType)pixelFormat {
+    _diagnosticOutputReconfigurations += 1;
     if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
     NSDictionary *attributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
@@ -150,6 +172,14 @@
         return NO;
     }
     self.videoTransform = videoTrack.preferredTransform;
+    CGFloat transformAngle = atan2(self.videoTransform.b, self.videoTransform.a) * 180.0 / M_PI;
+    os_log_with_type(VCAMDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
+        "[DEBUG-vcamdiag] asset natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%{public}ld requestedFps=%{public}ld",
+        videoTrack.naturalSize.width, videoTrack.naturalSize.height,
+        self.videoTransform.a, self.videoTransform.b, self.videoTransform.c,
+        self.videoTransform.d, self.videoTransform.tx, self.videoTransform.ty,
+        transformAngle, (long)self.configuration.rotationDegrees,
+        (long)self.configuration.preferredFramesPerSecond);
     AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:self.asset];
     self.playerItem = item;
     [self configurePlayerVideoOutputForPixelFormat:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange];
@@ -190,6 +220,7 @@
         CVPixelBufferRef newest = [self.playerVideoOutput copyPixelBufferForItemTime:itemTime
                                                                    itemTimeForDisplay:&displayTime];
         if (newest != NULL) {
+            _diagnosticNewFrames += 1;
             if (_currentPlayerPixelBuffer != NULL) CVPixelBufferRelease(_currentPlayerPixelBuffer);
             _currentPlayerPixelBuffer = newest;
             _currentPlayerItemTime = CMTIME_IS_VALID(displayTime) ? displayTime : itemTime;
@@ -198,6 +229,68 @@
     if (itemTimeOut != NULL) *itemTimeOut = _currentPlayerItemTime;
     if (_currentPlayerPixelBuffer == NULL) return NULL;
     return CVPixelBufferRetain(_currentPlayerPixelBuffer);
+}
+
+- (void)emitDiagnosticsForTemplate:(CMSampleBufferRef)templateBuffer
+                        sourceTime:(CMTime)sourceTime
+                    renderDuration:(CFTimeInterval)renderDuration
+                          hadFrame:(BOOL)hadFrame
+                          cacheHit:(BOOL)cacheHit {
+    _diagnosticCallbacks += 1;
+    if (!hadFrame) _diagnosticMisses += 1;
+    if (cacheHit) _diagnosticCacheHits += 1;
+    if (renderDuration > 0) {
+        _diagnosticRenders += 1;
+        _diagnosticRenderTotal += renderDuration;
+        _diagnosticRenderMaximum = MAX(_diagnosticRenderMaximum, renderDuration);
+    }
+    CVImageBufferRef templateImage = CMSampleBufferGetImageBuffer(templateBuffer);
+    OSType templateFormat = templateImage == NULL ? 0 : CVPixelBufferGetPixelFormatType(templateImage);
+    if (_diagnosticLastTemplateFormat != 0 && templateFormat != _diagnosticLastTemplateFormat) {
+        _diagnosticTemplateSwitches += 1;
+    }
+    _diagnosticLastTemplateFormat = templateFormat;
+
+    CFTimeInterval now = CACurrentMediaTime();
+    if (_diagnosticWindowStart == 0) {
+        _diagnosticWindowStart = now;
+        _diagnosticWindowItemStart = sourceTime;
+        return;
+    }
+    CFTimeInterval elapsed = now - _diagnosticWindowStart;
+    if (elapsed < 1.0) return;
+
+    Float64 itemAdvance = 0;
+    if (CMTIME_IS_VALID(sourceTime) && CMTIME_IS_VALID(_diagnosticWindowItemStart)) {
+        itemAdvance = CMTimeGetSeconds(CMTimeSubtract(sourceTime, _diagnosticWindowItemStart));
+        if (!isfinite(itemAdvance)) itemAdvance = 0;
+    }
+    size_t sourceWidth = _currentPlayerPixelBuffer == NULL ? 0 : CVPixelBufferGetWidth(_currentPlayerPixelBuffer);
+    size_t sourceHeight = _currentPlayerPixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(_currentPlayerPixelBuffer);
+    size_t targetWidth = templateImage == NULL ? 0 : CVPixelBufferGetWidth(templateImage);
+    size_t targetHeight = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
+    double averageRenderMilliseconds = _diagnosticRenders == 0 ? 0 :
+        (_diagnosticRenderTotal * 1000.0 / _diagnosticRenders);
+    os_log_with_type(VCAMDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
+        "[DEBUG-vcamdiag] perf window=%.3f callbacks=%{public}lu newFrames=%{public}lu misses=%{public}lu reconfigs=%{public}lu templateSwitches=%{public}lu cacheHits=%{public}lu renders=%{public}lu renderAvgMs=%.3f renderMaxMs=%.3f itemAdvance=%.3f rate=%.2f source=%{public}zux%{public}zu target=%{public}zux%{public}zu templateFormat=0x%{public}08x",
+        elapsed, (unsigned long)_diagnosticCallbacks, (unsigned long)_diagnosticNewFrames,
+        (unsigned long)_diagnosticMisses, (unsigned long)_diagnosticOutputReconfigurations,
+        (unsigned long)_diagnosticTemplateSwitches, (unsigned long)_diagnosticCacheHits,
+        (unsigned long)_diagnosticRenders, averageRenderMilliseconds,
+        _diagnosticRenderMaximum * 1000.0, itemAdvance, self.player.rate,
+        sourceWidth, sourceHeight, targetWidth, targetHeight, (unsigned int)templateFormat);
+
+    _diagnosticCallbacks = 0;
+    _diagnosticNewFrames = 0;
+    _diagnosticMisses = 0;
+    _diagnosticOutputReconfigurations = 0;
+    _diagnosticTemplateSwitches = 0;
+    _diagnosticCacheHits = 0;
+    _diagnosticRenders = 0;
+    _diagnosticRenderTotal = 0;
+    _diagnosticRenderMaximum = 0;
+    _diagnosticWindowStart = now;
+    _diagnosticWindowItemStart = sourceTime;
 }
 
 - (BOOL)rebuildAudioReaderForSampleRate:(Float64)sampleRate
@@ -244,7 +337,11 @@
         CMTime sourcePTS = kCMTimeInvalid;
         CVPixelBufferRef imageBuffer = [self copyCurrentPlayerPixelBufferForTemplate:templateBuffer
                                                                             itemTime:&sourcePTS];
-        if (imageBuffer == NULL) return NULL;
+        if (imageBuffer == NULL) {
+            [self emitDiagnosticsForTemplate:templateBuffer sourceTime:sourcePTS
+                              renderDuration:0 hadFrame:NO cacheHit:NO];
+            return NULL;
+        }
         CVImageBufferRef templateImage = CMSampleBufferGetImageBuffer(templateBuffer);
         size_t width = templateImage == NULL ? 0 : CVPixelBufferGetWidth(templateImage);
         size_t height = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
@@ -262,14 +359,18 @@
             CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, _lastRenderedVideoSample,
                                                   1, &timing, &retimed);
             CVPixelBufferRelease(imageBuffer);
+            [self emitDiagnosticsForTemplate:templateBuffer sourceTime:sourcePTS
+                              renderDuration:0 hadFrame:YES cacheHit:YES];
             return retimed;
         }
         CIImage *image = imageBuffer == NULL ? nil : [CIImage imageWithCVImageBuffer:imageBuffer];
         if (image != nil && !CGAffineTransformIsIdentity(self.videoTransform)) {
             image = [image imageByApplyingTransform:self.videoTransform];
         }
+        CFTimeInterval renderStart = CACurrentMediaTime();
         CMSampleBufferRef rendered = image == nil ? NULL :
             [self.renderer copySampleFromImage:image template:templateBuffer configuration:self.configuration];
+        CFTimeInterval renderDuration = CACurrentMediaTime() - renderStart;
         if (rendered != NULL) {
             if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);
             _lastRenderedVideoSample = NULL;
@@ -280,6 +381,8 @@
             _lastRenderedPixelFormat = pixelFormat;
         }
         CVPixelBufferRelease(imageBuffer);
+        [self emitDiagnosticsForTemplate:templateBuffer sourceTime:sourcePTS
+                          renderDuration:renderDuration hadFrame:(rendered != NULL) cacheHit:NO];
         return rendered;
     }
 }
