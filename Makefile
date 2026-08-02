@@ -18,9 +18,8 @@ VCAM_FILES = \
 	Sources/UI/VCAMMediaPickerController.m \
 	Sources/Sources/VCAMLocalMediaSource.m \
 	Sources/Sources/VCAMOBSStreamSource.m \
-	Sources/Sources/VCAMRTSPStreamSource.mm
+	Sources/Sources/VCAMRTSPStreamSource.m
 VCAM_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
-VCAM_CCFLAGS = -std=c++17
 VCAM_FRAMEWORKS = AVFoundation AudioToolbox CoreImage CoreMedia CoreVideo Foundation ImageIO PhotosUI QuartzCore UIKit UniformTypeIdentifiers VideoToolbox
 VCAM_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 VCAM_LIBRARIES = avformat avcodec avutil

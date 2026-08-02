@@ -1,12 +1,10 @@
 #import "VCAMRTSPStreamSource.h"
 #import <QuartzCore/QuartzCore.h>
 
-extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
-}
 
 static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                                                          const enum AVPixelFormat *formats) {

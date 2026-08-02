@@ -122,7 +122,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         configuration_h = (ROOT / "Sources" / "Core" / "VCAMConfiguration.h").read_text(encoding="utf-8")
         configuration_m = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
         pipeline = (ROOT / "Sources" / "Core" / "VCAMFramePipeline.m").read_text(encoding="utf-8")
-        source = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.mm").read_text(encoding="utf-8")
+        source = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(encoding="utf-8")
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
@@ -134,7 +134,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", source)
         self.assertIn("frame->data[3]", source)
         self.assertIn('@"rtspURL"', picker)
-        self.assertIn("VCAMRTSPStreamSource.mm", makefile)
+        self.assertIn("VCAMRTSPStreamSource.m", makefile)
 
     def test_preview_hot_path_reuses_buffers_and_template(self) -> None:
         renderer = (
