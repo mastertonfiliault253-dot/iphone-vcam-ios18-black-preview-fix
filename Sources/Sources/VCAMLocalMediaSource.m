@@ -1,14 +1,23 @@
 #import "VCAMLocalMediaSource.h"
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
+#import <fcntl.h>
 #import <math.h>
-#import <os/log.h>
+#import <stdarg.h>
+#import <unistd.h>
 
-static os_log_t VCAMDiagnosticLog(void) {
-    static os_log_t log;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ log = os_log_create("com.codex.vcam", "diagnostics"); });
-    return log;
+static NSString * const VCAMDiagnosticPath = @"/var/mobile/Library/Preferences/com.codex.vcam.diagnostics.log";
+
+static void VCAMWriteDiagnostic(NSString *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    NSString *line = [[NSString alloc] initWithFormat:format arguments:arguments];
+    va_end(arguments);
+    NSData *data = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+    int descriptor = open(VCAMDiagnosticPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (descriptor < 0) return;
+    (void)write(descriptor, data.bytes, data.length);
+    (void)close(descriptor);
 }
 
 @interface VCAMLocalMediaSource () {
@@ -76,6 +85,7 @@ static os_log_t VCAMDiagnosticLog(void) {
     }
 
     NSURL *url = [NSURL fileURLWithPath:path];
+    [[NSFileManager defaultManager] removeItemAtPath:VCAMDiagnosticPath error:nil];
     self.stillImage = [CIImage imageWithContentsOfURL:url];
     if (self.stillImage == nil) {
         self.asset = [AVURLAsset URLAssetWithURL:url options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
@@ -173,8 +183,8 @@ static os_log_t VCAMDiagnosticLog(void) {
     }
     self.videoTransform = videoTrack.preferredTransform;
     CGFloat transformAngle = atan2(self.videoTransform.b, self.videoTransform.a) * 180.0 / M_PI;
-    os_log_with_type(VCAMDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "[DEBUG-vcamdiag] asset natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%{public}ld requestedFps=%{public}ld",
+    VCAMWriteDiagnostic(
+        @"[DEBUG-vcamdiag] asset natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%ld requestedFps=%ld",
         videoTrack.naturalSize.width, videoTrack.naturalSize.height,
         self.videoTransform.a, self.videoTransform.b, self.videoTransform.c,
         self.videoTransform.d, self.videoTransform.tx, self.videoTransform.ty,
@@ -271,8 +281,8 @@ static os_log_t VCAMDiagnosticLog(void) {
     size_t targetHeight = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
     double averageRenderMilliseconds = _diagnosticRenders == 0 ? 0 :
         (_diagnosticRenderTotal * 1000.0 / _diagnosticRenders);
-    os_log_with_type(VCAMDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "[DEBUG-vcamdiag] perf window=%.3f callbacks=%{public}lu newFrames=%{public}lu misses=%{public}lu reconfigs=%{public}lu templateSwitches=%{public}lu cacheHits=%{public}lu renders=%{public}lu renderAvgMs=%.3f renderMaxMs=%.3f itemAdvance=%.3f rate=%.2f source=%{public}zux%{public}zu target=%{public}zux%{public}zu templateFormat=0x%{public}08x",
+    VCAMWriteDiagnostic(
+        @"[DEBUG-vcamdiag] perf window=%.3f callbacks=%lu newFrames=%lu misses=%lu reconfigs=%lu templateSwitches=%lu cacheHits=%lu renders=%lu renderAvgMs=%.3f renderMaxMs=%.3f itemAdvance=%.3f rate=%.2f source=%zux%zu target=%zux%zu templateFormat=0x%08x",
         elapsed, (unsigned long)_diagnosticCallbacks, (unsigned long)_diagnosticNewFrames,
         (unsigned long)_diagnosticMisses, (unsigned long)_diagnosticOutputReconfigurations,
         (unsigned long)_diagnosticTemplateSwitches, (unsigned long)_diagnosticCacheHits,
