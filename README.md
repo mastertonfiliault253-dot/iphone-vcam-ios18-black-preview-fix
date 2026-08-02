@@ -104,7 +104,7 @@ python scripts\write-config.py --source obs `
 Copy the generated plist to the path above and post the Darwin notification
 `com.codex.vcam/preferences.changed`, or restart the target app.
 
-## OBS desktop bridge
+## OBS / RTSP desktop bridge
 
 1. Install OBS Studio and start **Virtual Camera**.
 2. Install bridge dependencies:
@@ -117,6 +117,13 @@ Copy the generated plist to the path above and post the Darwin notification
 
    ```powershell
    python desktop\obs_bridge.py --device 0 --port 8765
+   ```
+
+   Or ingest an RTSP source (TCP transport, low-latency buffering, and reconnect
+   are enabled) and relay it to the same iPhone WebSocket client:
+
+   ```powershell
+   python desktop\obs_bridge.py --rtsp-url rtsp://192.168.2.10:8554/live --port 8765
    ```
 
 4. Put the PC and iPhone on the same trusted LAN and use the PC LAN address in

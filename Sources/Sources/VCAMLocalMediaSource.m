@@ -4,8 +4,8 @@
 #import <math.h>
 
 @interface VCAMLocalMediaSource () {
-    CMSampleBufferRef _currentVideoSample;
-    CMSampleBufferRef _nextVideoSample;
+    CVPixelBufferRef _currentPlayerPixelBuffer;
+    CMTime _currentPlayerItemTime;
     CMSampleBufferRef _lastRenderedVideoSample;
     CMTime _lastRenderedSourcePTS;
     size_t _lastRenderedWidth;
@@ -16,16 +16,16 @@
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) CIImage *stillImage;
 @property(nonatomic, strong, nullable) AVURLAsset *asset;
-@property(nonatomic, strong, nullable) AVAssetReader *videoReader;
 @property(nonatomic, strong, nullable) AVAssetReader *audioReader;
-@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *videoOutput;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *audioOutput;
+@property(nonatomic, strong, nullable) AVPlayerItem *playerItem;
+@property(nonatomic, strong, nullable) AVPlayer *player;
+@property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *playerVideoOutput;
 @property(nonatomic) Float64 audioSampleRate;
 @property(nonatomic) UInt32 audioChannelCount;
 @property(nonatomic) BOOL running;
 @property(nonatomic) CGAffineTransform videoTransform;
-@property(nonatomic) CMTime firstVideoPTS;
-@property(nonatomic) CFTimeInterval videoPlaybackStartHostTime;
+@property(nonatomic) OSType playerOutputPixelFormat;
 @end
 
 @implementation VCAMLocalMediaSource
@@ -37,7 +37,7 @@
         _configuration = configuration;
         _renderer = renderer;
         _videoTransform = CGAffineTransformIdentity;
-        _firstVideoPTS = kCMTimeInvalid;
+        _currentPlayerItemTime = kCMTimeInvalid;
         _lastRenderedSourcePTS = kCMTimeInvalid;
     }
     return self;
@@ -58,7 +58,7 @@
     self.stillImage = [CIImage imageWithContentsOfURL:url];
     if (self.stillImage == nil) {
         self.asset = [AVURLAsset URLAssetWithURL:url options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
-        if (![self rebuildVideoReader:error]) {
+        if (![self startVideoPlayer:error]) {
             return NO;
         }
         [self rebuildAudioReaderForSampleRate:0 channelCount:0 error:nil];
@@ -69,11 +69,18 @@
 
 - (void)stop {
     @synchronized (self) {
-        [self.videoReader cancelReading];
+        [self.player pause];
+        if (self.playerItem != nil) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                            name:AVPlayerItemDidPlayToEndTimeNotification
+                                                          object:self.playerItem];
+        }
+        if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
         [self.audioReader cancelReading];
-        self.videoReader = nil;
+        self.player = nil;
+        self.playerItem = nil;
+        self.playerVideoOutput = nil;
         self.audioReader = nil;
-        self.videoOutput = nil;
         self.audioOutput = nil;
         [self resetVideoPlaybackState];
         self.running = NO;
@@ -81,18 +88,16 @@
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self resetVideoPlaybackState];
 }
 
 - (void)resetVideoPlaybackState {
-    if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
-    if (_nextVideoSample != NULL) CFRelease(_nextVideoSample);
+    if (_currentPlayerPixelBuffer != NULL) CVPixelBufferRelease(_currentPlayerPixelBuffer);
     if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);
-    _currentVideoSample = NULL;
-    _nextVideoSample = NULL;
+    _currentPlayerPixelBuffer = NULL;
+    _currentPlayerItemTime = kCMTimeInvalid;
     _lastRenderedVideoSample = NULL;
-    self.firstVideoPTS = kCMTimeInvalid;
-    self.videoPlaybackStartHostTime = 0;
     _lastRenderedSourcePTS = kCMTimeInvalid;
     _lastRenderedWidth = 0;
     _lastRenderedHeight = 0;
@@ -103,8 +108,37 @@
     @synchronized (self) { return self.asset != nil; }
 }
 
-- (BOOL)rebuildVideoReader:(NSError **)error {
-    [self.videoReader cancelReading];
+- (OSType)desiredPlayerPixelFormatForTemplate:(CMSampleBufferRef)templateBuffer {
+    CVImageBufferRef image = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
+    OSType requested = image == NULL ? 0 : CVPixelBufferGetPixelFormatType(image);
+    switch (requested) {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+        case kCVPixelFormatType_32BGRA:
+            return requested;
+        default:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    }
+}
+
+- (void)configurePlayerVideoOutputForPixelFormat:(OSType)pixelFormat {
+    if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+    };
+    AVPlayerItemVideoOutput *output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attributes];
+    [self.playerItem addOutput:output];
+    self.playerVideoOutput = output;
+    self.playerOutputPixelFormat = pixelFormat;
+    if (_currentPlayerPixelBuffer != NULL) {
+        CVPixelBufferRelease(_currentPlayerPixelBuffer);
+        _currentPlayerPixelBuffer = NULL;
+    }
+}
+
+- (BOOL)startVideoPlayer:(NSError **)error {
     [self resetVideoPlaybackState];
     AVAssetTrack *videoTrack = [[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     if (videoTrack == nil) {
@@ -116,57 +150,54 @@
         return NO;
     }
     self.videoTransform = videoTrack.preferredTransform;
-
-    AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:self.asset error:error];
-    if (reader == nil) return NO;
-
-    NSDictionary *videoSettings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-    };
-    AVAssetReaderTrackOutput *videoOutput = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:videoTrack
-                                                                                       outputSettings:videoSettings];
-    videoOutput.alwaysCopiesSampleData = NO;
-    if (![reader canAddOutput:videoOutput]) return NO;
-    [reader addOutput:videoOutput];
-
-    if (![reader startReading]) {
-        if (error != NULL && *error == nil) *error = reader.error;
-        return NO;
+    AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:self.asset];
+    self.playerItem = item;
+    [self configurePlayerVideoOutputForPixelFormat:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange];
+    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
+    player.muted = YES;
+    player.volume = 0;
+    player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    if ([player respondsToSelector:@selector(setAutomaticallyWaitsToMinimizeStalling:)]) {
+        player.automaticallyWaitsToMinimizeStalling = NO;
     }
-    self.videoReader = reader;
-    self.videoOutput = videoOutput;
+    self.player = player;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playerItemDidPlayToEnd:)
+                                                 name:AVPlayerItemDidPlayToEndTimeNotification
+                                               object:item];
+    [player play];
     return YES;
 }
 
-- (CMSampleBufferRef)copyPacedDecodedVideoSample {
-    if (_currentVideoSample == NULL) {
-        _currentVideoSample = [self.videoOutput copyNextSampleBuffer];
-        if (_currentVideoSample == NULL) return NULL;
-        self.firstVideoPTS = CMSampleBufferGetPresentationTimeStamp(_currentVideoSample);
-        self.videoPlaybackStartHostTime = CACurrentMediaTime();
-        _nextVideoSample = [self.videoOutput copyNextSampleBuffer];
-    }
+- (void)playerItemDidPlayToEnd:(NSNotification *)notification {
+    if (!self.running || !self.configuration.loopMedia || notification.object != self.playerItem) return;
+    [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero
+          completionHandler:^(BOOL finished) {
+        if (finished && self.running) [self.player play];
+    }];
+}
 
-    CFTimeInterval elapsed = MAX(0, CACurrentMediaTime() - self.videoPlaybackStartHostTime);
-    while (_nextVideoSample != NULL) {
-        CMTime nextPTS = CMSampleBufferGetPresentationTimeStamp(_nextVideoSample);
-        Float64 nextTime = CMTimeGetSeconds(CMTimeSubtract(nextPTS, self.firstVideoPTS));
-        if (!isfinite(nextTime) || nextTime > elapsed) break;
-        CFRelease(_currentVideoSample);
-        _currentVideoSample = _nextVideoSample;
-        _nextVideoSample = [self.videoOutput copyNextSampleBuffer];
+- (CVPixelBufferRef)copyCurrentPlayerPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer
+                                                   itemTime:(CMTime *)itemTimeOut {
+    OSType desiredPixelFormat = [self desiredPlayerPixelFormatForTemplate:templateBuffer];
+    if (desiredPixelFormat != self.playerOutputPixelFormat) {
+        [self configurePlayerVideoOutputForPixelFormat:desiredPixelFormat];
     }
-
-    Float64 duration = CMTimeGetSeconds(self.asset.duration);
-    if (_nextVideoSample == NULL && self.configuration.loopMedia &&
-        isfinite(duration) && duration > 0.001 && elapsed >= duration) {
-        if ([self rebuildVideoReader:nil]) return [self copyPacedDecodedVideoSample];
+    CMTime itemTime = [self.playerVideoOutput itemTimeForHostTime:CACurrentMediaTime()];
+    if (!CMTIME_IS_VALID(itemTime)) itemTime = self.player.currentTime;
+    if ([self.playerVideoOutput hasNewPixelBufferForItemTime:itemTime]) {
+        CMTime displayTime = kCMTimeInvalid;
+        CVPixelBufferRef newest = [self.playerVideoOutput copyPixelBufferForItemTime:itemTime
+                                                                   itemTimeForDisplay:&displayTime];
+        if (newest != NULL) {
+            if (_currentPlayerPixelBuffer != NULL) CVPixelBufferRelease(_currentPlayerPixelBuffer);
+            _currentPlayerPixelBuffer = newest;
+            _currentPlayerItemTime = CMTIME_IS_VALID(displayTime) ? displayTime : itemTime;
+        }
     }
-
-    CMSampleBufferRef copy = NULL;
-    CMSampleBufferCreateCopy(kCFAllocatorDefault, _currentVideoSample, &copy);
-    return copy;
+    if (itemTimeOut != NULL) *itemTimeOut = _currentPlayerItemTime;
+    if (_currentPlayerPixelBuffer == NULL) return NULL;
+    return CVPixelBufferRetain(_currentPlayerPixelBuffer);
 }
 
 - (BOOL)rebuildAudioReaderForSampleRate:(Float64)sampleRate
@@ -210,11 +241,11 @@
                                         configuration:self.configuration];
         }
 
-        CMSampleBufferRef decoded = [self copyPacedDecodedVideoSample];
-        if (decoded == NULL) return NULL;
-        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(decoded);
+        CMTime sourcePTS = kCMTimeInvalid;
+        CVPixelBufferRef imageBuffer = [self copyCurrentPlayerPixelBufferForTemplate:templateBuffer
+                                                                            itemTime:&sourcePTS];
+        if (imageBuffer == NULL) return NULL;
         CVImageBufferRef templateImage = CMSampleBufferGetImageBuffer(templateBuffer);
-        CMTime sourcePTS = CMSampleBufferGetPresentationTimeStamp(decoded);
         size_t width = templateImage == NULL ? 0 : CVPixelBufferGetWidth(templateImage);
         size_t height = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
         OSType pixelFormat = templateImage == NULL ? 0 : CVPixelBufferGetPixelFormatType(templateImage);
@@ -230,7 +261,7 @@
             CMSampleBufferRef retimed = NULL;
             CMSampleBufferCreateCopyWithNewTiming(kCFAllocatorDefault, _lastRenderedVideoSample,
                                                   1, &timing, &retimed);
-            CFRelease(decoded);
+            CVPixelBufferRelease(imageBuffer);
             return retimed;
         }
         CIImage *image = imageBuffer == NULL ? nil : [CIImage imageWithCVImageBuffer:imageBuffer];
@@ -248,7 +279,7 @@
             _lastRenderedHeight = height;
             _lastRenderedPixelFormat = pixelFormat;
         }
-        CFRelease(decoded);
+        CVPixelBufferRelease(imageBuffer);
         return rendered;
     }
 }

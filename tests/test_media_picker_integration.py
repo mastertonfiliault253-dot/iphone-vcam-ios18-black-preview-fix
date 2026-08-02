@@ -49,15 +49,17 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"source": @"camera"', source)
         self.assertIn('@"enabled": @NO', source)
 
-    def test_local_video_honors_track_orientation_and_media_clock(self) -> None:
+    def test_local_video_uses_hardware_player_clock_and_honors_orientation(self) -> None:
         source = (
             ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
         ).read_text(encoding="utf-8")
 
         self.assertIn("videoTrack.preferredTransform", source)
         self.assertIn("CACurrentMediaTime()", source)
-        self.assertIn("CMSampleBufferGetPresentationTimeStamp", source)
-        self.assertIn("_nextVideoSample", source)
+        self.assertIn("AVPlayerItemVideoOutput", source)
+        self.assertIn("itemTimeForHostTime", source)
+        self.assertIn("copyPixelBufferForItemTime", source)
+        self.assertNotIn("copyNextSampleBuffer", source.split("rebuildAudioReaderForSampleRate")[0])
 
     def test_preview_samples_are_displayed_immediately(self) -> None:
         source = (
@@ -146,6 +148,16 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("_lastRenderedVideoSample", source)
         self.assertIn("CMTimeCompare", source)
         self.assertIn("preferredFramesPerSecond", preview)
+
+    def test_local_video_requests_native_camera_yuv_from_hardware_player(self) -> None:
+        source = (
+            ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
+        self.assertIn("desiredPlayerPixelFormatForTemplate", source)
+        self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", source)
+        self.assertIn("automaticallyWaitsToMinimizeStalling", source)
 
     def test_rotation_action_is_quarter_turn_and_immediately_reloads(self) -> None:
         picker = (
