@@ -150,6 +150,13 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     detail = [detail stringByAppendingFormat:@"\n诊断 Hook：拍照请求 %@ / 回调 %@；录像开始 %@ / 完成 %@",
               captureDiagnostics[@"photoRequest"], captureDiagnostics[@"photoCallback"],
               captureDiagnostics[@"recordingStart"], captureDiagnostics[@"recordingFinish"]];
+    detail = [detail stringByAppendingFormat:@"\n录像复制：尝试 %@ / 成功 %@；源存在 %@ / 输出文件 %@；错误 删除%@ 复制%@",
+              captureDiagnostics[@"copyAttempt"], captureDiagnostics[@"copySuccess"],
+              captureDiagnostics[@"sourceExists"], captureDiagnostics[@"outputIsFileURL"],
+              captureDiagnostics[@"removeError"], captureDiagnostics[@"copyError"]];
+    detail = [detail stringByAppendingFormat:@"\n大小：源 %@；输出 %@ → %@ 字节",
+              captureDiagnostics[@"sourceSize"], captureDiagnostics[@"outputSizeBefore"],
+              captureDiagnostics[@"outputSizeAfter"]];
     return @{
         @"source": sourceTitle,
         @"detail": detail,

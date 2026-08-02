@@ -16,6 +16,15 @@ static _Atomic(uint64_t) VCAMPhotoRequestCount;
 static _Atomic(uint64_t) VCAMPhotoCallbackCount;
 static _Atomic(uint64_t) VCAMRecordingStartCount;
 static _Atomic(uint64_t) VCAMRecordingFinishCount;
+static _Atomic(uint64_t) VCAMRecordingCopyAttemptCount;
+static _Atomic(uint64_t) VCAMRecordingCopySuccessCount;
+static _Atomic(uint64_t) VCAMRecordingSourceSize;
+static _Atomic(uint64_t) VCAMRecordingOutputSizeBefore;
+static _Atomic(uint64_t) VCAMRecordingOutputSizeAfter;
+static _Atomic(long) VCAMRecordingRemoveErrorCode;
+static _Atomic(long) VCAMRecordingCopyErrorCode;
+static _Atomic(BOOL) VCAMRecordingSourceExists;
+static _Atomic(BOOL) VCAMRecordingOutputIsFileURL;
 
 extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) {
     return @{
@@ -23,6 +32,15 @@ extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapsh
         @"photoCallback": @(atomic_load_explicit(&VCAMPhotoCallbackCount, memory_order_relaxed)),
         @"recordingStart": @(atomic_load_explicit(&VCAMRecordingStartCount, memory_order_relaxed)),
         @"recordingFinish": @(atomic_load_explicit(&VCAMRecordingFinishCount, memory_order_relaxed)),
+        @"copyAttempt": @(atomic_load_explicit(&VCAMRecordingCopyAttemptCount, memory_order_relaxed)),
+        @"copySuccess": @(atomic_load_explicit(&VCAMRecordingCopySuccessCount, memory_order_relaxed)),
+        @"sourceExists": @(atomic_load_explicit(&VCAMRecordingSourceExists, memory_order_relaxed)),
+        @"outputIsFileURL": @(atomic_load_explicit(&VCAMRecordingOutputIsFileURL, memory_order_relaxed)),
+        @"sourceSize": @(atomic_load_explicit(&VCAMRecordingSourceSize, memory_order_relaxed)),
+        @"outputSizeBefore": @(atomic_load_explicit(&VCAMRecordingOutputSizeBefore, memory_order_relaxed)),
+        @"outputSizeAfter": @(atomic_load_explicit(&VCAMRecordingOutputSizeAfter, memory_order_relaxed)),
+        @"removeError": @(atomic_load_explicit(&VCAMRecordingRemoveErrorCode, memory_order_relaxed)),
+        @"copyError": @(atomic_load_explicit(&VCAMRecordingCopyErrorCode, memory_order_relaxed)),
     };
 }
 
@@ -269,13 +287,29 @@ static void VCAMHookRecordingDelegate(id delegate) {
             NSString *replacementPath = [[VCAMFramePipeline sharedPipeline] localRecordingReplacementPath];
             NSURL *recordedOBSFile = [[VCAMFramePipeline sharedPipeline] finishReplacementRecording];
             if (replacementPath.length == 0) replacementPath = recordedOBSFile.path;
+            NSFileManager *manager = NSFileManager.defaultManager;
+            BOOL sourceExists = replacementPath.length > 0 && [manager fileExistsAtPath:replacementPath];
+            NSDictionary *sourceAttributes = sourceExists ? [manager attributesOfItemAtPath:replacementPath error:nil] : nil;
+            NSDictionary *outputAttributes = outputURL.isFileURL ? [manager attributesOfItemAtPath:outputURL.path error:nil] : nil;
+            atomic_store_explicit(&VCAMRecordingSourceExists, sourceExists, memory_order_relaxed);
+            atomic_store_explicit(&VCAMRecordingOutputIsFileURL, outputURL.isFileURL, memory_order_relaxed);
+            atomic_store_explicit(&VCAMRecordingSourceSize, [sourceAttributes fileSize], memory_order_relaxed);
+            atomic_store_explicit(&VCAMRecordingOutputSizeBefore, [outputAttributes fileSize], memory_order_relaxed);
+            atomic_store_explicit(&VCAMRecordingRemoveErrorCode, 0, memory_order_relaxed);
+            atomic_store_explicit(&VCAMRecordingCopyErrorCode, 0, memory_order_relaxed);
             if (replacementPath.length > 0 && outputURL.isFileURL &&
                 ![replacementPath isEqualToString:outputURL.path]) {
-                NSFileManager *manager = NSFileManager.defaultManager;
-                [manager removeItemAtURL:outputURL error:nil];
-                [manager copyItemAtURL:[NSURL fileURLWithPath:replacementPath]
-                                 toURL:outputURL
-                                 error:&replacementError];
+                atomic_fetch_add_explicit(&VCAMRecordingCopyAttemptCount, 1, memory_order_relaxed);
+                NSError *removeError = nil;
+                [manager removeItemAtURL:outputURL error:&removeError];
+                BOOL copied = [manager copyItemAtURL:[NSURL fileURLWithPath:replacementPath]
+                                               toURL:outputURL
+                                               error:&replacementError];
+                if (copied) atomic_fetch_add_explicit(&VCAMRecordingCopySuccessCount, 1, memory_order_relaxed);
+                atomic_store_explicit(&VCAMRecordingRemoveErrorCode, removeError.code, memory_order_relaxed);
+                atomic_store_explicit(&VCAMRecordingCopyErrorCode, replacementError.code, memory_order_relaxed);
+                NSDictionary *afterAttributes = [manager attributesOfItemAtPath:outputURL.path error:nil];
+                atomic_store_explicit(&VCAMRecordingOutputSizeAfter, [afterAttributes fileSize], memory_order_relaxed);
             }
             original(receiver, selector, output, outputURL, connections, replacementError ?: error);
         }), (IMP *)&original);
