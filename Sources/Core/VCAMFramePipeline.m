@@ -10,10 +10,8 @@
 #import "../Sources/VCAMRTSPStreamSource.h"
 
 @interface VCAMFramePipeline () {
-    CMSampleBufferRef _latestVideoSample;
     CMSampleBufferRef _previewTemplateSample;
     CGSize _previewTemplateSize;
-    CFTimeInterval _latestVideoHostTime;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -26,7 +24,6 @@
 @implementation VCAMFramePipeline
 
 - (void)dealloc {
-    if (_latestVideoSample != NULL) CFRelease(_latestVideoSample);
     if (_previewTemplateSample != NULL) CFRelease(_previewTemplateSample);
 }
 
@@ -52,10 +49,6 @@
     dispatch_sync(self.stateQueue, ^{
         [self.source stop];
         self.source = nil;
-        if (self->_latestVideoSample != NULL) {
-            CFRelease(self->_latestVideoSample);
-            self->_latestVideoSample = NULL;
-        }
         if (self->_previewTemplateSample != NULL) {
             CFRelease(self->_previewTemplateSample);
             self->_previewTemplateSample = NULL;
@@ -153,34 +146,21 @@
     dispatch_sync(self.stateQueue, ^{
         replacement = [self.source copyVideoSampleForTemplate:sample];
         if (replacement != NULL) {
-            [self rememberVideoSample:replacement];
             [self.recorder appendVideoSample:replacement];
         }
     });
     return replacement;
 }
 
-- (void)rememberVideoSample:(CMSampleBufferRef)sample {
-    if (_latestVideoSample != NULL) CFRelease(_latestVideoSample);
-    _latestVideoSample = NULL;
-    CMSampleBufferCreateCopy(kCFAllocatorDefault, sample, &_latestVideoSample);
-    _latestVideoHostTime = CACurrentMediaTime();
-}
-
 - (CMSampleBufferRef)copyPreviewVideoForSize:(CGSize)size {
     __block CMSampleBufferRef result = NULL;
     dispatch_sync(self.stateQueue, ^{
-        if (self->_latestVideoSample != NULL && CACurrentMediaTime() - self->_latestVideoHostTime < 0.20) {
-            CMSampleBufferCreateCopy(kCFAllocatorDefault, self->_latestVideoSample, &result);
-            return;
-        }
         if (self.source == nil || size.width < 1 || size.height < 1) return;
 
         CMSampleBufferRef template = [self copyPreviewTemplateForSize:size];
         if (template != NULL) {
             result = [self.source copyVideoSampleForTemplate:template];
             if (result != NULL) {
-                [self rememberVideoSample:result];
                 [self.recorder appendVideoSample:result];
             }
             CFRelease(template);
