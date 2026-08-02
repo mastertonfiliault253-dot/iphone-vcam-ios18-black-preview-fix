@@ -17,7 +17,7 @@ static _Atomic(uint64_t) VCAMPhotoCallbackCount;
 static _Atomic(uint64_t) VCAMRecordingStartCount;
 static _Atomic(uint64_t) VCAMRecordingFinishCount;
 
-NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) {
+extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) {
     return @{
         @"photoRequest": @(atomic_load_explicit(&VCAMPhotoRequestCount, memory_order_relaxed)),
         @"photoCallback": @(atomic_load_explicit(&VCAMPhotoCallbackCount, memory_order_relaxed)),
