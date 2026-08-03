@@ -1,4 +1,5 @@
 #import "VCAMConfiguration.h"
+#import "VCAMInjectionPolicy.h"
 
 @interface VCAMConfiguration ()
 @property(nonatomic, readwrite) BOOL enabled;
@@ -59,11 +60,20 @@
 }
 
 + (NSString *)configurationPath {
-    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"com.codex.vcam.plist"];
+    return @"/var/mobile/Library/Preferences/com.codex.vcam.plist";
 }
 
 + (NSString *)mediaDirectoryPath {
-    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"Media"];
+    return @"/var/mobile/Media/VCAM";
+}
+
++ (NSDictionary<NSString *, id> *)currentValues {
+    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
+    if ([values isKindOfClass:NSDictionary.class]) return values;
+    NSString *legacyPath = [[self storageDirectoryPath]
+        stringByAppendingPathComponent:@"com.codex.vcam.plist"];
+    values = [NSDictionary dictionaryWithContentsOfFile:legacyPath];
+    return [values isKindOfClass:NSDictionary.class] ? values : @{};
 }
 
 + (instancetype)loadCurrent {
@@ -77,17 +87,11 @@
     configuration.localDecoderMode = VCAMLocalDecoderModeSinglePlayer;
     configuration.photoMetadata = @{};
 
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
-    if (![values isKindOfClass:NSDictionary.class]) {
-        // Retain compatibility with configurations installed over SSH by older builds.
-        values = [NSDictionary dictionaryWithContentsOfFile:
-            @"/var/mobile/Library/Preferences/com.codex.vcam.plist"];
-    }
-    if (![values isKindOfClass:NSDictionary.class]) {
-        return configuration;
-    }
+    NSDictionary *values = [self currentValues];
+    if (values.count == 0) return configuration;
 
-    configuration.enabled = [values[@"enabled"] boolValue];
+    configuration.enabled = [values[@"enabled"] boolValue] &&
+                            [VCAMInjectionPolicy isCurrentProcessEnabledForValues:values];
     configuration.replaceAudio = [values[@"replaceAudio"] boolValue];
     configuration.loopMedia = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     configuration.mirrorHorizontally = [values[@"mirrorHorizontally"] boolValue];

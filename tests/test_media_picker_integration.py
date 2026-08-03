@@ -26,7 +26,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"enabled": @YES', source)
         self.assertIn('CFSTR("com.codex.vcam/preferences.changed")', source)
 
-    def test_picker_storage_probes_camera_writable_directories(self) -> None:
+    def test_picker_storage_uses_shared_paths_with_legacy_process_fallback(self) -> None:
         configuration = (
             ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
         ).read_text(encoding="utf-8")
@@ -36,10 +36,13 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("NSTemporaryDirectory()", configuration)
         self.assertIn('@".write-probe"', configuration)
         self.assertIn("+ (NSString *)mediaDirectoryPath", configuration)
-        self.assertNotIn(
+        self.assertIn(
             'return @"/var/mobile/Library/Preferences/com.codex.vcam.plist"',
             configuration,
         )
+        self.assertIn('return @"/var/mobile/Media/VCAM"', configuration)
+        self.assertIn("+ (NSDictionary<NSString *, id> *)currentValues", configuration)
+        self.assertIn("legacyPath", configuration)
 
     def test_menu_can_restore_the_real_camera(self) -> None:
         source = (

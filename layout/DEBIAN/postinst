@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -e
+
+install -d -o mobile -g mobile -m 0755 /var/mobile/Media/VCAM
+if [ -e /var/mobile/Library/Preferences/com.codex.vcam.plist ]; then
+    chown mobile:mobile /var/mobile/Library/Preferences/com.codex.vcam.plist
+    chmod 0644 /var/mobile/Library/Preferences/com.codex.vcam.plist
+fi
+
+exit 0

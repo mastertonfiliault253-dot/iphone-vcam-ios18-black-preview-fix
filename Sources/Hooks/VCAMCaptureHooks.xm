@@ -2,16 +2,26 @@
 #import <objc/runtime.h>
 #import <stdatomic.h>
 #import <substrate.h>
-#import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
+#import "../Core/VCAMInjectionPolicy.h"
+
+#ifndef VCAM_WITH_CONTROL_UI
+#define VCAM_WITH_CONTROL_UI 0
+#endif
+
+#if VCAM_WITH_CONTROL_UI
+#import <UIKit/UIKit.h>
 #import "../UI/VCAMMediaPickerController.h"
 #import "VCAMPreviewDriver.h"
+#endif
 
 static const void *VCAMReplacementPixelBufferKey = &VCAMReplacementPixelBufferKey;
 static const void *VCAMReplacementPhotoDataKey = &VCAMReplacementPhotoDataKey;
 static const void *VCAMReplacementDepthDataKey = &VCAMReplacementDepthDataKey;
 static const void *VCAMReplacementMetadataKey = &VCAMReplacementMetadataKey;
+#if VCAM_WITH_CONTROL_UI
 static const void *VCAMPreviewDriverKey = &VCAMPreviewDriverKey;
+#endif
 static _Atomic(uint64_t) VCAMPhotoRequestCount;
 static _Atomic(uint64_t) VCAMPhotoCallbackCount;
 static _Atomic(uint64_t) VCAMRecordingStartCount;
@@ -44,18 +54,13 @@ extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapsh
     };
 }
 
-static BOOL VCAMIsAllowedProcess(void) {
-    NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
-    NSString *processName = NSProcessInfo.processInfo.processName;
-    return [bundleIdentifier isEqualToString:@"com.apple.camera"] ||
-           [processName isEqualToString:@"Camera"];
-}
-
+#if VCAM_WITH_CONTROL_UI
 static void VCAMInstallPreviewDriver(AVCaptureVideoPreviewLayer *layer) {
     if (layer == nil || objc_getAssociatedObject(layer, VCAMPreviewDriverKey) != nil) return;
     VCAMPreviewDriver *driver = [[VCAMPreviewDriver alloc] initWithPreviewLayer:layer];
     objc_setAssociatedObject(layer, VCAMPreviewDriverKey, driver, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+#endif
 
 static NSMutableSet<NSString *> *VCAMHookedDelegateClasses(void) {
     static NSMutableSet<NSString *> *classes;
@@ -330,6 +335,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 %end
 
+#if VCAM_WITH_CONTROL_UI
 %hook AVCaptureVideoPreviewLayer
 
 - (instancetype)initWithSession:(AVCaptureSession *)session {
@@ -345,6 +351,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
 }
 
 %end
+#endif
 
 %hook AVCapturePhotoOutput
 
@@ -385,10 +392,13 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 %ctor {
     @autoreleasepool {
-        if (!VCAMIsAllowedProcess()) return;
+        if (![VCAMInjectionPolicy isRecognizedTarget] ||
+            ![VCAMInjectionPolicy isCurrentProcessEnabled]) return;
         %init(VCAMCameraHooks);
         [VCAMFramePipeline sharedPipeline];
-        [[VCAMMediaPickerController sharedController] start];
+#if VCAM_WITH_CONTROL_UI
+        [[VCAMMediaPickerController sharedController] startControlUI];
+#endif
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         [](CFNotificationCenterRef center, void *observer,

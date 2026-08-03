@@ -1,23 +1,23 @@
 # RootHide package target map
 
 `targets.json` is the machine-checked map from process injection requirements to
-RootHide packages. It records both implemented and intentionally blocked targets
-so a filter change cannot silently load the Camera UI/FFmpeg binary into a vital
-daemon.
+one RootHide package containing two binaries. This keeps one install/update entry
+while preventing the Camera control UI from loading into background processes.
 
 | Target | Package | Current state |
 | --- | --- | --- |
-| `VCAMController` | `com.codex.vcam` | Implemented; Camera only |
-| `VCAMAppClient` | `com.codex.vcam.browser-client` | Mapped; waits for `vcamd` shared frames |
-| `VCAMWebKitClient` | `com.codex.vcam.browser-client` | Mapped; device executable discovery required |
-| `VCAMMediaServerClient` | `com.codex.vcam.mediaserver-client` | Separate, disabled; load-probe required before hooks |
-| `vcamd` | `com.codex.vcam.daemon` | Mapped; IOSurface/XPC implementation pending |
+| `VCAMController` | `com.codex.vcam` / `VCAM.dylib` | Camera UI and Camera hooks; enabled by default |
+| `VCAMAppClient` | `com.codex.vcam` / `VCAMProcessClient.dylib` | Safari and Chrome; selectable, default off |
+| `VCAMWebKitClient` | `com.codex.vcam` / `VCAMProcessClient.dylib` | WebContent capture hooks; selectable, default off |
+| `VCAMMediaServerClient` | `com.codex.vcam` / `VCAMProcessClient.dylib` | mediaserverd capture hooks; selectable, default off |
 
-Only `com.codex.vcam` is emitted by the current Makefile. The other identifiers
-are reserved package seams, not claims that browser or mediaserver replacement
-already works. Browser and daemon clients must consume decoded IOSurface frames
-from `vcamd`; they must not link the UI or instantiate FFmpeg independently.
+Only `com.codex.vcam` is emitted. `VCAM.dylib` owns the control UI;
+`VCAMProcessClient.dylib` contains the capture pipeline without UIKit or PhotosUI.
+The process client currently decodes the selected source inside each enabled
+process. This makes the selection functional without a second package, at the
+cost of one decoder per enabled process.
 
-The mediaserver package remains disabled until a no-hook binary survives ten
-userspace restarts without a watchdog timeout. WebKit executable filters must be
-filled from an on-device process sample rather than guessed.
+"Global injection" is an alias for the explicit Camera, Safari, Chrome, WebKit,
+and mediaserverd targets; it never removes the plist allowlist. mediaserverd is
+default-off and labelled high-risk because a failure can trigger Dopamine's
+watchdog protection. Target changes require the target process to be relaunched.

@@ -5,7 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface VCAMMediaPickerController : NSObject
 
 + (instancetype)sharedController;
-- (void)start;
+- (void)startControlUI;
 
 @end
 

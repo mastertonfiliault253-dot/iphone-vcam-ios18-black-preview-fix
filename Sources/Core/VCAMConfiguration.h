@@ -42,6 +42,7 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 @property(nonatomic, readonly) VCAMLocalDecoderMode localDecoderMode;
 
 + (instancetype)loadCurrent;
++ (NSDictionary<NSString *, id> *)currentValues;
 + (NSString *)configurationPath;
 + (NSString *)mediaDirectoryPath;
 

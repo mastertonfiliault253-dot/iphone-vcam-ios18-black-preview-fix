@@ -4,6 +4,7 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../Core/VCAMConfiguration.h"
+#import "../Core/VCAMInjectionPolicy.h"
 #import "../Sources/VCAMLocalMediaSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
 
@@ -26,7 +27,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     return controller;
 }
 
-- (void)start {
+- (void)startControlUI {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.remainingWindowRetries = 20;
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -128,20 +129,37 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (NSDictionary<NSString *, NSString *> *)currentStatus {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = [values[@"enabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString] ?: @"camera";
+    NSArray<NSArray<NSString *> *> *targetPairs = @[
+        @[@"injectionCameraEnabled", @"Camera"],
+        @[@"injectionSafariEnabled", @"Safari"],
+        @[@"injectionChromeEnabled", @"Chrome"],
+        @[@"injectionWebKitEnabled", @"WebKit"],
+        @[@"injectionMediaServerEnabled", @"mediaserverd"],
+    ];
+    NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
+    for (NSArray<NSString *> *pair in targetPairs) {
+        BOOL defaultEnabled = [pair[0] isEqualToString:@"injectionCameraEnabled"] && values[pair[0]] == nil;
+        if (values[pair[0]] == nil ? defaultEnabled : [values[pair[0]] boolValue]) {
+            [activeTargets addObject:pair[1]];
+        }
+    }
+    NSString *targetSummary = [values[@"injectionGlobalEnabled"] boolValue]
+        ? @"全局（显式白名单）"
+        : (activeTargets.count > 0 ? [activeTargets componentsJoinedByString:@"、"] : @"未选择");
     NSString *sourceTitle = @"真实相机（未替换）";
-    NSString *detail = @"目标：系统相机 Camera";
+    NSString *detail = [NSString stringWithFormat:@"注入目标：%@", targetSummary];
     if (enabled && [source isEqualToString:@"local"]) {
         NSString *file = [values[@"mediaPath"] lastPathComponent] ?: @"本地媒体";
         sourceTitle = [NSString stringWithFormat:@"本地视频：%@", file];
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"直播流已启用";
-        detail = [NSString stringWithFormat:@"%@\n目标：系统相机 Camera", values[@"obsWebSocketURL"] ?: @"未设置地址"];
+        detail = [NSString stringWithFormat:@"%@\n注入目标：%@", values[@"obsWebSocketURL"] ?: @"未设置地址", targetSummary];
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";
-        detail = [NSString stringWithFormat:@"%@\n目标：系统相机 Camera", values[@"rtspURL"] ?: @"未设置地址"];
+        detail = [NSString stringWithFormat:@"%@\n注入目标：%@", values[@"rtspURL"] ?: @"未设置地址", targetSummary];
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
@@ -385,7 +403,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)promptForLiveStream {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"输入直播流"
                                                                    message:@"输入 ws:// 电脑桥接地址，或 rtsp:// 手机直连地址"
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -469,7 +487,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 - (void)rotateCounterClockwise { [self changeRotationBy:270]; }
 
 - (void)changeRotationBy:(NSInteger)delta {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     NSInteger rotationDegrees = ([values[@"rotationDegrees"] integerValue] + delta) % 360;
     if (![self updatePreferences:@{@"rotationDegrees": @(rotationDegrees)}]) return;
     [self postConfigurationChanged];
@@ -479,7 +497,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)toggleMirror {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = ![values[@"mirrorHorizontally"] boolValue];
     if (![self updatePreferences:@{@"mirrorHorizontally": @(enabled)}]) return;
     [self postConfigurationChanged];
@@ -487,7 +505,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)toggleAudioReplacement {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = ![values[@"replaceAudio"] boolValue];
     if (![self updatePreferences:@{@"replaceAudio": @(enabled)}]) return;
     [self postConfigurationChanged];
@@ -495,7 +513,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)toggleLoopPlayback {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL current = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     BOOL enabled = !current;
     if (![self updatePreferences:@{@"loopMedia": @(enabled)}]) return;
@@ -504,7 +522,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)toggleLocalDecoderMode {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     NSString *current = [values[@"localDecoderMode"] lowercaseString] ?: @"single";
     NSString *next = [current isEqualToString:@"single"] ? @"triple" : @"single";
     if (![self updatePreferences:@{@"localDecoderMode": next}]) return;
@@ -516,7 +534,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)cycleContentMode {
-    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSDictionary *values = [VCAMConfiguration currentValues];
     NSString *current = [values[@"contentMode"] lowercaseString] ?: @"fill";
     NSString *next = [current isEqualToString:@"fill"] ? @"fit" :
                      ([current isEqualToString:@"fit"] ? @"stretch" : @"fill");
@@ -526,16 +544,69 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (void)presentTargetSelector {
+    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"选择替换软件和进程"
-                                                                   message:@"当前安全白名单只包含系统相机。第三方 App 需要按 bundle ID 加入安装包白名单后才能选择。"
+                                                                   message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App；mediaserverd 需手动重启用户空间。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [menu addAction:[UIAlertAction actionWithTitle:@"系统相机 Camera（当前）"
-                                             style:UIAlertActionStyleDefault handler:nil]];
+    NSArray<NSDictionary<NSString *, NSString *> *> *targets = @[
+        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（以下全部目标）"},
+        @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
+        @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
+        @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
+        @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
+        @{@"key": @"injectionMediaServerEnabled", @"title": @"mediaserverd（高风险）"},
+    ];
+    for (NSDictionary<NSString *, NSString *> *target in targets) {
+        NSString *key = target[@"key"];
+        BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
+        BOOL selected = values[key] == nil ? defaultEnabled : [values[key] boolValue];
+        NSString *title = [NSString stringWithFormat:@"%@ %@", selected ? @"✓" : @"○", target[@"title"]];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [self toggleInjectionTarget:key title:target[@"title"]];
+        }]];
+    }
     [menu addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
     UIPopoverPresentationController *popover = menu.popoverPresentationController;
     popover.sourceView = self.button;
     popover.sourceRect = self.button.bounds;
     [[self presentingViewController] presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)toggleInjectionTarget:(NSString *)key title:(NSString *)title {
+    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
+    BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
+    BOOL next = !(values[key] == nil ? defaultEnabled : [values[key] boolValue]);
+    NSMutableDictionary<NSString *, id> *changes = [NSMutableDictionary dictionary];
+    if ([key isEqualToString:@"injectionGlobalEnabled"]) {
+        changes[key] = @(next);
+        for (NSString *individualKey in [VCAMInjectionPolicy individualPreferenceKeys]) {
+            changes[individualKey] = @(next);
+        }
+    } else {
+        changes[key] = @(next);
+        BOOL allEnabled = next;
+        for (NSString *individualKey in [VCAMInjectionPolicy individualPreferenceKeys]) {
+            if ([individualKey isEqualToString:key]) continue;
+            BOOL individualDefault = [individualKey isEqualToString:@"injectionCameraEnabled"] &&
+                                     values[individualKey] == nil;
+            if (!(values[individualKey] == nil ? individualDefault : [values[individualKey] boolValue])) {
+                allEnabled = NO;
+                break;
+            }
+        }
+        changes[@"injectionGlobalEnabled"] = @(allEnabled);
+    }
+    if (![self updatePreferences:changes]) {
+        [self showMessage:@"注入目标配置写入失败" error:YES];
+        return;
+    }
+    [self postConfigurationChanged];
+    NSString *suffix = [key isEqualToString:@"injectionMediaServerEnabled"] && next
+        ? @"；请确认其他插件已关闭，再手动重启用户空间"
+        : @"；请彻底关闭并重开目标 App";
+    [self showMessage:[NSString stringWithFormat:@"%@已%@%@", title, next ? @"开启" : @"关闭", suffix]
+                  error:NO];
 }
 
 - (void)restoreRealCamera {
@@ -552,7 +623,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     if (![NSFileManager.defaultManager createDirectoryAtPath:preferencesPath.stringByDeletingLastPathComponent
                                   withIntermediateDirectories:YES attributes:nil error:nil]) return NO;
     NSMutableDictionary<NSString *, id> *preferences =
-        [[NSDictionary dictionaryWithContentsOfFile:preferencesPath] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [[VCAMConfiguration currentValues] mutableCopy] ?: [NSMutableDictionary dictionary];
     [preferences addEntriesFromDictionary:changes];
     return [preferences writeToFile:preferencesPath atomically:YES];
 }
