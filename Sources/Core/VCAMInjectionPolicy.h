@@ -9,6 +9,7 @@ typedef NS_ENUM(NSInteger, VCAMInjectionTarget) {
     VCAMInjectionTargetChrome,
     VCAMInjectionTargetWebKit,
     VCAMInjectionTargetMediaServer,
+    VCAMInjectionTargetSpringBoard,
 };
 
 /// One process-policy seam shared by the Logos constructor, configuration loader,
@@ -23,6 +24,8 @@ typedef NS_ENUM(NSInteger, VCAMInjectionTarget) {
 + (BOOL)isCurrentProcessMediaReplacementEnabled;
 + (BOOL)isCurrentProcessMediaReplacementEnabledForValues:(NSDictionary<NSString *, id> *)values;
 + (BOOL)isRecognizedTarget;
++ (BOOL)supportsControlUIInCurrentProcess;
++ (BOOL)defaultEnabledForTarget:(VCAMInjectionTarget)target;
 + (NSString *)displayNameForTarget:(VCAMInjectionTarget)target;
 + (NSArray<NSString *> *)individualPreferenceKeys;
 

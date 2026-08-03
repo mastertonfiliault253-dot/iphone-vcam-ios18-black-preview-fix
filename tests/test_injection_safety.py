@@ -47,7 +47,7 @@ class InjectionSafetyTests(unittest.TestCase):
     def test_process_client_does_not_link_ui_frameworks(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-        self.assertIn("TWEAK_NAME = VCAM VCAMAppClient VCAMProcessClient", makefile)
+        self.assertIn("TWEAK_NAME = VCAM VCAMAppClient VCAMProcessClient VCAMSpringBoardClient", makefile)
         self.assertIn("VCAMAppClient_FILES", makefile)
         self.assertIn("VCAMAppClient_FRAMEWORKS", makefile)
         self.assertIn("UIKit", makefile.split("VCAMAppClient_FRAMEWORKS", 1)[1].splitlines()[0])

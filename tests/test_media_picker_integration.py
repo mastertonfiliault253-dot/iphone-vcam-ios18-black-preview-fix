@@ -20,7 +20,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("PHPickerFilter.videosFilter", source)
         self.assertIn("loadFileRepresentationForTypeIdentifier", source)
         self.assertIn("[VCAMConfiguration mediaDirectoryPath]", source)
-        self.assertIn("[VCAMConfiguration configurationPath]", source)
+        self.assertIn("[VCAMConfiguration updateValues:changes]", source)
         self.assertNotIn('@"/var/mobile/Media/VCAM"', source)
         self.assertIn('@"source": @"local"', source)
         self.assertIn('@"enabled": @YES', source)
@@ -37,12 +37,42 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@".write-probe"', configuration)
         self.assertIn("+ (NSString *)mediaDirectoryPath", configuration)
         self.assertIn(
-            'return @"/var/mobile/Library/Preferences/com.codex.vcam.plist"',
+            'return @"/var/mobile/Media/VCAM/com.codex.vcam.plist"',
             configuration,
         )
         self.assertIn('return @"/var/mobile/Media/VCAM"', configuration)
         self.assertIn("+ (NSDictionary<NSString *, id> *)currentValues", configuration)
         self.assertIn("legacyPath", configuration)
+
+    def test_shared_preference_updates_use_springboard_write_broker(self) -> None:
+        configuration_h = (ROOT / "Sources" / "Core" / "VCAMConfiguration.h").read_text(encoding="utf-8")
+        configuration_m = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn("updateValues", configuration_h)
+        self.assertIn("startWriteBroker", configuration_h)
+        self.assertIn("INADDR_LOOPBACK", configuration_m)
+        self.assertIn("VCAMConfigurationBrokerPort", configuration_m)
+        self.assertIn("VCAMConfigurationBrokerReadCommand", configuration_m)
+        self.assertIn("copyValuesFromBroker", configuration_m)
+        self.assertIn("allowedPreferenceKeys", configuration_m)
+        self.assertIn("writeValuesDirectly", configuration_m)
+        self.assertIn('@"/var/mobile/Media/VCAM/com.codex.vcam.plist"', configuration_m)
+        self.assertIn("[VCAMConfiguration updateValues:changes]", picker)
+        update_method = picker.split("- (BOOL)updatePreferences:", 1)[1]
+        update_method = update_method.split("\n}", 1)[0]
+        self.assertNotIn("writeToFile", update_method)
+
+    def test_floating_dot_is_per_process_and_toggled_by_three_finger_double_tap(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn("floatingButtonVisibility", picker)
+        self.assertIn("numberOfTouchesRequired = 3", picker)
+        self.assertIn("numberOfTapsRequired = 2", picker)
+        self.assertIn("UIAccessibilityIsVoiceOverRunning", picker)
+        self.assertIn("cancelsTouchesInView = NO", picker)
+        self.assertIn("44.0", picker)
+        self.assertIn("20.0", picker)
 
     def test_menu_can_restore_the_real_camera(self) -> None:
         source = (
@@ -93,7 +123,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("VCAMControlPanelViewController.m", makefile)
         self.assertIn("UIPanGestureRecognizer", picker)
-        self.assertIn("cornerRadius = 24.0", picker)
+        self.assertIn("cornerRadius = 10.0", picker)
         self.assertIn("VCAMControlPanelViewController", picker)
         self.assertIn("UIScrollView", panel)
         self.assertIn("accessibilityLabel", panel)

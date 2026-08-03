@@ -3,19 +3,30 @@
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/message.h>
 #import "../Core/VCAMConfiguration.h"
 #import "../Core/VCAMInjectionPolicy.h"
-#import "../Sources/VCAMLocalMediaSource.h"
-#import "../Sources/VCAMRTSPStreamSource.h"
 
-extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void);
+extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) __attribute__((weak_import));
+extern NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) __attribute__((weak_import));
+extern NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) __attribute__((weak_import));
+
+static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
+                                           const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)name; (void)object; (void)userInfo;
+    VCAMMediaPickerController *controller = (__bridge VCAMMediaPickerController *)observer;
+    dispatch_async(dispatch_get_main_queue(), ^{ [controller performSelector:@selector(configurationDidChange)]; });
+}
 
 @interface VCAMMediaPickerController () <PHPickerViewControllerDelegate,
                                           UIDocumentPickerDelegate,
-                                          VCAMControlPanelDelegate>
+                                          VCAMControlPanelDelegate,
+                                          UIGestureRecognizerDelegate>
 @property(nonatomic, strong, nullable) UIButton *button;
 @property(nonatomic, weak, nullable) VCAMControlPanelViewController *panel;
+@property(nonatomic, weak, nullable) UIWindow *gestureWindow;
 @property(nonatomic) NSInteger remainingWindowRetries;
+@property(nonatomic) BOOL started;
 @end
 
 @implementation VCAMMediaPickerController
@@ -29,13 +40,25 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 
 - (void)startControlUI {
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.started) return;
+        self.started = YES;
         self.remainingWindowRetries = 20;
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(applicationDidBecomeActive:)
                                                      name:UIApplicationDidBecomeActiveNotification
                                                    object:nil];
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        (__bridge const void *)self,
+                                        VCAMPickerConfigurationChanged,
+                                        CFSTR("com.codex.vcam/preferences.changed"), NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
         [self installButtonWhenWindowIsReady];
     });
+}
+
+- (void)configurationDidChange {
+    self.remainingWindowRetries = 20;
+    [self installButtonWhenWindowIsReady];
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
@@ -62,6 +85,29 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 - (NSString *)floatingPositionIdentifier {
     NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
     return bundle.length > 0 ? bundle : NSProcessInfo.processInfo.processName;
+}
+
+- (BOOL)isSpringBoardHost {
+    return [NSProcessInfo.processInfo.processName.lowercaseString isEqualToString:@"springboard"];
+}
+
+- (BOOL)isSpringBoardUnlocked {
+    if (![self isSpringBoardHost]) return YES;
+    Class managerClass = NSClassFromString(@"SBLockScreenManager");
+    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    SEL lockedSelector = NSSelectorFromString(@"isUILocked");
+    if (managerClass == Nil || ![managerClass respondsToSelector:sharedSelector]) return YES;
+    id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
+    if (![manager respondsToSelector:lockedSelector]) return YES;
+    return !((BOOL (*)(id, SEL))objc_msgSend)(manager, lockedSelector);
+}
+
+- (BOOL)isFloatingButtonVisibleForValues:(NSDictionary<NSString *, id> *)values {
+    if (![self isSpringBoardHost] && ![VCAMInjectionPolicy shouldShowControlUIForValues:values]) return NO;
+    NSDictionary *visibility = values[@"floatingButtonVisibility"];
+    NSNumber *saved = [visibility isKindOfClass:NSDictionary.class]
+        ? visibility[[self floatingPositionIdentifier]] : nil;
+    return saved == nil ? YES : saved.boolValue;
 }
 
 - (nullable NSValue *)savedFloatingButtonCenterForWindow:(UIWindow *)window {
@@ -98,19 +144,40 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         return;
     }
 
+    if (self.gestureWindow != window) {
+        if (self.gestureWindow != nil) {
+            for (UIGestureRecognizer *recognizer in self.gestureWindow.gestureRecognizers.copy) {
+                if (recognizer.delegate == self && [recognizer isKindOfClass:UITapGestureRecognizer.class]) {
+                    [self.gestureWindow removeGestureRecognizer:recognizer];
+                }
+            }
+        }
+        UITapGestureRecognizer *toggle = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                                action:@selector(toggleFloatingButton:)];
+        toggle.numberOfTouchesRequired = 3;
+        toggle.numberOfTapsRequired = 2;
+        toggle.cancelsTouchesInView = NO;
+        toggle.delegate = self;
+        [window addGestureRecognizer:toggle];
+        self.gestureWindow = window;
+    }
+
     if (self.button == nil) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.accessibilityLabel = @"打开 VCAM 控制面板";
-        [button setImage:[UIImage systemImageNamed:@"video.fill"] forState:UIControlStateNormal];
-        button.tintColor = UIColor.whiteColor;
-        button.backgroundColor = [UIColor colorWithRed:0.08 green:0.28 blue:0.58 alpha:0.92];
-        button.layer.cornerRadius = 24.0;
-        button.layer.borderWidth = 1.0;
-        button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.65].CGColor;
+        button.backgroundColor = UIColor.clearColor;
+        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(12.0, 12.0, 20.0, 20.0)];
+        dot.userInteractionEnabled = NO;
+        dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.88];
+        dot.layer.cornerRadius = 10.0;
+        dot.layer.borderWidth = 1.0;
+        dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
+        dot.layer.shadowColor = UIColor.blackColor.CGColor;
+        dot.layer.shadowOpacity = 0.35;
+        dot.layer.shadowRadius = 4.0;
+        dot.layer.shadowOffset = CGSizeMake(0, 1);
+        [button addSubview:dot];
         button.layer.shadowColor = UIColor.blackColor.CGColor;
-        button.layer.shadowOpacity = 0.32;
-        button.layer.shadowRadius = 6.0;
-        button.layer.shadowOffset = CGSizeMake(0, 2);
         [button addTarget:self action:@selector(showSourceMenu:) forControlEvents:UIControlEventTouchUpInside];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
                                                                              action:@selector(dragButton:)];
@@ -121,7 +188,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 
     if (self.button.superview != window) {
         [self.button removeFromSuperview];
-        self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 24.0, 48.0, 48.0);
+        self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 22.0, 44.0, 44.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
         if (savedCenter != nil) self.button.center = savedCenter.CGPointValue;
         self.button.autoresizingMask = UIViewAutoresizingFlexibleRightMargin |
@@ -129,7 +196,29 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
                                        UIViewAutoresizingFlexibleBottomMargin;
         [window addSubview:self.button];
     }
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
     [window bringSubviewToFront:self.button];
+}
+
+- (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateRecognized || UIAccessibilityIsVoiceOverRunning()) return;
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSMutableDictionary *visibility = [values[@"floatingButtonVisibility"] mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    BOOL currentlyVisible = [self isFloatingButtonVisibleForValues:values];
+    visibility[[self floatingPositionIdentifier]] = @(!currentlyVisible);
+    if (![self updatePreferences:@{@"floatingButtonVisibility": visibility}]) {
+        [self showMessage:@"主屏配置服务不可用" error:YES];
+        return;
+    }
+    [self configurationDidChange];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    (void)gestureRecognizer; (void)otherGestureRecognizer;
+    return YES;
 }
 
 - (void)dragButton:(UIPanGestureRecognizer *)recognizer {
@@ -140,7 +229,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     CGPoint center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     [recognizer setTranslation:CGPointZero inView:window];
     UIEdgeInsets safe = window.safeAreaInsets;
-    CGFloat radius = 24.0;
+    CGFloat radius = 22.0;
     center.x = MAX(safe.left + radius + 4, MIN(CGRectGetWidth(window.bounds) - safe.right - radius - 4, center.x));
     center.y = MAX(safe.top + radius + 4, MIN(CGRectGetHeight(window.bounds) - safe.bottom - radius - 4, center.y));
     button.center = center;
@@ -175,12 +264,14 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     ];
     NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
     for (NSArray<NSString *> *pair in targetPairs) {
-        BOOL defaultEnabled = [pair[0] isEqualToString:@"injectionCameraEnabled"] && values[pair[0]] == nil;
+        BOOL defaultEnabled = ![pair[0] isEqualToString:@"injectionMediaServerEnabled"] && values[pair[0]] == nil;
         if (values[pair[0]] == nil ? defaultEnabled : [values[pair[0]] boolValue]) {
             [activeTargets addObject:pair[1]];
         }
     }
-    NSString *targetSummary = [values[@"injectionGlobalEnabled"] boolValue]
+    BOOL globalEnabled = values[@"injectionGlobalEnabled"] == nil
+        ? YES : [values[@"injectionGlobalEnabled"] boolValue];
+    NSString *targetSummary = globalEnabled
         ? @"全局（显式白名单）"
         : (activeTargets.count > 0 ? [activeTargets componentsJoinedByString:@"、"] : @"未选择");
     NSString *sourceTitle = @"真实相机（未替换）";
@@ -205,7 +296,8 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     if ([source isEqualToString:@"local"]) {
         detail = [detail stringByAppendingFormat:@" · 解码：%@",
                   [localDecoderMode isEqualToString:@"single"] ? @"单路 NV12（推荐）" : @"原版三路并行"];
-        NSDictionary<NSString *, id> *performance = VCAMLocalPlaybackPerformanceSnapshot();
+        NSDictionary<NSString *, id> *performance = VCAMLocalPlaybackPerformanceSnapshot != NULL
+            ? VCAMLocalPlaybackPerformanceSnapshot() : @{};
         NSNumber *sourceFPS = performance[@"sourceFPS"];
         if (sourceFPS != nil) {
             detail = [detail stringByAppendingFormat:@"\n实时：%.1f fps · P95 %.1fms · 渲染 %.1f/%.1fms · 丢帧 %@",
@@ -219,7 +311,8 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         }
     }
     if ([source isEqualToString:@"rtsp"]) {
-        NSDictionary<NSString *, id> *performance = VCAMRTSPPerformanceSnapshot();
+        NSDictionary<NSString *, id> *performance = VCAMRTSPPerformanceSnapshot != NULL
+            ? VCAMRTSPPerformanceSnapshot() : @{};
         NSNumber *sourceFPS = performance[@"sourceFPS"];
         if (sourceFPS != nil) {
             detail = [detail stringByAppendingFormat:
@@ -233,7 +326,9 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
             detail = [detail stringByAppendingString:@"\nRTSP source: waiting for first 1-second window"];
         }
     }
-    NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot();
+    NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot != NULL
+        ? VCAMCaptureHookDiagnosticSnapshot() : nil;
+    if (captureDiagnostics != nil) {
     detail = [detail stringByAppendingFormat:@"\n诊断 Hook：拍照请求 %@ / 回调 %@；录像开始 %@ / 完成 %@",
               captureDiagnostics[@"photoRequest"], captureDiagnostics[@"photoCallback"],
               captureDiagnostics[@"recordingStart"], captureDiagnostics[@"recordingFinish"]];
@@ -244,6 +339,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     detail = [detail stringByAppendingFormat:@"\n大小：源 %@；输出 %@ → %@ 字节",
               captureDiagnostics[@"sourceSize"], captureDiagnostics[@"outputSizeBefore"],
               captureDiagnostics[@"outputSizeAfter"]];
+    }
     return @{
         @"source": sourceTitle,
         @"detail": detail,
@@ -593,7 +689,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     ];
     for (NSDictionary<NSString *, NSString *> *target in targets) {
         NSString *key = target[@"key"];
-        BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
+        BOOL defaultEnabled = ![key isEqualToString:@"injectionMediaServerEnabled"] && values[key] == nil;
         BOOL selected = values[key] == nil ? defaultEnabled : [values[key] boolValue];
         NSString *title = [NSString stringWithFormat:@"%@ %@", selected ? @"✓" : @"○", target[@"title"]];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
@@ -618,7 +714,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
-    BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
+    BOOL defaultEnabled = ![key isEqualToString:@"injectionMediaServerEnabled"] && values[key] == nil;
     return values[key] == nil ? defaultEnabled : [values[key] boolValue];
 }
 
@@ -687,13 +783,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 }
 
 - (BOOL)updatePreferences:(NSDictionary<NSString *, id> *)changes {
-    NSString *preferencesPath = [VCAMConfiguration configurationPath];
-    if (![NSFileManager.defaultManager createDirectoryAtPath:preferencesPath.stringByDeletingLastPathComponent
-                                  withIntermediateDirectories:YES attributes:nil error:nil]) return NO;
-    NSMutableDictionary<NSString *, id> *preferences =
-        [[VCAMConfiguration currentValues] mutableCopy] ?: [NSMutableDictionary dictionary];
-    [preferences addEntriesFromDictionary:changes];
-    return [preferences writeToFile:preferencesPath atomically:YES];
+    return [VCAMConfiguration updateValues:changes];
 }
 
 - (void)postConfigurationChanged {

@@ -63,24 +63,25 @@ final verifier for the system Camera process.
 
 ### On-device video picker
 
-Open the system Camera app and tap the draggable floating video dot.
+On the unlocked Home screen, tap the draggable white VCAM dot to configure the
+shared source and injection targets before opening a target app. The same full
+panel is available in Camera, Safari, Chrome, and SafariViewService when enabled.
 Choose **从相册选择** to import a video from Photos. The selected asset and
-picker-managed preference file are stored in the first Camera-writable location
-found by a write probe (Application Support, Caches, then the process temporary
-directory), then the capture pipeline reloads without a respring. Choose
+shared preference file are stored under `/var/mobile/Media/VCAM`. SpringBoard
+is the only configuration writer; sandboxed panels use its loopback-only broker.
+The capture pipeline reloads without a respring. Choose
 **恢复真实相机** from the same panel to disable replacement. Cancelling the
 picker leaves the current source unchanged.
 
-The package filter remains restricted to `com.apple.camera`. The target picker
-therefore reports Camera as the only safe target in this build; add specific
-third-party bundle identifiers to a reviewed package rather than injecting the
-tweak into every process.
+Camera, Safari, Chrome, and WebKit are enabled by default. `mediaserverd` remains
+off and separate from the global toggle. A three-finger double tap hides or
+restores the dot for the current UI host; VoiceOver disables that gesture.
 
 ### Manual configuration
 
 The tweak reads:
 
-`/var/mobile/Library/Preferences/com.codex.vcam.plist`
+`/var/mobile/Media/VCAM/com.codex.vcam.plist`
 
 Generate a configuration on the PC:
 

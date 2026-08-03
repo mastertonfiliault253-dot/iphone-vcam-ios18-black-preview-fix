@@ -62,7 +62,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("VCAMInjectionTargetMediaServer", policy_m)
         self.assertIn("target != VCAMInjectionTargetMediaServer", policy_m)
         self.assertIn("!mediaServerEnabled", policy_m)
-        self.assertIn("shouldShowControlUI", hooks)
+        self.assertIn("supportsControlUIInCurrentProcess", hooks)
         self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
 
     def test_global_excludes_mediaserver_and_browser_targets_link_webkit(self) -> None:
@@ -81,6 +81,29 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("floatingButtonPositions", picker)
         self.assertIn("floatingPositionIdentifier", picker)
         self.assertIn("UIGestureRecognizerStateEnded", picker)
+
+    def test_springboard_ui_is_a_separate_ui_only_binary_in_the_same_package(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        filter_text = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
+        entry = (ROOT / "Sources" / "Hooks" / "VCAMSpringBoardEntry.xm").read_text(encoding="utf-8")
+
+        self.assertIn("VCAMSpringBoardClient", makefile)
+        self.assertIn("SpringBoard", filter_text)
+        springboard_files = makefile.split("VCAMSpringBoardClient_FILES", 1)[1].splitlines()[0]
+        self.assertNotIn("VCAM_COMMON_FILES", springboard_files)
+        self.assertNotIn("VCAMCaptureHooks", springboard_files)
+        self.assertNotIn("VCAMRTSPStreamSource", springboard_files)
+        self.assertIn("startWriteBroker", entry)
+        self.assertIn("startControlUI", entry)
+
+    def test_default_injection_enables_camera_and_browsers_but_not_mediaserver(self) -> None:
+        policy = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m").read_text(encoding="utf-8")
+
+        self.assertIn("defaultEnabledForTarget", policy)
+        self.assertIn("VCAMInjectionTargetSpringBoard", policy)
+        self.assertIn("VCAMInjectionTargetMediaServer: return NO", policy)
+        for target in ("Camera", "Safari", "Chrome", "WebKit"):
+            self.assertIn(f"VCAMInjectionTarget{target}: return YES", policy)
 
 
 if __name__ == "__main__":

@@ -29,9 +29,9 @@
       "executables": [],
       "separateBinary": true,
       "separatePackage": false,
-      "defaultEnabled": false,
+      "defaultEnabled": true,
       "forbiddenDependencies": [],
-      "status": "implemented-default-off"
+      "status": "implemented-default-on"
     },
     {
       "name": "VCAMWebKitClient",
@@ -43,9 +43,9 @@
       "executableDiscoveryRequired": false,
       "separateBinary": true,
       "separatePackage": false,
-      "defaultEnabled": false,
+      "defaultEnabled": true,
       "forbiddenDependencies": ["UIKit", "PhotosUI"],
-      "status": "implemented-default-off"
+      "status": "implemented-default-on"
     },
     {
       "name": "VCAMMediaServerClient",
@@ -59,6 +59,19 @@
       "defaultEnabled": false,
       "forbiddenDependencies": ["UIKit", "PhotosUI"],
       "status": "implemented-default-off-high-risk"
+    },
+    {
+      "name": "VCAMSpringBoardClient",
+      "package": "com.codex.vcam",
+      "binary": "VCAMSpringBoardClient.dylib",
+      "role": "home-screen-control-ui-and-single-configuration-writer",
+      "bundleIds": ["com.apple.springboard"],
+      "executables": ["SpringBoard"],
+      "separateBinary": true,
+      "separatePackage": false,
+      "defaultEnabled": true,
+      "forbiddenDependencies": ["FFmpeg", "VCAMCaptureHooks"],
+      "status": "implemented"
     }
   ]
 }

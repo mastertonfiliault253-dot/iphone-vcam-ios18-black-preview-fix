@@ -43,6 +43,9 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 
 + (instancetype)loadCurrent;
 + (NSDictionary<NSString *, id> *)currentValues;
++ (BOOL)updateValues:(NSDictionary<NSString *, id> *)changes;
++ (BOOL)updateValues:(NSDictionary<NSString *, id> *)changes error:(NSError **)error;
++ (void)startWriteBroker;
 + (NSString *)configurationPath;
 + (NSString *)mediaDirectoryPath;
 

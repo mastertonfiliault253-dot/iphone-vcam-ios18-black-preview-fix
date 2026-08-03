@@ -364,14 +364,14 @@ static void VCAMHookRecordingDelegate(id delegate) {
     @autoreleasepool {
         if (![VCAMInjectionPolicy isRecognizedTarget]) return;
         BOOL installMediaHooks = [VCAMInjectionPolicy isCurrentProcessMediaReplacementEnabled];
-        BOOL showControlUI = [VCAMInjectionPolicy shouldShowControlUI];
-        if (!installMediaHooks && !showControlUI) return;
+        BOOL supportsControlUI = [VCAMInjectionPolicy supportsControlUIInCurrentProcess];
+        if (!installMediaHooks && !supportsControlUI) return;
         if (installMediaHooks) {
             %init(VCAMMediaHooks);
             [VCAMFramePipeline sharedPipeline];
         }
 #if VCAM_WITH_CONTROL_UI
-        if (showControlUI) [[VCAMMediaPickerController sharedController] startControlUI];
+        if (supportsControlUI) [[VCAMMediaPickerController sharedController] startControlUI];
 #endif
         if (installMediaHooks) CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
