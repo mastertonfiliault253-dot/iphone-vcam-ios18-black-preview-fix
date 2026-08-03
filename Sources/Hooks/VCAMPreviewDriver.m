@@ -1,4 +1,5 @@
 #import "VCAMPreviewDriver.h"
+#import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
 
 @interface VCAMPreviewDriver ()
