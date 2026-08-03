@@ -28,7 +28,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         targets = {target["name"]: target for target in manifest["targets"]}
 
         self.assertEqual(manifest["delivery"], "single-package-multiple-binaries")
-        for name in ("VCAMAppClient", "VCAMWebKitClient", "VCAMMediaServerClient"):
+        self.assertEqual(targets["VCAMAppClient"]["binary"], "VCAMAppClient.dylib")
+        for name in ("VCAMWebKitClient", "VCAMMediaServerClient"):
             forbidden = targets[name]["forbiddenDependencies"]
             self.assertIn("PhotosUI", forbidden)
             self.assertIn("UIKit", forbidden)
@@ -50,6 +51,36 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("Safari", picker)
         self.assertIn("Chrome", picker)
         self.assertIn("mediaserverd", picker)
+
+    def test_ui_hosts_share_panel_but_process_clients_never_start_ui(self) -> None:
+        policy_h = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.h").read_text(encoding="utf-8")
+        policy_m = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m").read_text(encoding="utf-8")
+        hooks = (ROOT / "Sources" / "Hooks" / "VCAMCaptureHooks.xm").read_text(encoding="utf-8")
+
+        self.assertIn("shouldShowControlUI", policy_h)
+        self.assertIn("isCurrentProcessMediaReplacementEnabled", policy_h)
+        self.assertIn("VCAMInjectionTargetMediaServer", policy_m)
+        self.assertIn("target != VCAMInjectionTargetMediaServer", policy_m)
+        self.assertIn("!mediaServerEnabled", policy_m)
+        self.assertIn("shouldShowControlUI", hooks)
+        self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
+
+    def test_global_excludes_mediaserver_and_browser_targets_link_webkit(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn("globalPreferenceKeys", picker)
+        self.assertIn("linkedWebKitEnabled", picker)
+        self.assertIn("confirmMediaServerToggle", picker)
+        global_method = picker.split("- (NSArray<NSString *> *)globalPreferenceKeys", 1)[1]
+        global_method = global_method.split("\n}", 1)[0]
+        self.assertNotIn("injectionMediaServerEnabled", global_method)
+
+    def test_floating_button_position_is_saved_per_host_app(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn("floatingButtonPositions", picker)
+        self.assertIn("floatingPositionIdentifier", picker)
+        self.assertIn("UIGestureRecognizerStateEnded", picker)
 
 
 if __name__ == "__main__":

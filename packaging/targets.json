@@ -23,14 +23,14 @@
     {
       "name": "VCAMAppClient",
       "package": "com.codex.vcam",
-      "binary": "VCAMProcessClient.dylib",
-      "role": "replace-capture-frames-in-browser-host-apps",
+      "binary": "VCAMAppClient.dylib",
+      "role": "browser-floating-ui-and-capture-hooks",
       "bundleIds": ["com.apple.mobilesafari", "com.google.chrome.ios"],
       "executables": [],
       "separateBinary": true,
       "separatePackage": false,
       "defaultEnabled": false,
-      "forbiddenDependencies": ["UIKit", "PhotosUI"],
+      "forbiddenDependencies": [],
       "status": "implemented-default-off"
     },
     {

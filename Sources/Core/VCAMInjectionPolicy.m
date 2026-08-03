@@ -44,10 +44,33 @@
 + (BOOL)isCurrentProcessEnabledForValues:(NSDictionary<NSString *,id> *)values {
     VCAMInjectionTarget target = self.currentTarget;
     if (target == VCAMInjectionTargetUnknown) return NO;
-    if ([values[@"injectionGlobalEnabled"] boolValue]) return YES;
+    if (target != VCAMInjectionTargetMediaServer &&
+        [values[@"injectionGlobalEnabled"] boolValue]) return YES;
     NSString *key = [self preferenceKeyForTarget:target];
     if (values[key] == nil) return target == VCAMInjectionTargetCamera;
     return [values[key] boolValue];
+}
+
++ (BOOL)shouldShowControlUIForValues:(NSDictionary<NSString *,id> *)values {
+    VCAMInjectionTarget target = self.currentTarget;
+    if (target != VCAMInjectionTargetCamera && target != VCAMInjectionTargetSafari &&
+        target != VCAMInjectionTargetChrome) return NO;
+    return [self isCurrentProcessEnabledForValues:values];
+}
+
++ (BOOL)shouldShowControlUI {
+    return [self shouldShowControlUIForValues:[VCAMConfiguration currentValues]];
+}
+
++ (BOOL)isCurrentProcessMediaReplacementEnabledForValues:(NSDictionary<NSString *,id> *)values {
+    if (![self isCurrentProcessEnabledForValues:values]) return NO;
+    BOOL mediaServerEnabled = [values[@"injectionMediaServerEnabled"] boolValue];
+    if (self.currentTarget == VCAMInjectionTargetMediaServer) return mediaServerEnabled;
+    return !mediaServerEnabled;
+}
+
++ (BOOL)isCurrentProcessMediaReplacementEnabled {
+    return [self isCurrentProcessMediaReplacementEnabledForValues:[VCAMConfiguration currentValues]];
 }
 
 + (BOOL)isCurrentProcessEnabled {

@@ -1,4 +1,5 @@
 #import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
 #import <stdatomic.h>
 #import <substrate.h>
@@ -8,10 +9,15 @@
 #ifndef VCAM_WITH_CONTROL_UI
 #define VCAM_WITH_CONTROL_UI 0
 #endif
+#ifndef VCAM_WITH_PREVIEW_DRIVER
+#define VCAM_WITH_PREVIEW_DRIVER 0
+#endif
 
 #if VCAM_WITH_CONTROL_UI
 #import <UIKit/UIKit.h>
 #import "../UI/VCAMMediaPickerController.h"
+#endif
+#if VCAM_WITH_PREVIEW_DRIVER
 #import "VCAMPreviewDriver.h"
 #endif
 
@@ -19,7 +25,7 @@ static const void *VCAMReplacementPixelBufferKey = &VCAMReplacementPixelBufferKe
 static const void *VCAMReplacementPhotoDataKey = &VCAMReplacementPhotoDataKey;
 static const void *VCAMReplacementDepthDataKey = &VCAMReplacementDepthDataKey;
 static const void *VCAMReplacementMetadataKey = &VCAMReplacementMetadataKey;
-#if VCAM_WITH_CONTROL_UI
+#if VCAM_WITH_PREVIEW_DRIVER
 static const void *VCAMPreviewDriverKey = &VCAMPreviewDriverKey;
 #endif
 static _Atomic(uint64_t) VCAMPhotoRequestCount;
@@ -54,7 +60,7 @@ extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapsh
     };
 }
 
-#if VCAM_WITH_CONTROL_UI
+#if VCAM_WITH_PREVIEW_DRIVER
 static void VCAMInstallPreviewDriver(AVCaptureVideoPreviewLayer *layer) {
     if (layer == nil || objc_getAssociatedObject(layer, VCAMPreviewDriverKey) != nil) return;
     VCAMPreviewDriver *driver = [[VCAMPreviewDriver alloc] initWithPreviewLayer:layer];
@@ -335,7 +341,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 %end
 
-#if VCAM_WITH_CONTROL_UI
+#if VCAM_WITH_PREVIEW_DRIVER
 %hook AVCaptureVideoPreviewLayer
 
 - (instancetype)initWithSession:(AVCaptureSession *)session {
@@ -392,14 +398,18 @@ static void VCAMHookRecordingDelegate(id delegate) {
 
 %ctor {
     @autoreleasepool {
-        if (![VCAMInjectionPolicy isRecognizedTarget] ||
-            ![VCAMInjectionPolicy isCurrentProcessEnabled]) return;
-        %init(VCAMCameraHooks);
-        [VCAMFramePipeline sharedPipeline];
+        if (![VCAMInjectionPolicy isRecognizedTarget]) return;
+        BOOL installMediaHooks = [VCAMInjectionPolicy isCurrentProcessMediaReplacementEnabled];
+        BOOL showControlUI = [VCAMInjectionPolicy shouldShowControlUI];
+        if (!installMediaHooks && !showControlUI) return;
+        if (installMediaHooks) {
+            %init(VCAMCameraHooks);
+            [VCAMFramePipeline sharedPipeline];
+        }
 #if VCAM_WITH_CONTROL_UI
-        [[VCAMMediaPickerController sharedController] startControlUI];
+        if (showControlUI) [[VCAMMediaPickerController sharedController] startControlUI];
 #endif
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+        if (installMediaHooks) CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         [](CFNotificationCenterRef center, void *observer,
                                            CFStringRef name, const void *object,

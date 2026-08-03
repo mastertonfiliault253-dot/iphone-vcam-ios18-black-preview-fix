@@ -1,14 +1,9 @@
 {
     Filter = {
         Bundles = (
-            "com.apple.mobilesafari",
-            "com.apple.SafariViewService",
-            "com.google.chrome.ios",
             "com.apple.WebKit.WebContent"
         );
         Executables = (
-            "MobileSafari",
-            "SafariViewService",
             "com.apple.WebKit.WebContent",
             "mediaserverd"
         );

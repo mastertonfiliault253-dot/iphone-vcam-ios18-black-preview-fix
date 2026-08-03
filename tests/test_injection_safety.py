@@ -17,14 +17,22 @@ class InjectionSafetyTests(unittest.TestCase):
         filter_text = (ROOT / "VCAMProcessClient.plist").read_text(encoding="utf-8")
 
         for target in (
-            "com.apple.mobilesafari",
-            "com.google.chrome.ios",
             "com.apple.WebKit.WebContent",
             "mediaserverd",
         ):
             self.assertIn(target, filter_text)
+        self.assertNotIn("com.apple.mobilesafari", filter_text)
+        self.assertNotIn("com.google.chrome.ios", filter_text)
         self.assertNotIn("Classes", filter_text)
         self.assertNotIn("AVCaptureSession", filter_text)
+
+    def test_app_client_filter_is_limited_to_ui_host_apps(self) -> None:
+        filter_text = (ROOT / "VCAMAppClient.plist").read_text(encoding="utf-8")
+
+        self.assertIn("com.apple.mobilesafari", filter_text)
+        self.assertIn("com.google.chrome.ios", filter_text)
+        self.assertNotIn("mediaserverd", filter_text)
+        self.assertNotIn("WebContent", filter_text)
 
     def test_constructor_uses_shared_process_policy_and_only_starts_ui_in_camera(self) -> None:
         hooks = (
@@ -32,14 +40,18 @@ class InjectionSafetyTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("VCAMInjectionPolicy", hooks)
-        self.assertIn("isCurrentProcessEnabled", hooks)
+        self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
         self.assertIn("VCAM_WITH_CONTROL_UI", hooks)
         self.assertIn("startControlUI", hooks)
 
     def test_process_client_does_not_link_ui_frameworks(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-        self.assertIn("TWEAK_NAME = VCAM VCAMProcessClient", makefile)
+        self.assertIn("TWEAK_NAME = VCAM VCAMAppClient VCAMProcessClient", makefile)
+        self.assertIn("VCAMAppClient_FILES", makefile)
+        self.assertIn("VCAMAppClient_FRAMEWORKS", makefile)
+        self.assertIn("UIKit", makefile.split("VCAMAppClient_FRAMEWORKS", 1)[1].splitlines()[0])
+        self.assertIn("PhotosUI", makefile.split("VCAMAppClient_FRAMEWORKS", 1)[1].splitlines()[0])
         self.assertIn("VCAMProcessClient_FILES", makefile)
         self.assertIn("VCAMProcessClient_CFLAGS", makefile)
         self.assertIn("-DVCAM_WITH_CONTROL_UI=0", makefile)

@@ -18,6 +18,10 @@ typedef NS_ENUM(NSInteger, VCAMInjectionTarget) {
 + (VCAMInjectionTarget)currentTarget;
 + (BOOL)isCurrentProcessEnabled;
 + (BOOL)isCurrentProcessEnabledForValues:(NSDictionary<NSString *, id> *)values;
++ (BOOL)shouldShowControlUI;
++ (BOOL)shouldShowControlUIForValues:(NSDictionary<NSString *, id> *)values;
++ (BOOL)isCurrentProcessMediaReplacementEnabled;
++ (BOOL)isCurrentProcessMediaReplacementEnabledForValues:(NSDictionary<NSString *, id> *)values;
 + (BOOL)isRecognizedTarget;
 + (NSString *)displayNameForTarget:(VCAMInjectionTarget)target;
 + (NSArray<NSString *> *)individualPreferenceKeys;

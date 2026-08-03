@@ -1,0 +1,13 @@
+{
+    Filter = {
+        Bundles = (
+            "com.apple.mobilesafari",
+            "com.apple.SafariViewService",
+            "com.google.chrome.ios"
+        );
+        Executables = (
+            "MobileSafari",
+            "SafariViewService"
+        );
+    };
+}

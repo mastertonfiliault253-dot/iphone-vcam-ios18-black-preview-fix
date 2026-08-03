@@ -91,7 +91,7 @@
     if (values.count == 0) return configuration;
 
     configuration.enabled = [values[@"enabled"] boolValue] &&
-                            [VCAMInjectionPolicy isCurrentProcessEnabledForValues:values];
+                            [VCAMInjectionPolicy isCurrentProcessMediaReplacementEnabledForValues:values];
     configuration.replaceAudio = [values[@"replaceAudio"] boolValue];
     configuration.loopMedia = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     configuration.mirrorHorizontally = [values[@"mirrorHorizontally"] boolValue];

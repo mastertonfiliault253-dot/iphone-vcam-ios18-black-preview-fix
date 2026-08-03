@@ -59,6 +59,34 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     return nil;
 }
 
+- (NSString *)floatingPositionIdentifier {
+    NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
+    return bundle.length > 0 ? bundle : NSProcessInfo.processInfo.processName;
+}
+
+- (nullable NSValue *)savedFloatingButtonCenterForWindow:(UIWindow *)window {
+    NSDictionary *positions = [VCAMConfiguration currentValues][@"floatingButtonPositions"];
+    NSDictionary *position = [positions isKindOfClass:NSDictionary.class]
+        ? positions[[self floatingPositionIdentifier]] : nil;
+    if (![position isKindOfClass:NSDictionary.class]) return nil;
+    CGFloat x = [position[@"x"] doubleValue];
+    CGFloat y = [position[@"y"] doubleValue];
+    if (x <= 0 || x >= 1 || y <= 0 || y >= 1) return nil;
+    return [NSValue valueWithCGPoint:CGPointMake(x * CGRectGetWidth(window.bounds),
+                                                 y * CGRectGetHeight(window.bounds))];
+}
+
+- (void)saveFloatingButtonPositionInWindow:(UIWindow *)window {
+    if (self.button == nil || CGRectGetWidth(window.bounds) <= 0 || CGRectGetHeight(window.bounds) <= 0) return;
+    NSMutableDictionary *positions =
+        [[VCAMConfiguration currentValues][@"floatingButtonPositions"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    positions[[self floatingPositionIdentifier]] = @{
+        @"x": @(self.button.center.x / CGRectGetWidth(window.bounds)),
+        @"y": @(self.button.center.y / CGRectGetHeight(window.bounds)),
+    };
+    [self updatePreferences:@{@"floatingButtonPositions": positions}];
+}
+
 - (void)installButtonWhenWindowIsReady {
     NSAssert(NSThread.isMainThread, @"VCAM picker UI must run on the main thread");
     UIWindow *window = [self cameraWindow];
@@ -94,6 +122,8 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     if (self.button.superview != window) {
         [self.button removeFromSuperview];
         self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 24.0, 48.0, 48.0);
+        NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
+        if (savedCenter != nil) self.button.center = savedCenter.CGPointValue;
         self.button.autoresizingMask = UIViewAutoresizingFlexibleRightMargin |
                                        UIViewAutoresizingFlexibleTopMargin |
                                        UIViewAutoresizingFlexibleBottomMargin;
@@ -114,6 +144,10 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     center.x = MAX(safe.left + radius + 4, MIN(CGRectGetWidth(window.bounds) - safe.right - radius - 4, center.x));
     center.y = MAX(safe.top + radius + 4, MIN(CGRectGetHeight(window.bounds) - safe.bottom - radius - 4, center.y));
     button.center = center;
+    if (recognizer.state == UIGestureRecognizerStateEnded ||
+        recognizer.state == UIGestureRecognizerStateCancelled) {
+        [self saveFloatingButtonPositionInWindow:window];
+    }
 }
 
 - (nullable UIViewController *)presentingViewController {
@@ -150,16 +184,17 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         ? @"全局（显式白名单）"
         : (activeTargets.count > 0 ? [activeTargets componentsJoinedByString:@"、"] : @"未选择");
     NSString *sourceTitle = @"真实相机（未替换）";
-    NSString *detail = [NSString stringWithFormat:@"注入目标：%@", targetSummary];
+    NSString *processTitle = [VCAMInjectionPolicy displayNameForTarget:[VCAMInjectionPolicy currentTarget]];
+    NSString *detail = [NSString stringWithFormat:@"当前进程：%@\n注入目标：%@", processTitle, targetSummary];
     if (enabled && [source isEqualToString:@"local"]) {
         NSString *file = [values[@"mediaPath"] lastPathComponent] ?: @"本地媒体";
         sourceTitle = [NSString stringWithFormat:@"本地视频：%@", file];
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"直播流已启用";
-        detail = [NSString stringWithFormat:@"%@\n注入目标：%@", values[@"obsWebSocketURL"] ?: @"未设置地址", targetSummary];
+        detail = [NSString stringWithFormat:@"%@\n当前进程：%@\n注入目标：%@", values[@"obsWebSocketURL"] ?: @"未设置地址", processTitle, targetSummary];
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";
-        detail = [NSString stringWithFormat:@"%@\n注入目标：%@", values[@"rtspURL"] ?: @"未设置地址", targetSummary];
+        detail = [NSString stringWithFormat:@"%@\n当前进程：%@\n注入目标：%@", values[@"rtspURL"] ?: @"未设置地址", processTitle, targetSummary];
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
@@ -549,7 +584,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
                                                                    message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App；mediaserverd 需手动重启用户空间。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary<NSString *, NSString *> *> *targets = @[
-        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（以下全部目标）"},
+        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/浏览器/WebKit）"},
         @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
         @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
         @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
@@ -563,7 +598,11 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         NSString *title = [NSString stringWithFormat:@"%@ %@", selected ? @"✓" : @"○", target[@"title"]];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
                                                 handler:^(__unused UIAlertAction *action) {
-            [self toggleInjectionTarget:key title:target[@"title"]];
+            if ([key isEqualToString:@"injectionMediaServerEnabled"]) {
+                [self confirmMediaServerToggle];
+            } else {
+                [self toggleInjectionTarget:key title:target[@"title"]];
+            }
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
@@ -573,27 +612,56 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     [[self presentingViewController] presentViewController:menu animated:YES completion:nil];
 }
 
+- (NSArray<NSString *> *)globalPreferenceKeys {
+    return @[@"injectionCameraEnabled", @"injectionSafariEnabled",
+             @"injectionChromeEnabled", @"injectionWebKitEnabled"];
+}
+
+- (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
+    BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
+    return values[key] == nil ? defaultEnabled : [values[key] boolValue];
+}
+
+- (void)confirmMediaServerToggle {
+    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
+    if ([self preferenceEnabled:@"injectionMediaServerEnabled" values:values]) {
+        [self toggleInjectionTarget:@"injectionMediaServerEnabled" title:@"mediaserverd"];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启 mediaserverd 注入？"
+                                                                   message:@"这是高风险模式。它会暂停 App/WebKit 的画面替换 Hook，但保留悬浮控制 UI。请先关闭其他相机插件；保存后需要你手动重启用户空间。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确认开启" style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction *action) {
+        [self toggleInjectionTarget:@"injectionMediaServerEnabled" title:@"mediaserverd"];
+    }]];
+    [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)toggleInjectionTarget:(NSString *)key title:(NSString *)title {
     NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
-    BOOL defaultEnabled = [key isEqualToString:@"injectionCameraEnabled"] && values[key] == nil;
-    BOOL next = !(values[key] == nil ? defaultEnabled : [values[key] boolValue]);
+    BOOL next = ![self preferenceEnabled:key values:values];
     NSMutableDictionary<NSString *, id> *changes = [NSMutableDictionary dictionary];
     if ([key isEqualToString:@"injectionGlobalEnabled"]) {
         changes[key] = @(next);
-        for (NSString *individualKey in [VCAMInjectionPolicy individualPreferenceKeys]) {
+        for (NSString *individualKey in [self globalPreferenceKeys]) {
             changes[individualKey] = @(next);
         }
     } else {
         changes[key] = @(next);
-        BOOL allEnabled = next;
-        for (NSString *individualKey in [VCAMInjectionPolicy individualPreferenceKeys]) {
-            if ([individualKey isEqualToString:key]) continue;
-            BOOL individualDefault = [individualKey isEqualToString:@"injectionCameraEnabled"] &&
-                                     values[individualKey] == nil;
-            if (!(values[individualKey] == nil ? individualDefault : [values[individualKey] boolValue])) {
-                allEnabled = NO;
-                break;
-            }
+        if ([key isEqualToString:@"injectionSafariEnabled"] ||
+            [key isEqualToString:@"injectionChromeEnabled"]) {
+            NSString *otherBrowserKey = [key isEqualToString:@"injectionSafariEnabled"]
+                ? @"injectionChromeEnabled" : @"injectionSafariEnabled";
+            BOOL linkedWebKitEnabled = next || [self preferenceEnabled:otherBrowserKey values:values];
+            changes[@"injectionWebKitEnabled"] = @(linkedWebKitEnabled);
+        }
+        BOOL allEnabled = YES;
+        for (NSString *globalKey in [self globalPreferenceKeys]) {
+            NSNumber *changed = changes[globalKey];
+            BOOL selected = changed != nil ? changed.boolValue : [self preferenceEnabled:globalKey values:values];
+            if (!selected) { allEnabled = NO; break; }
         }
         changes[@"injectionGlobalEnabled"] = @(allEnabled);
     }
