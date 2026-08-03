@@ -80,6 +80,31 @@ class WriteConfigTests(unittest.TestCase):
             )
             values = plistlib.loads(output.read_bytes())
             self.assertEqual(values["photoMetadata"]["{TIFF}"]["Make"], "VCAM")
+            self.assertEqual(values["localDecoderMode"], "triple")
+
+    def test_local_decoder_can_use_single_player_fallback(self) -> None:
+        script = pathlib.Path(__file__).parents[1] / "scripts" / "write-config.py"
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "vcam.plist"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--output",
+                    str(output),
+                    "--source",
+                    "local",
+                    "--media-path",
+                    "/var/mobile/Media/test.mov",
+                    "--local-decoder",
+                    "single",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            values = plistlib.loads(output.read_bytes())
+            self.assertEqual(values["localDecoderMode"], "single")
 
 
 if __name__ == "__main__":

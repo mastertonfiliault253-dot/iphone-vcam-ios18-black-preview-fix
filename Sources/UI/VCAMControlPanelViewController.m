@@ -110,6 +110,10 @@
                                                 symbol:@"repeat"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(loopTapped)]];
+    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"本地解码：%@", self.status[@"localDecoder"] ?: @"原版三路"]
+                                                symbol:@"rectangle.3.group"
+                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
+                                                action:@selector(localDecoderTapped)]];
 
     [stack addArrangedSubview:[self sectionLabel:@"目标与恢复"]];
     [stack addArrangedSubview:[self actionButton:@"选择替换软件和进程" symbol:@"app.badge.checkmark"
@@ -238,6 +242,7 @@
 - (void)audioTapped { [self.delegate controlPanelDidRequestAudioToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
+- (void)localDecoderTapped { [self.delegate controlPanelDidRequestLocalDecoderToggle:self]; }
 - (void)restoreTapped { [self.delegate controlPanelDidRequestRestoreCamera:self]; }
 - (void)targetTapped { [self.delegate controlPanelDidRequestTargetSelector:self]; }
 

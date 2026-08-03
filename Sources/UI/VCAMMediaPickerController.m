@@ -4,6 +4,7 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../Core/VCAMConfiguration.h"
+#import "../Sources/VCAMLocalMediaSource.h"
 
 extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void);
 
@@ -143,9 +144,26 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
+    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString] ?: @"triple";
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
               values[@"preferredFramesPerSecond"] ?: @30];
+    if ([source isEqualToString:@"local"]) {
+        detail = [detail stringByAppendingFormat:@" · 解码：%@",
+                  [localDecoderMode isEqualToString:@"single"] ? @"单路 AVPlayer" : @"原版三路并行"];
+        NSDictionary<NSString *, id> *performance = VCAMLocalPlaybackPerformanceSnapshot();
+        NSNumber *sourceFPS = performance[@"sourceFPS"];
+        if (sourceFPS != nil) {
+            detail = [detail stringByAppendingFormat:@"\n实时：%.1f fps · P95 %.1fms · 渲染 %.1f/%.1fms · 丢帧 %@",
+                      sourceFPS.doubleValue,
+                      [performance[@"sourceFrameP95Ms"] doubleValue],
+                      [performance[@"renderAvgMs"] doubleValue],
+                      [performance[@"renderMaxMs"] doubleValue],
+                      performance[@"misses"] ?: @0];
+        } else {
+            detail = [detail stringByAppendingString:@"\n实时：等待首个 1 秒性能窗口"];
+        }
+    }
     NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot();
     detail = [detail stringByAppendingFormat:@"\n诊断 Hook：拍照请求 %@ / 回调 %@；录像开始 %@ / 完成 %@",
               captureDiagnostics[@"photoRequest"], captureDiagnostics[@"photoCallback"],
@@ -164,6 +182,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         @"audio": [values[@"replaceAudio"] boolValue] ? @"开启" : @"关闭",
         @"loop": values[@"loopMedia"] == nil || [values[@"loopMedia"] boolValue] ? @"开启" : @"关闭",
         @"contentMode": modeNames[mode] ?: @"裁切填满",
+        @"localDecoder": [localDecoderMode isEqualToString:@"single"] ? @"单路 AVPlayer" : @"原版三路",
     };
 }
 
@@ -241,6 +260,11 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 - (void)controlPanelDidRequestLoopToggle:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self toggleLoopPlayback];
+}
+
+- (void)controlPanelDidRequestLocalDecoderToggle:(VCAMControlPanelViewController *)panel {
+    (void)panel;
+    [self toggleLocalDecoderMode];
 }
 
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel {
@@ -416,6 +440,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         (nominalFrameRate >= 28.0f ? 30 : (nominalFrameRate >= 20.0f ? 24 : 30));
     if (![self updatePreferences:@{@"source": @"local", @"enabled": @YES,
                                   @"mediaPath": destinationURL.path, @"loopMedia": @YES,
+                                  @"localDecoderMode": @"triple",
                                   @"preferredFramesPerSecond": @(preferredFramesPerSecond)}]) {
         [self showMessage:@"视频已复制，但 VCAM 配置写入失败" error:YES];
         return;
@@ -460,6 +485,18 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     if (![self updatePreferences:@{@"loopMedia": @(enabled)}]) return;
     [self postConfigurationChanged];
     [self dismissPanelThen:^{ [self showMessage:enabled ? @"视频循环已开启" : @"视频循环已关闭" error:NO]; }];
+}
+
+- (void)toggleLocalDecoderMode {
+    NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
+    NSString *current = [values[@"localDecoderMode"] lowercaseString] ?: @"triple";
+    NSString *next = [current isEqualToString:@"single"] ? @"triple" : @"single";
+    if (![self updatePreferences:@{@"localDecoderMode": next}]) return;
+    [self postConfigurationChanged];
+    [self dismissPanelThen:^{
+        [self showMessage:[next isEqualToString:@"single"] ? @"已切换到单路 AVPlayer" : @"已切换到原版三路并行解码"
+                    error:NO];
+    }];
 }
 
 - (void)cycleContentMode {

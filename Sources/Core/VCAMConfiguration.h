@@ -15,6 +15,11 @@ typedef NS_ENUM(NSInteger, VCAMContentMode) {
     VCAMContentModeStretch = 2,
 };
 
+typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
+    VCAMLocalDecoderModeUpstreamTriple = 0,
+    VCAMLocalDecoderModeSinglePlayer = 1,
+};
+
 /// Immutable configuration snapshot. Callers only need to load one snapshot;
 /// path resolution and validation stay behind this interface.
 @interface VCAMConfiguration : NSObject
@@ -34,6 +39,7 @@ typedef NS_ENUM(NSInteger, VCAMContentMode) {
 @property(nonatomic, copy, readonly, nullable) NSURL *obsWebSocketURL;
 @property(nonatomic, copy, readonly, nullable) NSURL *rtspURL;
 @property(nonatomic, readonly) NSInteger preferredFramesPerSecond;
+@property(nonatomic, readonly) VCAMLocalDecoderMode localDecoderMode;
 
 + (instancetype)loadCurrent;
 + (NSString *)configurationPath;

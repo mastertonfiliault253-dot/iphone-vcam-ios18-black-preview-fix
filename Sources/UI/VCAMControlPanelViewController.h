@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)controlPanelDidRequestAudioToggle:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestContentModeCycle:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestLoopToggle:(VCAMControlPanelViewController *)panel;
+- (void)controlPanelDidRequestLocalDecoderToggle:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestTargetSelector:(VCAMControlPanelViewController *)panel;
 @end

@@ -16,6 +16,7 @@
 @property(nonatomic, copy, readwrite, nullable) NSURL *obsWebSocketURL;
 @property(nonatomic, copy, readwrite, nullable) NSURL *rtspURL;
 @property(nonatomic, readwrite) NSInteger preferredFramesPerSecond;
+@property(nonatomic, readwrite) VCAMLocalDecoderMode localDecoderMode;
 @end
 
 @implementation VCAMConfiguration
@@ -73,6 +74,7 @@
     configuration.rotationDegrees = 0;
     configuration.contentMode = VCAMContentModeAspectFill;
     configuration.preferredFramesPerSecond = 30;
+    configuration.localDecoderMode = VCAMLocalDecoderModeUpstreamTriple;
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
@@ -91,6 +93,11 @@
     configuration.mirrorHorizontally = [values[@"mirrorHorizontally"] boolValue];
     configuration.rotationDegrees = [values[@"rotationDegrees"] integerValue] % 360;
     configuration.preferredFramesPerSecond = MAX(1, MIN(60, [values[@"preferredFramesPerSecond"] integerValue] ?: 30));
+    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString];
+    if ([localDecoderMode isEqualToString:@"single"] ||
+        [localDecoderMode isEqualToString:@"singleplayer"]) {
+        configuration.localDecoderMode = VCAMLocalDecoderModeSinglePlayer;
+    }
 
     NSString *source = [values[@"source"] lowercaseString];
     if ([source isEqualToString:@"local"]) {

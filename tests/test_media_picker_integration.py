@@ -49,17 +49,28 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"source": @"camera"', source)
         self.assertIn('@"enabled": @NO', source)
 
-    def test_local_video_uses_hardware_player_clock_and_honors_orientation(self) -> None:
+    def test_local_video_supports_upstream_triple_reader_and_single_player_fallback(self) -> None:
         source = (
             ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
         ).read_text(encoding="utf-8")
 
         self.assertIn("videoTrack.preferredTransform", source)
         self.assertIn("CACurrentMediaTime()", source)
+        self.assertIn("VCAMLocalDecoderModeUpstreamTriple", source)
+        self.assertIn("tripleBGRAOutput", source)
+        self.assertIn("tripleVideoRangeOutput", source)
+        self.assertIn("tripleFullRangeOutput", source)
+        self.assertIn("copyNextSampleBuffer", source)
         self.assertIn("AVPlayerItemVideoOutput", source)
         self.assertIn("itemTimeForHostTime", source)
         self.assertIn("copyPixelBufferForItemTime", source)
-        self.assertNotIn("copyNextSampleBuffer", source.split("rebuildAudioReaderForSampleRate")[0])
+        self.assertIn("VCAMLocalPlaybackPerformanceSnapshot", source)
+
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMLocalPlaybackPerformanceSnapshot()", picker)
+        self.assertIn('performance[@"sourceFPS"]', picker)
 
     def test_preview_samples_are_displayed_immediately(self) -> None:
         source = (
