@@ -9,25 +9,15 @@
 #ifndef VCAM_WITH_CONTROL_UI
 #define VCAM_WITH_CONTROL_UI 0
 #endif
-#ifndef VCAM_WITH_PREVIEW_DRIVER
-#define VCAM_WITH_PREVIEW_DRIVER 0
-#endif
-
 #if VCAM_WITH_CONTROL_UI
 #import <UIKit/UIKit.h>
 #import "../UI/VCAMMediaPickerController.h"
-#endif
-#if VCAM_WITH_PREVIEW_DRIVER
-#import "VCAMPreviewDriver.h"
 #endif
 
 static const void *VCAMReplacementPixelBufferKey = &VCAMReplacementPixelBufferKey;
 static const void *VCAMReplacementPhotoDataKey = &VCAMReplacementPhotoDataKey;
 static const void *VCAMReplacementDepthDataKey = &VCAMReplacementDepthDataKey;
 static const void *VCAMReplacementMetadataKey = &VCAMReplacementMetadataKey;
-#if VCAM_WITH_PREVIEW_DRIVER
-static const void *VCAMPreviewDriverKey = &VCAMPreviewDriverKey;
-#endif
 static _Atomic(uint64_t) VCAMPhotoRequestCount;
 static _Atomic(uint64_t) VCAMPhotoCallbackCount;
 static _Atomic(uint64_t) VCAMRecordingStartCount;
@@ -59,14 +49,6 @@ extern "C" NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapsh
         @"copyError": @(atomic_load_explicit(&VCAMRecordingCopyErrorCode, memory_order_relaxed)),
     };
 }
-
-#if VCAM_WITH_PREVIEW_DRIVER
-static void VCAMInstallPreviewDriver(AVCaptureVideoPreviewLayer *layer) {
-    if (layer == nil || objc_getAssociatedObject(layer, VCAMPreviewDriverKey) != nil) return;
-    VCAMPreviewDriver *driver = [[VCAMPreviewDriver alloc] initWithPreviewLayer:layer];
-    objc_setAssociatedObject(layer, VCAMPreviewDriverKey, driver, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-#endif
 
 static NSMutableSet<NSString *> *VCAMHookedDelegateClasses(void) {
     static NSMutableSet<NSString *> *classes;
@@ -328,7 +310,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
     }
 }
 
-%group VCAMCameraHooks
+%group VCAMMediaHooks
 
 %hook AVCaptureVideoDataOutput
 
@@ -340,24 +322,6 @@ static void VCAMHookRecordingDelegate(id delegate) {
 }
 
 %end
-
-#if VCAM_WITH_PREVIEW_DRIVER
-%hook AVCaptureVideoPreviewLayer
-
-- (instancetype)initWithSession:(AVCaptureSession *)session {
-    AVCaptureVideoPreviewLayer *layer = %orig;
-    VCAMInstallPreviewDriver(layer);
-    return layer;
-}
-
-- (instancetype)initWithSessionWithNoConnection:(AVCaptureSession *)session {
-    AVCaptureVideoPreviewLayer *layer = %orig;
-    VCAMInstallPreviewDriver(layer);
-    return layer;
-}
-
-%end
-#endif
 
 %hook AVCapturePhotoOutput
 
@@ -403,7 +367,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
         BOOL showControlUI = [VCAMInjectionPolicy shouldShowControlUI];
         if (!installMediaHooks && !showControlUI) return;
         if (installMediaHooks) {
-            %init(VCAMCameraHooks);
+            %init(VCAMMediaHooks);
             [VCAMFramePipeline sharedPipeline];
         }
 #if VCAM_WITH_CONTROL_UI

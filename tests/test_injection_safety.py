@@ -57,6 +57,8 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("-DVCAM_WITH_CONTROL_UI=0", makefile)
         self.assertNotIn("UIKit", makefile.split("VCAMProcessClient_FRAMEWORKS", 1)[1].splitlines()[0])
         self.assertNotIn("PhotosUI", makefile.split("VCAMProcessClient_FRAMEWORKS", 1)[1].splitlines()[0])
+        self.assertIn("VCAMCameraPreviewHooks.xm", makefile)
+        self.assertNotIn("VCAMCameraPreviewHooks.xm", makefile.split("VCAMAppClient_FILES", 1)[1].splitlines()[0])
 
 
 if __name__ == "__main__":
