@@ -67,7 +67,27 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self installButtonWhenWindowIsReady];
 }
 
+- (nullable UIWindow *)springBoardHomeWindow {
+    if (![self isSpringBoardHost]) return nil;
+    Class iconControllerClass = NSClassFromString(@"SBIconController");
+    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    if (iconControllerClass != Nil && [iconControllerClass respondsToSelector:sharedSelector]) {
+        id iconController = ((id (*)(id, SEL))objc_msgSend)(iconControllerClass, sharedSelector);
+        SEL viewSelector = NSSelectorFromString(@"view");
+        if ([iconController respondsToSelector:viewSelector]) {
+            UIView *view = ((id (*)(id, SEL))objc_msgSend)(iconController, viewSelector);
+            if ([view isKindOfClass:UIView.class] && view.window != nil) return view.window;
+        }
+    }
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        if (!window.hidden && window.windowLevel == UIWindowLevelNormal && window.rootViewController != nil) return window;
+    }
+    return nil;
+}
+
 - (nullable UIWindow *)cameraWindow {
+    UIWindow *springBoardWindow = [self springBoardHomeWindow];
+    if (springBoardWindow != nil) return springBoardWindow;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (scene.activationState != UISceneActivationStateForegroundActive ||
             ![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -166,10 +186,10 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.accessibilityLabel = @"打开 VCAM 控制面板";
         button.backgroundColor = UIColor.clearColor;
-        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(12.0, 12.0, 20.0, 20.0)];
+        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
         dot.userInteractionEnabled = NO;
         dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.88];
-        dot.layer.cornerRadius = 10.0;
+        dot.layer.cornerRadius = 22.0;
         dot.layer.borderWidth = 1.0;
         dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
         dot.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -188,7 +208,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 
     if (self.button.superview != window) {
         [self.button removeFromSuperview];
-        self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 22.0, 44.0, 44.0);
+        self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
         if (savedCenter != nil) self.button.center = savedCenter.CGPointValue;
         self.button.autoresizingMask = UIViewAutoresizingFlexibleRightMargin |
@@ -229,7 +249,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     CGPoint center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     [recognizer setTranslation:CGPointZero inView:window];
     UIEdgeInsets safe = window.safeAreaInsets;
-    CGFloat radius = 22.0;
+    CGFloat radius = 26.0;
     center.x = MAX(safe.left + radius + 4, MIN(CGRectGetWidth(window.bounds) - safe.right - radius - 4, center.x));
     center.y = MAX(safe.top + radius + 4, MIN(CGRectGetHeight(window.bounds) - safe.bottom - radius - 4, center.y));
     button.center = center;
@@ -568,36 +588,15 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 }
 
 - (void)installVideoFromTemporaryURL:(NSURL *)temporaryURL suggestedName:(nullable NSString *)suggestedName {
-    NSFileManager *manager = NSFileManager.defaultManager;
     NSError *error = nil;
-    NSURL *directory = [NSURL fileURLWithPath:[VCAMConfiguration mediaDirectoryPath] isDirectory:YES];
-    if (![manager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&error]) {
+    NSString *destinationPath = [VCAMConfiguration importMediaAtURL:temporaryURL
+                                                      suggestedName:suggestedName
+                                                              error:&error];
+    if (destinationPath.length == 0) {
         [self showMessage:error.localizedDescription error:YES];
         return;
     }
-    NSString *extension = temporaryURL.pathExtension.lowercaseString;
-    if (extension.length == 0) extension = suggestedName.pathExtension.lowercaseString;
-    if (![@[@"mov", @"mp4", @"m4v"] containsObject:extension]) extension = @"mov";
-    NSURL *incomingURL = [directory URLByAppendingPathComponent:
-        [NSString stringWithFormat:@".incoming-%@.%@", NSUUID.UUID.UUIDString, extension]];
-    NSURL *destinationURL = [directory URLByAppendingPathComponent:
-        [NSString stringWithFormat:@"selected.%@", extension]];
-    if (![manager copyItemAtURL:temporaryURL toURL:incomingURL error:&error]) {
-        [self showMessage:error.localizedDescription error:YES];
-        return;
-    }
-    if ([manager fileExistsAtPath:destinationURL.path]) {
-        if (![manager replaceItemAtURL:destinationURL withItemAtURL:incomingURL backupItemName:nil
-                               options:0 resultingItemURL:nil error:&error]) {
-            [manager removeItemAtURL:incomingURL error:nil];
-            [self showMessage:error.localizedDescription error:YES];
-            return;
-        }
-    } else if (![manager moveItemAtURL:incomingURL toURL:destinationURL error:&error]) {
-        [manager removeItemAtURL:incomingURL error:nil];
-        [self showMessage:error.localizedDescription error:YES];
-        return;
-    }
+    NSURL *destinationURL = [NSURL fileURLWithPath:destinationPath];
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:destinationURL options:nil];
     AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     float nominalFrameRate = videoTrack.nominalFrameRate;

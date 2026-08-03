@@ -19,7 +19,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("PHPickerFilter.videosFilter", source)
         self.assertIn("loadFileRepresentationForTypeIdentifier", source)
-        self.assertIn("[VCAMConfiguration mediaDirectoryPath]", source)
+        self.assertIn("[VCAMConfiguration importMediaAtURL:temporaryURL", source)
         self.assertIn("[VCAMConfiguration updateValues:changes]", source)
         self.assertNotIn('@"/var/mobile/Media/VCAM"', source)
         self.assertIn('@"source": @"local"', source)
@@ -71,8 +71,25 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("numberOfTapsRequired = 2", picker)
         self.assertIn("UIAccessibilityIsVoiceOverRunning", picker)
         self.assertIn("cancelsTouchesInView = NO", picker)
+        self.assertIn("52.0", picker)
         self.assertIn("44.0", picker)
-        self.assertIn("20.0", picker)
+
+    def test_springboard_uses_the_home_icon_window_instead_of_app_scenes_only(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn('NSClassFromString(@"SBIconController")', picker)
+        self.assertIn("springBoardHomeWindow", picker)
+        self.assertIn("UIApplication.sharedApplication.windows", picker)
+
+    def test_sandboxed_media_import_is_delegated_to_the_springboard_broker(self) -> None:
+        configuration_h = (ROOT / "Sources" / "Core" / "VCAMConfiguration.h").read_text(encoding="utf-8")
+        configuration_m = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
+
+        self.assertIn("importMediaAtURL", configuration_h)
+        self.assertIn("VCAMConfigurationBrokerImportCommand", configuration_m)
+        self.assertIn("receiveImportedMediaFromClient", configuration_m)
+        self.assertIn("[VCAMConfiguration importMediaAtURL:temporaryURL", picker)
 
     def test_menu_can_restore_the_real_camera(self) -> None:
         source = (
@@ -123,7 +140,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("VCAMControlPanelViewController.m", makefile)
         self.assertIn("UIPanGestureRecognizer", picker)
-        self.assertIn("cornerRadius = 10.0", picker)
+        self.assertIn("cornerRadius = 22.0", picker)
         self.assertIn("VCAMControlPanelViewController", picker)
         self.assertIn("UIScrollView", panel)
         self.assertIn("accessibilityLabel", panel)

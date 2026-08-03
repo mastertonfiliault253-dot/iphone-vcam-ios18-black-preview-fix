@@ -86,6 +86,7 @@
 + (BOOL)isCurrentProcessMediaReplacementEnabledForValues:(NSDictionary<NSString *,id> *)values {
     if (![self isCurrentProcessEnabledForValues:values]) return NO;
     if (self.currentTarget == VCAMInjectionTargetSpringBoard) return NO;
+    if (self.currentTarget != VCAMInjectionTargetCamera && ![values[@"enabled"] boolValue]) return NO;
     BOOL mediaServerEnabled = [values[@"injectionMediaServerEnabled"] boolValue];
     if (self.currentTarget == VCAMInjectionTargetMediaServer) return mediaServerEnabled;
     return !mediaServerEnabled;

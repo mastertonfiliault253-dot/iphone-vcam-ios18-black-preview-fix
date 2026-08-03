@@ -89,6 +89,7 @@ class PackagingArchitectureTests(unittest.TestCase):
 
         self.assertIn("VCAMSpringBoardClient", makefile)
         self.assertIn("SpringBoard", filter_text)
+        self.assertIn("com.apple.springboard", filter_text)
         springboard_files = makefile.split("VCAMSpringBoardClient_FILES", 1)[1].splitlines()[0]
         self.assertNotIn("VCAM_COMMON_FILES", springboard_files)
         self.assertNotIn("VCAMCaptureHooks", springboard_files)
@@ -105,6 +106,14 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("VCAMInjectionTargetMediaServer: return NO", policy)
         for target in ("Camera", "Safari", "Chrome", "WebKit"):
             self.assertIn(f"VCAMInjectionTarget{target}: return YES", policy)
+
+    def test_browser_media_pipeline_is_deferred_until_a_source_is_enabled(self) -> None:
+        policy = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m").read_text(encoding="utf-8")
+
+        method = policy.split("isCurrentProcessMediaReplacementEnabledForValues", 1)[1]
+        method = method.split("\n}", 1)[0]
+        self.assertIn('values[@"enabled"]', method)
+        self.assertIn("VCAMInjectionTargetCamera", method)
 
 
 if __name__ == "__main__":
