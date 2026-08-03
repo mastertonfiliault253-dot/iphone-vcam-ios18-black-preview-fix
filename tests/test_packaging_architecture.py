@@ -93,6 +93,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("VCAM_COMMON_FILES", springboard_files)
         self.assertNotIn("VCAMCaptureHooks", springboard_files)
         self.assertNotIn("VCAMRTSPStreamSource", springboard_files)
+        self.assertIn("VCAMSpringBoardDiagnosticsStubs.m", springboard_files)
         self.assertIn("startWriteBroker", entry)
         self.assertIn("startControlUI", entry)
 
