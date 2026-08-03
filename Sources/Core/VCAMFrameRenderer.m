@@ -1,5 +1,6 @@
 #import "VCAMFrameRenderer.h"
 #import <CoreVideo/CoreVideo.h>
+#import <math.h>
 
 @interface VCAMFrameRenderer () {
     CVPixelBufferPoolRef _pixelBufferPool;
@@ -142,7 +143,16 @@
     } else if (configuration.contentMode == VCAMContentModeAspectFill) {
         sx = sy = MAX(sx, sy);
     }
-    result = [result imageByApplyingTransform:CGAffineTransformMakeScale(sx, sy)];
+    BOOL uniformDownscale = fabs(sx - sy) < 0.0001 && sx < 1.0;
+    if (uniformDownscale) {
+        CIFilter *lanczos = [CIFilter filterWithName:@"CILanczosScaleTransform"];
+        [lanczos setValue:result forKey:kCIInputImageKey];
+        [lanczos setValue:@(sx) forKey:kCIInputScaleKey];
+        [lanczos setValue:@1.0 forKey:kCIInputAspectRatioKey];
+        result = lanczos.outputImage ?: [result imageByApplyingTransform:CGAffineTransformMakeScale(sx, sy)];
+    } else {
+        result = [result imageByApplyingTransform:CGAffineTransformMakeScale(sx, sy)];
+    }
     CGRect scaled = result.extent;
     CGFloat tx = CGRectGetMidX(target) - CGRectGetMidX(scaled);
     CGFloat ty = CGRectGetMidY(target) - CGRectGetMidY(scaled);

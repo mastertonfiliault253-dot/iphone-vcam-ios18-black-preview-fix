@@ -80,7 +80,7 @@ class WriteConfigTests(unittest.TestCase):
             )
             values = plistlib.loads(output.read_bytes())
             self.assertEqual(values["photoMetadata"]["{TIFF}"]["Make"], "VCAM")
-            self.assertEqual(values["localDecoderMode"], "triple")
+            self.assertEqual(values["localDecoderMode"], "single")
 
     def test_local_decoder_can_use_single_player_fallback(self) -> None:
         script = pathlib.Path(__file__).parents[1] / "scripts" / "write-config.py"

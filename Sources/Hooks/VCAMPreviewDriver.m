@@ -67,7 +67,10 @@
     }
     if (self.frameInFlight) return;
     self.frameInFlight = YES;
-    CGSize targetSize = preview.bounds.size;
+    CGFloat pixelScale = MAX(1.0, UIScreen.mainScreen.nativeScale);
+    CGSize targetSize = CGSizeMake(round(preview.bounds.size.width * pixelScale),
+                                   round(preview.bounds.size.height * pixelScale));
+    self.replacementLayer.contentsScale = pixelScale;
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.frameQueue, ^{
         CMSampleBufferRef sample = [pipeline copyPreviewVideoForSize:targetSize];

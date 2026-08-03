@@ -184,7 +184,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
-        self.assertIn("desiredPlayerPixelFormatForTemplate", source)
+        self.assertIn("configurePlayerVideoOutputForPixelFormat:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", source)
         self.assertIn("automaticallyWaitsToMinimizeStalling", source)
 
@@ -197,6 +197,39 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("changeRotationBy:90", picker)
         self.assertIn("changeRotationBy:270", picker)
         self.assertIn("[self postConfigurationChanged]", picker)
+
+    def test_preview_template_uses_screen_pixels_instead_of_layer_points(self) -> None:
+        preview = (
+            ROOT / "Sources" / "Hooks" / "VCAMPreviewDriver.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("UIScreen.mainScreen.nativeScale", preview)
+        self.assertIn("preview.bounds.size.width * pixelScale", preview)
+        self.assertIn("preview.bounds.size.height * pixelScale", preview)
+
+    def test_recommended_single_decoder_stays_on_one_nv12_output(self) -> None:
+        source = (
+            ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m"
+        ).read_text(encoding="utf-8")
+        method = source.split("- (CVPixelBufferRef)copyCurrentPlayerPixelBufferForTemplate:", 1)[1]
+        method = method.split("- (void)emitDiagnosticsForTemplate:", 1)[0]
+
+        self.assertNotIn("configurePlayerVideoOutputForPixelFormat", method)
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
+
+    def test_gpu_renderer_uses_lanczos_when_downscaling(self) -> None:
+        renderer = (
+            ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('filterWithName:@"CILanczosScaleTransform"', renderer)
+
+    def test_new_local_imports_default_to_smooth_single_decoder(self) -> None:
+        picker = (
+            ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('@"localDecoderMode": @"single"', picker)
 
 
 if __name__ == "__main__":

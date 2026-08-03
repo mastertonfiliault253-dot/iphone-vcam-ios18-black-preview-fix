@@ -353,19 +353,6 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     @synchronized (self) { return self.asset != nil; }
 }
 
-- (OSType)desiredPlayerPixelFormatForTemplate:(CMSampleBufferRef)templateBuffer {
-    CVImageBufferRef image = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
-    OSType requested = image == NULL ? 0 : CVPixelBufferGetPixelFormatType(image);
-    switch (requested) {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
-        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
-        case kCVPixelFormatType_32BGRA:
-            return requested;
-        default:
-            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
-    }
-}
-
 - (void)configurePlayerVideoOutputForPixelFormat:(OSType)pixelFormat {
     _diagnosticOutputReconfigurations += 1;
     if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
@@ -433,10 +420,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (CVPixelBufferRef)copyCurrentPlayerPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer
                                                    itemTime:(CMTime *)itemTimeOut {
-    OSType desiredPixelFormat = [self desiredPlayerPixelFormatForTemplate:templateBuffer];
-    if (desiredPixelFormat != self.playerOutputPixelFormat) {
-        [self configurePlayerVideoOutputForPixelFormat:desiredPixelFormat];
-    }
+    (void)templateBuffer;
     CMTime itemTime = [self.playerVideoOutput itemTimeForHostTime:CACurrentMediaTime()];
     if (!CMTIME_IS_VALID(itemTime)) itemTime = self.player.currentTime;
     if ([self.playerVideoOutput hasNewPixelBufferForItemTime:itemTime]) {

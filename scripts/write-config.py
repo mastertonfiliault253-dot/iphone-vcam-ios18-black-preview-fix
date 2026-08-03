@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=0)
     parser.add_argument("--content-mode", choices=("fit", "fill", "stretch"), default="fill")
     parser.add_argument("--fps", type=int, choices=range(1, 61), default=30, metavar="1..60")
-    parser.add_argument("--local-decoder", choices=("triple", "single"), default="triple")
+    parser.add_argument("--local-decoder", choices=("triple", "single"), default="single")
     return parser.parse_args()
 
 

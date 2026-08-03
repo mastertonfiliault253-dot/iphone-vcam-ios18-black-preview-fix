@@ -74,7 +74,7 @@
     configuration.rotationDegrees = 0;
     configuration.contentMode = VCAMContentModeAspectFill;
     configuration.preferredFramesPerSecond = 30;
-    configuration.localDecoderMode = VCAMLocalDecoderModeUpstreamTriple;
+    configuration.localDecoderMode = VCAMLocalDecoderModeSinglePlayer;
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
@@ -94,9 +94,9 @@
     configuration.rotationDegrees = [values[@"rotationDegrees"] integerValue] % 360;
     configuration.preferredFramesPerSecond = MAX(1, MIN(60, [values[@"preferredFramesPerSecond"] integerValue] ?: 30));
     NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString];
-    if ([localDecoderMode isEqualToString:@"single"] ||
-        [localDecoderMode isEqualToString:@"singleplayer"]) {
-        configuration.localDecoderMode = VCAMLocalDecoderModeSinglePlayer;
+    if ([localDecoderMode isEqualToString:@"triple"] ||
+        [localDecoderMode isEqualToString:@"upstreamtriple"]) {
+        configuration.localDecoderMode = VCAMLocalDecoderModeUpstreamTriple;
     }
 
     NSString *source = [values[@"source"] lowercaseString];

@@ -110,7 +110,7 @@
                                                 symbol:@"repeat"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(loopTapped)]];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"本地解码：%@", self.status[@"localDecoder"] ?: @"原版三路"]
+    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"本地解码：%@", self.status[@"localDecoder"] ?: @"单路 NV12（推荐）"]
                                                 symbol:@"rectangle.3.group"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(localDecoderTapped)]];

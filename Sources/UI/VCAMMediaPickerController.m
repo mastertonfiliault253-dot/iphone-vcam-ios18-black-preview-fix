@@ -144,13 +144,13 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
-    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString] ?: @"triple";
+    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString] ?: @"single";
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
               values[@"preferredFramesPerSecond"] ?: @30];
     if ([source isEqualToString:@"local"]) {
         detail = [detail stringByAppendingFormat:@" · 解码：%@",
-                  [localDecoderMode isEqualToString:@"single"] ? @"单路 AVPlayer" : @"原版三路并行"];
+                  [localDecoderMode isEqualToString:@"single"] ? @"单路 NV12（推荐）" : @"原版三路并行"];
         NSDictionary<NSString *, id> *performance = VCAMLocalPlaybackPerformanceSnapshot();
         NSNumber *sourceFPS = performance[@"sourceFPS"];
         if (sourceFPS != nil) {
@@ -182,7 +182,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         @"audio": [values[@"replaceAudio"] boolValue] ? @"开启" : @"关闭",
         @"loop": values[@"loopMedia"] == nil || [values[@"loopMedia"] boolValue] ? @"开启" : @"关闭",
         @"contentMode": modeNames[mode] ?: @"裁切填满",
-        @"localDecoder": [localDecoderMode isEqualToString:@"single"] ? @"单路 AVPlayer" : @"原版三路",
+        @"localDecoder": [localDecoderMode isEqualToString:@"single"] ? @"单路 NV12（推荐）" : @"原版三路",
     };
 }
 
@@ -440,7 +440,7 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
         (nominalFrameRate >= 28.0f ? 30 : (nominalFrameRate >= 20.0f ? 24 : 30));
     if (![self updatePreferences:@{@"source": @"local", @"enabled": @YES,
                                   @"mediaPath": destinationURL.path, @"loopMedia": @YES,
-                                  @"localDecoderMode": @"triple",
+                                  @"localDecoderMode": @"single",
                                   @"preferredFramesPerSecond": @(preferredFramesPerSecond)}]) {
         [self showMessage:@"视频已复制，但 VCAM 配置写入失败" error:YES];
         return;
@@ -489,12 +489,12 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 
 - (void)toggleLocalDecoderMode {
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:[VCAMConfiguration configurationPath]] ?: @{};
-    NSString *current = [values[@"localDecoderMode"] lowercaseString] ?: @"triple";
+    NSString *current = [values[@"localDecoderMode"] lowercaseString] ?: @"single";
     NSString *next = [current isEqualToString:@"single"] ? @"triple" : @"single";
     if (![self updatePreferences:@{@"localDecoderMode": next}]) return;
     [self postConfigurationChanged];
     [self dismissPanelThen:^{
-        [self showMessage:[next isEqualToString:@"single"] ? @"已切换到单路 AVPlayer" : @"已切换到原版三路并行解码"
+        [self showMessage:[next isEqualToString:@"single"] ? @"已切换到单路 NV12（推荐）" : @"已切换到原版三路并行解码"
                     error:NO];
     }];
 }
