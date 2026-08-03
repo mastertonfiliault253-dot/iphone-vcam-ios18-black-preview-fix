@@ -238,7 +238,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AVPlayerLayer", preview)
         self.assertIn("localPreviewPlayer", pipeline_h)
         self.assertIn("localPreviewPlayer", pipeline_m)
+        self.assertIn("tickLocalPreviewDiagnostics", pipeline_h)
+        self.assertIn("tickLocalPreviewDiagnostics", pipeline_m)
         self.assertIn("self.localPlayerLayer.player = localPlayer", preview)
+        self.assertIn("[pipeline tickLocalPreviewDiagnostics]", preview)
         self.assertIn("self.replacementLayer.hidden = YES", preview)
 
     def test_new_local_imports_default_to_smooth_single_decoder(self) -> None:

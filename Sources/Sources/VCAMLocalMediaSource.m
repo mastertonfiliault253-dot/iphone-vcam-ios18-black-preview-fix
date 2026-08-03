@@ -457,7 +457,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         _diagnosticRenderTotal += renderDuration;
         _diagnosticRenderMaximum = MAX(_diagnosticRenderMaximum, renderDuration);
     }
-    CVImageBufferRef templateImage = CMSampleBufferGetImageBuffer(templateBuffer);
+    CVImageBufferRef templateImage = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
     OSType templateFormat = templateImage == NULL ? 0 : CVPixelBufferGetPixelFormatType(templateImage);
     if (_diagnosticLastTemplateFormat != 0 && templateFormat != _diagnosticLastTemplateFormat) {
         _diagnosticTemplateSwitches += 1;
@@ -531,6 +531,21 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     [self resetDiagnosticWindow];
     _diagnosticWindowStart = now;
     _diagnosticWindowItemStart = sourceTime;
+}
+
+- (void)tickDirectPreviewDiagnostics {
+    @synchronized (self) {
+        if (!self.running || self.playerVideoOutput == nil) return;
+        CMTime sourcePTS = kCMTimeInvalid;
+        CVPixelBufferRef pixelBuffer = [self copyCurrentPlayerPixelBufferForTemplate:NULL
+                                                                            itemTime:&sourcePTS];
+        [self emitDiagnosticsForTemplate:NULL
+                              sourceTime:sourcePTS
+                          renderDuration:0
+                                hadFrame:(pixelBuffer != NULL)
+                                cacheHit:NO];
+        if (pixelBuffer != NULL) CVPixelBufferRelease(pixelBuffer);
+    }
 }
 
 - (BOOL)rebuildAudioReaderForSampleRate:(Float64)sampleRate

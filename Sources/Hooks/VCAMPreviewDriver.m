@@ -82,6 +82,7 @@
             self.localPlayerLayer.player = localPlayer;
         }
         self.localPlayerLayer.hidden = NO;
+        [pipeline tickLocalPreviewDiagnostics];
         if (!self.replacementLayer.hidden) {
             self.replacementLayer.hidden = YES;
             [self.replacementLayer flushAndRemoveImage];

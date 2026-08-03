@@ -156,6 +156,14 @@
     return player;
 }
 
+- (void)tickLocalPreviewDiagnostics {
+    dispatch_sync(self.stateQueue, ^{
+        VCAMLocalMediaSource *localSource =
+            [self.source isKindOfClass:VCAMLocalMediaSource.class] ? (VCAMLocalMediaSource *)self.source : nil;
+        [localSource tickDirectPreviewDiagnostics];
+    });
+}
+
 - (CMSampleBufferRef)copyReplacementVideoForSample:(CMSampleBufferRef)sample {
     __block CMSampleBufferRef replacement = NULL;
     dispatch_sync(self.stateQueue, ^{

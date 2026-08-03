@@ -11,6 +11,7 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnap
                               renderer:(VCAMFrameRenderer *)renderer;
 - (BOOL)hasVideoAsset;
 - (nullable AVPlayer *)previewPlayer;
+- (void)tickDirectPreviewDiagnostics;
 @end
 
 NS_ASSUME_NONNULL_END
