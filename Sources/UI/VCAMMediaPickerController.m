@@ -79,7 +79,10 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
             if ([view isKindOfClass:UIView.class] && view.window != nil) return view.window;
         }
     }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+    SEL windowsSelector = NSSelectorFromString(@"windows");
+    NSArray<UIWindow *> *legacyWindows = [UIApplication.sharedApplication respondsToSelector:windowsSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(UIApplication.sharedApplication, windowsSelector) : @[];
+    for (UIWindow *window in legacyWindows) {
         if (!window.hidden && window.windowLevel == UIWindowLevelNormal && window.rootViewController != nil) return window;
     }
     return nil;

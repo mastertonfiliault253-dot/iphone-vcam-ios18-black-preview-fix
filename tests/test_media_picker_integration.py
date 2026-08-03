@@ -79,7 +79,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn('NSClassFromString(@"SBIconController")', picker)
         self.assertIn("springBoardHomeWindow", picker)
-        self.assertIn("UIApplication.sharedApplication.windows", picker)
+        self.assertIn('NSSelectorFromString(@"windows")', picker)
 
     def test_sandboxed_media_import_is_delegated_to_the_springboard_broker(self) -> None:
         configuration_h = (ROOT / "Sources" / "Core" / "VCAMConfiguration.h").read_text(encoding="utf-8")
