@@ -4,6 +4,7 @@
 
 @interface VCAMPreviewDriver ()
 @property(nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;
+@property(nonatomic, strong) AVPlayerLayer *localPlayerLayer;
 @property(nonatomic, strong) AVSampleBufferDisplayLayer *replacementLayer;
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic) dispatch_queue_t frameQueue;
@@ -18,6 +19,10 @@
     self = [super init];
     if (self) {
         _previewLayer = previewLayer;
+        _localPlayerLayer = [AVPlayerLayer playerLayerWithPlayer:nil];
+        _localPlayerLayer.videoGravity = previewLayer.videoGravity;
+        _localPlayerLayer.hidden = YES;
+        [previewLayer addSublayer:_localPlayerLayer];
         _replacementLayer = [AVSampleBufferDisplayLayer layer];
         _replacementLayer.videoGravity = previewLayer.videoGravity;
         _replacementLayer.hidden = YES;
@@ -37,6 +42,7 @@
 
 - (void)dealloc {
     [self.displayLink invalidate];
+    self.localPlayerLayer.player = nil;
     [self.replacementLayer flushAndRemoveImage];
 }
 
@@ -46,6 +52,8 @@
         [displayLink invalidate];
         return;
     }
+    self.localPlayerLayer.frame = preview.bounds;
+    self.localPlayerLayer.videoGravity = preview.videoGravity;
     self.replacementLayer.frame = preview.bounds;
     self.replacementLayer.videoGravity = preview.videoGravity;
     VCAMFramePipeline *pipeline = [VCAMFramePipeline sharedPipeline];
@@ -62,10 +70,26 @@
         }
     }
     if (![pipeline isEnabled]) {
+        self.localPlayerLayer.hidden = YES;
+        self.localPlayerLayer.player = nil;
         self.replacementLayer.hidden = YES;
         [self.replacementLayer flushAndRemoveImage];
         return;
     }
+    AVPlayer *localPlayer = [pipeline localPreviewPlayer];
+    if (localPlayer != nil) {
+        if (self.localPlayerLayer.player != localPlayer) {
+            self.localPlayerLayer.player = localPlayer;
+        }
+        self.localPlayerLayer.hidden = NO;
+        if (!self.replacementLayer.hidden) {
+            self.replacementLayer.hidden = YES;
+            [self.replacementLayer flushAndRemoveImage];
+        }
+        return;
+    }
+    self.localPlayerLayer.hidden = YES;
+    self.localPlayerLayer.player = nil;
     if (self.frameInFlight) return;
     self.frameInFlight = YES;
     CGFloat pixelScale = MAX(1.0, UIScreen.mainScreen.nativeScale);

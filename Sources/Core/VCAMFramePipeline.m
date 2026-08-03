@@ -141,6 +141,21 @@
     return MAX(1, MIN(60, framesPerSecond));
 }
 
+- (AVPlayer *)localPreviewPlayer {
+    __block AVPlayer *player = nil;
+    dispatch_sync(self.stateQueue, ^{
+        if (!self.configuration.enabled ||
+            self.configuration.sourceKind != VCAMSourceKindLocalMedia ||
+            self.configuration.localDecoderMode != VCAMLocalDecoderModeSinglePlayer) {
+            return;
+        }
+        VCAMLocalMediaSource *localSource =
+            [self.source isKindOfClass:VCAMLocalMediaSource.class] ? (VCAMLocalMediaSource *)self.source : nil;
+        player = [localSource previewPlayer];
+    });
+    return player;
+}
+
 - (CMSampleBufferRef)copyReplacementVideoForSample:(CMSampleBufferRef)sample {
     __block CMSampleBufferRef replacement = NULL;
     dispatch_sync(self.stateQueue, ^{

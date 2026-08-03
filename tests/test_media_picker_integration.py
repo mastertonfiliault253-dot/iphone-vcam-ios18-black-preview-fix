@@ -224,6 +224,23 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn('filterWithName:@"CILanczosScaleTransform"', renderer)
 
+    def test_local_camera_preview_uses_avplayerlayer_hardware_compositor(self) -> None:
+        preview = (
+            ROOT / "Sources" / "Hooks" / "VCAMPreviewDriver.m"
+        ).read_text(encoding="utf-8")
+        pipeline_h = (
+            ROOT / "Sources" / "Core" / "VCAMFramePipeline.h"
+        ).read_text(encoding="utf-8")
+        pipeline_m = (
+            ROOT / "Sources" / "Core" / "VCAMFramePipeline.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("AVPlayerLayer", preview)
+        self.assertIn("localPreviewPlayer", pipeline_h)
+        self.assertIn("localPreviewPlayer", pipeline_m)
+        self.assertIn("self.localPlayerLayer.player = localPlayer", preview)
+        self.assertIn("self.replacementLayer.hidden = YES", preview)
+
     def test_new_local_imports_default_to_smooth_single_decoder(self) -> None:
         picker = (
             ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m"

@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reloadConfiguration;
 - (BOOL)isEnabled;
 - (NSInteger)preferredFramesPerSecond;
+- (nullable AVPlayer *)localPreviewPlayer;
 - (nullable CMSampleBufferRef)copyReplacementVideoForSample:(CMSampleBufferRef)sample
     CF_RETURNS_RETAINED;
 - (nullable CMSampleBufferRef)copyReplacementAudioForSample:(CMSampleBufferRef)sample

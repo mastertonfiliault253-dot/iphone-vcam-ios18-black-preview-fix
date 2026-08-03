@@ -353,6 +353,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     @synchronized (self) { return self.asset != nil; }
 }
 
+- (AVPlayer *)previewPlayer {
+    @synchronized (self) { return self.player; }
+}
+
 - (void)configurePlayerVideoOutputForPixelFormat:(OSType)pixelFormat {
     _diagnosticOutputReconfigurations += 1;
     if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
