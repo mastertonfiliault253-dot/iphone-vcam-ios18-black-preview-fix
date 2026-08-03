@@ -13,7 +13,14 @@ fi
 
 rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT" "$OUTPUT_ROOT/lib" "$OUTPUT_ROOT/include"
-curl -L --fail --retry 3 "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o "$WORK_ROOT/ffmpeg.tar.xz"
+curl -L --fail \
+  --retry 8 \
+  --retry-delay 3 \
+  --retry-all-errors \
+  --connect-timeout 20 \
+  --max-time 600 \
+  "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+  -o "$WORK_ROOT/ffmpeg.tar.xz"
 tar -xf "$WORK_ROOT/ffmpeg.tar.xz" -C "$WORK_ROOT"
 SOURCE_ROOT="$WORK_ROOT/ffmpeg-${FFMPEG_VERSION}"
 SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
