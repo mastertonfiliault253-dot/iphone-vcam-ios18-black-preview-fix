@@ -144,8 +144,27 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", source)
         self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", source)
         self.assertIn("frame->data[3]", source)
+        self.assertIn("VCAMRTSPPerformanceSnapshot", source)
+        self.assertIn("copyDirectPreviewSample", source)
+        self.assertIn("_latestFrameSequence", source)
+        self.assertIn("copyDirectPreviewVideoSample", pipeline)
+        self.assertIn("identityPreview", pipeline)
+        self.assertIn("VCAMContentModeAspectFill", pipeline)
+        preview = (ROOT / "Sources" / "Hooks" / "VCAMPreviewDriver.m").read_text(encoding="utf-8")
+        self.assertIn("copyDirectPreviewVideoSample", preview)
         self.assertIn('@"rtspURL"', picker)
         self.assertIn("VCAMRTSPStreamSource.m", makefile)
+
+    def test_rtsp_zero_copy_path_preserves_matching_nv12_frames(self) -> None:
+        renderer_h = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.h").read_text(encoding="utf-8")
+        renderer_m = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(encoding="utf-8")
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(encoding="utf-8")
+
+        self.assertIn("copySampleFromPixelBuffer", renderer_h)
+        self.assertIn("copySampleFromPixelBuffer", renderer_m)
+        self.assertIn("sourceWidth == targetWidth", renderer_m)
+        self.assertIn("sourcePixelFormat == targetPixelFormat", renderer_m)
+        self.assertIn("_lastRenderedFrameSequence", rtsp)
 
     def test_preview_hot_path_reuses_buffers_and_template(self) -> None:
         renderer = (

@@ -192,6 +192,24 @@
     return result;
 }
 
+- (CMSampleBufferRef)copyDirectPreviewVideoSample:(BOOL *)supported {
+    __block BOOL directSupported = NO;
+    __block CMSampleBufferRef result = NULL;
+    dispatch_sync(self.stateQueue, ^{
+        VCAMRTSPStreamSource *rtspSource =
+            [self.source isKindOfClass:VCAMRTSPStreamSource.class] ? (VCAMRTSPStreamSource *)self.source : nil;
+        BOOL identityPreview = self.configuration.rotationDegrees == 0 &&
+            !self.configuration.mirrorHorizontally &&
+            self.configuration.contentMode == VCAMContentModeAspectFill;
+        if (rtspSource == nil || !identityPreview) return;
+        directSupported = YES;
+        result = [rtspSource copyDirectPreviewSample];
+        if (result != NULL) [self.recorder appendVideoSample:result];
+    });
+    if (supported != NULL) *supported = directSupported;
+    return result;
+}
+
 - (CMSampleBufferRef)copyReplacementAudioForSample:(CMSampleBufferRef)sample {
     __block CMSampleBufferRef replacement = NULL;
     dispatch_sync(self.stateQueue, ^{

@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
     CF_RETURNS_RETAINED;
 - (nullable CMSampleBufferRef)copyPreviewVideoForSize:(CGSize)size
     CF_RETURNS_RETAINED;
+- (nullable CMSampleBufferRef)copyDirectPreviewVideoSample:(BOOL *)supported
+    CF_RETURNS_RETAINED;
 - (nullable AVDepthData *)replacementDepthData;
 - (NSDictionary<NSString *, id> *)replacementPhotoMetadataForOriginal:(NSDictionary<NSString *, id> *)original;
 - (nullable NSData *)pairedLivePhotoStillData;

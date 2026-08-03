@@ -99,7 +99,11 @@
     self.replacementLayer.contentsScale = pixelScale;
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.frameQueue, ^{
-        CMSampleBufferRef sample = [pipeline copyPreviewVideoForSize:targetSize];
+        BOOL directPreviewSupported = NO;
+        CMSampleBufferRef sample = [pipeline copyDirectPreviewVideoSample:&directPreviewSupported];
+        if (!directPreviewSupported) {
+            sample = [pipeline copyPreviewVideoForSize:targetSize];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) self = weakSelf;
             if (self == nil) {

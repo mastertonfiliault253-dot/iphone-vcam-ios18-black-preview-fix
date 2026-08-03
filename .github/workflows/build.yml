@@ -11,6 +11,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Run host regression tests
+        run: python3 -m unittest discover -s tests -v
       - name: Install RootHide Theos
         env:
           THEOS: ${{ runner.temp }}/theos-roothide

@@ -5,6 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../Core/VCAMConfiguration.h"
 #import "../Sources/VCAMLocalMediaSource.h"
+#import "../Sources/VCAMRTSPStreamSource.h"
 
 extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void);
 
@@ -162,6 +163,21 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
                       performance[@"misses"] ?: @0];
         } else {
             detail = [detail stringByAppendingString:@"\n实时：等待首个 1 秒性能窗口"];
+        }
+    }
+    if ([source isEqualToString:@"rtsp"]) {
+        NSDictionary<NSString *, id> *performance = VCAMRTSPPerformanceSnapshot();
+        NSNumber *sourceFPS = performance[@"sourceFPS"];
+        if (sourceFPS != nil) {
+            detail = [detail stringByAppendingFormat:
+                @"\nRTSP source: %.1f fps · P95 %.1fms · %@x%@ · VideoToolbox %@",
+                sourceFPS.doubleValue,
+                [performance[@"sourceFrameP95Ms"] doubleValue],
+                performance[@"sourceWidth"] ?: @0,
+                performance[@"sourceHeight"] ?: @0,
+                [performance[@"hardwareFrames"] unsignedIntegerValue] > 0 ? @"yes" : @"no"];
+        } else {
+            detail = [detail stringByAppendingString:@"\nRTSP source: waiting for first 1-second window"];
         }
     }
     NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot();

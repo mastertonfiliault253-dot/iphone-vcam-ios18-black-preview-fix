@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "scheme": "roothide",
+  "currentPackage": {
+    "identifier": "com.codex.vcam",
+    "implementedTarget": "VCAMController"
+  },
+  "targets": [
+    {
+      "name": "VCAMController",
+      "package": "com.codex.vcam",
+      "role": "camera-control-ui-and-current-camera-hooks",
+      "bundleIds": ["com.apple.camera"],
+      "executables": ["Camera"],
+      "separateBinary": true,
+      "separatePackage": false,
+      "defaultEnabled": true,
+      "forbiddenDependencies": [],
+      "status": "implemented"
+    },
+    {
+      "name": "VCAMAppClient",
+      "package": "com.codex.vcam.browser-client",
+      "role": "consume-vcamd-frames-in-browser-host-apps",
+      "bundleIds": ["com.apple.mobilesafari", "com.google.chrome.ios"],
+      "executables": [],
+      "separateBinary": true,
+      "separatePackage": true,
+      "defaultEnabled": false,
+      "forbiddenDependencies": ["PhotosUI", "FFmpeg"],
+      "status": "mapped-blocked-by-vcamd"
+    },
+    {
+      "name": "VCAMWebKitClient",
+      "package": "com.codex.vcam.browser-client",
+      "role": "consume-vcamd-frames-in-webcontent-processes",
+      "bundleIds": [],
+      "executables": [],
+      "executableDiscoveryRequired": true,
+      "separateBinary": true,
+      "separatePackage": true,
+      "defaultEnabled": false,
+      "forbiddenDependencies": ["UIKit", "PhotosUI", "FFmpeg"],
+      "status": "mapped-awaiting-device-process-sample"
+    },
+    {
+      "name": "VCAMMediaServerClient",
+      "package": "com.codex.vcam.mediaserver-client",
+      "role": "minimal-fail-open-mediaserver-frame-client",
+      "bundleIds": [],
+      "executables": ["mediaserverd"],
+      "separateBinary": true,
+      "separatePackage": true,
+      "defaultEnabled": false,
+      "forbiddenDependencies": ["UIKit", "PhotosUI", "FFmpeg"],
+      "status": "mapped-probe-required-before-hooks"
+    },
+    {
+      "name": "vcamd",
+      "package": "com.codex.vcam.daemon",
+      "role": "decode-and-publish-iosurface",
+      "bundleIds": [],
+      "executables": ["vcamd"],
+      "separateBinary": true,
+      "separatePackage": true,
+      "defaultEnabled": true,
+      "forbiddenDependencies": ["UIKit", "PhotosUI"],
+      "status": "mapped-not-yet-implemented"
+    }
+  ]
+}

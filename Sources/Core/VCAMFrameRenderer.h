@@ -9,6 +9,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// are all hidden behind this small interface.
 @interface VCAMFrameRenderer : NSObject
 
+- (nullable CMSampleBufferRef)copySampleFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                                                template:(CMSampleBufferRef)templateBuffer
+                                           configuration:(VCAMConfiguration *)configuration
+    CF_RETURNS_RETAINED;
+
 - (nullable CMSampleBufferRef)copySampleFromImage:(CIImage *)image
                                          template:(CMSampleBufferRef)templateBuffer
                                     configuration:(VCAMConfiguration *)configuration

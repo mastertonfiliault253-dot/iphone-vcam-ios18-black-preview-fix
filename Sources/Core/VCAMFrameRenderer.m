@@ -15,6 +15,42 @@
 
 @implementation VCAMFrameRenderer
 
+- (void)copyAttachmentsFromTemplate:(CMSampleBufferRef)templateBuffer
+                            toSample:(CMSampleBufferRef)sample {
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(templateBuffer, false);
+    if (attachments != NULL) {
+        CMSetAttachment(sample, CFSTR("VCAMOriginalSampleAttachments"), attachments,
+                        kCMAttachmentMode_ShouldNotPropagate);
+    }
+    CFTypeRef propagated = CMGetAttachment(templateBuffer,
+                                            kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
+                                            NULL);
+    if (propagated != NULL) {
+        CMSetAttachment(sample, kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix, propagated,
+                        kCMAttachmentMode_ShouldPropagate);
+    }
+}
+
+- (CMSampleBufferRef)copySampleWrappingPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                                           template:(CMSampleBufferRef)templateBuffer {
+    CMVideoFormatDescriptionRef format = NULL;
+    if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &format) != noErr) {
+        return NULL;
+    }
+    CMSampleTimingInfo timing = {
+        .duration = CMSampleBufferGetDuration(templateBuffer),
+        .presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(templateBuffer),
+        .decodeTimeStamp = CMSampleBufferGetDecodeTimeStamp(templateBuffer),
+    };
+    CMSampleBufferRef sample = NULL;
+    OSStatus status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true,
+                                                          NULL, NULL, format, &timing, &sample);
+    CFRelease(format);
+    if (status != noErr || sample == NULL) return NULL;
+    [self copyAttachmentsFromTemplate:templateBuffer toSample:sample];
+    return sample;
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -28,6 +64,26 @@
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
     if (_formatDescription != NULL) CFRelease(_formatDescription);
     if (_colorSpace != NULL) CGColorSpaceRelease(_colorSpace);
+}
+
+- (CMSampleBufferRef)copySampleFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                                       template:(CMSampleBufferRef)templateBuffer
+                                  configuration:(VCAMConfiguration *)configuration {
+    CVImageBufferRef targetBuffer = CMSampleBufferGetImageBuffer(templateBuffer);
+    if (pixelBuffer == NULL || targetBuffer == NULL) return NULL;
+    size_t sourceWidth = CVPixelBufferGetWidth(pixelBuffer);
+    size_t sourceHeight = CVPixelBufferGetHeight(pixelBuffer);
+    OSType sourcePixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
+    size_t targetHeight = CVPixelBufferGetHeight(targetBuffer);
+    OSType targetPixelFormat = CVPixelBufferGetPixelFormatType(targetBuffer);
+    BOOL identityTransform = configuration.rotationDegrees == 0 && !configuration.mirrorHorizontally;
+    if (identityTransform && sourceWidth == targetWidth && sourceHeight == targetHeight &&
+        sourcePixelFormat == targetPixelFormat) {
+        return [self copySampleWrappingPixelBuffer:pixelBuffer template:templateBuffer];
+    }
+    CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    return [self copySampleFromImage:image template:templateBuffer configuration:configuration];
 }
 
 - (BOOL)preparePoolForWidth:(size_t)width height:(size_t)height pixelFormat:(OSType)pixelFormat {
@@ -105,16 +161,7 @@
                                                     _formatDescription, &timing, &sample);
     }
     if (status == noErr && sample != NULL) {
-        CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(templateBuffer, false);
-        if (attachments != NULL) {
-            CMSetAttachment(sample, CFSTR("VCAMOriginalSampleAttachments"), attachments,
-                            kCMAttachmentMode_ShouldNotPropagate);
-        }
-        CFTypeRef propagated = CMGetAttachment(templateBuffer, kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix, NULL);
-        if (propagated != NULL) {
-            CMSetAttachment(sample, kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix, propagated,
-                            kCMAttachmentMode_ShouldPropagate);
-        }
+        [self copyAttachmentsFromTemplate:templateBuffer toSample:sample];
     }
 
     CVPixelBufferRelease(output);
