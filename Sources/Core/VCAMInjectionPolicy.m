@@ -57,7 +57,6 @@
 }
 
 + (BOOL)shouldShowControlUIForValues:(NSDictionary<NSString *,id> *)values {
-    VCAMInjectionTarget target = self.currentTarget;
     if (![self supportsControlUIInCurrentProcess]) return NO;
     return [self isCurrentProcessEnabledForValues:values];
 }
