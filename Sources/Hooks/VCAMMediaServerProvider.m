@@ -43,7 +43,7 @@ static CGColorSpaceRef VCAMSharedColorSpace(void) {
 @property(nonatomic) BOOL mirrorHorizontally;
 @property(nonatomic) VCAMContentMode contentMode;
 @property(nonatomic) BOOL videoMode;
-@property(nonatomic, strong, nullable) CGImageRef replacementImage;
+@property(nonatomic, assign, nullable) CGImageRef replacementImage;
 @property(nonatomic, strong, nullable) AVAssetReader *reader;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *videoOutput;
 @property(nonatomic) CGAffineTransform videoTransform;
@@ -113,7 +113,7 @@ static BOOL VCAMLoadVideoMedia(VCAMMediaServerProviderState *state) {
 }
 
 static BOOL VCAMEnsureMediaLoaded(VCAMMediaServerProviderState *state) {
-    NSDictionary *values = [VCAMConfiguration readValuesFromDisk];
+    NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = [values[@"enabled"] boolValue] && [values[@"injectionMediaServerEnabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString];
     NSString *path = [values[@"mediaPath"] isKindOfClass:NSString.class] ? values[@"mediaPath"] : nil;
@@ -158,9 +158,6 @@ static BOOL VCAMEnsureMediaLoaded(VCAMMediaServerProviderState *state) {
 static CVPixelBufferRef VCAMCopyNextVideoPixelBuffer(VCAMMediaServerProviderState *state) {
     CMSampleBufferRef sample = [state.videoOutput copyNextSampleBuffer];
     if (sample == NULL) {
-        if (!state.reader.reading || [state.reader status] == AVAssetReaderStatusFailed) {
-            return NULL;
-        }
         NSString *path = state.mediaPath;
         VCAMResetMedia(state);
         state.mediaPath = path;
