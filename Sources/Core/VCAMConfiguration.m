@@ -2,6 +2,7 @@
 #import "VCAMInjectionPolicy.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
+#import <errno.h>
 #import <fcntl.h>
 #import <sys/stat.h>
 #import <sys/socket.h>
@@ -38,6 +39,38 @@ static BOOL VCAMWriteAll(int descriptor, const void *bytes, size_t length) {
 static NSError *VCAMConfigurationError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"com.codex.vcam.configuration" code:code
                            userInfo:@{NSLocalizedDescriptionKey: message ?: @"VCAM operation failed"}];
+}
+
+static NSString *VCAMDiagnosticsLogPath(void) {
+    return @"/var/mobile/Media/VCAM/broker-probe.log";
+}
+
+static void VCAMAppendDiagnostics(NSString *message) {
+    if (message.length == 0) return;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *directory = VCAMDiagnosticsLogPath().stringByDeletingLastPathComponent;
+    if (![manager createDirectoryAtPath:directory withIntermediateDirectories:YES
+                             attributes:nil error:nil]) return;
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [formatter stringFromDate:NSDate.date], message];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:VCAMDiagnosticsLogPath()];
+    if (handle == nil) {
+        [line writeToFile:VCAMDiagnosticsLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (NSException *exception) {
+        (void)exception;
+        [line writeToFile:VCAMDiagnosticsLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    [handle closeFile];
+}
+
+const char *VCAMBuildTag(void) {
+    return "com.codex.vcam/0.5.0+home3";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -123,7 +156,13 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     NSString *legacyPath = [[self storageDirectoryPath]
         stringByAppendingPathComponent:@"com.codex.vcam.plist"];
     values = [NSDictionary dictionaryWithContentsOfFile:legacyPath];
-    return [values isKindOfClass:NSDictionary.class] ? values : @{};
+    if ([values isKindOfClass:NSDictionary.class]) {
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"readValuesFromDisk used legacy path %@ keys=%lu",
+            legacyPath, (unsigned long)values.count]);
+        return values;
+    }
+    return @{};
 }
 
 + (int)connectedBrokerSocket {
@@ -178,7 +217,8 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
             @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"injectionGlobalEnabled", @"injectionCameraEnabled", @"injectionSafariEnabled",
-            @"injectionChromeEnabled", @"injectionWebKitEnabled", @"injectionMediaServerEnabled",
+            @"injectionChromeEnabled", @"injectionEdgeEnabled", @"injectionGoogleEnabled",
+            @"injectionWebKitEnabled", @"injectionMediaServerEnabled",
             @"floatingButtonPositions", @"floatingButtonVisibility",
         ]];
     });
@@ -217,19 +257,38 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *path = self.configurationPath;
     if (![manager createDirectoryAtPath:path.stringByDeletingLastPathComponent
-             withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+             withIntermediateDirectories:YES attributes:nil error:error]) {
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"writeValuesDirectly mkdir failed path=%@ errno=%d", path, errno]);
+        return NO;
+    }
     NSMutableDictionary<NSString *, id> *merged = [[self currentValues] mutableCopy];
     if (merged == nil) merged = [NSMutableDictionary dictionary];
     [merged addEntriesFromDictionary:changes];
     BOOL written = [merged writeToFile:path atomically:YES];
+    if (written) {
+        [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
+                                 NSFilePosixPermissions: @0644}
+                  ofItemAtPath:path error:nil];
+        NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:path];
+        for (NSString *key in changes) {
+            id expected = changes[key];
+            id actual = readBack[key];
+            if (!(expected == nil && actual == nil) && ![expected isEqual:actual]) {
+                written = NO;
+                break;
+            }
+        }
+    }
+    VCAMAppendDiagnostics([NSString stringWithFormat:
+        @"writeValuesDirectly path=%@ written=%d mergedCount=%lu fileExists=%d keys=%@",
+        path, written ? 1 : 0, (unsigned long)merged.count,
+        [manager fileExistsAtPath:path] ? 1 : 0, changes.allKeys]);
     if (!written && error != NULL) {
         *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:4
                                 userInfo:@{NSLocalizedDescriptionKey: @"SpringBoard 无法写入共享配置"}];
     }
     if (written) {
-        [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
-                                 NSFilePosixPermissions: @0644}
-                  ofItemAtPath:path error:nil];
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.codex.vcam/preferences.changed"),
                                              NULL, NULL, true);
@@ -251,9 +310,22 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     if (success) success = VCAMWriteAll(descriptor, payload.bytes, payload.length);
     if (success) success = VCAMReadAll(descriptor, &response, sizeof(response)) && response == 1;
     close(descriptor);
+    if (success) {
+        NSDictionary *persisted = [self copyValuesFromBroker];
+        for (NSString *key in changes) {
+            id expected = changes[key];
+            id actual = persisted[key];
+            if (!(expected == nil && actual == nil) && ![expected isEqual:actual]) {
+                success = NO;
+                break;
+            }
+        }
+    }
+    VCAMAppendDiagnostics([NSString stringWithFormat:
+        @"submitChangesToBroker success=%d keys=%@", success ? 1 : 0, changes.allKeys]);
     if (!success && error != NULL && *error == nil) {
         *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:5
-                                userInfo:@{NSLocalizedDescriptionKey: @"主屏配置服务不可用"}];
+                                userInfo:@{NSLocalizedDescriptionKey: @"主屏配置服务不可用或写入未生效"}];
     }
     return success;
 }
@@ -386,6 +458,9 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     if (!self.isWriteBrokerHost) return;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"broker starting pid=%d tag=%s configPath=%@ mediaDir=%@",
+            (int)getpid(), VCAMBuildTag(), self.configurationPath, self.mediaDirectoryPath]);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             int server = socket(AF_INET, SOCK_STREAM, 0);
             if (server < 0) return;
@@ -444,6 +519,8 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
                     if (success) success = [self writeValuesDirectly:changes error:nil];
                     uint8_t response = success ? 1 : 0;
                     VCAMWriteAll(client, &response, sizeof(response));
+                    VCAMAppendDiagnostics([NSString stringWithFormat:
+                        @"broker update response=%d keys=%@", success ? 1 : 0, changes.allKeys]);
                 }
                 close(client);
             }

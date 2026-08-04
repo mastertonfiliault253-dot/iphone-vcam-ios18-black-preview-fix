@@ -14,7 +14,12 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertEqual(targets["VCAMController"]["bundleIds"], ["com.apple.camera"])
         self.assertEqual(
             targets["VCAMAppClient"]["bundleIds"],
-            ["com.apple.mobilesafari", "com.google.chrome.ios"],
+            [
+                "com.apple.mobilesafari",
+                "com.google.chrome.ios",
+                "com.microsoft.edge.ios",
+                "com.google.GoogleMobile",
+            ],
         )
         self.assertTrue(targets["VCAMWebKitClient"]["separateBinary"])
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
@@ -43,6 +48,8 @@ class PackagingArchitectureTests(unittest.TestCase):
             "injectionCameraEnabled",
             "injectionSafariEnabled",
             "injectionChromeEnabled",
+            "injectionEdgeEnabled",
+            "injectionGoogleEnabled",
             "injectionWebKitEnabled",
             "injectionMediaServerEnabled",
         ):
@@ -50,6 +57,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("全局注入", picker)
         self.assertIn("Safari", picker)
         self.assertIn("Chrome", picker)
+        self.assertIn("Edge", picker)
+        self.assertIn("Google", picker)
         self.assertIn("mediaserverd", picker)
 
     def test_ui_hosts_share_panel_but_process_clients_never_start_ui(self) -> None:
@@ -64,6 +73,31 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("!mediaServerEnabled", policy_m)
         self.assertIn("supportsControlUIInCurrentProcess", hooks)
         self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
+
+    def test_configuration_allowlist_includes_edge_and_google(self) -> None:
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+        policy = (
+            ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("injectionEdgeEnabled", configuration)
+        self.assertIn("injectionGoogleEnabled", configuration)
+        self.assertIn("VCAMInjectionTargetEdge", policy)
+        self.assertIn("VCAMInjectionTargetGoogle", policy)
+        self.assertIn("com.microsoft.edge.ios", policy)
+        self.assertIn("com.google.GoogleMobile", policy)
+
+    def test_broker_persistence_is_verified_and_diagnosed(self) -> None:
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VCAMAppendDiagnostics", configuration)
+        self.assertIn("broker-probe.log", configuration)
+        self.assertIn("copyValuesFromBroker", configuration)
+        self.assertIn("VCAMBuildTag", configuration)
 
     def test_global_excludes_mediaserver_and_browser_targets_link_webkit(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")

@@ -3,11 +3,15 @@
         Bundles = (
             "com.apple.mobilesafari",
             "com.apple.SafariViewService",
-            "com.google.chrome.ios"
+            "com.google.chrome.ios",
+            "com.microsoft.edge.ios",
+            "com.google.GoogleMobile"
         );
         Executables = (
             "MobileSafari",
-            "SafariViewService"
+            "SafariViewService",
+            "Microsoft Edge",
+            "Google"
         );
     };
 }

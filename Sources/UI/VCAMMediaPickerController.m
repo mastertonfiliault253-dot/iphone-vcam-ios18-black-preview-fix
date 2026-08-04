@@ -282,6 +282,8 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @[@"injectionCameraEnabled", @"Camera"],
         @[@"injectionSafariEnabled", @"Safari"],
         @[@"injectionChromeEnabled", @"Chrome"],
+        @[@"injectionEdgeEnabled", @"Edge"],
+        @[@"injectionGoogleEnabled", @"Google"],
         @[@"injectionWebKitEnabled", @"WebKit"],
         @[@"injectionMediaServerEnabled", @"mediaserverd"],
     ];
@@ -686,6 +688,8 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
         @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
         @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
+        @{@"key": @"injectionEdgeEnabled", @"title": @"Edge"},
+        @{@"key": @"injectionGoogleEnabled", @"title": @"Google"},
         @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
         @{@"key": @"injectionMediaServerEnabled", @"title": @"mediaserverd（高风险）"},
     ];
@@ -711,8 +715,8 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 }
 
 - (NSArray<NSString *> *)globalPreferenceKeys {
-    return @[@"injectionCameraEnabled", @"injectionSafariEnabled",
-             @"injectionChromeEnabled", @"injectionWebKitEnabled"];
+    return @[@"injectionCameraEnabled", @"injectionSafariEnabled", @"injectionChromeEnabled",
+             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled"];
 }
 
 - (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
@@ -749,10 +753,18 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     } else {
         changes[key] = @(next);
         if ([key isEqualToString:@"injectionSafariEnabled"] ||
-            [key isEqualToString:@"injectionChromeEnabled"]) {
-            NSString *otherBrowserKey = [key isEqualToString:@"injectionSafariEnabled"]
-                ? @"injectionChromeEnabled" : @"injectionSafariEnabled";
-            BOOL linkedWebKitEnabled = next || [self preferenceEnabled:otherBrowserKey values:values];
+            [key isEqualToString:@"injectionChromeEnabled"] ||
+            [key isEqualToString:@"injectionEdgeEnabled"] ||
+            [key isEqualToString:@"injectionGoogleEnabled"]) {
+            BOOL linkedWebKitEnabled = next;
+            for (NSString *browserKey in @[@"injectionSafariEnabled", @"injectionChromeEnabled",
+                                           @"injectionEdgeEnabled", @"injectionGoogleEnabled"]) {
+                if ([browserKey isEqualToString:key]) continue;
+                if ([self preferenceEnabled:browserKey values:values]) {
+                    linkedWebKitEnabled = YES;
+                    break;
+                }
+            }
             changes[@"injectionWebKitEnabled"] = @(linkedWebKitEnabled);
         }
         BOOL allEnabled = YES;

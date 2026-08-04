@@ -25,7 +25,7 @@
       "package": "com.codex.vcam",
       "binary": "VCAMAppClient.dylib",
       "role": "browser-floating-ui-and-capture-hooks",
-      "bundleIds": ["com.apple.mobilesafari", "com.google.chrome.ios"],
+      "bundleIds": ["com.apple.mobilesafari", "com.google.chrome.ios", "com.microsoft.edge.ios", "com.google.GoogleMobile"],
       "executables": [],
       "separateBinary": true,
       "separatePackage": false,

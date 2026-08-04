@@ -40,3 +40,4 @@ jobs:
         with:
           name: vcam-roothide
           path: packages/*.deb
+          retention-days: 7

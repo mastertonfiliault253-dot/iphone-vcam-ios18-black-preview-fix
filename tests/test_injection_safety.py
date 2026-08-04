@@ -23,6 +23,8 @@ class InjectionSafetyTests(unittest.TestCase):
             self.assertIn(target, filter_text)
         self.assertNotIn("com.apple.mobilesafari", filter_text)
         self.assertNotIn("com.google.chrome.ios", filter_text)
+        self.assertNotIn("com.microsoft.edge.ios", filter_text)
+        self.assertNotIn("com.google.GoogleMobile", filter_text)
         self.assertNotIn("Classes", filter_text)
         self.assertNotIn("AVCaptureSession", filter_text)
 
@@ -31,6 +33,8 @@ class InjectionSafetyTests(unittest.TestCase):
 
         self.assertIn("com.apple.mobilesafari", filter_text)
         self.assertIn("com.google.chrome.ios", filter_text)
+        self.assertIn("com.microsoft.edge.ios", filter_text)
+        self.assertIn("com.google.GoogleMobile", filter_text)
         self.assertNotIn("mediaserverd", filter_text)
         self.assertNotIn("WebContent", filter_text)
 

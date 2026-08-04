@@ -13,15 +13,30 @@ def main() -> int:
     parser.add_argument("--recording-finish", type=int, required=True)
     parser.add_argument("--photo-output", choices=("replacement", "real"), required=True)
     parser.add_argument("--recording-output", choices=("replacement", "real"), required=True)
+    parser.add_argument("--recording-first-frame", choices=("replacement", "real"), default="replacement")
+    parser.add_argument("--copy-attempt", type=int, default=0)
+    parser.add_argument("--copy-success", type=int, default=0)
     args = parser.parse_args()
 
-    red = args.photo_output == "real" or args.recording_output == "real"
-    photo_path = "public_hook_not_reached" if args.photo_request == 0 and args.photo_callback == 0 else "public_hook_reached"
-    recording_path = (
-        "completion_hook_reached_but_output_unreplaced"
-        if args.recording_start > 0 and args.recording_finish > 0 and args.recording_output == "real"
-        else "completion_hook_not_fully_reached"
+    red = (
+        args.photo_output == "real"
+        or args.recording_output == "real"
+        or args.recording_first_frame == "real"
     )
+    photo_path = "public_hook_not_reached" if args.photo_request == 0 and args.photo_callback == 0 else "public_hook_reached"
+    if (
+        args.recording_start > 0
+        and args.recording_finish > 0
+        and args.copy_attempt > 0
+        and args.copy_success > 0
+        and args.recording_output == "replacement"
+        and args.recording_first_frame == "real"
+    ):
+        recording_path = "replacement_succeeded_but_first_frame_is_real"
+    elif args.recording_start > 0 and args.recording_finish > 0 and args.recording_output == "real":
+        recording_path = "completion_hook_reached_but_output_unreplaced"
+    else:
+        recording_path = "completion_hook_not_fully_reached"
     print(f"VCAM_CAPTURE_VERDICT={'RED' if red else 'GREEN'}")
     print(f"photo_path={photo_path}")
     print(f"recording_path={recording_path}")
@@ -30,6 +45,7 @@ def main() -> int:
         f"photo_request:{args.photo_request},photo_callback:{args.photo_callback},"
         f"recording_start:{args.recording_start},recording_finish:{args.recording_finish}"
     )
+    print(f"copy=attempt:{args.copy_attempt},success:{args.copy_success}")
     return 1 if red else 0
 
 
