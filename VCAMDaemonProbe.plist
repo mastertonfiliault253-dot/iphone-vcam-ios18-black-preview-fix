@@ -3,7 +3,8 @@
         Executables = (
             "/usr/sbin/mediaserverd",
             mediaserverd,
-            cfprefsd
+            cfprefsd,
+            SpringBoard
         );
     };
 }

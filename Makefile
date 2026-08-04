@@ -51,6 +51,6 @@ VCAMSpringBoardClient_FRAMEWORKS = AVFoundation Foundation PhotosUI QuartzCore U
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 
-VCAMDaemonProbe_FILES = Sources/Probes/VCAMDaemonProbe.m
+VCAMDaemonProbe_FILES = Sources/Probes/VCAMDaemonProbe.xm
 VCAMDaemonProbe_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
 VCAMDaemonProbe_FRAMEWORKS = Foundation
