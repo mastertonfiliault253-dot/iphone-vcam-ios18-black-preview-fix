@@ -46,6 +46,33 @@ static NSString *VCAMDiagnosticsLogPath(void) {
     return @"/var/mobile/Media/VCAM/broker-probe.log";
 }
 
++ (NSString *)processLogPath {
+    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"vcam-app.log"];
+}
+
++ (void)appendProcessLog:(NSString *)message {
+    if (message.length == 0) return;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *directory = [self processLogPath].stringByDeletingLastPathComponent;
+    if (![manager createDirectoryAtPath:directory withIntermediateDirectories:YES
+                             attributes:nil error:nil]) return;
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *line = [NSString stringWithFormat:@"[%@][DEBUG-vcamapp] %@\n", [formatter stringFromDate:NSDate.date], message];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:[self processLogPath]];
+    if (handle == nil) {
+        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (NSException *exception) {
+        (void)exception;
+        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    [handle closeFile];
+}
 static void VCAMAppendDiagnostics(NSString *message) {
     if (message.length == 0) return;
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -71,7 +98,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.5.0+home3";
+    return "com.codex.vcam/0.5.0+diag5";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -662,6 +689,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [self currentValues];
+    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent values=%lu enabledRaw=%d global=%d camera=%d mediaServer=%d", (unsigned long)values.count, [values[@"enabled"] boolValue], [values[@"injectionGlobalEnabled"] boolValue], [values[@"injectionCameraEnabled"] boolValue], [values[@"injectionMediaServerEnabled"] boolValue]]];
     if (values.count == 0) return configuration;
 
     configuration.enabled = [values[@"enabled"] boolValue] &&
@@ -700,6 +728,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
         configuration.mediaPath = configuration.sourceKind == VCAMSourceKindLocalMedia
             ? [self resolvedMediaPathForSharedPath:mediaPath error:nil] ?: mediaPath
             : mediaPath;
+    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent mediaPath=%@ resolved=%@", mediaPath ?: @"(none)", configuration.mediaPath ?: @"(none)"]];
     }
 
     NSString *depthImagePath = values[@"depthImagePath"];
@@ -730,6 +759,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     if ([rtspURL.scheme.lowercaseString isEqualToString:@"rtsp"]) {
         configuration.rtspURL = rtspURL;
     }
+    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent final enabled=%d source=%ld mode=%ld path=%@", configuration.enabled, (long)configuration.sourceKind, (long)configuration.localDecoderMode, configuration.mediaPath ?: @"(none)"]];
     return configuration;
 }
 

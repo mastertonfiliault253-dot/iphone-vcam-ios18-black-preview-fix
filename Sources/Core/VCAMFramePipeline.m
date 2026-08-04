@@ -79,6 +79,7 @@
             NSLog(@"[VCAM] Media source failed to start: %@", error);
             self.source = nil;
         }
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"pipeline reload enabled=%d source=%ld path=%@ sourceStarted=%d error=%@", self.configuration.enabled, (long)self.configuration.sourceKind, self.configuration.mediaPath ?: @"(none)", self.source != nil, error.localizedDescription ?: @"(none)"]];
     });
 }
 

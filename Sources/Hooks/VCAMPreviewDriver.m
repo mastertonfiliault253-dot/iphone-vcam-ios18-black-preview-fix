@@ -1,6 +1,7 @@
 #import "VCAMPreviewDriver.h"
 #import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
+#import "../Core/VCAMConfiguration.h"
 
 @interface VCAMPreviewDriver ()
 @property(nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;
@@ -27,6 +28,7 @@
         _replacementLayer.videoGravity = previewLayer.videoGravity;
         _replacementLayer.hidden = YES;
         [previewLayer addSublayer:_replacementLayer];
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"preview driver installed bounds=%.0fx%.0f", previewLayer.bounds.size.width, previewLayer.bounds.size.height]];
         _frameQueue = dispatch_queue_create("com.codex.vcam.preview", DISPATCH_QUEUE_SERIAL);
         _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
         if (@available(iOS 15.0, *)) {
@@ -57,6 +59,10 @@
     self.replacementLayer.frame = preview.bounds;
     self.replacementLayer.videoGravity = preview.videoGravity;
     VCAMFramePipeline *pipeline = [VCAMFramePipeline sharedPipeline];
+    static NSUInteger vcamTickCounter = 0;
+    if ((vcamTickCounter++ % 60) == 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"preview tick=%lu enabled=%d player=%d localHidden=%d replHidden=%d", (unsigned long)vcamTickCounter, [pipeline isEnabled], [pipeline localPreviewPlayer] != nil, self.localPlayerLayer.hidden, self.replacementLayer.hidden]];
+    }
     NSInteger preferredFramesPerSecond = [pipeline preferredFramesPerSecond];
     if (preferredFramesPerSecond != self.configuredFramesPerSecond) {
         self.configuredFramesPerSecond = preferredFramesPerSecond;

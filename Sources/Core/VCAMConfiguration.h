@@ -50,6 +50,8 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
                                   error:(NSError **)error;
 + (nullable NSString *)resolvedMediaPathForSharedPath:(NSString *)sharedPath
                                                 error:(NSError **)error;
++ (NSString *)processLogPath;
++ (void)appendProcessLog:(NSString *)message;
 + (void)startWriteBroker;
 + (NSString *)configurationPath;
 + (NSString *)mediaDirectoryPath;

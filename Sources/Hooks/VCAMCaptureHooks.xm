@@ -5,6 +5,7 @@
 #import <substrate.h>
 #import "../Core/VCAMFramePipeline.h"
 #import "../Core/VCAMInjectionPolicy.h"
+#import "../Core/VCAMConfiguration.h"
 
 #ifndef VCAM_WITH_CONTROL_UI
 #define VCAM_WITH_CONTROL_UI 0
@@ -365,6 +366,7 @@ static void VCAMHookRecordingDelegate(id delegate) {
         if (![VCAMInjectionPolicy isRecognizedTarget]) return;
         BOOL installMediaHooks = [VCAMInjectionPolicy isCurrentProcessMediaReplacementEnabled];
         BOOL supportsControlUI = [VCAMInjectionPolicy supportsControlUIInCurrentProcess];
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"ctor target=%ld installMediaHooks=%d supportsControlUI=%d", (long)[VCAMInjectionPolicy currentTarget], installMediaHooks, supportsControlUI]];
         if (!installMediaHooks && !supportsControlUI) return;
         if (installMediaHooks) {
             %init(VCAMMediaHooks);

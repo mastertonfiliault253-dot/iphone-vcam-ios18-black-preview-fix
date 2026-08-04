@@ -1,4 +1,5 @@
 #import "VCAMLocalMediaSource.h"
+#import "../Core/VCAMConfiguration.h"
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 #import <fcntl.h>
@@ -110,6 +111,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (BOOL)start:(NSError **)error {
     NSString *path = self.configuration.mediaPath;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local start path=%@ exists=%d", path ?: @"(none)", [[NSFileManager defaultManager] fileExistsAtPath:path]]];
     if (path.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"VCAMLocalMediaSource"
@@ -133,6 +135,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         [self rebuildAudioReaderForSampleRate:0 channelCount:0 error:nil];
     }
     self.running = YES;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local start ok decoder=%ld still=%d asset=%d player=%d", (long)self.configuration.localDecoderMode, self.stillImage != nil, self.asset != nil, self.player != nil]];
     return YES;
 }
 
@@ -582,6 +585,11 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (CMSampleBufferRef)copyVideoSampleForTemplate:(CMSampleBufferRef)templateBuffer {
     @synchronized (self) {
+        static NSUInteger vcamFrameLogCounter = 0;
+        if ((vcamFrameLogCounter++ % 150) == 0 || vcamFrameLogCounter <= 3) {
+            CVImageBufferRef tplImage = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local copyVideo call=%lu tpl=%.0fx%.0f running=%d", (unsigned long)vcamFrameLogCounter, tplImage == NULL ? 0 : CVPixelBufferGetWidth(tplImage), tplImage == NULL ? 0 : CVPixelBufferGetHeight(tplImage), self.running]];
+        }
         if (!self.running) return NULL;
         if (self.stillImage != nil) {
             return [self.renderer copySampleFromImage:self.stillImage
