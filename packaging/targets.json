@@ -34,6 +34,19 @@
       "status": "implemented-default-on"
     },
     {
+      "name": "VCAMWebKitClient",
+      "package": "com.codex.vcam",
+      "binary": "VCAMWebKitClient.dylib",
+      "role": "replace-capture-frames-in-safari-web-content-processes",
+      "bundleIds": ["com.apple.WebKit.WebContent"],
+      "executables": ["com.apple.WebKit.WebContent"],
+      "separateBinary": true,
+      "separatePackage": false,
+      "defaultEnabled": true,
+      "forbiddenDependencies": ["UIKit", "PhotosUI"],
+      "status": "implemented-default-on"
+    },
+    {
       "name": "VCAMSpringBoardClient",
       "package": "com.codex.vcam",
       "binary": "VCAMSpringBoardClient.dylib",

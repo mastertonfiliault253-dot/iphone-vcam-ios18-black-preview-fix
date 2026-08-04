@@ -370,7 +370,9 @@ static void VCAMHookRecordingDelegate(id delegate) {
         if (!installMediaHooks && !supportsControlUI) return;
         if (installMediaHooks) {
             %init(VCAMMediaHooks);
-            [VCAMFramePipeline sharedPipeline];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                [VCAMFramePipeline sharedPipeline];
+            });
         }
 #if VCAM_WITH_CONTROL_UI
         if (supportsControlUI) [[VCAMMediaPickerController sharedController] startControlUI];

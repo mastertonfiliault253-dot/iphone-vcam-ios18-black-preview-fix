@@ -73,8 +73,8 @@ The capture pipeline reloads without a respring. Choose
 **恢复真实相机** from the same panel to disable replacement. Cancelling the
 picker leaves the current source unchanged.
 
-Camera, Safari, Chrome, Edge, and Google are enabled by default and share one
-global toggle. WebKit.WebContent and mediaserverd are not injection targets.
+Camera, Safari, Chrome, Edge, Google, and WebKit WebContent are enabled by
+default and share one global toggle. mediaserverd is not an injection target.
 A three-finger double tap hides or restores the dot for the current UI host;
 VoiceOver disables that gesture.
 

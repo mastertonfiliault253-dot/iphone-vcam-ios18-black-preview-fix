@@ -71,7 +71,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.5.0+home4";
+    return "com.codex.vcam/0.5.0+home5";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -246,6 +246,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"injectionGlobalEnabled", @"injectionCameraEnabled", @"injectionSafariEnabled",
             @"injectionChromeEnabled", @"injectionEdgeEnabled", @"injectionGoogleEnabled",
+            @"injectionWebKitEnabled",
             @"floatingButtonPositions", @"floatingButtonVisibility",
         ]];
     });

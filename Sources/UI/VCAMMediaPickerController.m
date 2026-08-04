@@ -284,7 +284,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @[@"injectionChromeEnabled", @"Chrome"],
         @[@"injectionEdgeEnabled", @"Edge"],
         @[@"injectionGoogleEnabled", @"Google"],
-
+        @[@"injectionWebKitEnabled", @"WebKit"],
     ];
     NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
     for (NSArray<NSString *> *pair in targetPairs) {
@@ -683,13 +683,13 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
                                                                    message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary<NSString *, NSString *> *> *targets = @[
-        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/Safari/Chrome/Edge/Google）"},
+        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/Safari/Chrome/Edge/Google/WebKit）"},
         @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
         @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
         @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
         @{@"key": @"injectionEdgeEnabled", @"title": @"Edge"},
         @{@"key": @"injectionGoogleEnabled", @"title": @"Google"},
-
+        @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
     ];
     for (NSDictionary<NSString *, NSString *> *target in targets) {
         NSString *key = target[@"key"];
@@ -710,7 +710,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 
 - (NSArray<NSString *> *)globalPreferenceKeys {
     return @[@"injectionCameraEnabled", @"injectionSafariEnabled", @"injectionChromeEnabled",
-             @"injectionEdgeEnabled", @"injectionGoogleEnabled"];
+             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled"];
 }
 
 - (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
