@@ -48,9 +48,8 @@ VCAMSpringBoardClient_FILES = Sources/Hooks/VCAMSpringBoardEntry.xm Sources/Hook
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation Foundation PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
-include $(THEOS_MAKE_PATH)/tweak.mk
-
 
 VCAMDaemonProbe_FILES = Sources/Probes/VCAMDaemonProbe.xm
 VCAMDaemonProbe_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
 VCAMDaemonProbe_FRAMEWORKS = Foundation
+include $(THEOS_MAKE_PATH)/tweak.mk
