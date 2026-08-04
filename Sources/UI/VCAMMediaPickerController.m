@@ -285,6 +285,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @[@"injectionEdgeEnabled", @"Edge"],
         @[@"injectionGoogleEnabled", @"Google"],
         @[@"injectionWebKitEnabled", @"WebKit"],
+        @[@"injectionMediaServerEnabled", @"mediaserverd"],
     ];
     NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
     for (NSArray<NSString *> *pair in targetPairs) {
@@ -690,6 +691,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @{@"key": @"injectionEdgeEnabled", @"title": @"Edge"},
         @{@"key": @"injectionGoogleEnabled", @"title": @"Google"},
         @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
+        @{@"key": @"injectionMediaServerEnabled", @"title": @"mediaserverd（虚拟相机模式，需重启用户空间）"},
     ];
     for (NSDictionary<NSString *, NSString *> *target in targets) {
         NSString *key = target[@"key"];

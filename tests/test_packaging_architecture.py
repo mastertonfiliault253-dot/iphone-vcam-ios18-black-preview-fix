@@ -24,19 +24,31 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertEqual(targets["VCAMAppClient"]["package"], "com.codex.vcam")
         self.assertEqual(manifest["delivery"], "single-package-multiple-binaries")
 
-    def test_webkit_client_is_headless_and_mediaserver_is_removed(self) -> None:
+    def test_webkit_client_is_headless(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
         targets = {target["name"]: target for target in manifest["targets"]}
 
         self.assertEqual(targets["VCAMWebKitClient"]["bundleIds"], ["com.apple.WebKit.WebContent"])
         self.assertIn("UIKit", targets["VCAMWebKitClient"]["forbiddenDependencies"])
         self.assertIn("PhotosUI", targets["VCAMWebKitClient"]["forbiddenDependencies"])
-        self.assertNotIn("VCAMMediaServerClient", targets)
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertNotIn("VCAMProcessClient", makefile)
         self.assertIn("VCAMWebKitClient", makefile)
-        self.assertFalse((ROOT / "VCAMProcessClient.plist").exists())
         self.assertTrue((ROOT / "VCAMWebKitClient.plist").exists())
+
+    def test_mediaserver_client_is_minimal_headless_and_default_on(self) -> None:
+        manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
+        targets = {target["name"]: target for target in manifest["targets"]}
+
+        ms = targets["VCAMMediaServerClient"]
+        self.assertEqual(ms["executables"], ["mediaserverd"])
+        self.assertTrue(ms["defaultEnabled"])
+        self.assertIn("FFmpeg", ms["forbiddenDependencies"])
+        self.assertIn("UIKit", ms["forbiddenDependencies"])
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("VCAMMediaServerClient", makefile)
+        self.assertIn("VCAMMediaServerEntry.xm", makefile)
+        self.assertTrue((ROOT / "VCAMMediaServerClient.plist").exists())
+        self.assertFalse((ROOT / "VCAMProcessClient.plist").exists())
 
     def test_control_panel_exposes_individual_and_global_injection_selection(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
@@ -49,16 +61,16 @@ class PackagingArchitectureTests(unittest.TestCase):
             "injectionEdgeEnabled",
             "injectionGoogleEnabled",
             "injectionWebKitEnabled",
+            "injectionMediaServerEnabled",
         ):
             self.assertIn(key, picker)
-        self.assertNotIn("injectionMediaServerEnabled", picker)
-        self.assertNotIn("mediaserverd", picker)
         self.assertIn("全局注入", picker)
         self.assertIn("Safari", picker)
         self.assertIn("Chrome", picker)
         self.assertIn("Edge", picker)
         self.assertIn("Google", picker)
         self.assertIn("WebKit", picker)
+        self.assertIn("mediaserverd", picker)
 
     def test_ui_hosts_share_panel_and_all_targets_use_common_policy(self) -> None:
         policy_h = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.h").read_text(encoding="utf-8")
@@ -67,13 +79,13 @@ class PackagingArchitectureTests(unittest.TestCase):
 
         self.assertIn("shouldShowControlUI", policy_h)
         self.assertIn("isCurrentProcessMediaReplacementEnabled", policy_h)
-        self.assertNotIn("VCAMInjectionTargetMediaServer", policy_m)
+        self.assertIn("VCAMInjectionTargetMediaServer", policy_m)
         self.assertIn("VCAMInjectionTargetWebKit", policy_m)
         self.assertIn("supportsControlUIInCurrentProcess", hooks)
         self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
         self.assertIn("dispatch_async", hooks)
 
-    def test_configuration_allowlist_includes_webkit_but_not_mediaserver(self) -> None:
+    def test_configuration_allowlist_includes_webkit_and_mediaserver(self) -> None:
         configuration = (
             ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
         ).read_text(encoding="utf-8")
@@ -81,13 +93,10 @@ class PackagingArchitectureTests(unittest.TestCase):
             ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("injectionEdgeEnabled", configuration)
-        self.assertIn("injectionGoogleEnabled", configuration)
         self.assertIn("injectionWebKitEnabled", configuration)
-        self.assertNotIn("injectionMediaServerEnabled", configuration)
-        self.assertIn("VCAMInjectionTargetEdge", policy)
-        self.assertIn("VCAMInjectionTargetGoogle", policy)
+        self.assertIn("injectionMediaServerEnabled", configuration)
         self.assertIn("VCAMInjectionTargetWebKit", policy)
+        self.assertIn("VCAMInjectionTargetMediaServer", policy)
         self.assertIn("com.microsoft.edge.ios", policy)
         self.assertIn("com.google.GoogleMobile", policy)
 
@@ -115,7 +124,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("resolvedMediaPathForSharedPath:", configuration)
         self.assertIn("isWriteBrokerHost", configuration)
 
-    def test_global_toggle_covers_camera_browsers_and_webkit(self) -> None:
+    def test_global_toggle_excludes_mediaserver(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
 
         self.assertIn("globalPreferenceKeys", picker)
@@ -125,8 +134,6 @@ class PackagingArchitectureTests(unittest.TestCase):
                     "injectionEdgeEnabled", "injectionGoogleEnabled", "injectionWebKitEnabled"):
             self.assertIn(key, global_method)
         self.assertNotIn("injectionMediaServerEnabled", global_method)
-        self.assertNotIn("linkedWebKitEnabled", picker)
-        self.assertNotIn("confirmMediaServerToggle", picker)
 
     def test_floating_button_position_is_saved_per_host_app(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
@@ -151,14 +158,13 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("startWriteBroker", entry)
         self.assertIn("startControlUI", entry)
 
-    def test_default_injection_enables_camera_browsers_and_webkit(self) -> None:
+    def test_default_injection_enables_all_targets(self) -> None:
         policy = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m").read_text(encoding="utf-8")
 
         self.assertIn("defaultEnabledForTarget", policy)
         self.assertIn("VCAMInjectionTargetSpringBoard", policy)
-        for target in ("Camera", "Safari", "Chrome", "Edge", "Google", "WebKit"):
+        for target in ("Camera", "Safari", "Chrome", "Edge", "Google", "WebKit", "MediaServer"):
             self.assertIn(f"VCAMInjectionTarget{target}: return YES", policy)
-        self.assertNotIn("VCAMInjectionTargetMediaServer", policy)
 
     def test_browser_media_pipeline_is_deferred_until_a_source_is_enabled(self) -> None:
         policy = (ROOT / "Sources" / "Core" / "VCAMInjectionPolicy.m").read_text(encoding="utf-8")

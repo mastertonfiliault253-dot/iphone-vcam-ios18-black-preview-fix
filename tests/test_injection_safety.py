@@ -32,6 +32,14 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("com.apple.camera", filter_text)
         self.assertNotIn("Classes", filter_text)
 
+    def test_mediaserver_client_filter_is_limited_to_mediaserverd(self) -> None:
+        filter_text = (ROOT / "VCAMMediaServerClient.plist").read_text(encoding="utf-8")
+
+        self.assertIn("mediaserverd", filter_text)
+        self.assertNotIn("WebContent", filter_text)
+        self.assertNotIn("com.apple.camera", filter_text)
+        self.assertNotIn("Classes", filter_text)
+
     def test_constructor_uses_shared_process_policy_and_only_starts_ui_in_camera(self) -> None:
         hooks = (
             ROOT / "Sources" / "Hooks" / "VCAMCaptureHooks.xm"
@@ -42,18 +50,21 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAM_WITH_CONTROL_UI", hooks)
         self.assertIn("startControlUI", hooks)
 
-    def test_webkit_client_does_not_link_ui_frameworks(self) -> None:
+    def test_mediaserver_client_does_not_link_ui_or_ffmpeg(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-        self.assertIn("TWEAK_NAME = VCAM VCAMAppClient VCAMWebKitClient VCAMSpringBoardClient", makefile)
-        self.assertIn("VCAMWebKitClient_FILES", makefile)
-        self.assertIn("VCAMWebKitClient_CFLAGS", makefile)
+        self.assertIn("VCAMMediaServerClient_FILES", makefile)
+        self.assertIn("VCAMMediaServerClient_CFLAGS", makefile)
         self.assertIn("-DVCAM_WITH_CONTROL_UI=0", makefile)
-        self.assertNotIn("UIKit", makefile.split("VCAMWebKitClient_FRAMEWORKS", 1)[1].splitlines()[0])
-        self.assertNotIn("PhotosUI", makefile.split("VCAMWebKitClient_FRAMEWORKS", 1)[1].splitlines()[0])
+        ms_block = makefile.split("VCAMMediaServerClient_FILES", 1)[1].split("VCAMSpringBoardClient_FILES", 1)[0]
+        self.assertNotIn("VCAM_COMMON_FILES", ms_block)
+        self.assertNotIn("VCAMCaptureHooks", ms_block)
+        self.assertNotIn("ffmpeg", ms_block)
+        self.assertNotIn("UIKit", ms_block)
+        self.assertNotIn("PhotosUI", ms_block)
         self.assertIn("VCAMCameraPreviewHooks.xm", makefile)
-        self.assertNotIn("VCAMCameraPreviewHooks.xm", makefile.split("VCAMAppClient_FILES", 1)[1].splitlines()[0])
         self.assertNotIn("VCAMCameraPreviewHooks.xm", makefile.split("VCAMWebKitClient_FILES", 1)[1].splitlines()[0])
+        self.assertNotIn("VCAMCameraPreviewHooks.xm", ms_block)
 
 
 if __name__ == "__main__":

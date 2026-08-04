@@ -74,7 +74,8 @@ The capture pipeline reloads without a respring. Choose
 picker leaves the current source unchanged.
 
 Camera, Safari, Chrome, Edge, Google, and WebKit WebContent are enabled by
-default and share one global toggle. mediaserverd is not an injection target.
+default and share one global toggle. mediaserverd is also injected by default
+(system-wide virtual-camera mode; requires a userspace restart after toggling).
 A three-finger double tap hides or restores the dot for the current UI host;
 VoiceOver disables that gesture.
 

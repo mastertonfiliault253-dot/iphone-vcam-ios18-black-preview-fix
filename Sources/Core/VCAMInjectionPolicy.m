@@ -30,6 +30,7 @@
     if ([bundle containsString:@"com.apple.webkit"] || [process containsString:@"webkit"]) {
         return VCAMInjectionTargetWebKit;
     }
+    if ([process isEqualToString:@"mediaserverd"]) return VCAMInjectionTargetMediaServer;
     return VCAMInjectionTargetUnknown;
 }
 
@@ -41,6 +42,7 @@
         case VCAMInjectionTargetEdge: return @"injectionEdgeEnabled";
         case VCAMInjectionTargetGoogle: return @"injectionGoogleEnabled";
         case VCAMInjectionTargetWebKit: return @"injectionWebKitEnabled";
+        case VCAMInjectionTargetMediaServer: return @"injectionMediaServerEnabled";
         case VCAMInjectionTargetSpringBoard: return @"";
         case VCAMInjectionTargetUnknown: return @"";
     }
@@ -48,7 +50,8 @@
 
 + (NSArray<NSString *> *)individualPreferenceKeys {
     return @[@"injectionCameraEnabled", @"injectionSafariEnabled", @"injectionChromeEnabled",
-             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled"];
+             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled",
+             @"injectionMediaServerEnabled"];
 }
 
 + (BOOL)isCurrentProcessEnabledForValues:(NSDictionary<NSString *,id> *)values {
@@ -81,6 +84,7 @@
         case VCAMInjectionTargetEdge: return YES;
         case VCAMInjectionTargetGoogle: return YES;
         case VCAMInjectionTargetWebKit: return YES;
+        case VCAMInjectionTargetMediaServer: return YES;
         case VCAMInjectionTargetSpringBoard: return YES;
         case VCAMInjectionTargetUnknown: return NO;
     }
@@ -116,6 +120,7 @@
         case VCAMInjectionTargetEdge: return @"Edge";
         case VCAMInjectionTargetGoogle: return @"Google";
         case VCAMInjectionTargetWebKit: return @"WebKit WebContent";
+        case VCAMInjectionTargetMediaServer: return @"mediaserverd";
         case VCAMInjectionTargetSpringBoard: return @"主屏 SpringBoard";
         case VCAMInjectionTargetUnknown: return @"未知进程";
     }

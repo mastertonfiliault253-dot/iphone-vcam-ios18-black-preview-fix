@@ -47,6 +47,19 @@
       "status": "implemented-default-on"
     },
     {
+      "name": "VCAMMediaServerClient",
+      "package": "com.codex.vcam",
+      "binary": "VCAMMediaServerClient.dylib",
+      "role": "system-wide virtual camera frame swap in mediaserverd",
+      "bundleIds": [],
+      "executables": ["mediaserverd"],
+      "separateBinary": true,
+      "separatePackage": false,
+      "defaultEnabled": true,
+      "forbiddenDependencies": ["UIKit", "PhotosUI", "FFmpeg"],
+      "status": "implemented-default-on-high-risk"
+    },
+    {
       "name": "VCAMSpringBoardClient",
       "package": "com.codex.vcam",
       "binary": "VCAMSpringBoardClient.dylib",

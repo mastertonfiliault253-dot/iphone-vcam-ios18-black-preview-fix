@@ -4,7 +4,7 @@ INSTALL_TARGET_PROCESSES = Camera
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = VCAM VCAMAppClient VCAMWebKitClient VCAMSpringBoardClient
+TWEAK_NAME = VCAM VCAMAppClient VCAMWebKitClient VCAMMediaServerClient VCAMSpringBoardClient
 
 VCAM_COMMON_FILES = \
 	Sources/Hooks/VCAMCaptureHooks.xm \
@@ -39,6 +39,10 @@ VCAMWebKitClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WI
 VCAMWebKitClient_FRAMEWORKS = AVFoundation AudioToolbox CoreImage CoreMedia CoreVideo Foundation ImageIO QuartzCore VideoToolbox
 VCAMWebKitClient_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 VCAMWebKitClient_LIBRARIES = avformat avcodec avutil
+
+VCAMMediaServerClient_FILES = Sources/Hooks/VCAMMediaServerEntry.xm Sources/Core/VCAMConfiguration.m Sources/Core/VCAMInjectionPolicy.m
+VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=0
+VCAMMediaServerClient_FRAMEWORKS = Foundation CoreMedia CoreVideo
 
 VCAMSpringBoardClient_FILES = Sources/Hooks/VCAMSpringBoardEntry.xm Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m Sources/Core/VCAMConfiguration.m Sources/Core/VCAMInjectionPolicy.m $(VCAM_UI_FILES)
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1
