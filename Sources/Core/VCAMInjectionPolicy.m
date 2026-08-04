@@ -98,6 +98,11 @@
     if (![self isCurrentProcessEnabledForValues:values]) return NO;
     if (self.currentTarget == VCAMInjectionTargetSpringBoard) return NO;
     if (self.currentTarget != VCAMInjectionTargetCamera && ![values[@"enabled"] boolValue]) return NO;
+    BOOL mediaServerEnabled = [values[@"injectionMediaServerEnabled"] boolValue];
+    if (self.currentTarget == VCAMInjectionTargetMediaServer) return mediaServerEnabled;
+    NSString *source = [values[@"source"] lowercaseString];
+    BOOL localOwnedByMediaServer = mediaServerEnabled && [source isEqualToString:@"local"];
+    if (localOwnedByMediaServer) return NO;
     return YES;
 }
 

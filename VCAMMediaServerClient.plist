@@ -1,7 +1,8 @@
 {
     Filter = {
         Executables = (
-            "mediaserverd"
+            "/usr/sbin/mediaserverd",
+            mediaserverd,
         );
     };
 }
