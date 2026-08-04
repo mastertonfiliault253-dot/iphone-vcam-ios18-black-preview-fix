@@ -41,3 +41,31 @@ jobs:
           name: vcam-roothide
           path: packages/*.deb
           retention-days: 7
+  ref-vcam:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout reference EthanArbuckle/vcam-ios
+        uses: actions/checkout@v4
+        with:
+          repository: EthanArbuckle/vcam-ios
+          path: ref-vcam
+      - name: Install RootHide Theos
+        env:
+          THEOS: ${{ runner.temp }}/theos-roothide
+        run: |
+          brew untap aws/tap || true
+          brew install ldid xz
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          "$THEOS/bin/install-sdk" latest
+      - name: Build reference vcam-ios
+        env:
+          THEOS: ${{ runner.temp }}/theos-roothide
+        working-directory: ref-vcam
+        run: |
+          make clean package FINALPACKAGE=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-ios-ref
+          path: ref-vcam/packages/*.deb
+          retention-days: 7
