@@ -66,3 +66,8 @@
 
 - 参考项目不构成“它能替换而我们不行”的证据；它只是我们 mediaserverd 客户端的极简原型。
 - 要在这台机器上实现系统级替换，唯一可行方向仍是：真皮版 Inject Manager 放行 mediaserverd，或切换支持 daemon 注入的越狱；否则走逐进程（含 WebContent）方案。
+## 7. 附加教训：探针 dylib 空壳问题
+
+- 第一版探针用 `__attribute__((constructor))` 写在 .m 里，CI 产出的 `VCAMDaemonProbe.dylib` 里**没有任何源码字符串**（连 "pid=" 都不存在），即构造函数被链接器丢弃，探针形同空壳。
+- 修复：改用 Logos `%ctor`（.xm），Run 31 已重新构建。这解释了为何第一次探针测试（cfprefsd/SpringBoard）全部无输出——不是注入没通，而是探针本身没代码。
+- 教训：本项目这类 Theos 目标应统一使用 Logos 入口，不依赖普通 C 构造函数。
