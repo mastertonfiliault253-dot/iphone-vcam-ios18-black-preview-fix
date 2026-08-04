@@ -69,3 +69,37 @@ jobs:
           name: vcam-ios-ref
           path: ref-vcam/packages/*.deb
           retention-days: 7
+  rootless:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run host regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Install Theos
+        env:
+          THEOS: ${{ runner.temp }}/theos-rootless
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          brew untap aws/tap || true
+          brew install ldid xz
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          for attempt in 1 2 3 4; do
+            if "$THEOS/bin/install-sdk" latest; then
+              break
+            fi
+            if [[ "$attempt" == 4 ]]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+      - name: Build rootless package
+        env:
+          THEOS: ${{ runner.temp }}/theos-rootless
+        run: |
+          ./scripts/build-ffmpeg-ios.sh
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-rootless
+          path: packages/*.deb
+          retention-days: 7
