@@ -36,6 +36,8 @@ bash ./scripts/build-ffmpeg-ios-linux.sh
 BUILD_ROOT="$(mktemp -d /tmp/vcam-roothide-build.XXXXXX)"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 cp -a "$PROJECT_ROOT/." "$BUILD_ROOT/"
+chmod -R a+rX,go-w "$BUILD_ROOT"
+chmod 755 "$BUILD_ROOT/layout/DEBIAN"
 case "$BUILD_ROOT" in
   /tmp/vcam-roothide-build.*) ;;
   *) echo "Unexpected build root: $BUILD_ROOT" >&2; exit 1 ;;
