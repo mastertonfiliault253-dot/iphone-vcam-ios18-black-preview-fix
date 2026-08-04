@@ -9,8 +9,6 @@ typedef NS_ENUM(NSInteger, VCAMInjectionTarget) {
     VCAMInjectionTargetChrome,
     VCAMInjectionTargetEdge,
     VCAMInjectionTargetGoogle,
-    VCAMInjectionTargetWebKit,
-    VCAMInjectionTargetMediaServer,
     VCAMInjectionTargetSpringBoard,
 };
 

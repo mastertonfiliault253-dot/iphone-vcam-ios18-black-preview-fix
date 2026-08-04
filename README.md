@@ -73,9 +73,10 @@ The capture pipeline reloads without a respring. Choose
 **恢复真实相机** from the same panel to disable replacement. Cancelling the
 picker leaves the current source unchanged.
 
-Camera, Safari, Chrome, and WebKit are enabled by default. `mediaserverd` remains
-off and separate from the global toggle. A three-finger double tap hides or
-restores the dot for the current UI host; VoiceOver disables that gesture.
+Camera, Safari, Chrome, Edge, and Google are enabled by default and share one
+global toggle. WebKit.WebContent and mediaserverd are not injection targets.
+A three-finger double tap hides or restores the dot for the current UI host;
+VoiceOver disables that gesture.
 
 ### Manual configuration
 

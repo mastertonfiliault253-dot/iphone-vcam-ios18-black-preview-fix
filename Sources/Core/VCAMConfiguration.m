@@ -71,7 +71,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.5.0+diag5";
+    return "com.codex.vcam/0.5.0+home4";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -246,7 +246,6 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"injectionGlobalEnabled", @"injectionCameraEnabled", @"injectionSafariEnabled",
             @"injectionChromeEnabled", @"injectionEdgeEnabled", @"injectionGoogleEnabled",
-            @"injectionWebKitEnabled", @"injectionMediaServerEnabled",
             @"floatingButtonPositions", @"floatingButtonVisibility",
         ]];
     });
@@ -498,10 +497,12 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
         }
     }
 
-    int probe = open(sharedPath.fileSystemRepresentation, O_RDONLY);
-    if (probe >= 0) {
-        close(probe);
-        return sharedPath;
+    if (self.isWriteBrokerHost) {
+        int probe = open(sharedPath.fileSystemRepresentation, O_RDONLY);
+        if (probe >= 0) {
+            close(probe);
+            return sharedPath;
+        }
     }
 
     int descriptor = [self connectedBrokerSocket];
@@ -689,7 +690,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [self currentValues];
-    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent values=%lu enabledRaw=%d global=%d camera=%d mediaServer=%d", (unsigned long)values.count, [values[@"enabled"] boolValue], [values[@"injectionGlobalEnabled"] boolValue], [values[@"injectionCameraEnabled"] boolValue], [values[@"injectionMediaServerEnabled"] boolValue]]];
+    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent values=%lu enabledRaw=%d global=%d camera=%d", (unsigned long)values.count, [values[@"enabled"] boolValue], [values[@"injectionGlobalEnabled"] boolValue], [values[@"injectionCameraEnabled"] boolValue]]];
     if (values.count == 0) return configuration;
 
     configuration.enabled = [values[@"enabled"] boolValue] &&

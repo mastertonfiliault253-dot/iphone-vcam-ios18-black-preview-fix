@@ -284,12 +284,11 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         @[@"injectionChromeEnabled", @"Chrome"],
         @[@"injectionEdgeEnabled", @"Edge"],
         @[@"injectionGoogleEnabled", @"Google"],
-        @[@"injectionWebKitEnabled", @"WebKit"],
-        @[@"injectionMediaServerEnabled", @"mediaserverd"],
+
     ];
     NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
     for (NSArray<NSString *> *pair in targetPairs) {
-        BOOL defaultEnabled = ![pair[0] isEqualToString:@"injectionMediaServerEnabled"] && values[pair[0]] == nil;
+        BOOL defaultEnabled = values[pair[0]] == nil;
         if (values[pair[0]] == nil ? defaultEnabled : [values[pair[0]] boolValue]) {
             [activeTargets addObject:pair[1]];
         }
@@ -681,30 +680,25 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 - (void)presentTargetSelector {
     NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"选择替换软件和进程"
-                                                                   message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App；mediaserverd 需手动重启用户空间。"
+                                                                   message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App。"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSDictionary<NSString *, NSString *> *> *targets = @[
-        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/浏览器/WebKit）"},
+        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/Safari/Chrome/Edge/Google）"},
         @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
         @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
         @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
         @{@"key": @"injectionEdgeEnabled", @"title": @"Edge"},
         @{@"key": @"injectionGoogleEnabled", @"title": @"Google"},
-        @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
-        @{@"key": @"injectionMediaServerEnabled", @"title": @"mediaserverd（高风险）"},
+
     ];
     for (NSDictionary<NSString *, NSString *> *target in targets) {
         NSString *key = target[@"key"];
-        BOOL defaultEnabled = ![key isEqualToString:@"injectionMediaServerEnabled"] && values[key] == nil;
+        BOOL defaultEnabled = values[key] == nil;
         BOOL selected = values[key] == nil ? defaultEnabled : [values[key] boolValue];
         NSString *title = [NSString stringWithFormat:@"%@ %@", selected ? @"✓" : @"○", target[@"title"]];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
                                                 handler:^(__unused UIAlertAction *action) {
-            if ([key isEqualToString:@"injectionMediaServerEnabled"]) {
-                [self confirmMediaServerToggle];
-            } else {
-                [self toggleInjectionTarget:key title:target[@"title"]];
-            }
+            [self toggleInjectionTarget:key title:target[@"title"]];
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
@@ -716,29 +710,11 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 
 - (NSArray<NSString *> *)globalPreferenceKeys {
     return @[@"injectionCameraEnabled", @"injectionSafariEnabled", @"injectionChromeEnabled",
-             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled"];
+             @"injectionEdgeEnabled", @"injectionGoogleEnabled"];
 }
 
 - (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
-    BOOL defaultEnabled = ![key isEqualToString:@"injectionMediaServerEnabled"] && values[key] == nil;
-    return values[key] == nil ? defaultEnabled : [values[key] boolValue];
-}
-
-- (void)confirmMediaServerToggle {
-    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
-    if ([self preferenceEnabled:@"injectionMediaServerEnabled" values:values]) {
-        [self toggleInjectionTarget:@"injectionMediaServerEnabled" title:@"mediaserverd"];
-        return;
-    }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"开启 mediaserverd 注入？"
-                                                                   message:@"这是高风险模式。它会暂停 App/WebKit 的画面替换 Hook，但保留悬浮控制 UI。请先关闭其他相机插件；保存后需要你手动重启用户空间。"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确认开启" style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction *action) {
-        [self toggleInjectionTarget:@"injectionMediaServerEnabled" title:@"mediaserverd"];
-    }]];
-    [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
+    return values[key] == nil ? YES : [values[key] boolValue];
 }
 
 - (void)toggleInjectionTarget:(NSString *)key title:(NSString *)title {
@@ -752,21 +728,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         }
     } else {
         changes[key] = @(next);
-        if ([key isEqualToString:@"injectionSafariEnabled"] ||
-            [key isEqualToString:@"injectionChromeEnabled"] ||
-            [key isEqualToString:@"injectionEdgeEnabled"] ||
-            [key isEqualToString:@"injectionGoogleEnabled"]) {
-            BOOL linkedWebKitEnabled = next;
-            for (NSString *browserKey in @[@"injectionSafariEnabled", @"injectionChromeEnabled",
-                                           @"injectionEdgeEnabled", @"injectionGoogleEnabled"]) {
-                if ([browserKey isEqualToString:key]) continue;
-                if ([self preferenceEnabled:browserKey values:values]) {
-                    linkedWebKitEnabled = YES;
-                    break;
-                }
-            }
-            changes[@"injectionWebKitEnabled"] = @(linkedWebKitEnabled);
-        }
+
         BOOL allEnabled = YES;
         for (NSString *globalKey in [self globalPreferenceKeys]) {
             NSNumber *changed = changes[globalKey];
@@ -780,10 +742,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         return;
     }
     [self postConfigurationChanged];
-    NSString *suffix = [key isEqualToString:@"injectionMediaServerEnabled"] && next
-        ? @"；请确认其他插件已关闭，再手动重启用户空间"
-        : @"；请彻底关闭并重开目标 App";
-    [self showMessage:[NSString stringWithFormat:@"%@已%@%@", title, next ? @"开启" : @"关闭", suffix]
+    [self showMessage:[NSString stringWithFormat:@"%@已%@", title, next ? @"开启" : @"关闭"]
                   error:NO];
 }
 

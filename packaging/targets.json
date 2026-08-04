@@ -34,33 +34,6 @@
       "status": "implemented-default-on"
     },
     {
-      "name": "VCAMWebKitClient",
-      "package": "com.codex.vcam",
-      "binary": "VCAMProcessClient.dylib",
-      "role": "replace-capture-frames-in-webcontent-processes",
-      "bundleIds": ["com.apple.WebKit.WebContent"],
-      "executables": ["com.apple.WebKit.WebContent"],
-      "executableDiscoveryRequired": false,
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": ["UIKit", "PhotosUI"],
-      "status": "implemented-default-on"
-    },
-    {
-      "name": "VCAMMediaServerClient",
-      "package": "com.codex.vcam",
-      "binary": "VCAMProcessClient.dylib",
-      "role": "replace-capture-frames-in-mediaserverd",
-      "bundleIds": [],
-      "executables": ["mediaserverd"],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": false,
-      "forbiddenDependencies": ["UIKit", "PhotosUI"],
-      "status": "implemented-default-off-high-risk"
-    },
-    {
       "name": "VCAMSpringBoardClient",
       "package": "com.codex.vcam",
       "binary": "VCAMSpringBoardClient.dylib",

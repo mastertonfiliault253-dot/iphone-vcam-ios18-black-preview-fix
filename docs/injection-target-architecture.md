@@ -2,78 +2,51 @@
 
 ## Current package
 
-The current package builds one `VCAM.dylib` from `Makefile` and filters it only
-into `com.apple.camera` through `VCAM.plist`. That dylib links UIKit, PhotosUI,
-FFmpeg, and all source/recording code. `VCAMCaptureHooks.xm` also starts the
-floating control panel from its constructor.
+The package builds three dylibs from `Makefile`:
 
-This binary must not be filtered directly into `mediaserverd`. Merely loading a
-UIKit/PhotosUI-linked dylib into a vital daemon increases startup and watchdog
-risk even when the constructor later decides not to install hooks.
+| Theos target | Filter | Responsibilities |
+| --- | --- | --- |
+| `VCAM` | `com.apple.camera` | Camera floating panel, media picker, capture hooks, preview overlay |
+| `VCAMAppClient` | `com.apple.mobilesafari`, `com.google.chrome.ios`, `com.microsoft.edge.ios`, `com.google.GoogleMobile` | Browser/Google floating panel, media picker, capture hooks |
+| `VCAMSpringBoardClient` | `com.apple.springboard` | Home-screen floating panel, single configuration writer (broker) |
 
-## Target package layout
+`WebKit.WebContent` and `mediaserverd` are intentionally **not** injection
+targets. The capture hooks live inside each camera-consuming host process
+(`AVCaptureVideoDataOutput`, `AVCapturePhotoOutput`, `AVCaptureMovieFileOutput`
+delegates) so frames are replaced at the AVFoundation boundary the app actually
+sees. A separate mediaserverd/WebContent client was removed because loading a
+UIKit/FFmpeg-linked dylib into those daemons caused Safari reload loops and
+Camera crashes.
 
-| Theos target | Filter | Responsibilities | Forbidden dependencies |
-| --- | --- | --- | --- |
-| `VCAMController` | `com.apple.camera` | Floating panel, media picker, target selection, diagnostics | None |
-| `VCAMAppClient` | `com.apple.camera`, `com.apple.mobilesafari`, `com.google.chrome.ios` | Public AVFoundation capture interception and fail-open frame consumption | PhotosUI, FFmpeg decoding |
-| `VCAMWebKitClient` | WebKit web-content executables discovered on device | Headless WebRTC/WebKit capture interception | UIKit, PhotosUI, FFmpeg, blocking I/O in `%ctor` |
-| `VCAMMediaServerClient` | executable `mediaserverd` | Minimal, separately enabled media-server probe/interception | UIKit, PhotosUI, UniformTypeIdentifiers, FFmpeg, network setup, blocking I/O in `%ctor` |
-| `vcamd` launch daemon | no injection filter | Own configuration/media, decode local/RTSP once, publish timestamped IOSurface frames over XPC | App UI |
+## Configuration and media sharing
 
-## Shared source and configuration
+Processes do not share an application container. SpringBoard runs a loopback
+broker on port 46321 that owns the shared configuration at
+`/var/mobile/Media/VCAM/com.codex.vcam.plist` and the imported media at
+`/var/mobile/Media/VCAM/selected.mov`.
 
-Camera, Safari, Chrome, Edge, Google, WebKit, and `mediaserverd` do not share an
-application container. A selected file path from Camera therefore cannot be treated as a
-cross-process media path. `vcamd` owns the source and configuration; clients
-receive IOSurface-backed frames and timing metadata over a narrow XPC protocol.
-Darwin notifications only signal configuration changes and never carry frames.
-
-Required client operations:
-
-- connect and report process/bundle identity;
-- request the current source format;
-- acquire the latest IOSurface plus monotonic presentation timestamp;
-- report health/cadence counters;
-- disconnect and immediately fall back to the real camera on any error.
+- Control UI writes through the broker (SpringBoard is the only writer).
+- Each process reads the config from the broker.
+- For local media, each process fetches the shared video through the broker and
+  mirrors it into its own container (`Application Support/VCAM/VCAM-media/`),
+  because AVFoundation cannot reliably read the shared path from another app's
+  sandbox. `resolvedMediaPathForSharedPath:` performs this mirror.
+- Darwin notifications (`com.codex.vcam/preferences.changed`) trigger pipeline
+  reloads in each injected process.
 
 ## Dynamic target switches
 
-The package filters determine where a minimal client may load. The controller's
-target switches determine whether hooks are installed in that process:
+The control panel exposes one switch per target plus a global switch:
 
-- Camera: enabled by default;
-- Safari, Chrome, Edge, Google: enabled by default;
-- WebKit helper processes: enabled while any browser target is enabled;
-- mediaserverd: disabled by default and shown as high risk.
+- Camera, Safari, Chrome, Edge, Google: enabled by default.
+- Global toggles all five together.
+- SpringBoard itself always hosts the home-screen panel and broker.
 
-No target switch may require a userspace reboot merely to turn replacement off.
-The media-server client must do no work in its constructor beyond reading a
-small immutable enable flag and installing hooks. It must never create UI,
-initialize FFmpeg, open RTSP, or synchronously contact the daemon during startup.
+## Capture hook contract
 
-## RootHide safety gate for mediaserverd
-
-Before shipping the media-server target:
-
-1. Build and install it as a separate subpackage so it can be removed without
-   removing the app clients.
-2. First deploy a no-hook load probe and verify ten userspace restarts without a
-   mediaserverd watchdog timeout.
-3. Add one hook family at a time with fail-open behavior.
-4. Add a boot-time disable flag readable without XPC.
-5. Keep Camera/Safari/Chrome functional when the daemon or client is absent.
-
-## Proposed Theos mapping
-
-`Makefile` becomes a multi-target project:
-
-- `TWEAK_NAME = VCAMController VCAMAppClient VCAMWebKitClient`
-- `TOOL_NAME = vcamd`
-- `SUBPROJECTS = mediaserver-client` for the separately removable high-risk
-  `VCAMMediaServerClient` package.
-
-Each target gets its own filter plist and framework list. Shared protocol and
-frame types live under `Sources/Shared`; UIKit files remain under `Sources/UI`;
-daemon-only local/RTSP decoding moves under `Sources/Daemon`; process hooks stay
-under `Sources/Clients/<target>`.
+Hooks are installed at process start when the current process is a recognized
+target and media replacement is enabled. Hooked sample-buffer delegates always
+fail open: if the pipeline is disabled or the replacement source has no frame,
+the original sample is passed through unchanged. No target switch requires a
+userspace reboot to turn replacement off; only the SpringBoard/UI binaries need
+a process restart after toggling injection.
