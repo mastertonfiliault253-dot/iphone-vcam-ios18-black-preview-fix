@@ -4,7 +4,7 @@ INSTALL_TARGET_PROCESSES = Camera
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = VCAM VCAMAppClient VCAMWebKitClient VCAMMediaServerClient VCAMSpringBoardClient
+TWEAK_NAME = VCAM VCAMAppClient VCAMWebKitClient VCAMMediaServerClient VCAMSpringBoardClient VCAMDaemonProbe
 
 VCAM_COMMON_FILES = \
 	Sources/Hooks/VCAMCaptureHooks.xm \
@@ -49,3 +49,8 @@ VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVC
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation Foundation PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+
+VCAMDaemonProbe_FILES = Sources/Probes/VCAMDaemonProbe.m
+VCAMDaemonProbe_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
+VCAMDaemonProbe_FRAMEWORKS = Foundation

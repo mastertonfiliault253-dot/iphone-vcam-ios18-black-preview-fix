@@ -1,0 +1,9 @@
+{
+    Filter = {
+        Executables = (
+            "/usr/sbin/mediaserverd",
+            mediaserverd,
+            cfprefsd
+        );
+    };
+}
