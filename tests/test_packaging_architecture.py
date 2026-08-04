@@ -99,6 +99,19 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("copyValuesFromBroker", configuration)
         self.assertIn("VCAMBuildTag", configuration)
 
+    def test_shared_media_is_mirrored_into_each_process(self) -> None:
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+        header = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.h"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("resolvedMediaPathForSharedPath", header)
+        self.assertIn("VCAMConfigurationBrokerFetchMediaCommand", configuration)
+        self.assertIn("VCAM-media", configuration)
+        self.assertIn("resolvedMediaPathForSharedPath:", configuration)
+
     def test_global_excludes_mediaserver_and_browser_targets_link_webkit(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
 

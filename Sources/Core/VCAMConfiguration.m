@@ -13,6 +13,7 @@ static const NSUInteger VCAMConfigurationMaximumRequestBytes = 1024 * 1024;
 static const uint8_t VCAMConfigurationBrokerUpdateCommand = 1;
 static const uint8_t VCAMConfigurationBrokerReadCommand = 2;
 static const uint8_t VCAMConfigurationBrokerImportCommand = 3;
+static const uint8_t VCAMConfigurationBrokerFetchMediaCommand = 4;
 
 static BOOL VCAMReadAll(int descriptor, void *bytes, size_t length) {
     uint8_t *cursor = bytes;
@@ -454,6 +455,94 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     return message;
 }
 
++ (nullable NSString *)resolvedMediaPathForSharedPath:(NSString *)sharedPath
+                                                error:(NSError **)error {
+    if (![sharedPath isKindOfClass:NSString.class] || sharedPath.length == 0) {
+        if (error != NULL) *error = VCAMConfigurationError(30, @"No shared media path configured");
+        return nil;
+    }
+    static NSMutableDictionary<NSString *, NSString *> *resolvedCache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ resolvedCache = [NSMutableDictionary dictionary]; });
+    @synchronized (resolvedCache) {
+        NSString *cached = resolvedCache[sharedPath];
+        if (cached.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:cached]) {
+            return cached;
+        }
+    }
+
+    int probe = open(sharedPath.fileSystemRepresentation, O_RDONLY);
+    if (probe >= 0) {
+        close(probe);
+        return sharedPath;
+    }
+
+    int descriptor = [self connectedBrokerSocket];
+    if (descriptor < 0) {
+        if (error != NULL) *error = VCAMConfigurationError(31, @"VCAM broker unavailable for media fetch");
+        return nil;
+    }
+    uint8_t command = VCAMConfigurationBrokerFetchMediaCommand;
+    uint32_t zeroLength = 0;
+    BOOL success = VCAMWriteAll(descriptor, &command, sizeof(command)) &&
+                   VCAMWriteAll(descriptor, &zeroLength, sizeof(zeroLength));
+    uint8_t status = 0;
+    if (success) success = VCAMReadAll(descriptor, &status, sizeof(status)) && status == 1;
+    uint32_t networkHeaderLength = 0;
+    if (success) success = VCAMReadAll(descriptor, &networkHeaderLength, sizeof(networkHeaderLength));
+    NSUInteger headerLength = ntohl(networkHeaderLength);
+    success = success && headerLength > 0 && headerLength <= 4096;
+    NSMutableData *headerData = success ? [NSMutableData dataWithLength:headerLength] : nil;
+    if (success) success = VCAMReadAll(descriptor, headerData.mutableBytes, headerLength);
+    NSDictionary *responseHeader = success
+        ? [NSJSONSerialization JSONObjectWithData:headerData options:0 error:nil] : nil;
+    NSNumber *fileSizeValue = [responseHeader isKindOfClass:NSDictionary.class] ? responseHeader[@"fileSize"] : nil;
+    unsigned long long fileSize = [fileSizeValue unsignedLongLongValue];
+    success = success && fileSize > 0 && fileSize <= 16ULL * 1024ULL * 1024ULL * 1024ULL;
+
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *directory = [[self storageDirectoryPath] stringByAppendingPathComponent:@"VCAM-media"];
+    NSString *suggestedName = [responseHeader[@"suggestedName"] isKindOfClass:NSString.class]
+        ? responseHeader[@"suggestedName"] : @"selected.mov";
+    NSString *extension = suggestedName.pathExtension.lowercaseString;
+    if (![@[@"mov", @"mp4", @"m4v"] containsObject:extension]) extension = @"mov";
+    NSString *destination = [directory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"selected.%@", extension]];
+    success = success && [manager createDirectoryAtPath:directory withIntermediateDirectories:YES
+                                              attributes:nil error:nil];
+    int output = success ? open(destination.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600) : -1;
+    if (output < 0) success = NO;
+    const size_t bufferSize = 256 * 1024;
+    void *buffer = malloc(bufferSize);
+    if (success && buffer == NULL) success = NO;
+    unsigned long long remaining = fileSize;
+    while (success && remaining > 0) {
+        size_t requested = (size_t)MIN((unsigned long long)bufferSize, remaining);
+        success = VCAMReadAll(descriptor, buffer, requested) && VCAMWriteAll(output, buffer, requested);
+        remaining -= requested;
+    }
+    free(buffer);
+    if (output >= 0) {
+        fsync(output);
+        close(output);
+    }
+    close(descriptor);
+    if (!success) {
+        [manager removeItemAtPath:destination error:nil];
+        if (error != NULL) *error = VCAMConfigurationError(32, @"Media fetch from SpringBoard failed");
+        return nil;
+    }
+    [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
+                             NSFilePosixPermissions: @0600}
+              ofItemAtPath:destination error:nil];
+    @synchronized (resolvedCache) {
+        resolvedCache[sharedPath] = destination;
+    }
+    VCAMAppendDiagnostics([NSString stringWithFormat:
+        @"resolvedMediaPath shared=%@ local=%@ size=%llu", sharedPath, destination, fileSize]);
+    return destination;
+}
+
 + (void)startWriteBroker {
     if (!self.isWriteBrokerHost) return;
     static dispatch_once_t onceToken;
@@ -504,6 +593,39 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
                             ? [self receiveImportedMediaFromClient:client header:header error:&importError] : nil;
                         VCAMWriteBrokerMessage(client, destination != nil,
                                                destination ?: importError.localizedDescription);
+                        close(client);
+                        continue;
+                    }
+                    if (success && command == VCAMConfigurationBrokerFetchMediaCommand) {
+                        uint32_t requestLength = 0;
+                        success = VCAMReadAll(client, &requestLength, sizeof(requestLength));
+                        NSUInteger headerSize = ntohl(requestLength);
+                        success = success && headerSize <= 4096;
+                        NSMutableData *requestData = success && headerSize > 0
+                            ? [NSMutableData dataWithLength:headerSize] : nil;
+                        if (success && headerSize > 0) {
+                            success = VCAMReadAll(client, requestData.mutableBytes, headerSize);
+                        }
+                        NSString *sharedPath = [self readValuesFromDisk][@"mediaPath"];
+                        NSString *mediaPath = [sharedPath isKindOfClass:NSString.class] ? sharedPath : nil;
+                        NSData *media = mediaPath.length > 0
+                            ? [NSData dataWithContentsOfFile:mediaPath options:NSDataReadingMappedIfSafe error:nil] : nil;
+                        uint8_t status = media.length > 0 ? 1 : 0;
+                        VCAMWriteAll(client, &status, sizeof(status));
+                        if (media.length > 0) {
+                            NSDictionary *responseHeader = @{
+                                @"fileSize": @(media.length),
+                                @"suggestedName": mediaPath.lastPathComponent ?: @"selected.mov",
+                            };
+                            NSData *headerData = [NSJSONSerialization dataWithJSONObject:responseHeader options:0 error:nil];
+                            uint32_t responseHeaderLength = htonl((uint32_t)headerData.length);
+                            VCAMWriteAll(client, &responseHeaderLength, sizeof(responseHeaderLength));
+                            VCAMWriteAll(client, headerData.bytes, headerData.length);
+                            VCAMWriteAll(client, media.bytes, media.length);
+                        }
+                        VCAMAppendDiagnostics([NSString stringWithFormat:
+                            @"broker fetch media path=%@ size=%lu", mediaPath ?: @"(none)",
+                            (unsigned long)media.length]);
                         close(client);
                         continue;
                     }
@@ -575,7 +697,9 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
 
     NSString *mediaPath = values[@"mediaPath"];
     if ([mediaPath isKindOfClass:NSString.class] && mediaPath.length > 0) {
-        configuration.mediaPath = mediaPath;
+        configuration.mediaPath = configuration.sourceKind == VCAMSourceKindLocalMedia
+            ? [self resolvedMediaPathForSharedPath:mediaPath error:nil] ?: mediaPath
+            : mediaPath;
     }
 
     NSString *depthImagePath = values[@"depthImagePath"];

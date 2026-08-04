@@ -48,6 +48,8 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 + (nullable NSString *)importMediaAtURL:(NSURL *)sourceURL
                           suggestedName:(nullable NSString *)suggestedName
                                   error:(NSError **)error;
++ (nullable NSString *)resolvedMediaPathForSharedPath:(NSString *)sharedPath
+                                                error:(NSError **)error;
 + (void)startWriteBroker;
 + (NSString *)configurationPath;
 + (NSString *)mediaDirectoryPath;
