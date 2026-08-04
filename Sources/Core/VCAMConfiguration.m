@@ -46,33 +46,6 @@ static NSString *VCAMDiagnosticsLogPath(void) {
     return @"/var/mobile/Media/VCAM/broker-probe.log";
 }
 
-+ (NSString *)processLogPath {
-    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"vcam-app.log"];
-}
-
-+ (void)appendProcessLog:(NSString *)message {
-    if (message.length == 0) return;
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSString *directory = [self processLogPath].stringByDeletingLastPathComponent;
-    if (![manager createDirectoryAtPath:directory withIntermediateDirectories:YES
-                             attributes:nil error:nil]) return;
-    NSDateFormatter *formatter = [NSDateFormatter new];
-    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
-    NSString *line = [NSString stringWithFormat:@"[%@][DEBUG-vcamapp] %@\n", [formatter stringFromDate:NSDate.date], message];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:[self processLogPath]];
-    if (handle == nil) {
-        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        return;
-    }
-    @try {
-        [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-    } @catch (NSException *exception) {
-        (void)exception;
-        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-    [handle closeFile];
-}
 static void VCAMAppendDiagnostics(NSString *message) {
     if (message.length == 0) return;
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -129,7 +102,34 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
 @property(nonatomic, readwrite) VCAMLocalDecoderMode localDecoderMode;
 @end
 
-@implementation VCAMConfiguration
+@implementation VCAMConfiguration+ (NSString *)processLogPath {
+    return [[self storageDirectoryPath] stringByAppendingPathComponent:@"vcam-app.log"];
+}
+
++ (void)appendProcessLog:(NSString *)message {
+    if (message.length == 0) return;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSString *directory = [self processLogPath].stringByDeletingLastPathComponent;
+    if (![manager createDirectoryAtPath:directory withIntermediateDirectories:YES
+                             attributes:nil error:nil]) return;
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *line = [NSString stringWithFormat:@"[%@][DEBUG-vcamapp] %@\n", [formatter stringFromDate:NSDate.date], message];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:[self processLogPath]];
+    if (handle == nil) {
+        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (NSException *exception) {
+        (void)exception;
+        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    [handle closeFile];
+}
+
 
 + (NSString *)storageDirectoryPath {
     static NSString *resolvedPath;
