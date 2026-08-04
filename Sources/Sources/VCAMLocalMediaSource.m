@@ -588,7 +588,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         static NSUInteger vcamFrameLogCounter = 0;
         if ((vcamFrameLogCounter++ % 150) == 0 || vcamFrameLogCounter <= 3) {
             CVImageBufferRef tplImage = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local copyVideo call=%lu tpl=%.0fx%.0f running=%d", (unsigned long)vcamFrameLogCounter, tplImage == NULL ? 0 : CVPixelBufferGetWidth(tplImage), tplImage == NULL ? 0 : CVPixelBufferGetHeight(tplImage), self.running]];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local copyVideo call=%lu tpl=%zux%zu running=%d", (unsigned long)vcamFrameLogCounter, tplImage == NULL ? 0 : CVPixelBufferGetWidth(tplImage), tplImage == NULL ? 0 : CVPixelBufferGetHeight(tplImage), self.running]];
         }
         if (!self.running) return NULL;
         if (self.stillImage != nil) {
