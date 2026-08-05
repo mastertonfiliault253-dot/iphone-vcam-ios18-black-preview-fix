@@ -26,8 +26,13 @@
         os_log(OS_LOG_DEFAULT, "VCAMDaemonProbe loaded in pid=%d name=%@", getpid(), NSProcessInfo.processInfo.processName ?: @"(nil)");
         NSString *name = NSProcessInfo.processInfo.processName.lowercaseString ?: @"";
         if ([name isEqualToString:@"mediaserverd"] || [name isEqualToString:@"cfprefsd"]) {
-            sleep(1);
-            abort();
+            // Diagnostic probe: only abort the daemon when the explicit flag is
+            // present. On real rootless setups the injection works, so an
+            // unconditional abort() crash-loops mediaserverd.
+            if ([NSFileManager.defaultManager fileExistsAtPath:@"/var/mobile/Media/VCAM/probe-abort.flag"]) {
+                sleep(1);
+                abort();
+            }
         }
     }
 }
