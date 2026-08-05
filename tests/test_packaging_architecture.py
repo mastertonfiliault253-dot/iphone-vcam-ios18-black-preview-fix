@@ -52,7 +52,11 @@ class PackagingArchitectureTests(unittest.TestCase):
         )
         launchd = plistlib.loads(launchd_path.read_bytes())
         self.assertEqual(launchd["ProcessType"], "Interactive")
+        self.assertEqual(launchd["POSIXSpawnType"], "Interactive")
         self.assertEqual(launchd["UserName"], "mobile")
+        self.assertFalse(launchd["EnablePressuredExit"])
+        self.assertFalse(launchd["EnableTransactions"])
+        self.assertTrue(launchd["KeepAlive"])
         self.assertNotIn("JetsamProperties", launchd)
 
         entitlements = plistlib.loads((ROOT / "vcamd.entitlements").read_bytes())
@@ -69,6 +73,12 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("memlimit_active = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("memlimit_inactive = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("VCAMWorkerMemoryLimitMB = 256", main)
+        for unsafe_escalation in (
+            "JETSAM_PRIORITY_CRITICAL",
+            "MEMORYSTATUS_CMD_SET_PRIORITY_PROPERTIES",
+            "MEMORYSTATUS_CMD_SET_PROCESS_IS_MANAGED",
+        ):
+            self.assertNotIn(unsafe_escalation, main)
         self.assertLess(
             main.index("VCAMRaiseJetsamMemoryLimit();"),
             main.index("VCAMSharedFrameWriterCreate();"),

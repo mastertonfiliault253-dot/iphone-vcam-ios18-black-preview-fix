@@ -29,30 +29,40 @@ typedef struct {
 extern int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags,
                                 void *buffer, size_t bufferSize);
 
+static BOOL VCAMRunMemorystatusStep(uint32_t command, pid_t pid, uint32_t flags,
+                                   void *buffer, size_t bufferSize,
+                                   const char *step) {
+    errno = 0;
+    int result = memorystatus_control(command, pid, flags, buffer, bufferSize);
+    int savedErrno = errno;
+    fprintf(stderr, "vcamd jetsam step=%s result=%d errno=%d (%s)\n",
+            step, result, savedErrno, savedErrno == 0 ? "none" : strerror(savedErrno));
+    return result == 0;
+}
+
 static BOOL VCAMRaiseJetsamMemoryLimit(void) {
+    pid_t pid = getpid();
     VCAMMemorystatusMemlimitProperties properties = {0};
     properties.memlimit_active = VCAMWorkerMemoryLimitMB;
     properties.memlimit_inactive = VCAMWorkerMemoryLimitMB;
-    int result = memorystatus_control(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES,
-                                      getpid(), 0, &properties, sizeof(properties));
-    if (result == 0) {
-        VCAMMemorystatusMemlimitProperties effective = {0};
-        int queryResult = memorystatus_control(MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES,
-                                               getpid(), 0, &effective, sizeof(effective));
-        if (queryResult == 0) {
-            fprintf(stderr,
-                    "vcamd jetsam memory limit set to %d MB; effective active=%d inactive=%d MB\n",
-                    VCAMWorkerMemoryLimitMB, effective.memlimit_active,
-                    effective.memlimit_inactive);
-        } else {
-            fprintf(stderr, "vcamd jetsam memory limit set to %d MB; query failed: %s\n",
-                    VCAMWorkerMemoryLimitMB, strerror(errno));
-        }
+    BOOL success = VCAMRunMemorystatusStep(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES,
+                                           pid, 0, &properties, sizeof(properties),
+                                           "bounded-memlimit");
+
+    VCAMMemorystatusMemlimitProperties effective = {0};
+    int queryResult = memorystatus_control(MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES,
+                                           pid, 0, &effective, sizeof(effective));
+    if (queryResult == 0) {
+        fprintf(stderr,
+                "vcamd jetsam policy ready=%d effective active=%d attr=%u inactive=%d attr=%u MB\n",
+                success, effective.memlimit_active, effective.memlimit_active_attr,
+                effective.memlimit_inactive, effective.memlimit_inactive_attr);
     } else {
-        fprintf(stderr, "vcamd failed to set jetsam memory limit: %s\n", strerror(errno));
+        fprintf(stderr, "vcamd jetsam policy ready=0 query failed: %s\n", strerror(errno));
+        success = NO;
     }
     fflush(stderr);
-    return result == 0;
+    return success;
 }
 
 static void VCAMPublishTick(void) {
