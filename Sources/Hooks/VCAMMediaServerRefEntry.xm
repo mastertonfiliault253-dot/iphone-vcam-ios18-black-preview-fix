@@ -42,12 +42,8 @@
         VCAMRefLog("loadReplacementMedia finished");
     });
 
-    @try {
-        CVPixelBufferLockBaseAddress(originalImageBuffer, 0);
+    @autoreleasepool {
         drawReplacementOntoBuffer(originalImageBuffer);
-    }
-    @finally {
-        CVPixelBufferUnlockBaseAddress(originalImageBuffer, 0);
     }
 
     %orig(sampleBuffer);

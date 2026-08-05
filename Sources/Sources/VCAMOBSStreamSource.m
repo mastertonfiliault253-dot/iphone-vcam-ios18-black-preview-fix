@@ -1,4 +1,6 @@
 #import "VCAMOBSStreamSource.h"
+#import <ImageIO/ImageIO.h>
+#import <QuartzCore/QuartzCore.h>
 
 static const NSUInteger VCAMPacketHeaderLength = 16;
 
@@ -8,6 +10,7 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
 @property(nonatomic, strong, nullable) NSURLSession *session;
 @property(nonatomic, strong, nullable) NSURLSessionWebSocketTask *task;
 @property(nonatomic, strong, nullable) NSData *latestJPEG;
+@property(nonatomic) CFTimeInterval latestFrameHostTime;
 @property(nonatomic) BOOL running;
 @property(nonatomic) NSUInteger connectionGeneration;
 @end
@@ -48,7 +51,10 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
     [self.session invalidateAndCancel];
     self.task = nil;
     self.session = nil;
-    @synchronized (self) { self.latestJPEG = nil; }
+    @synchronized (self) {
+        self.latestJPEG = nil;
+        self.latestFrameHostTime = 0;
+    }
 }
 
 - (void)connect {
@@ -89,18 +95,30 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
     if (kind == 1) {
         NSData *jpeg = [packet subdataWithRange:NSMakeRange(VCAMPacketHeaderLength,
                                                             packet.length - VCAMPacketHeaderLength)];
-        @synchronized (self) { self.latestJPEG = jpeg; }
+        @synchronized (self) {
+            self.latestJPEG = jpeg;
+            self.latestFrameHostTime = CACurrentMediaTime();
+        }
     }
 }
 
 - (CMSampleBufferRef)copyVideoSampleForTemplate:(CMSampleBufferRef)templateBuffer {
     NSData *jpeg = nil;
-    @synchronized (self) { jpeg = self.latestJPEG; }
+    @synchronized (self) {
+        if (CACurrentMediaTime() - self.latestFrameHostTime < 3.5) jpeg = self.latestJPEG;
+    }
     if (jpeg.length == 0) return NULL;
-    CIImage *image = [CIImage imageWithData:jpeg];
-    return image == nil ? NULL : [self.renderer copySampleFromImage:image
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
+    if (source == NULL) return NULL;
+    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+    CFRelease(source);
+    if (image == NULL) return NULL;
+    CMSampleBufferRef sample = [self.renderer copySampleFromCGImage:image
+                                                    sourceTransform:CGAffineTransformIdentity
                                                            template:templateBuffer
                                                       configuration:self.configuration];
+    CGImageRelease(image);
+    return sample;
 }
 
 - (CMSampleBufferRef)copyAudioSampleForTemplate:(CMSampleBufferRef)templateBuffer {

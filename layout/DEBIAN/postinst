@@ -15,4 +15,12 @@ if [ -e /var/mobile/Library/Preferences/com.codex.vcam.plist ]; then
     chmod 0644 /var/mobile/Library/Preferences/com.codex.vcam.plist
 fi
 
+daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcamd.plist
+if [ -e "$daemon_plist" ]; then
+    launchctl bootout user/foreground/com.codex.vcamd >/dev/null 2>&1 || \
+        launchctl bootout system/com.codex.vcamd >/dev/null 2>&1 || true
+    launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || true
+    launchctl kickstart -k user/foreground/com.codex.vcamd >/dev/null 2>&1 || true
+fi
+
 exit 0

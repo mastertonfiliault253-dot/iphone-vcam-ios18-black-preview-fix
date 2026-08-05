@@ -58,6 +58,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong) dispatch_queue_t decodeQueue;
 @property(nonatomic) BOOL running;
+@property(nonatomic) BOOL hardwareDecodeEnabled;
 @end
 
 @implementation VCAMRTSPStreamSource
@@ -69,6 +70,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _configuration = configuration;
         _renderer = renderer;
         _decodeQueue = dispatch_queue_create("com.codex.vcam.rtsp.decode", DISPATCH_QUEUE_SERIAL);
+        _hardwareDecodeEnabled = YES;
     }
     return self;
 }
@@ -110,15 +112,23 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 
 - (void)decodeReconnectLoop {
     while (self.running) {
+        BOOL usedHardware = self.hardwareDecodeEnabled;
+        BOOL producedFrame = NO;
         @autoreleasepool {
-            [self decodeOneSession];
+            producedFrame = [self decodeOneSession];
         }
         if (!self.running) break;
+        if (usedHardware && !producedFrame) {
+            self.hardwareDecodeEnabled = NO;
+            [VCAMConfiguration appendProcessLog:
+                @"rtsp VideoToolbox produced no frames; switching to FFmpeg software decode"];
+            continue;
+        }
         [NSThread sleepForTimeInterval:0.5];
     }
 }
 
-- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer hardware:(BOOL)hardware {
     CVPixelBufferRetain(pixelBuffer);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
@@ -132,7 +142,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _latestFrameHostTime = now;
         _latestFrameSequence += 1;
         _diagnosticFrames += 1;
-        _diagnosticHardwareFrames += 1;
+        if (hardware) _diagnosticHardwareFrames += 1;
         if (_diagnosticLastFrameTime > 0 && _diagnosticFrameIntervalCount < 256) {
             _diagnosticFrameIntervals[_diagnosticFrameIntervalCount++] =
                 (now - _diagnosticLastFrameTime) * 1000.0;
@@ -166,7 +176,53 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     if (snapshot != nil) VCAMPublishRTSPPerformance(snapshot);
 }
 
-- (void)decodeOneSession {
+- (CVPixelBufferRef)copyBGRAFromSoftwareFrame:(AVFrame *)frame {
+    if (frame == NULL || frame->width <= 0 || frame->height <= 0) return NULL;
+    BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
+        frame->format == AV_PIX_FMT_YUVJ420P;
+    BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
+    if (!planar420 && !nv12) return NULL;
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    };
+    CVPixelBufferRef pixelBuffer = NULL;
+    if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
+                            (size_t)frame->height, kCVPixelFormatType_32BGRA,
+                            (__bridge CFDictionaryRef)attributes,
+                            &pixelBuffer) != kCVReturnSuccess) return NULL;
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+        CVPixelBufferRelease(pixelBuffer);
+        return NULL;
+    }
+    uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    for (int y = 0; y < frame->height; y++) {
+        const uint8_t *luma = frame->data[0] + y * frame->linesize[0];
+        const uint8_t *chromaU = frame->data[1] + (y / 2) * frame->linesize[1];
+        const uint8_t *chromaV = planar420
+            ? frame->data[2] + (y / 2) * frame->linesize[2] : NULL;
+        uint8_t *row = destination + (size_t)y * destinationStride;
+        for (int x = 0; x < frame->width; x++) {
+            int sampleY = luma[x];
+            int sampleU = planar420 ? chromaU[x / 2] : chromaU[(x / 2) * 2];
+            int sampleV = planar420 ? chromaV[x / 2] : chromaU[(x / 2) * 2 + 1];
+            int c = MAX(0, sampleY - 16);
+            int d = sampleU - 128;
+            int e = sampleV - 128;
+            int red = (298 * c + 409 * e + 128) >> 8;
+            int green = (298 * c - 100 * d - 208 * e + 128) >> 8;
+            int blue = (298 * c + 516 * d + 128) >> 8;
+            row[x * 4 + 0] = (uint8_t)MAX(0, MIN(255, blue));
+            row[x * 4 + 1] = (uint8_t)MAX(0, MIN(255, green));
+            row[x * 4 + 2] = (uint8_t)MAX(0, MIN(255, red));
+            row[x * 4 + 3] = 255;
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    return pixelBuffer;
+}
+
+- (BOOL)decodeOneSession {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
     AVBufferRef *hardwareDevice = NULL;
@@ -176,6 +232,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     int videoStream = -1;
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
+    BOOL useHardware = self.hardwareDecodeEnabled;
+    BOOL producedFrame = NO;
+    NSUInteger videoPacketsWithoutFrame = 0;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
     const char *url = urlString.UTF8String;
 
@@ -197,28 +256,46 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
-    codecContext->get_format = VCAMSelectHardwarePixelFormat;
     codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codecContext->thread_count = 1;
-    if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                               NULL, NULL, 0) < 0) {
-        goto cleanup;
+    if (useHardware) {
+        codecContext->get_format = VCAMSelectHardwarePixelFormat;
+        if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                   NULL, NULL, 0) < 0) goto cleanup;
+        codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
+        if (codecContext->hw_device_ctx == NULL) goto cleanup;
     }
-    codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
-    if (codecContext->hw_device_ctx == NULL || avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
+    if (avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
 
     packet = av_packet_alloc();
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
-        if (packet->stream_index == videoStream && avcodec_send_packet(codecContext, packet) >= 0) {
-            while (self.running && avcodec_receive_frame(codecContext, frame) >= 0) {
-                if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
-                    CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)frame->data[3];
-                    [self acceptDecodedPixelBuffer:pixelBuffer];
+        if (packet->stream_index == videoStream) {
+            videoPacketsWithoutFrame += 1;
+            if (avcodec_send_packet(codecContext, packet) >= 0) {
+                while (self.running && avcodec_receive_frame(codecContext, frame) >= 0) {
+                    if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
+                        CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)frame->data[3];
+                        [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
+                        producedFrame = YES;
+                        videoPacketsWithoutFrame = 0;
+                    } else if (!useHardware) {
+                        CVPixelBufferRef pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
+                        if (pixelBuffer != NULL) {
+                            [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
+                            CVPixelBufferRelease(pixelBuffer);
+                            producedFrame = YES;
+                            videoPacketsWithoutFrame = 0;
+                        }
+                    }
+                    av_frame_unref(frame);
                 }
-                av_frame_unref(frame);
+            }
+            if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 60) {
+                av_packet_unref(packet);
+                break;
             }
         }
         av_packet_unref(packet);
@@ -231,6 +308,7 @@ cleanup:
     av_buffer_unref(&hardwareDevice);
     avcodec_free_context(&codecContext);
     avformat_close_input(&formatContext);
+    return producedFrame;
 }
 
 - (CMSampleBufferRef)copyDirectPreviewSample {

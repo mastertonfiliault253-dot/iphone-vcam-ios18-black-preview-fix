@@ -6,67 +6,74 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class InjectionSafetyTests(unittest.TestCase):
-    def test_controller_filter_stays_limited_to_camera(self) -> None:
-        filter_text = (ROOT / "VCAM.plist").read_text(encoding="utf-8")
+    def test_only_mediaserverd_and_springboard_filters_exist(self) -> None:
+        filters = {path.name for path in ROOT.glob("VCAM*.plist")}
+        self.assertEqual(
+            filters,
+            {"VCAMMediaServerClient.plist", "VCAMSpringBoardClient.plist"},
+        )
 
-        self.assertIn('"com.apple.camera"', filter_text)
-        self.assertNotIn("mediaserverd", filter_text)
-        self.assertNotIn("Classes", filter_text)
+        media = (ROOT / "VCAMMediaServerClient.plist").read_text(encoding="utf-8")
+        springboard = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
+        self.assertIn("mediaserverd", media)
+        self.assertNotIn("Bundles", media)
+        self.assertIn("com.apple.springboard", springboard)
+        self.assertIn("SpringBoard", springboard)
 
-    def test_app_client_filter_is_limited_to_ui_host_apps(self) -> None:
-        filter_text = (ROOT / "VCAMAppClient.plist").read_text(encoding="utf-8")
-
-        self.assertIn("com.apple.mobilesafari", filter_text)
-        self.assertIn("com.google.chrome.ios", filter_text)
-        self.assertIn("com.microsoft.edge.ios", filter_text)
-        self.assertIn("com.google.GoogleMobile", filter_text)
-        self.assertNotIn("mediaserverd", filter_text)
-        self.assertNotIn("WebContent", filter_text)
-
-    def test_webkit_client_filter_is_limited_to_web_content(self) -> None:
-        filter_text = (ROOT / "VCAMWebKitClient.plist").read_text(encoding="utf-8")
-
-        self.assertIn("com.apple.WebKit.WebContent", filter_text)
-        self.assertNotIn("mediaserverd", filter_text)
-        self.assertNotIn("com.apple.mobilesafari", filter_text)
-        self.assertNotIn("com.apple.camera", filter_text)
-        self.assertNotIn("Classes", filter_text)
-
-    def test_mediaserver_client_filter_is_limited_to_mediaserverd(self) -> None:
-        filter_text = (ROOT / "VCAMMediaServerClient.plist").read_text(encoding="utf-8")
-
-        self.assertIn("mediaserverd", filter_text)
-        self.assertNotIn("WebContent", filter_text)
-        self.assertNotIn("com.apple.camera", filter_text)
-        self.assertNotIn("Classes", filter_text)
-
-    def test_constructor_uses_shared_process_policy_and_only_starts_ui_in_camera(self) -> None:
-        hooks = (
-            ROOT / "Sources" / "Hooks" / "VCAMCaptureHooks.xm"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("VCAMInjectionPolicy", hooks)
-        self.assertIn("isCurrentProcessMediaReplacementEnabled", hooks)
-        self.assertIn("VCAM_WITH_CONTROL_UI", hooks)
-        self.assertIn("startControlUI", hooks)
-
-    def test_mediaserver_client_does_not_link_ui_or_ffmpeg(self) -> None:
+    def test_makefile_builds_exactly_two_injected_targets(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        target_line = next(
+            line for line in makefile.splitlines() if line.startswith("TWEAK_NAME =")
+        )
+        self.assertEqual(
+            target_line,
+            "TWEAK_NAME = VCAMMediaServerClient VCAMSpringBoardClient",
+        )
+        self.assertIn("TOOL_NAME = vcamd", makefile)
+        for removed in ("VCAMAppClient", "VCAMWebKitClient", "VCAMDaemonProbe"):
+            self.assertNotIn(removed, target_line)
 
-        self.assertIn("VCAMMediaServerClient_FILES", makefile)
-        entry = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm").read_text(encoding="utf-8")
+    def test_mediaserver_consumer_has_no_decoder_or_network_code(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        implementation = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMSharedFrameReaderCopyLatest", implementation)
+        self.assertNotIn("libav", implementation)
+        self.assertNotIn("AVAssetReader", implementation)
+        self.assertNotIn("NSURLSession", implementation)
+
+        frameworks_line = next(
+            line
+            for line in makefile.splitlines()
+            if line.startswith("VCAMMediaServerClient_FRAMEWORKS")
+        )
+        self.assertNotIn("UIKit", frameworks_line)
+        self.assertNotIn("AVFoundation", frameworks_line)
+        self.assertNotIn("VideoToolbox", frameworks_line)
+
+    def test_mediaserver_keeps_validated_node_gate_and_fails_open(self) -> None:
+        implementation = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        entry = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
+        ).read_text(encoding="utf-8")
+        self.assertIn("targetWidth != 750 || targetHeight != 1334", implementation)
+        self.assertIn("1000000000ULL", implementation)
         self.assertIn("BWNodeOutput", entry)
-        self.assertIn("emitSampleBuffer", entry)
-        self.assertIn("loadReplacementMedia", entry)
-        self.assertIn("VCAMMediaServerClient_CFLAGS", makefile)
-        self.assertIn("-DVCAM_WITH_CONTROL_UI=0", makefile)
-        ms_block = makefile.split("VCAMMediaServerClient_FILES", 1)[1].split("VCAMSpringBoardClient_FILES", 1)[0]
-        self.assertNotIn("VCAM_COMMON_FILES", ms_block)
-        self.assertNotIn("VCAMCaptureHooks", ms_block)
-        self.assertNotIn("PhotosUI", ms_block)
-        self.assertIn("VCAMCameraPreviewHooks.xm", makefile)
-        self.assertNotIn("VCAMCameraPreviewHooks.xm", makefile.split("VCAMWebKitClient_FILES", 1)[1].splitlines()[0])
-        self.assertNotIn("VCAMCameraPreviewHooks.xm", ms_block)
+        self.assertIn("%orig(sampleBuffer)", entry)
+
+    def test_real_microphone_is_forced(self) -> None:
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+        panel = (
+            ROOT / "Sources" / "UI" / "VCAMControlPanelViewController.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("configuration.replaceAudio = NO", configuration)
+        self.assertNotIn("audioTapped", panel)
+        self.assertNotIn("替换声音", panel)
 
 
 if __name__ == "__main__":

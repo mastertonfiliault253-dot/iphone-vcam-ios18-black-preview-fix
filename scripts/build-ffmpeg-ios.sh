@@ -75,14 +75,11 @@ build_slice() {
 }
 
 build_slice arm64 arm64-apple-ios15.0
-build_slice arm64e arm64e-apple-ios15.0
 
 cp -R "$WORK_ROOT/install-arm64/include/." "$OUTPUT_ROOT/include/"
 for library in avformat avcodec avutil; do
-  xcrun lipo -create \
-    "$WORK_ROOT/install-arm64/lib/lib${library}.a" \
-    "$WORK_ROOT/install-arm64e/lib/lib${library}.a" \
-    -output "$OUTPUT_ROOT/lib/lib${library}.a"
+  cp "$WORK_ROOT/install-arm64/lib/lib${library}.a" \
+    "$OUTPUT_ROOT/lib/lib${library}.a"
 done
 cp "$SOURCE_ROOT/COPYING.LGPLv2.1" "$OUTPUT_ROOT/COPYING.LGPLv2.1"
-echo "Built universal arm64/arm64e FFmpeg $FFMPEG_VERSION"
+echo "Built arm64 FFmpeg $FFMPEG_VERSION for the arm64-only vcamd worker"

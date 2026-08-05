@@ -1,8 +1,8 @@
 Package: com.codex.vcam
 Name: VCAM Media Bridge
-Version: 0.5.0+rootless3
+Version: 0.6.0+worker1
 Architecture: iphoneos-arm
-Description: Test media source replacement for AVFoundation camera and microphone pipelines.
+Description: System virtual-camera video bridge with isolated local, OBS and RTSP decoding.
 Maintainer: Local Build
 Author: Local Build
 Section: Tweaks

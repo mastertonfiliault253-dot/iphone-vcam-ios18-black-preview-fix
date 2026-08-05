@@ -1,26 +1,20 @@
-# RootHide package target map
+# Package target map
 
-`targets.json` is the machine-checked map from process injection requirements to
-one RootHide package containing three binaries. This keeps one install/update entry
-while preventing the Camera control UI from loading into background processes.
+`targets.json` is the machine-checked process map for one package containing
+two injected dylibs and one isolated worker executable.
 
-| Target | Package | Current state |
+| Target | Runtime role | Injection |
 | --- | --- | --- |
-| `VCAMController` | `com.codex.vcam` / `VCAM.dylib` | Camera UI and Camera hooks; enabled by default |
-| `VCAMAppClient` | `com.codex.vcam` / `VCAMAppClient.dylib` | Safari and Chrome hooks plus floating control UI; selectable, default off |
-| `VCAMWebKitClient` | `com.codex.vcam` / `VCAMProcessClient.dylib` | WebContent capture hooks; selectable, default off |
-| `VCAMMediaServerClient` | `com.codex.vcam` / `VCAMProcessClient.dylib` | mediaserverd capture hooks; selectable, default off |
+| `VCAMMediaServerClient` | Reads the latest shared frame at `BWNodeOutput` | `mediaserverd` only |
+| `VCAMSpringBoardClient` | White-dot UI, picker, broker and preview | SpringBoard only |
+| `vcamd` | Local/OBS/RTSP decode and shared-frame publication | None (LaunchDaemon) |
 
-Only `com.codex.vcam` is emitted. `VCAM.dylib` owns the control UI;
-`VCAMAppClient.dylib` gives Safari and Chrome the shared floating panel.
-`VCAMProcessClient.dylib` handles WebContent and mediaserverd without UIKit or PhotosUI.
-The process client currently decodes the selected source inside each enabled
-process. This makes the selection functional without a second package, at the
-cost of one decoder per enabled process.
+No Camera, browser, WebKit or third-party App filter is packaged. FFmpeg is
+linked only into `vcamd`; audio stays on the real microphone path.
 
-"Global injection" is an alias for the explicit Camera, Safari, Chrome, and WebKit
-targets; it never removes the plist allowlist. mediaserverd is
-default-off and labelled high-risk because a failure can trigger Dopamine's
-watchdog protection. When mediaserverd mode is enabled, downstream app/WebKit
-replacement hooks pause while their floating UI stays available. Target changes
-require the target process to be relaunched.
+# Release build policy
+
+Release packages are built by `.github/workflows/build.yml` on macOS/Xcode.
+The WSL script is only a local compile/test aid because its third-party Linux
+toolchain may emit incompatible arm64e ABI slices. Do not install or publish a
+WSL-built DEB as the final device package.

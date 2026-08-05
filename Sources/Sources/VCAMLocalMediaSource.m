@@ -42,6 +42,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 @interface VCAMLocalMediaSource () {
+    CGImageRef _stillImage;
     CVPixelBufferRef _currentPlayerPixelBuffer;
     CMTime _currentPlayerItemTime;
     CMSampleBufferRef _lastRenderedVideoSample;
@@ -73,7 +74,6 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
-@property(nonatomic, strong, nullable) CIImage *stillImage;
 @property(nonatomic, strong, nullable) AVURLAsset *asset;
 @property(nonatomic, strong, nullable) AVAssetReader *audioReader;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *audioOutput;
@@ -123,8 +123,12 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
     NSURL *url = [NSURL fileURLWithPath:path];
     [[NSFileManager defaultManager] removeItemAtPath:VCAMDiagnosticPath error:nil];
-    self.stillImage = [CIImage imageWithContentsOfURL:url];
-    if (self.stillImage == nil) {
+    CGImageSourceRef imageSource = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (imageSource != NULL) {
+        _stillImage = CGImageSourceCreateImageAtIndex(imageSource, 0, NULL);
+        CFRelease(imageSource);
+    }
+    if (_stillImage == NULL) {
         self.asset = [AVURLAsset URLAssetWithURL:url options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
         BOOL videoStarted = self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple
             ? [self startTripleVideoReader:error]
@@ -135,7 +139,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         [self rebuildAudioReaderForSampleRate:0 channelCount:0 error:nil];
     }
     self.running = YES;
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local start ok decoder=%ld still=%d asset=%d player=%d", (long)self.configuration.localDecoderMode, self.stillImage != nil, self.asset != nil, self.player != nil]];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local start ok decoder=%ld still=%d asset=%d player=%d", (long)self.configuration.localDecoderMode, _stillImage != NULL, self.asset != nil, self.player != nil]];
     return YES;
 }
 
@@ -155,6 +159,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         self.playerVideoOutput = nil;
         self.audioReader = nil;
         self.audioOutput = nil;
+        if (_stillImage != NULL) {
+            CGImageRelease(_stillImage);
+            _stillImage = NULL;
+        }
         [self resetTripleVideoReaderState];
         [self resetVideoPlaybackState];
         VCAMPublishLocalPerformanceSnapshot(@{});
@@ -164,6 +172,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_stillImage != NULL) CGImageRelease(_stillImage);
     [self resetTripleVideoReaderState];
     [self resetVideoPlaybackState];
 }
@@ -591,10 +600,11 @@ static int VCAMCompareDouble(const void *left, const void *right) {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local copyVideo call=%lu tpl=%zux%zu running=%d", (unsigned long)vcamFrameLogCounter, tplImage == NULL ? 0 : CVPixelBufferGetWidth(tplImage), tplImage == NULL ? 0 : CVPixelBufferGetHeight(tplImage), self.running]];
         }
         if (!self.running) return NULL;
-        if (self.stillImage != nil) {
-            return [self.renderer copySampleFromImage:self.stillImage
-                                             template:templateBuffer
-                                        configuration:self.configuration];
+        if (_stillImage != NULL) {
+            return [self.renderer copySampleFromCGImage:_stillImage
+                                        sourceTransform:CGAffineTransformIdentity
+                                               template:templateBuffer
+                                          configuration:self.configuration];
         }
 
         CMTime sourcePTS = kCMTimeInvalid;
@@ -627,13 +637,11 @@ static int VCAMCompareDouble(const void *left, const void *right) {
                               renderDuration:0 hadFrame:YES cacheHit:YES];
             return retimed;
         }
-        CIImage *image = imageBuffer == NULL ? nil : [CIImage imageWithCVImageBuffer:imageBuffer];
-        if (image != nil && !CGAffineTransformIsIdentity(self.videoTransform)) {
-            image = [image imageByApplyingTransform:self.videoTransform];
-        }
         CFTimeInterval renderStart = CACurrentMediaTime();
-        CMSampleBufferRef rendered = image == nil ? NULL :
-            [self.renderer copySampleFromImage:image template:templateBuffer configuration:self.configuration];
+        CMSampleBufferRef rendered = [self.renderer copySampleFromPixelBuffer:imageBuffer
+                                                               sourceTransform:self.videoTransform
+                                                                      template:templateBuffer
+                                                                 configuration:self.configuration];
         CFTimeInterval renderDuration = CACurrentMediaTime() - renderStart;
         if (rendered != NULL) {
             if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);

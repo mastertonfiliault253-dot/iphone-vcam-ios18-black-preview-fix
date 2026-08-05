@@ -5,11 +5,6 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/message.h>
 #import "../Core/VCAMConfiguration.h"
-#import "../Core/VCAMInjectionPolicy.h"
-
-extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(void) __attribute__((weak_import));
-extern NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) __attribute__((weak_import));
-extern NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) __attribute__((weak_import));
 
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
                                            const void *object, CFDictionaryRef userInfo) {
@@ -126,7 +121,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 }
 
 - (BOOL)isFloatingButtonVisibleForValues:(NSDictionary<NSString *, id> *)values {
-    if (![self isSpringBoardHost] && ![VCAMInjectionPolicy shouldShowControlUIForValues:values]) return NO;
     NSDictionary *visibility = values[@"floatingButtonVisibility"];
     NSNumber *saved = [visibility isKindOfClass:NSDictionary.class]
         ? visibility[[self floatingPositionIdentifier]] : nil;
@@ -278,101 +272,31 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = [values[@"enabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString] ?: @"camera";
-    NSArray<NSArray<NSString *> *> *targetPairs = @[
-        @[@"injectionCameraEnabled", @"Camera"],
-        @[@"injectionSafariEnabled", @"Safari"],
-        @[@"injectionChromeEnabled", @"Chrome"],
-        @[@"injectionEdgeEnabled", @"Edge"],
-        @[@"injectionGoogleEnabled", @"Google"],
-        @[@"injectionWebKitEnabled", @"WebKit"],
-        @[@"injectionMediaServerEnabled", @"mediaserverd"],
-    ];
-    NSMutableArray<NSString *> *activeTargets = [NSMutableArray array];
-    for (NSArray<NSString *> *pair in targetPairs) {
-        BOOL defaultEnabled = values[pair[0]] == nil;
-        if (values[pair[0]] == nil ? defaultEnabled : [values[pair[0]] boolValue]) {
-            [activeTargets addObject:pair[1]];
-        }
-    }
-    BOOL globalEnabled = values[@"injectionGlobalEnabled"] == nil
-        ? YES : [values[@"injectionGlobalEnabled"] boolValue];
-    NSString *targetSummary = globalEnabled
-        ? @"全局（显式白名单）"
-        : (activeTargets.count > 0 ? [activeTargets componentsJoinedByString:@"、"] : @"未选择");
     NSString *sourceTitle = @"真实相机（未替换）";
-    NSString *processTitle = [VCAMInjectionPolicy displayNameForTarget:[VCAMInjectionPolicy currentTarget]];
-    NSString *detail = [NSString stringWithFormat:@"当前进程：%@\n注入目标：%@", processTitle, targetSummary];
+    NSString *detail = @"vcamd 未发布替换画面；真实相机保持可用";
     if (enabled && [source isEqualToString:@"local"]) {
         NSString *file = [values[@"mediaPath"] lastPathComponent] ?: @"本地媒体";
-        sourceTitle = [NSString stringWithFormat:@"本地视频：%@", file];
+        sourceTitle = [NSString stringWithFormat:@"本地图片/视频：%@", file];
+        detail = @"vcamd 按需解码并发布最新帧";
     } else if (enabled && [source isEqualToString:@"obs"]) {
-        sourceTitle = @"直播流已启用";
-        detail = [NSString stringWithFormat:@"%@\n当前进程：%@\n注入目标：%@", values[@"obsWebSocketURL"] ?: @"未设置地址", processTitle, targetSummary];
+        sourceTitle = @"OBS WebSocket 已启用";
+        detail = values[@"obsWebSocketURL"] ?: @"未设置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";
-        detail = [NSString stringWithFormat:@"%@\n当前进程：%@\n注入目标：%@", values[@"rtspURL"] ?: @"未设置地址", processTitle, targetSummary];
+        detail = values[@"rtspURL"] ?: @"未设置地址";
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
-    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString] ?: @"single";
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
               values[@"preferredFramesPerSecond"] ?: @30];
-    if ([source isEqualToString:@"local"]) {
-        detail = [detail stringByAppendingFormat:@" · 解码：%@",
-                  [localDecoderMode isEqualToString:@"single"] ? @"单路 NV12（推荐）" : @"原版三路并行"];
-        NSDictionary<NSString *, id> *performance = VCAMLocalPlaybackPerformanceSnapshot != NULL
-            ? VCAMLocalPlaybackPerformanceSnapshot() : @{};
-        NSNumber *sourceFPS = performance[@"sourceFPS"];
-        if (sourceFPS != nil) {
-            detail = [detail stringByAppendingFormat:@"\n实时：%.1f fps · P95 %.1fms · 渲染 %.1f/%.1fms · 丢帧 %@",
-                      sourceFPS.doubleValue,
-                      [performance[@"sourceFrameP95Ms"] doubleValue],
-                      [performance[@"renderAvgMs"] doubleValue],
-                      [performance[@"renderMaxMs"] doubleValue],
-                      performance[@"misses"] ?: @0];
-        } else {
-            detail = [detail stringByAppendingString:@"\n实时：等待首个 1 秒性能窗口"];
-        }
-    }
-    if ([source isEqualToString:@"rtsp"]) {
-        NSDictionary<NSString *, id> *performance = VCAMRTSPPerformanceSnapshot != NULL
-            ? VCAMRTSPPerformanceSnapshot() : @{};
-        NSNumber *sourceFPS = performance[@"sourceFPS"];
-        if (sourceFPS != nil) {
-            detail = [detail stringByAppendingFormat:
-                @"\nRTSP source: %.1f fps · P95 %.1fms · %@x%@ · VideoToolbox %@",
-                sourceFPS.doubleValue,
-                [performance[@"sourceFrameP95Ms"] doubleValue],
-                performance[@"sourceWidth"] ?: @0,
-                performance[@"sourceHeight"] ?: @0,
-                [performance[@"hardwareFrames"] unsignedIntegerValue] > 0 ? @"yes" : @"no"];
-        } else {
-            detail = [detail stringByAppendingString:@"\nRTSP source: waiting for first 1-second window"];
-        }
-    }
-    NSDictionary<NSString *, NSNumber *> *captureDiagnostics = VCAMCaptureHookDiagnosticSnapshot != NULL
-        ? VCAMCaptureHookDiagnosticSnapshot() : nil;
-    if (captureDiagnostics != nil) {
-    detail = [detail stringByAppendingFormat:@"\n诊断 Hook：拍照请求 %@ / 回调 %@；录像开始 %@ / 完成 %@",
-              captureDiagnostics[@"photoRequest"], captureDiagnostics[@"photoCallback"],
-              captureDiagnostics[@"recordingStart"], captureDiagnostics[@"recordingFinish"]];
-    detail = [detail stringByAppendingFormat:@"\n录像复制：尝试 %@ / 成功 %@；源存在 %@ / 输出文件 %@；错误 删除%@ 复制%@",
-              captureDiagnostics[@"copyAttempt"], captureDiagnostics[@"copySuccess"],
-              captureDiagnostics[@"sourceExists"], captureDiagnostics[@"outputIsFileURL"],
-              captureDiagnostics[@"removeError"], captureDiagnostics[@"copyError"]];
-    detail = [detail stringByAppendingFormat:@"\n大小：源 %@；输出 %@ → %@ 字节",
-              captureDiagnostics[@"sourceSize"], captureDiagnostics[@"outputSizeBefore"],
-              captureDiagnostics[@"outputSizeAfter"]];
-    }
+    detail = [detail stringByAppendingString:@"\n仅注入 mediaserverd 与 SpringBoard；麦克风保持真实输入"];
     return @{
         @"source": sourceTitle,
         @"detail": detail,
         @"mirror": [values[@"mirrorHorizontally"] boolValue] ? @"开启" : @"关闭",
-        @"audio": [values[@"replaceAudio"] boolValue] ? @"开启" : @"关闭",
         @"loop": values[@"loopMedia"] == nil || [values[@"loopMedia"] boolValue] ? @"开启" : @"关闭",
         @"contentMode": modeNames[mode] ?: @"裁切填满",
-        @"localDecoder": [localDecoderMode isEqualToString:@"single"] ? @"单路 NV12（推荐）" : @"原版三路",
     };
 }
 
@@ -404,7 +328,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 
 - (void)controlPanelDidRequestPhotoLibrary:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self presentVideoPicker]; }];
+    [self dismissPanelThen:^{ [self presentMediaPicker]; }];
 }
 
 - (void)controlPanelDidRequestDocument:(VCAMControlPanelViewController *)panel {
@@ -437,11 +361,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self toggleMirror];
 }
 
-- (void)controlPanelDidRequestAudioToggle:(VCAMControlPanelViewController *)panel {
-    (void)panel;
-    [self toggleAudioReplacement];
-}
-
 - (void)controlPanelDidRequestContentModeCycle:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self cycleContentMode];
@@ -452,24 +371,15 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self toggleLoopPlayback];
 }
 
-- (void)controlPanelDidRequestLocalDecoderToggle:(VCAMControlPanelViewController *)panel {
-    (void)panel;
-    [self toggleLocalDecoderMode];
-}
-
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self dismissPanelThen:^{ [self restoreRealCamera]; }];
 }
 
-- (void)controlPanelDidRequestTargetSelector:(VCAMControlPanelViewController *)panel {
-    (void)panel;
-    [self dismissPanelThen:^{ [self presentTargetSelector]; }];
-}
-
-- (void)presentVideoPicker {
+- (void)presentMediaPicker {
     PHPickerConfiguration *configuration = [[PHPickerConfiguration alloc] init];
-    configuration.filter = PHPickerFilter.videosFilter;
+    configuration.filter = [PHPickerFilter anyFilterMatchingSubfilters:
+        @[PHPickerFilter.imagesFilter, PHPickerFilter.videosFilter]];
     configuration.selectionLimit = 1;
     configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCurrent;
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
@@ -479,7 +389,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 
 - (void)presentDocumentPicker {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[UTTypeMovie] asCopy:YES];
+        initForOpeningContentTypes:@[UTTypeImage, UTTypeMovie] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     [[self presentingViewController] presentViewController:picker animated:YES completion:nil];
@@ -488,7 +398,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)controller;
     NSURL *url = urls.firstObject;
-    if (url != nil) [self installVideoFromTemporaryURL:url suggestedName:url.lastPathComponent];
+    if (url != nil) [self installMediaFromTemporaryURL:url suggestedName:url.lastPathComponent];
 }
 
 - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
@@ -496,27 +406,29 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     PHPickerResult *result = results.firstObject;
     if (result == nil) return;
     NSItemProvider *provider = result.itemProvider;
-    NSString *movieType = @"public.movie";
-    if (![provider hasItemConformingToTypeIdentifier:movieType]) {
-        [self showMessage:@"无法读取所选视频" error:YES];
+    NSString *mediaType = [provider hasItemConformingToTypeIdentifier:UTTypeMovie.identifier]
+        ? UTTypeMovie.identifier : ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]
+            ? UTTypeImage.identifier : nil);
+    if (mediaType == nil) {
+        [self showMessage:@"无法读取所选图片或视频" error:YES];
         return;
     }
     NSString *suggestedName = provider.suggestedName;
-    [provider loadFileRepresentationForTypeIdentifier:movieType completionHandler:^(NSURL *url, NSError *error) {
+    [provider loadFileRepresentationForTypeIdentifier:mediaType completionHandler:^(NSURL *url, NSError *error) {
         if (url == nil || error != nil) {
-            [self showMessage:error.localizedDescription ?: @"读取相册视频失败" error:YES];
+            [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];
             return;
         }
-        [self installVideoFromTemporaryURL:url suggestedName:suggestedName];
+        [self installMediaFromTemporaryURL:url suggestedName:suggestedName];
     }];
 }
 
 - (void)promptForOnlineVideo {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"在线源下载"
-                                                                   message:@"输入 MOV、MP4 或 M4V 的 HTTPS/HTTP 直链"
+                                                                   message:@"输入图片或 MOV、MP4、M4V 的 HTTPS/HTTP 直链"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"https://example.com/video.mp4";
+        field.placeholder = @"https://example.com/media.mp4";
         field.keyboardType = UIKeyboardTypeURL;
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
@@ -553,7 +465,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
             return;
         }
         NSString *name = response.suggestedFilename ?: url.lastPathComponent;
-        [self installVideoFromTemporaryURL:location suggestedName:name];
+        [self installMediaFromTemporaryURL:location suggestedName:name];
     }];
     [task resume];
 }
@@ -592,7 +504,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)installVideoFromTemporaryURL:(NSURL *)temporaryURL suggestedName:(nullable NSString *)suggestedName {
+- (void)installMediaFromTemporaryURL:(NSURL *)temporaryURL suggestedName:(nullable NSString *)suggestedName {
     NSError *error = nil;
     NSString *destinationPath = [VCAMConfiguration importMediaAtURL:temporaryURL
                                                       suggestedName:suggestedName
@@ -609,13 +521,15 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
         (nominalFrameRate >= 28.0f ? 30 : (nominalFrameRate >= 20.0f ? 24 : 30));
     if (![self updatePreferences:@{@"source": @"local", @"enabled": @YES,
                                   @"mediaPath": destinationURL.path, @"loopMedia": @YES,
+                                  @"replaceAudio": @NO,
                                   @"localDecoderMode": @"single",
                                   @"preferredFramesPerSecond": @(preferredFramesPerSecond)}]) {
-        [self showMessage:@"视频已复制，但 VCAM 配置写入失败" error:YES];
+        [self showMessage:@"媒体已复制，但 VCAM 配置写入失败" error:YES];
         return;
     }
     [self postConfigurationChanged];
-    [self showMessage:@"已切换到所选视频；视频将自动循环播放" error:NO];
+    [self showMessage:videoTrack != nil ? @"已切换到所选视频；视频将按时间轴循环播放"
+                                         : @"已切换到所选图片；将持续输出静态画面" error:NO];
 }
 
 - (void)rotateClockwise { [self changeRotationBy:90]; }
@@ -639,14 +553,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self dismissPanelThen:^{ [self showMessage:enabled ? @"镜像已开启" : @"镜像已关闭" error:NO]; }];
 }
 
-- (void)toggleAudioReplacement {
-    NSDictionary *values = [VCAMConfiguration currentValues];
-    BOOL enabled = ![values[@"replaceAudio"] boolValue];
-    if (![self updatePreferences:@{@"replaceAudio": @(enabled)}]) return;
-    [self postConfigurationChanged];
-    [self dismissPanelThen:^{ [self showMessage:enabled ? @"声音替换已开启" : @"声音替换已关闭" error:NO]; }];
-}
-
 - (void)toggleLoopPlayback {
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL current = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
@@ -654,18 +560,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     if (![self updatePreferences:@{@"loopMedia": @(enabled)}]) return;
     [self postConfigurationChanged];
     [self dismissPanelThen:^{ [self showMessage:enabled ? @"视频循环已开启" : @"视频循环已关闭" error:NO]; }];
-}
-
-- (void)toggleLocalDecoderMode {
-    NSDictionary *values = [VCAMConfiguration currentValues];
-    NSString *current = [values[@"localDecoderMode"] lowercaseString] ?: @"single";
-    NSString *next = [current isEqualToString:@"single"] ? @"triple" : @"single";
-    if (![self updatePreferences:@{@"localDecoderMode": next}]) return;
-    [self postConfigurationChanged];
-    [self dismissPanelThen:^{
-        [self showMessage:[next isEqualToString:@"single"] ? @"已切换到单路 NV12（推荐）" : @"已切换到原版三路并行解码"
-                    error:NO];
-    }];
 }
 
 - (void)cycleContentMode {
@@ -676,76 +570,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     if (![self updatePreferences:@{@"contentMode": next}]) return;
     [self postConfigurationChanged];
     [self dismissPanelThen:^{ [self showMessage:@"画面填充方式已切换" error:NO]; }];
-}
-
-- (void)presentTargetSelector {
-    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"选择替换软件和进程"
-                                                                   message:@"所有选项都在当前 com.codex.vcam 包内。修改后请彻底关闭并重开目标 App。"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray<NSDictionary<NSString *, NSString *> *> *targets = @[
-        @{@"key": @"injectionGlobalEnabled", @"title": @"全局注入（Camera/Safari/Chrome/Edge/Google/WebKit）"},
-        @{@"key": @"injectionCameraEnabled", @"title": @"系统相机 Camera"},
-        @{@"key": @"injectionSafariEnabled", @"title": @"Safari"},
-        @{@"key": @"injectionChromeEnabled", @"title": @"Chrome"},
-        @{@"key": @"injectionEdgeEnabled", @"title": @"Edge"},
-        @{@"key": @"injectionGoogleEnabled", @"title": @"Google"},
-        @{@"key": @"injectionWebKitEnabled", @"title": @"WebKit WebContent"},
-        @{@"key": @"injectionMediaServerEnabled", @"title": @"mediaserverd（虚拟相机模式，需重启用户空间）"},
-    ];
-    for (NSDictionary<NSString *, NSString *> *target in targets) {
-        NSString *key = target[@"key"];
-        BOOL defaultEnabled = values[key] == nil;
-        BOOL selected = values[key] == nil ? defaultEnabled : [values[key] boolValue];
-        NSString *title = [NSString stringWithFormat:@"%@ %@", selected ? @"✓" : @"○", target[@"title"]];
-        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-                                                handler:^(__unused UIAlertAction *action) {
-            [self toggleInjectionTarget:key title:target[@"title"]];
-        }]];
-    }
-    [menu addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
-    UIPopoverPresentationController *popover = menu.popoverPresentationController;
-    popover.sourceView = self.button;
-    popover.sourceRect = self.button.bounds;
-    [[self presentingViewController] presentViewController:menu animated:YES completion:nil];
-}
-
-- (NSArray<NSString *> *)globalPreferenceKeys {
-    return @[@"injectionCameraEnabled", @"injectionSafariEnabled", @"injectionChromeEnabled",
-             @"injectionEdgeEnabled", @"injectionGoogleEnabled", @"injectionWebKitEnabled"];
-}
-
-- (BOOL)preferenceEnabled:(NSString *)key values:(NSDictionary<NSString *, id> *)values {
-    return values[key] == nil ? YES : [values[key] boolValue];
-}
-
-- (void)toggleInjectionTarget:(NSString *)key title:(NSString *)title {
-    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
-    BOOL next = ![self preferenceEnabled:key values:values];
-    NSMutableDictionary<NSString *, id> *changes = [NSMutableDictionary dictionary];
-    if ([key isEqualToString:@"injectionGlobalEnabled"]) {
-        changes[key] = @(next);
-        for (NSString *individualKey in [self globalPreferenceKeys]) {
-            changes[individualKey] = @(next);
-        }
-    } else {
-        changes[key] = @(next);
-
-        BOOL allEnabled = YES;
-        for (NSString *globalKey in [self globalPreferenceKeys]) {
-            NSNumber *changed = changes[globalKey];
-            BOOL selected = changed != nil ? changed.boolValue : [self preferenceEnabled:globalKey values:values];
-            if (!selected) { allEnabled = NO; break; }
-        }
-        changes[@"injectionGlobalEnabled"] = @(allEnabled);
-    }
-    if (![self updatePreferences:changes]) {
-        [self showMessage:@"注入目标配置写入失败" error:YES];
-        return;
-    }
-    [self postConfigurationChanged];
-    [self showMessage:[NSString stringWithFormat:@"%@已%@", title, next ? @"开启" : @"关闭"]
-                  error:NO];
 }
 
 - (void)restoreRealCamera {

@@ -23,18 +23,7 @@ fi
 cd "$build_dir"
 
 make clean
-make package FINALPACKAGE=1
-
-make clean
 make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
-
-if [[ -d "$THEOS/vendor/mod/roothide" || -d "$THEOS/lib/iphone/roothide" ]]; then
-    make clean
-    make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
-else
-    printf '%s\n' "RootHide Theos module not installed; rootful and rootless packages were built."
-    printf '%s\n' "Install https://github.com/roothide/theos, then rerun this script for the roothide package."
-fi
 
 if [[ "$build_dir" != "$project_dir" ]]; then
     mkdir -p "$project_dir/packages"

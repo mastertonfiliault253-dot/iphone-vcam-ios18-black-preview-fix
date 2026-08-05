@@ -1,5 +1,4 @@
 #import "VCAMConfiguration.h"
-#import "VCAMInjectionPolicy.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <errno.h>
@@ -71,7 +70,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.5.0+home8";
+    return "com.codex.vcam/0.6.0+worker1";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -244,9 +243,6 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
             @"preferredFramesPerSecond", @"rotationDegrees", @"mirrorHorizontally",
             @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
-            @"injectionGlobalEnabled", @"injectionCameraEnabled", @"injectionSafariEnabled",
-            @"injectionChromeEnabled", @"injectionEdgeEnabled", @"injectionGoogleEnabled",
-            @"injectionWebKitEnabled", @"injectionMediaServerEnabled",
             @"floatingButtonPositions", @"floatingButtonVisibility",
         ]];
     });
@@ -278,6 +274,11 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
 + (BOOL)isWriteBrokerHost {
     NSString *process = NSProcessInfo.processInfo.processName.lowercaseString ?: @"";
     return [process isEqualToString:@"springboard"];
+}
+
++ (BOOL)isMediaWorkerHost {
+    NSString *process = NSProcessInfo.processInfo.processName.lowercaseString ?: @"";
+    return [process isEqualToString:@"vcamd"];
 }
 
 + (BOOL)writeValuesDirectly:(NSDictionary<NSString *, id> *)changes error:(NSError **)error {
@@ -379,7 +380,12 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     NSString *suggestedName = [header[@"suggestedName"] isKindOfClass:NSString.class]
         ? header[@"suggestedName"] : @"selected.mov";
     NSString *extension = suggestedName.pathExtension.lowercaseString;
-    if (![@[@"mov", @"mp4", @"m4v"] containsObject:extension]) extension = @"mov";
+    NSSet<NSString *> *allowedExtensions = [NSSet setWithArray:
+        @[@"mov", @"mp4", @"m4v", @"png", @"jpg", @"jpeg", @"heic", @"heif"]];
+    if (![allowedExtensions containsObject:extension]) {
+        if (error != NULL) *error = VCAMConfigurationError(27, @"Unsupported image or video type");
+        return nil;
+    }
 
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *directory = self.mediaDirectoryPath;
@@ -437,7 +443,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     struct stat metadata = {0};
     if (input < 0 || fstat(input, &metadata) != 0 || metadata.st_size <= 0) {
         if (input >= 0) close(input);
-        if (error != NULL) *error = VCAMConfigurationError(24, @"Unable to read the selected video");
+        if (error != NULL) *error = VCAMConfigurationError(24, @"Unable to read the selected media");
         return nil;
     }
     int descriptor = [self connectedBrokerSocket];
@@ -498,7 +504,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
         }
     }
 
-    if (self.isWriteBrokerHost) {
+    if (self.isWriteBrokerHost || self.isMediaWorkerHost) {
         int probe = open(sharedPath.fileSystemRepresentation, O_RDONLY);
         if (probe >= 0) {
             close(probe);
@@ -534,7 +540,9 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     NSString *suggestedName = [responseHeader[@"suggestedName"] isKindOfClass:NSString.class]
         ? responseHeader[@"suggestedName"] : @"selected.mov";
     NSString *extension = suggestedName.pathExtension.lowercaseString;
-    if (![@[@"mov", @"mp4", @"m4v"] containsObject:extension]) extension = @"mov";
+    NSSet<NSString *> *allowedExtensions = [NSSet setWithArray:
+        @[@"mov", @"mp4", @"m4v", @"png", @"jpg", @"jpeg", @"heic", @"heif"]];
+    if (![allowedExtensions containsObject:extension]) success = NO;
     NSString *destination = [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@"selected.%@", extension]];
     success = success && [manager createDirectoryAtPath:directory withIntermediateDirectories:YES
@@ -691,21 +699,18 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     configuration.photoMetadata = @{};
 
     NSDictionary *values = [self currentValues];
-    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent values=%lu enabledRaw=%d global=%d camera=%d", (unsigned long)values.count, [values[@"enabled"] boolValue], [values[@"injectionGlobalEnabled"] boolValue], [values[@"injectionCameraEnabled"] boolValue]]];
+    [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent values=%lu enabledRaw=%d process=%@",
+        (unsigned long)values.count, [values[@"enabled"] boolValue],
+        NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
     if (values.count == 0) return configuration;
 
-    configuration.enabled = [values[@"enabled"] boolValue] &&
-                            [VCAMInjectionPolicy isCurrentProcessMediaReplacementEnabledForValues:values];
-    configuration.replaceAudio = [values[@"replaceAudio"] boolValue];
+    configuration.enabled = [values[@"enabled"] boolValue];
+    configuration.replaceAudio = NO;
     configuration.loopMedia = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     configuration.mirrorHorizontally = [values[@"mirrorHorizontally"] boolValue];
     configuration.rotationDegrees = [values[@"rotationDegrees"] integerValue] % 360;
     configuration.preferredFramesPerSecond = MAX(1, MIN(60, [values[@"preferredFramesPerSecond"] integerValue] ?: 30));
-    NSString *localDecoderMode = [values[@"localDecoderMode"] lowercaseString];
-    if ([localDecoderMode isEqualToString:@"triple"] ||
-        [localDecoderMode isEqualToString:@"upstreamtriple"]) {
-        configuration.localDecoderMode = VCAMLocalDecoderModeUpstreamTriple;
-    }
+    configuration.localDecoderMode = VCAMLocalDecoderModeSinglePlayer;
 
     NSString *source = [values[@"source"] lowercaseString];
     if ([source isEqualToString:@"local"]) {

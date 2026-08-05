@@ -1,68 +1,41 @@
-# VCAM injection target architecture
+# VCAM process architecture
 
-## Current package
+## Rootless package
 
-The package builds five dylibs from `Makefile`:
+The standard rootless package installs under `/var/jb` and contains exactly:
 
-| Theos target | Filter | Responsibilities |
+| Target | Filter | Responsibility |
 | --- | --- | --- |
-| `VCAM` | `com.apple.camera` | Camera floating panel, media picker, capture hooks, preview overlay |
-| `VCAMAppClient` | `com.apple.mobilesafari`, `com.google.chrome.ios`, `com.microsoft.edge.ios`, `com.google.GoogleMobile` | Browser/Google floating panel, media picker, capture hooks |
-| `VCAMWebKitClient` | `com.apple.WebKit.WebContent` | Headless capture hooks for Safari web pages (getUserMedia runs here) |
-| `VCAMMediaServerClient` | executable `mediaserverd` | System-wide virtual camera mode: minimal, headless, no FFmpeg/UIKit |
-| `VCAMSpringBoardClient` | `com.apple.springboard` | Home-screen floating panel, single configuration writer (broker) |
+| `VCAMMediaServerClient` | executable `mediaserverd` | Nonblocking read of a fresh shared frame and `BWNodeOutput` replacement |
+| `VCAMSpringBoardClient` | `com.apple.springboard` / `SpringBoard` | White dot, picker, configuration broker and preview |
+| `vcamd` | no injection; LaunchDaemon | Local image/video, OBS and RTSP decoding and latest-frame publication |
 
-`mediaserverd` injection is **enabled by default** because the system-wide
-virtual-camera behavior requires it plus a userspace restart. The client is a
-minimal loader (`VCAMMediaServerEntry.xm` + configuration/policy only) so it
-cannot destabilise mediaserverd while the Celestial frame-swap seam is being
-mapped. Per-process AVFoundation hooks stay active so replacement keeps working
-during that research.
+There is no Camera, browser, WebKit or third-party App injection target. Audio
+is not replaced.
 
-## Camera frame path and the virtual-camera seam
+## Frame path
 
-`App → AVFoundation → mediaserverd → Camera HAL (applecamerad/h13ispd) → hardware`
+`local / OBS / RTSP → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
 
-mediaserverd itself is a thin binary (205 KB); the capture pipeline lives in
-`Celestial.framework`, which is merged into the dyld shared cache on iOS 16 and
-is not a standalone file on disk. Replacing frames at the mediaserverd layer
-therefore requires extracting Celestial from the shared cache and mapping its
-capture-session/sample delivery classes before the real frame swap can be
-hooked. Until then the mediaserverd client only loads and logs.
+The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 720×1280 BGRA.
+Publication uses atomic slot and sequence metadata. Consumers copy without
+waiting; a missing, changing, inactive or older-than-one-second frame is rejected
+so the normal camera sample passes through unchanged.
 
-## Configuration and media sharing
+`mediaserverd` keeps the on-device-validated 750×1334 node gate. Widening this
+gate requires separate device evidence because rendering into unrelated graph
+buffers previously caused GPU freezes.
 
-Processes do not share an application container. SpringBoard runs a loopback
-broker on port 46321 that owns the shared configuration at
-`/var/mobile/Media/VCAM/com.codex.vcam.plist` and the imported media at
-`/var/mobile/Media/VCAM/selected.mov`.
+## Decode behavior
 
-- Control UI writes through the broker (SpringBoard is the only writer).
-- Each process reads the config from the broker.
-- For local media, each process fetches the shared video through the broker and
-  mirrors it into its own container (`Application Support/VCAM/VCAM-media/`),
-  because AVFoundation cannot reliably read the shared path from another app's
-  sandbox. `resolvedMediaPathForSharedPath:` performs this mirror.
-- Darwin notifications (`com.codex.vcam/preferences.changed`) trigger pipeline
-  reloads in each injected process.
+- Images are decoded once by Core Image and rendered as a static source.
+- Local video uses one `AVPlayerItemVideoOutput` driven by media time. It does
+  not preload the asset into a frame array and loops at end-of-item when enabled.
+- OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
+  without a packet.
+- RTSP uses FFmpeg only inside `vcamd`, with TCP, low-delay options and
+  VideoToolbox. It retains only the newest decoded pixel buffer and reconnects.
 
-## Dynamic target switches
-
-The control panel exposes one switch per target plus a global switch:
-
-- Camera, Safari, Chrome, Edge, Google, WebKit WebContent: enabled by default,
-  controlled by the global toggle.
-- mediaserverd: enabled by default, separate switch, requires a userspace
-  restart after toggling.
-- SpringBoard itself always hosts the home-screen panel and broker.
-
-## Capture hook contract
-
-Hooks are installed at process start when the current process is a recognized
-target and media replacement is enabled. Pipeline creation is deferred to a
-background queue so WebContent startup never blocks. Hooked sample-buffer
-delegates always fail open: if the pipeline is disabled or the replacement
-source has no frame, the original sample is passed through unchanged. No target
-switch requires a userspace reboot to turn replacement off; only the
-SpringBoard/mediaserverd binaries need a process restart after toggling
-injection.
+SpringBoard remains the only configuration writer. `vcamd`, running as `mobile`,
+reads imported media directly from `/var/mobile/Media/VCAM`; mediaserverd never
+opens the selected media file.

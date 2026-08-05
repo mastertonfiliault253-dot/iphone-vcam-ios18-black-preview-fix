@@ -1,4 +1,5 @@
 #import "VCAMControlPanelViewController.h"
+#import "VCAMSharedFramePreviewView.h"
 
 @interface VCAMControlPanelViewController ()
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *status;
@@ -68,6 +69,11 @@
 
     UIView *statusCard = [self statusCard];
     [stack addArrangedSubview:statusCard];
+    VCAMSharedFramePreviewView *preview = [[VCAMSharedFramePreviewView alloc] initWithFrame:CGRectZero];
+    preview.translatesAutoresizingMaskIntoConstraints = NO;
+    preview.accessibilityLabel = @"当前虚拟摄像头画面预览";
+    [stack addArrangedSubview:preview];
+    [preview.heightAnchor constraintEqualToConstant:210].active = YES;
     [stack addArrangedSubview:[self sectionLabel:@"导入资源"]];
     [stack addArrangedSubview:[self actionButton:@"从相册选择" symbol:@"photo.on.rectangle"
                                                   color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1]
@@ -102,23 +108,11 @@
                                                 symbol:@"rectangle.inset.filled"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(contentModeTapped)]];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"替换声音：%@", self.status[@"audio"] ?: @"关闭"]
-                                                symbol:@"waveform"
-                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
-                                                action:@selector(audioTapped)]];
     [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"视频循环：%@", self.status[@"loop"] ?: @"开启"]
                                                 symbol:@"repeat"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(loopTapped)]];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"本地解码：%@", self.status[@"localDecoder"] ?: @"单路 NV12（推荐）"]
-                                                symbol:@"rectangle.3.group"
-                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
-                                                action:@selector(localDecoderTapped)]];
-
-    [stack addArrangedSubview:[self sectionLabel:@"目标与恢复"]];
-    [stack addArrangedSubview:[self actionButton:@"选择替换软件和进程" symbol:@"app.badge.checkmark"
-                                                  color:[UIColor colorWithRed:0.10 green:0.55 blue:0.42 alpha:1]
-                                                 action:@selector(targetTapped)]];
+    [stack addArrangedSubview:[self sectionLabel:@"恢复"]];
     [stack addArrangedSubview:[self actionButton:@"恢复真实相机" symbol:@"camera"
                                                   color:[UIColor colorWithRed:0.88 green:0.20 blue:0.24 alpha:1]
                                                  action:@selector(restoreTapped)]];
@@ -239,11 +233,8 @@
 - (void)clockwiseTapped { [self.delegate controlPanelDidRequestClockwiseRotation:self]; }
 - (void)counterClockwiseTapped { [self.delegate controlPanelDidRequestCounterClockwiseRotation:self]; }
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
-- (void)audioTapped { [self.delegate controlPanelDidRequestAudioToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
-- (void)localDecoderTapped { [self.delegate controlPanelDidRequestLocalDecoderToggle:self]; }
 - (void)restoreTapped { [self.delegate controlPanelDidRequestRestoreCamera:self]; }
-- (void)targetTapped { [self.delegate controlPanelDidRequestTargetSelector:self]; }
 
 @end

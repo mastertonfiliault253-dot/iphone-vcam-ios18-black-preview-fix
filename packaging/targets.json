@@ -1,76 +1,38 @@
 {
-  "schemaVersion": 1,
-  "scheme": "roothide",
-  "delivery": "single-package-multiple-binaries",
+  "schemaVersion": 2,
+  "scheme": "rootless",
+  "delivery": "single-package-two-injections-one-worker",
   "currentPackage": {
     "identifier": "com.codex.vcam",
-    "implementedTarget": "VCAMController"
+    "implementedTarget": "VCAMSystemBridge"
   },
   "targets": [
     {
-      "name": "VCAMController",
-      "package": "com.codex.vcam",
-      "binary": "VCAM.dylib",
-      "role": "camera-control-ui-and-current-camera-hooks",
-      "bundleIds": ["com.apple.camera"],
-      "executables": ["Camera"],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": [],
-      "status": "implemented"
-    },
-    {
-      "name": "VCAMAppClient",
-      "package": "com.codex.vcam",
-      "binary": "VCAMAppClient.dylib",
-      "role": "browser-floating-ui-and-capture-hooks",
-      "bundleIds": ["com.apple.mobilesafari", "com.google.chrome.ios", "com.microsoft.edge.ios", "com.google.GoogleMobile"],
-      "executables": [],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": [],
-      "status": "implemented-default-on"
-    },
-    {
-      "name": "VCAMWebKitClient",
-      "package": "com.codex.vcam",
-      "binary": "VCAMWebKitClient.dylib",
-      "role": "replace-capture-frames-in-safari-web-content-processes",
-      "bundleIds": ["com.apple.WebKit.WebContent"],
-      "executables": ["com.apple.WebKit.WebContent"],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": ["UIKit", "PhotosUI"],
-      "status": "implemented-default-on"
-    },
-    {
       "name": "VCAMMediaServerClient",
-      "package": "com.codex.vcam",
       "binary": "VCAMMediaServerClient.dylib",
-      "role": "system-wide virtual camera frame swap in mediaserverd",
+      "role": "nonblocking-latest-frame-consumer",
       "bundleIds": [],
       "executables": ["mediaserverd"],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": ["PhotosUI"],
-      "status": "implemented-default-on-high-risk"
+      "injected": true,
+      "forbiddenDependencies": ["FFmpeg", "UIKit", "AVAssetReader", "network"]
     },
     {
       "name": "VCAMSpringBoardClient",
-      "package": "com.codex.vcam",
       "binary": "VCAMSpringBoardClient.dylib",
-      "role": "home-screen-control-ui-and-single-configuration-writer",
+      "role": "white-dot-picker-configuration-and-preview",
       "bundleIds": ["com.apple.springboard"],
       "executables": ["SpringBoard"],
-      "separateBinary": true,
-      "separatePackage": false,
-      "defaultEnabled": true,
-      "forbiddenDependencies": ["FFmpeg", "VCAMCaptureHooks"],
-      "status": "implemented"
+      "injected": true,
+      "forbiddenDependencies": ["FFmpeg", "RTSP decoder", "local video decoder"]
+    },
+    {
+      "name": "vcamd",
+      "binary": "vcamd",
+      "role": "package-owned-media-worker",
+      "bundleIds": [],
+      "executables": ["vcamd"],
+      "injected": false,
+      "sources": ["local-image", "local-video", "obs-websocket", "rtsp-ffmpeg-videotoolbox"]
     }
   ]
 }

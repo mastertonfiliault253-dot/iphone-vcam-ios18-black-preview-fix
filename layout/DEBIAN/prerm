@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -e
+
+launchctl bootout user/foreground/com.codex.vcamd >/dev/null 2>&1 || \
+    launchctl bootout system/com.codex.vcamd >/dev/null 2>&1 || true
+
+exit 0
