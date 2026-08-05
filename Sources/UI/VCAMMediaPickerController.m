@@ -11,51 +11,6 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 extern NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) __attribute__((weak_import));
 extern NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) __attribute__((weak_import));
 
-#include <sys/time.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <string.h>
-#include <time.h>
-
-static void VCAMSBLog(const char *message) {
-    struct timeval tv = {0};
-    gettimeofday(&tv, NULL);
-    time_t now = tv.tv_sec;
-    struct tm brokenDown = {0};
-    localtime_r(&now, &brokenDown);
-    char stamp[64] = {0};
-    strftime(stamp, sizeof(stamp), "%H:%M:%S", &brokenDown);
-    char line[1024] = {0};
-    snprintf(line, sizeof(line), "[%d][%s.%03d] %s\n",
-             getpid(), stamp, (int)(tv.tv_usec / 1000), message);
-    int descriptor = open("/var/mobile/Media/VCAM/vcam-sb-ui.log",
-                          O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (descriptor >= 0) {
-        (void)write(descriptor, line, strlen(line));
-        close(descriptor);
-    }
-}
-
-@interface VCAMPassthroughView : UIView
-@end
-
-@implementation VCAMPassthroughView
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hit = [super hitTest:point withEvent:event];
-    return (hit == self) ? nil : hit;
-}
-@end
-
-@interface VCAMPassthroughViewController : UIViewController
-@end
-
-@implementation VCAMPassthroughViewController
-- (void)loadView {
-    self.view = [[VCAMPassthroughView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-}
-- (BOOL)prefersStatusBarHidden { return YES; }
-@end
-
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
                                            const void *object, CFDictionaryRef userInfo) {
     (void)center; (void)name; (void)object; (void)userInfo;
@@ -133,51 +88,7 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     return nil;
 }
 
-- (UIWindow *)springBoardOverlayWindow {
-    if (![self isSpringBoardHost]) return nil;
-    static UIWindow *overlayWindow;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // SpringBoard's status bar window already floats above every app;
-        // attach there first (known reliable), then fall back to our own
-        // scene-aware window, then a plain full-screen window.
-        SEL statusBarSelector = NSSelectorFromString(@"statusBarWindow");
-        if ([UIApplication.sharedApplication respondsToSelector:statusBarSelector]) {
-            UIWindow *statusWindow = ((UIWindow *(*)(id, SEL))objc_msgSend)(
-                UIApplication.sharedApplication, statusBarSelector);
-            if (statusWindow != nil && !statusWindow.hidden) {
-                overlayWindow = statusWindow;
-                VCAMSBLog("overlay: using SpringBoard statusBarWindow");
-            }
-        }
-        if (overlayWindow == nil) {
-            UIWindowScene *activeScene = nil;
-            for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
-                if ([candidate isKindOfClass:UIWindowScene.class] &&
-                    candidate.activationState == UISceneActivationStateForegroundActive) {
-                    activeScene = (UIWindowScene *)candidate;
-                    break;
-                }
-            }
-            if (activeScene != nil) {
-                overlayWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
-                overlayWindow.frame = activeScene.coordinateSpace.bounds;
-                VCAMSBLog("overlay: created with windowScene");
-            } else {
-                overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-                VCAMSBLog("overlay: no windowScene, created with frame");
-            }
-            overlayWindow.windowLevel = 1500.0;
-            overlayWindow.rootViewController = [VCAMPassthroughViewController new];
-            overlayWindow.hidden = NO;
-        }
-    });
-    return overlayWindow;
-}
-
 - (nullable UIWindow *)cameraWindow {
-    UIWindow *overlay = [self springBoardOverlayWindow];
-    if (overlay != nil) return overlay;
     UIWindow *springBoardWindow = [self springBoardHomeWindow];
     if (springBoardWindow != nil) return springBoardWindow;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -248,13 +159,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 - (void)installButtonWhenWindowIsReady {
     NSAssert(NSThread.isMainThread, @"VCAM picker UI must run on the main thread");
     UIWindow *window = [self cameraWindow];
-    if (window != nil) {
-        char winBuf[256] = {0};
-        snprintf(winBuf, sizeof(winBuf), "install: window=%s level=%.1f hidden=%d frame=%.0fx%.0f",
-                 NSStringFromClass(window.class).UTF8String, (double)window.windowLevel, window.hidden,
-                 CGRectGetWidth(window.bounds), CGRectGetHeight(window.bounds));
-        VCAMSBLog(winBuf);
-    }
     if (window == nil) {
         if (self.remainingWindowRetries-- > 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
@@ -318,12 +222,6 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     NSDictionary *values = [VCAMConfiguration currentValues];
     self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
     [window bringSubviewToFront:self.button];
-    char attachBuf[256] = {0};
-    snprintf(attachBuf, sizeof(attachBuf), "attach: superview=%s hidden=%d visible=%d win=%s",
-             NSStringFromClass(self.button.superview.class).UTF8String, self.button.hidden,
-             [self isFloatingButtonVisibleForValues:values],
-             NSStringFromClass(window.class).UTF8String);
-    VCAMSBLog(attachBuf);
 }
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
