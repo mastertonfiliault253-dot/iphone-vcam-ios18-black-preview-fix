@@ -54,10 +54,10 @@ class InjectionSafetyTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
         self.assertIn("VCAMMediaServerClient_FILES", makefile)
-        entry = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerEntry.xm").read_text(encoding="utf-8")
+        entry = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm").read_text(encoding="utf-8")
         self.assertIn("BWNodeOutput", entry)
         self.assertIn("emitSampleBuffer", entry)
-        self.assertIn("VCAMMediaServerReplacementDrawsIntoBuffer", entry)
+        self.assertIn("loadReplacementMedia", entry)
         self.assertIn("VCAMMediaServerClient_CFLAGS", makefile)
         self.assertIn("-DVCAM_WITH_CONTROL_UI=0", makefile)
         ms_block = makefile.split("VCAMMediaServerClient_FILES", 1)[1].split("VCAMSpringBoardClient_FILES", 1)[0]

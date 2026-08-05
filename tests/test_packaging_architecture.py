@@ -46,8 +46,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("UIKit", ms["forbiddenDependencies"])
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("VCAMMediaServerClient", makefile)
-        self.assertIn("VCAMMediaServerEntry.xm", makefile)
-        self.assertIn("VCAMMediaServerProvider.m", makefile)
+        self.assertIn("VCAMMediaServerRefEntry.xm", makefile)
+        self.assertIn("VCAMMediaServerRefImageUtils.m", makefile)
         self.assertTrue((ROOT / "VCAMMediaServerClient.plist").exists())
         self.assertFalse((ROOT / "VCAMProcessClient.plist").exists())
 
