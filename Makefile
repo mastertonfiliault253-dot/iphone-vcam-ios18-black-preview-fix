@@ -40,9 +40,9 @@ VCAMWebKitClient_FRAMEWORKS = AVFoundation AudioToolbox CoreImage CoreMedia Core
 VCAMWebKitClient_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 VCAMWebKitClient_LIBRARIES = avformat avcodec avutil
 
-VCAMMediaServerClient_FILES = Sources/Hooks/VCAMMediaServerEntry.xm Sources/Hooks/VCAMMediaServerProvider.m Sources/Core/VCAMConfiguration.m Sources/Core/VCAMInjectionPolicy.m
-VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=0
-VCAMMediaServerClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation ImageIO
+VCAMMediaServerClient_FILES = Sources/Hooks/VCAMMediaServerRefEntry.xm Sources/Hooks/VCAMMediaServerRefImageUtils.m
+VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations
+VCAMMediaServerClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation ImageIO UIKit
 
 VCAMSpringBoardClient_FILES = Sources/Hooks/VCAMSpringBoardEntry.xm Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m Sources/Core/VCAMConfiguration.m Sources/Core/VCAMInjectionPolicy.m $(VCAM_UI_FILES)
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1
