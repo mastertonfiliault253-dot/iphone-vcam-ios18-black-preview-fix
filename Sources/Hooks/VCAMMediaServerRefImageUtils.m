@@ -24,7 +24,23 @@ static NSString *VCAMReferenceMediaPath(void) {
         config = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
         path = config[@"mediaPath"];
     }
-    if ([path isKindOfClass:NSString.class] && path.length > 0) return path;
+    if ([path isKindOfClass:NSString.class] && path.length > 0) {
+        // mediaserverd's sandbox cannot read the shared media directory, and
+        // the UI may rewrite the config path, so prefer a /var/tmp mirror of
+        // the chosen file whenever one exists.
+        NSString *name = path.lastPathComponent;
+        if (name.length > 0) {
+            NSString *mirror = [@"/var/tmp" stringByAppendingPathComponent:name];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:mirror]) {
+                return mirror;
+            }
+            NSString *fixedMirror = @"/var/tmp/vcam-selected.mov";
+            if ([[NSFileManager defaultManager] fileExistsAtPath:fixedMirror]) {
+                return fixedMirror;
+            }
+        }
+        return path;
+    }
     return @"/var/tmp/vcam-selected.mov";
 }
 
