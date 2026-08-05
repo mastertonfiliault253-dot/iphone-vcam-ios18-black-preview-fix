@@ -52,7 +52,7 @@ fi
 PACKAGE_PATH="${PACKAGES[0]}"
 PACKAGE_VERSION="$(dpkg-deb -f "$PACKAGE_PATH" Version)"
 PACKAGE_ARCH="$(dpkg-deb -f "$PACKAGE_PATH" Architecture)"
-if [[ "$PACKAGE_VERSION" != "0.6.0+worker4" ]]; then
+if [[ "$PACKAGE_VERSION" != "0.6.0+worker5" ]]; then
   echo "Unexpected package version: $PACKAGE_VERSION" >&2
   exit 1
 fi
@@ -61,8 +61,8 @@ if [[ "$PACKAGE_ARCH" != "iphoneos-arm64" ]]; then
   exit 1
 fi
 
-STAGING_DIR="$PROJECT_ROOT/dist/worker4-rootless"
-STAGED_PACKAGE="$STAGING_DIR/com.codex.vcam_0.6.0+worker4_iphoneos-arm64.deb"
+STAGING_DIR="$PROJECT_ROOT/dist/worker5-rootless"
+STAGED_PACKAGE="$STAGING_DIR/com.codex.vcam_0.6.0+worker5_iphoneos-arm64.deb"
 mkdir -p "$STAGING_DIR"
 cp "$PACKAGE_PATH" "$STAGED_PACKAGE"
 

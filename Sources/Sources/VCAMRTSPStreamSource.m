@@ -1,5 +1,6 @@
 #import "VCAMRTSPStreamSource.h"
 #import <QuartzCore/QuartzCore.h>
+#import <errno.h>
 #import <math.h>
 #import <stdlib.h>
 
@@ -20,6 +21,12 @@ static void VCAMPublishRTSPPerformance(NSDictionary<NSString *, id> *snapshot) {
     @synchronized ([VCAMRTSPStreamSource class]) {
         VCAMRTSPPerformance = [snapshot copy];
     }
+}
+
+static NSString *VCAMFFmpegErrorDescription(int result) {
+    char buffer[AV_ERROR_MAX_STRING_SIZE] = {0};
+    if (av_strerror(result, buffer, sizeof(buffer)) != 0) return [NSString stringWithFormat:@"%d", result];
+    return [NSString stringWithFormat:@"%d (%s)", result, buffer];
 }
 
 static int VCAMCompareRTSPInterval(const void *left, const void *right) {
@@ -234,6 +241,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     const AVCodec *decoder = NULL;
     BOOL useHardware = self.hardwareDecodeEnabled;
     BOOL producedFrame = NO;
+    BOOL loggedSoftwareFrame = NO;
+    BOOL loggedSoftwareConversionFailure = NO;
+    BOOL loggedReceiveFailure = NO;
+    BOOL loggedSendFailure = NO;
     NSUInteger videoPacketsWithoutFrame = 0;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
     const char *url = urlString.UTF8String;
@@ -253,6 +264,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     stream = formatContext->streams[videoStream];
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (decoder == NULL) goto cleanup;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d",
+        useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
+        stream->codecpar->width, stream->codecpar->height, stream->codecpar->format]];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
@@ -274,24 +289,53 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
             videoPacketsWithoutFrame += 1;
-            if (avcodec_send_packet(codecContext, packet) >= 0) {
-                while (self.running && avcodec_receive_frame(codecContext, frame) >= 0) {
+            int sendResult = avcodec_send_packet(codecContext, packet);
+            if (sendResult >= 0) {
+                while (self.running) {
+                    int receiveResult = avcodec_receive_frame(codecContext, frame);
+                    if (receiveResult < 0) {
+                        if (receiveResult != AVERROR(EAGAIN) && receiveResult != AVERROR_EOF &&
+                            !loggedReceiveFailure) {
+                            loggedReceiveFailure = YES;
+                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                @"rtsp receive_frame failed hardware=%d error=%@", useHardware,
+                                VCAMFFmpegErrorDescription(receiveResult)]];
+                        }
+                        break;
+                    }
                     if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
                         CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)frame->data[3];
                         [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
                         producedFrame = YES;
                         videoPacketsWithoutFrame = 0;
                     } else if (!useHardware) {
+                        if (!loggedSoftwareFrame) {
+                            loggedSoftwareFrame = YES;
+                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                @"rtsp software frame format=%d size=%dx%d lines=%d,%d,%d",
+                                frame->format, frame->width, frame->height, frame->linesize[0],
+                                frame->linesize[1], frame->linesize[2]]];
+                        }
                         CVPixelBufferRef pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
                         if (pixelBuffer != NULL) {
                             [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
                             CVPixelBufferRelease(pixelBuffer);
                             producedFrame = YES;
                             videoPacketsWithoutFrame = 0;
+                        } else if (!loggedSoftwareConversionFailure) {
+                            loggedSoftwareConversionFailure = YES;
+                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                @"rtsp software conversion failed format=%d size=%dx%d",
+                                frame->format, frame->width, frame->height]];
                         }
                     }
                     av_frame_unref(frame);
                 }
+            } else if (sendResult != AVERROR(EAGAIN) && !loggedSendFailure) {
+                loggedSendFailure = YES;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"rtsp send_packet failed hardware=%d error=%@", useHardware,
+                    VCAMFFmpegErrorDescription(sendResult)]];
             }
             if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 60) {
                 av_packet_unref(packet);

@@ -54,6 +54,7 @@ class PackagingArchitectureTests(unittest.TestCase):
 
         main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
         self.assertIn("MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES", main)
+        self.assertIn("MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES", main)
         self.assertIn("memlimit_active = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("memlimit_inactive = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("VCAMWorkerMemoryLimitMB = 256", main)

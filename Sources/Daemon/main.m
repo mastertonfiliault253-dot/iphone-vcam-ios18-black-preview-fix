@@ -15,6 +15,7 @@ static dispatch_source_t VCAMTimer;
 
 enum {
     MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES = 7,
+    MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES = 8,
     VCAMWorkerMemoryLimitMB = 256,
 };
 
@@ -35,8 +36,18 @@ static BOOL VCAMRaiseJetsamMemoryLimit(void) {
     int result = memorystatus_control(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES,
                                       getpid(), 0, &properties, sizeof(properties));
     if (result == 0) {
-        fprintf(stderr, "vcamd jetsam memory limit set to %d MB\n",
-                VCAMWorkerMemoryLimitMB);
+        VCAMMemorystatusMemlimitProperties effective = {0};
+        int queryResult = memorystatus_control(MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES,
+                                               getpid(), 0, &effective, sizeof(effective));
+        if (queryResult == 0) {
+            fprintf(stderr,
+                    "vcamd jetsam memory limit set to %d MB; effective active=%d inactive=%d MB\n",
+                    VCAMWorkerMemoryLimitMB, effective.memlimit_active,
+                    effective.memlimit_inactive);
+        } else {
+            fprintf(stderr, "vcamd jetsam memory limit set to %d MB; query failed: %s\n",
+                    VCAMWorkerMemoryLimitMB, strerror(errno));
+        }
     } else {
         fprintf(stderr, "vcamd failed to set jetsam memory limit: %s\n", strerror(errno));
     }
