@@ -38,8 +38,7 @@ jobs:
           make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
       - name: Validate rootless release shape
         run: |
-          set -euxo pipefail
-          find packages .theos/_ -type f -print
+          set -euo pipefail
           deb_count="$(find packages -maxdepth 1 -type f -name '*.deb' -print | wc -l | tr -d ' ')"
           test "$deb_count" -eq 1
           deb="$(find packages -maxdepth 1 -type f -name '*.deb' -print)"
@@ -53,13 +52,12 @@ jobs:
           lipo -info "$media_client"
           lipo -info "$springboard_client"
           lipo -info "$worker"
-          lipo -verify_arch arm64 arm64e "$media_client"
-          lipo -verify_arch arm64 arm64e "$springboard_client"
-          lipo -verify_arch arm64 "$worker"
+          lipo "$media_client" -verify_arch arm64 arm64e
+          lipo "$springboard_client" -verify_arch arm64 arm64e
+          lipo "$worker" -verify_arch arm64
           obsolete_count="$(find .theos/_ -type f \( -name VCAM.dylib -o -name VCAMAppClient.dylib -o -name VCAMWebKitClient.dylib \) -print | wc -l | tr -d ' ')"
           test "$obsolete_count" -eq 0
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: vcam-rootless
           path: packages/*.deb
