@@ -236,8 +236,8 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     UIWindow *window = [self cameraWindow];
     if (window != nil) {
         char winBuf[256] = {0};
-        snprintf(winBuf, sizeof(winBuf), "install: window=%@ level=%.1f hidden=%d frame=%.0fx%.0f",
-                 NSStringFromClass(window.class), (double)window.windowLevel, window.hidden,
+        snprintf(winBuf, sizeof(winBuf), "install: window=%s level=%.1f hidden=%d frame=%.0fx%.0f",
+                 NSStringFromClass(window.class).UTF8String, (double)window.windowLevel, window.hidden,
                  CGRectGetWidth(window.bounds), CGRectGetHeight(window.bounds));
         VCAMSBLog(winBuf);
     }
@@ -305,10 +305,10 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
     [window bringSubviewToFront:self.button];
     char attachBuf[256] = {0};
-    snprintf(attachBuf, sizeof(attachBuf), "attach: superview=%@ hidden=%d visible=%d win=%@",
-             NSStringFromClass(self.button.superview.class), self.button.hidden,
+    snprintf(attachBuf, sizeof(attachBuf), "attach: superview=%s hidden=%d visible=%d win=%s",
+             NSStringFromClass(self.button.superview.class).UTF8String, self.button.hidden,
              [self isFloatingButtonVisibleForValues:values],
-             NSStringFromClass(window.class));
+             NSStringFromClass(window.class).UTF8String);
     VCAMSBLog(attachBuf);
 }
 
