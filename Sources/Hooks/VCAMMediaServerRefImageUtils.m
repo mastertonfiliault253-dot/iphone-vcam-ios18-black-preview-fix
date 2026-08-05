@@ -32,7 +32,10 @@ static CVPixelBufferRef VCAMLastVirtualFrame;
 static CIContext *VCAMContext;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
-static VTPixelTransferSessionRef VCAMPixelTransferSession;
+// Keep the process-lifetime session in an availability-neutral CF slot. The
+// concrete VTPixelTransferSessionRef type is iOS 16+, while the package keeps
+// an iOS 15 deployment target so unsupported systems can fail closed.
+static CFTypeRef VCAMPixelTransferSession;
 static volatile int VCAMConsecutiveSlowRenders;
 // -1 means no valid configuration has been read yet. Treat that state as
 // enabled/fail-closed until an explicit valid false is observed.
@@ -271,18 +274,23 @@ void loadReplacementMedia(void) {
         CVReturn result = VCAMCreateStagingPool(
             kCVPixelFormatType_32BGRA,
             VCAMSharedFrameWidth, VCAMSharedFrameHeight, &VCAMScratchPool);
-        OSStatus transferCreateResult = VTPixelTransferSessionCreate(
-            kCFAllocatorDefault, &VCAMPixelTransferSession);
-        OSStatus scalingResult = transferCreateResult == noErr
-            ? VTSessionSetProperty(VCAMPixelTransferSession,
-                                   kVTPixelTransferPropertyKey_ScalingMode,
-                                   kVTScalingMode_Normal)
-            : transferCreateResult;
-        OSStatus realtimeResult = transferCreateResult == noErr
-            ? VTSessionSetProperty(VCAMPixelTransferSession,
-                                   kVTPixelTransferPropertyKey_RealTime,
-                                   kCFBooleanTrue)
-            : transferCreateResult;
+        OSStatus transferCreateResult = kCVReturnUnsupported;
+        OSStatus scalingResult = transferCreateResult;
+        OSStatus realtimeResult = transferCreateResult;
+        if (@available(iOS 16.0, *)) {
+            VTPixelTransferSessionRef transferSession = NULL;
+            transferCreateResult = VTPixelTransferSessionCreate(
+                kCFAllocatorDefault, &transferSession);
+            if (transferCreateResult == noErr) {
+                VCAMPixelTransferSession = transferSession;
+                scalingResult = VTSessionSetProperty(
+                    transferSession, kVTPixelTransferPropertyKey_ScalingMode,
+                    kVTScalingMode_Normal);
+                realtimeResult = VTSessionSetProperty(
+                    transferSession, kVTPixelTransferPropertyKey_RealTime,
+                    kCFBooleanTrue);
+            }
+        }
         VCAMReloadConfiguredMode();
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(), NULL,
@@ -428,10 +436,14 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     CVBufferRemoveAllAttachments(stagingBuffer);
     VCAMCopyColorAttachments(originalTargetBuffer, stagingBuffer);
 
-    [VCAMPixelTransferLock lock];
-    OSStatus transferStatus = VTPixelTransferSessionTransferImage(
-        VCAMPixelTransferSession, stagingBuffer, replacementTargetBuffer);
-    [VCAMPixelTransferLock unlock];
+    OSStatus transferStatus = kCVReturnUnsupported;
+    if (@available(iOS 16.0, *)) {
+        [VCAMPixelTransferLock lock];
+        transferStatus = VTPixelTransferSessionTransferImage(
+            (VTPixelTransferSessionRef)VCAMPixelTransferSession,
+            stagingBuffer, replacementTargetBuffer);
+        [VCAMPixelTransferLock unlock];
+    }
 
     if (transferStatus != noErr) {
         static volatile int transferFailures = 0;

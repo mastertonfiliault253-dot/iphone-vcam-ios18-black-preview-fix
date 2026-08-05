@@ -53,6 +53,12 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VideoToolbox", frameworks_line)
         self.assertNotIn("VTDecompressionSession", implementation)
         self.assertNotIn("VTCompressionSession", implementation)
+        self.assertIn("if (@available(iOS 16.0, *))", implementation)
+        self.assertIn("static CFTypeRef VCAMPixelTransferSession", implementation)
+        self.assertNotIn(
+            "static VTPixelTransferSessionRef VCAMPixelTransferSession",
+            implementation,
+        )
 
     def test_mediaserver_replaces_only_validated_consumer_outputs(self) -> None:
         implementation = (
