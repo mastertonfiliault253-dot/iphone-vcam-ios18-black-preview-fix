@@ -11,10 +11,17 @@
 
 // This can be a static image or video file
 static NSString *VCAMReferenceMediaPath(void) {
-    NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+    // mediaserverd's sandbox cannot read /var/mobile/Media/VCAM, so prefer a
+    // copy under /var/tmp (the daemon's writable scratch space) and fall back
+    // to the app-facing shared config, then a tmp media default.
+    NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:@"/var/tmp/com.codex.vcam.plist"];
     NSString *path = config[@"mediaPath"];
+    if (![path isKindOfClass:NSString.class] || path.length == 0) {
+        config = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+        path = config[@"mediaPath"];
+    }
     if ([path isKindOfClass:NSString.class] && path.length > 0) return path;
-    return @"/var/mobile/Media/VCAM/selected.mov";
+    return @"/var/tmp/vcam-selected.mov";
 }
 
 
