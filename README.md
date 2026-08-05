@@ -12,7 +12,9 @@ Only two Apple processes are injected:
 - `mediaserverd`: reads the latest 720×1280 BGRA frame from a three-slot shared
   mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
-  observed BGRA, bi-planar YUV and device-private compressed recording formats.
+  observed BGRA and bi-planar YUV formats. Device-private compressed recording
+  buffers use a target-sized public `420v` staging surface, VideoToolbox pixel
+  transfer into a private-format clone, and a PTS-matched encoded-output guard.
   Once virtual mode is enabled, a missing, stale or unrenderable source never
   exposes a real camera frame: the last virtual frame is retained when possible,
   otherwise a black frame is emitted or that consumer sample is suppressed.
@@ -86,3 +88,6 @@ python -m py_compile desktop\*.py scripts\*.py
 6. Validate front, back, tele, ultra-wide and external routes on the hardware
    that exposes them. A supported architecture is not a substitute for captured
    on-device route and output evidence.
+7. With the phone upright, verify Camera preview, Safari/WebRTC and saved stills
+   are upright; then record front/back 1080p30 and 4K30 clips and inspect their
+   first, middle and final frames. The `mediaserverd` PID must remain stable.

@@ -2,7 +2,9 @@
 
 #import <CoreImage/CoreImage.h>
 #import <CoreVideo/CVPixelFormatDescription.h>
+#import <ImageIO/CGImageProperties.h>
 #import <Metal/Metal.h>
+#import <VideoToolbox/VideoToolbox.h>
 #import "../Shared/VCAMSharedFrame.h"
 
 #include <fcntl.h>
@@ -16,9 +18,21 @@
 
 static VCAMSharedFrameReader *VCAMReader;
 static CVPixelBufferPoolRef VCAMScratchPool;
+static CVPixelBufferPoolRef VCAMCompressedStagingPool;
+static size_t VCAMCompressedStagingWidth;
+static size_t VCAMCompressedStagingHeight;
+static CVPixelBufferPoolRef VCAMCompressedTargetPool;
+static OSType VCAMCompressedTargetFormat;
+static size_t VCAMCompressedTargetWidth;
+static size_t VCAMCompressedTargetHeight;
+static CFDictionaryRef VCAMCompressedTargetCreationAttributes;
+static CVPixelBufferRef VCAMLastCompressedVirtualFrame;
+static CFDictionaryRef VCAMLastCompressedVirtualFrameCreationAttributes;
 static CVPixelBufferRef VCAMLastVirtualFrame;
 static CIContext *VCAMContext;
 static NSLock *VCAMReaderLock;
+static NSLock *VCAMPixelTransferLock;
+static VTPixelTransferSessionRef VCAMPixelTransferSession;
 static volatile int VCAMConsecutiveSlowRenders;
 // -1 means no valid configuration has been read yet. Treat that state as
 // enabled/fail-closed until an explicit valid false is observed.
@@ -28,6 +42,176 @@ static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     double a = *(const double *)left;
     double b = *(const double *)right;
     return (a > b) - (a < b);
+}
+
+static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
+    return format == kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
+        format == (OSType)0x5b387630 || // observed private compressed '[8v0'
+        format == (OSType)0x7d387630;   // observed private compressed '}8v0'
+}
+
+static CVReturn VCAMCreateStagingPool(OSType format, size_t width, size_t height,
+                                     CVPixelBufferPoolRef *poolOut) {
+    NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @2};
+    NSDictionary *pixelAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(format),
+        (id)kCVPixelBufferWidthKey: @(width),
+        (id)kCVPixelBufferHeightKey: @(height),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+    };
+    return CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                   (__bridge CFDictionaryRef)poolAttributes,
+                                   (__bridge CFDictionaryRef)pixelAttributes,
+                                   poolOut);
+}
+
+static CVReturn VCAMCreateCompressedStagingBuffer(size_t width, size_t height,
+                                                  CVPixelBufferRef *bufferOut) {
+    if (bufferOut == NULL || VCAMPixelTransferLock == nil) return kCVReturnInvalidArgument;
+    *bufferOut = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMCompressedStagingPool == NULL ||
+        VCAMCompressedStagingWidth != width ||
+        VCAMCompressedStagingHeight != height) {
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = VCAMCreateStagingPool(
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            width, height, &replacementPool);
+        if (poolStatus != kCVReturnSuccess) {
+            [VCAMPixelTransferLock unlock];
+            return poolStatus;
+        }
+        if (VCAMCompressedStagingPool != NULL) {
+            CVPixelBufferPoolRelease(VCAMCompressedStagingPool);
+        }
+        VCAMCompressedStagingPool = replacementPool;
+        VCAMCompressedStagingWidth = width;
+        VCAMCompressedStagingHeight = height;
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMCompressedStagingPool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    return bufferStatus;
+}
+
+static CVReturn VCAMCreateCompressedTargetBuffer(CVPixelBufferRef targetBuffer,
+                                                 CVPixelBufferRef *bufferOut) {
+    if (targetBuffer == NULL || bufferOut == NULL ||
+        VCAMPixelTransferLock == nil) return kCVReturnInvalidArgument;
+    *bufferOut = NULL;
+    size_t width = CVPixelBufferGetWidth(targetBuffer);
+    size_t height = CVPixelBufferGetHeight(targetBuffer);
+    OSType format = CVPixelBufferGetPixelFormatType(targetBuffer);
+    CFDictionaryRef creationAttributes =
+        CVPixelBufferCopyCreationAttributes(targetBuffer);
+    if (creationAttributes == NULL) return kCVReturnInvalidPixelBufferAttributes;
+
+    [VCAMPixelTransferLock lock];
+    if (VCAMCompressedTargetPool == NULL ||
+        VCAMCompressedTargetFormat != format ||
+        VCAMCompressedTargetWidth != width ||
+        VCAMCompressedTargetHeight != height ||
+        VCAMCompressedTargetCreationAttributes == NULL ||
+        !CFEqual(VCAMCompressedTargetCreationAttributes, creationAttributes)) {
+        NSDictionary *poolAttributes = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @3,
+        };
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            (__bridge CFDictionaryRef)poolAttributes,
+            creationAttributes,
+            &replacementPool);
+        if (poolStatus != kCVReturnSuccess) {
+            [VCAMPixelTransferLock unlock];
+            CFRelease(creationAttributes);
+            return poolStatus;
+        }
+        if (VCAMCompressedTargetPool != NULL) {
+            CVPixelBufferPoolRelease(VCAMCompressedTargetPool);
+        }
+        if (VCAMCompressedTargetCreationAttributes != NULL) {
+            CFRelease(VCAMCompressedTargetCreationAttributes);
+        }
+        if (VCAMLastCompressedVirtualFrame != NULL) {
+            CVPixelBufferRelease(VCAMLastCompressedVirtualFrame);
+            VCAMLastCompressedVirtualFrame = NULL;
+        }
+        if (VCAMLastCompressedVirtualFrameCreationAttributes != NULL) {
+            CFRelease(VCAMLastCompressedVirtualFrameCreationAttributes);
+            VCAMLastCompressedVirtualFrameCreationAttributes = NULL;
+        }
+        VCAMCompressedTargetPool = replacementPool;
+        VCAMCompressedTargetFormat = format;
+        VCAMCompressedTargetWidth = width;
+        VCAMCompressedTargetHeight = height;
+        VCAMCompressedTargetCreationAttributes =
+            (CFDictionaryRef)CFRetain(creationAttributes);
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMCompressedTargetPool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    CFRelease(creationAttributes);
+    return bufferStatus;
+}
+
+static void VCAMRememberCompressedVirtualFrame(CVPixelBufferRef pixelBuffer,
+                                               CVPixelBufferRef targetBuffer) {
+    if (pixelBuffer == NULL || targetBuffer == NULL ||
+        VCAMPixelTransferLock == nil) return;
+    CFDictionaryRef creationAttributes =
+        CVPixelBufferCopyCreationAttributes(targetBuffer);
+    if (creationAttributes == NULL) return;
+    [VCAMPixelTransferLock lock];
+    if (VCAMLastCompressedVirtualFrame != NULL) {
+        CVPixelBufferRelease(VCAMLastCompressedVirtualFrame);
+    }
+    if (VCAMLastCompressedVirtualFrameCreationAttributes != NULL) {
+        CFRelease(VCAMLastCompressedVirtualFrameCreationAttributes);
+    }
+    VCAMLastCompressedVirtualFrame = CVPixelBufferRetain(pixelBuffer);
+    VCAMLastCompressedVirtualFrameCreationAttributes = creationAttributes;
+    [VCAMPixelTransferLock unlock];
+}
+
+static BOOL VCAMCopyLastCompressedVirtualFrame(CVPixelBufferRef targetBuffer,
+                                               CVPixelBufferRef *bufferOut) {
+    if (targetBuffer == NULL || bufferOut == NULL ||
+        VCAMPixelTransferLock == nil) return NO;
+    CFDictionaryRef creationAttributes =
+        CVPixelBufferCopyCreationAttributes(targetBuffer);
+    if (creationAttributes == NULL) return NO;
+    size_t width = CVPixelBufferGetWidth(targetBuffer);
+    size_t height = CVPixelBufferGetHeight(targetBuffer);
+    OSType format = CVPixelBufferGetPixelFormatType(targetBuffer);
+    BOOL copied = NO;
+    [VCAMPixelTransferLock lock];
+    if (VCAMLastCompressedVirtualFrame != NULL &&
+        VCAMLastCompressedVirtualFrameCreationAttributes != NULL &&
+        CFEqual(VCAMLastCompressedVirtualFrameCreationAttributes,
+                creationAttributes) &&
+        CVPixelBufferGetWidth(VCAMLastCompressedVirtualFrame) == width &&
+        CVPixelBufferGetHeight(VCAMLastCompressedVirtualFrame) == height &&
+        CVPixelBufferGetPixelFormatType(VCAMLastCompressedVirtualFrame) == format) {
+        *bufferOut = CVPixelBufferRetain(VCAMLastCompressedVirtualFrame);
+        copied = YES;
+    }
+    [VCAMPixelTransferLock unlock];
+    CFRelease(creationAttributes);
+    if (copied) {
+        static volatile int staleCompressedFrames = 0;
+        int staleCount = __sync_add_and_fetch(&staleCompressedFrames, 1);
+        if (staleCount <= 8 || staleCount % 300 == 0) {
+            char message[192] = {0};
+            snprintf(message, sizeof(message),
+                     "using last virtual compressed frame count=%d format=%08x",
+                     staleCount, format);
+            VCAMRefLog(message);
+        }
+    }
+    return copied;
 }
 
 static void VCAMReloadConfiguredMode(void) {
@@ -83,18 +267,22 @@ void loadReplacementMedia(void) {
             ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
             : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
         VCAMReaderLock = [NSLock new];
-        NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @2};
-        NSDictionary *pixelAttributes = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-            (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
-            (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
-            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-        };
-        CVReturn result = CVPixelBufferPoolCreate(kCFAllocatorDefault,
-                                                   (__bridge CFDictionaryRef)poolAttributes,
-                                                   (__bridge CFDictionaryRef)pixelAttributes,
-                                                   &VCAMScratchPool);
+        VCAMPixelTransferLock = [NSLock new];
+        CVReturn result = VCAMCreateStagingPool(
+            kCVPixelFormatType_32BGRA,
+            VCAMSharedFrameWidth, VCAMSharedFrameHeight, &VCAMScratchPool);
+        OSStatus transferCreateResult = VTPixelTransferSessionCreate(
+            kCFAllocatorDefault, &VCAMPixelTransferSession);
+        OSStatus scalingResult = transferCreateResult == noErr
+            ? VTSessionSetProperty(VCAMPixelTransferSession,
+                                   kVTPixelTransferPropertyKey_ScalingMode,
+                                   kVTScalingMode_Normal)
+            : transferCreateResult;
+        OSStatus realtimeResult = transferCreateResult == noErr
+            ? VTSessionSetProperty(VCAMPixelTransferSession,
+                                   kVTPixelTransferPropertyKey_RealTime,
+                                   kCFBooleanTrue)
+            : transferCreateResult;
         VCAMReloadConfiguredMode();
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(), NULL,
@@ -103,6 +291,17 @@ void loadReplacementMedia(void) {
         VCAMRefLog(result == kCVReturnSuccess
             ? "shared-frame reader initialized"
             : "shared-frame scratch pool initialization failed");
+        if (transferCreateResult == noErr && scalingResult == noErr &&
+            realtimeResult == noErr) {
+            VCAMRefLog("compressed pixel transfer initialized");
+        } else {
+            char message[224] = {0};
+            snprintf(message, sizeof(message),
+                     "compressed pixel transfer initialization failed create=%d scaling=%d realtime=%d",
+                     (int)transferCreateResult,
+                     (int)scalingResult, (int)realtimeResult);
+            VCAMRefLog(message);
+        }
     });
 }
 
@@ -140,11 +339,7 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
             CVPixelBufferGetPlaneCount(targetBuffer) == 0 &&
             CVPixelBufferGetBytesPerRow(targetBuffer) >= width * 4;
     }
-    BOOL compressedVideoRange =
-        format == kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange ||
-        format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
-        format == (OSType)0x5b387630 || // observed private compressed '[8v0'
-        format == (OSType)0x7d387630;   // observed private compressed '}8v0'
+    BOOL compressedVideoRange = VCAMFormatIsCompressedVideoRange(format);
     if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
         format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
         !compressedVideoRange) return NO;
@@ -153,7 +348,7 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
         CVPixelBufferGetPlaneCount(targetBuffer) != 2) return NO;
     if (compressedVideoRange) {
         // Apple explicitly forbids CPU interpretation of compressed planes.
-        // Core Image/Metal owns the write; the IOSurface and device capability
+        // VideoToolbox owns the write; the IOSurface and device capability
         // checks are the only safe validation available here.
         return CVIsCompressedPixelFormatAvailable(format) ||
             format == (OSType)0x5b387630 || format == (OSType)0x7d387630;
@@ -182,13 +377,93 @@ static BOOL VCAMFillBlackSharedFrame(CVPixelBufferRef pixelBuffer) {
     return YES;
 }
 
-BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget) {
+static void VCAMCopyColorAttachments(CVPixelBufferRef sourceBuffer,
+                                     CVPixelBufferRef destinationBuffer) {
+    const CFStringRef keys[] = {
+        kCVImageBufferColorPrimariesKey,
+        kCVImageBufferTransferFunctionKey,
+        kCVImageBufferYCbCrMatrixKey,
+    };
+    for (NSUInteger index = 0; index < sizeof(keys) / sizeof(keys[0]); index++) {
+        CVAttachmentMode mode = kCVAttachmentMode_ShouldNotPropagate;
+        CFTypeRef value = CVBufferGetAttachment(sourceBuffer, keys[index], &mode);
+        if (value != NULL) CVBufferSetAttachment(destinationBuffer, keys[index], value, mode);
+    }
+}
+
+static void VCAMMergeGraphAttachments(CVPixelBufferRef sourceBuffer,
+                                      CVPixelBufferRef destinationBuffer) {
+    // Keep VideoToolbox's content-description attachments authoritative. Only
+    // fill missing, public graph-contract keys whose values remain valid for a
+    // same-sized clone; never copy opaque camera/private metadata wholesale.
+    const CFStringRef keys[] = {
+        kCVImageBufferCleanApertureKey,
+        kCVImageBufferPixelAspectRatioKey,
+        kCVImageBufferFieldCountKey,
+        kCVImageBufferFieldDetailKey,
+        kCVImageBufferChromaLocationTopFieldKey,
+        kCVImageBufferChromaLocationBottomFieldKey,
+        kCVImageBufferColorPrimariesKey,
+        kCVImageBufferTransferFunctionKey,
+        kCVImageBufferYCbCrMatrixKey,
+        kCVImageBufferGammaLevelKey,
+    };
+    for (NSUInteger index = 0; index < sizeof(keys) / sizeof(keys[0]); index++) {
+        if (CVBufferGetAttachment(destinationBuffer, keys[index], NULL) != NULL) {
+            continue;
+        }
+        CVAttachmentMode mode = kCVAttachmentMode_ShouldNotPropagate;
+        CFTypeRef value = CVBufferGetAttachment(sourceBuffer, keys[index], &mode);
+        if (value != NULL) CVBufferSetAttachment(destinationBuffer, keys[index], value, mode);
+    }
+}
+
+static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
+                                             CVPixelBufferRef originalTargetBuffer,
+                                             CVPixelBufferRef replacementTargetBuffer) {
+    if (stagingBuffer == NULL || originalTargetBuffer == NULL ||
+        replacementTargetBuffer == NULL ||
+        VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) return NO;
+
+    CVBufferRemoveAllAttachments(stagingBuffer);
+    VCAMCopyColorAttachments(originalTargetBuffer, stagingBuffer);
+
+    [VCAMPixelTransferLock lock];
+    OSStatus transferStatus = VTPixelTransferSessionTransferImage(
+        VCAMPixelTransferSession, stagingBuffer, replacementTargetBuffer);
+    [VCAMPixelTransferLock unlock];
+
+    if (transferStatus != noErr) {
+        static volatile int transferFailures = 0;
+        int failureCount = __sync_add_and_fetch(&transferFailures, 1);
+        if (failureCount <= 8 || failureCount % 300 == 0) {
+            char message[224] = {0};
+            snprintf(message, sizeof(message),
+                     "compressed pixel transfer failed count=%d status=%d format=%08x",
+                     failureCount, (int)transferStatus,
+                     CVPixelBufferGetPixelFormatType(originalTargetBuffer));
+            VCAMRefLog(message);
+        }
+        return NO;
+    }
+    VCAMMergeGraphAttachments(originalTargetBuffer, replacementTargetBuffer);
+    return YES;
+}
+
+BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget,
+                               CVPixelBufferRef *replacementBufferOut) {
+    if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
         VCAMScratchPool == NULL) return NO;
 
     size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeight = CVPixelBufferGetHeight(targetBuffer);
+    OSType targetFormat = CVPixelBufferGetPixelFormatType(targetBuffer);
+    BOOL compressedTarget = VCAMFormatIsCompressedVideoRange(targetFormat);
+    if (compressedTarget && replacementBufferOut == NULL) return NO;
     CVPixelBufferRef scratch = NULL;
+    CVPixelBufferRef stagingBuffer = NULL;
+    CVPixelBufferRef compressedReplacementBuffer = NULL;
     VCAMSharedFrameMetadata metadata = {0};
     BOOL readerLocked = NO;
     BOOL rendered = NO;
@@ -205,7 +480,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
             return NO;
         }
         if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
-                                               &scratch) != kCVReturnSuccess) return NO;
+                                               &scratch) != kCVReturnSuccess) {
+            if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
+                    targetBuffer, replacementBufferOut)) return YES;
+            return NO;
+        }
         BOOL copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
                                                       1000000000ULL, &metadata);
         if (!copied) {
@@ -224,27 +503,69 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
             VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
             VCAMRefLog("virtual mode pending: rendering black instead of real camera");
         } else {
+            if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
+                    targetBuffer, replacementBufferOut)) return YES;
             return NO;
         }
         [VCAMReaderLock unlock];
         readerLocked = NO;
 
+        CVPixelBufferRef renderBuffer = targetBuffer;
+        size_t renderWidth = targetWidth;
+        size_t renderHeight = targetHeight;
+        if (compressedTarget) {
+            CVReturn stagingStatus = VCAMPixelTransferSession == NULL
+                ? kCVReturnInvalidArgument
+                : VCAMCreateCompressedStagingBuffer(
+                    targetWidth, targetHeight, &stagingBuffer);
+            CVReturn targetStatus = stagingStatus == kCVReturnSuccess
+                ? VCAMCreateCompressedTargetBuffer(
+                    targetBuffer, &compressedReplacementBuffer)
+                : kCVReturnInvalidArgument;
+            if (stagingStatus != kCVReturnSuccess ||
+                targetStatus != kCVReturnSuccess) {
+                static volatile int allocationFailures = 0;
+                int failureCount = __sync_add_and_fetch(&allocationFailures, 1);
+                if (failureCount <= 8 || failureCount % 300 == 0) {
+                    char message[224] = {0};
+                    snprintf(message, sizeof(message),
+                             "compressed replacement buffer allocation failed count=%d staging=%d target=%d format=%08x",
+                             failureCount, stagingStatus, targetStatus, targetFormat);
+                    VCAMRefLog(message);
+                }
+                if (VCAMCopyLastCompressedVirtualFrame(
+                        targetBuffer, replacementBufferOut)) return YES;
+                return NO;
+            }
+            renderBuffer = stagingBuffer;
+            renderWidth = CVPixelBufferGetWidth(stagingBuffer);
+            renderHeight = CVPixelBufferGetHeight(stagingBuffer);
+        }
+
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
-        CGFloat scale = MIN((CGFloat)targetWidth / CGRectGetWidth(image.extent),
-                            (CGFloat)targetHeight / CGRectGetHeight(image.extent));
+        // The shared source is kept in user-visible portrait orientation.
+        // Landscape sensor storage receives a downstream clockwise display
+        // transform, so store portrait sources one quarter-turn left first.
+        // Checking both aspects avoids rotating a future landscape source.
+        if (targetWidth > targetHeight &&
+            CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+        }
+        CGFloat scale = MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
+                            (CGFloat)renderHeight / CGRectGetHeight(image.extent));
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
-        CGFloat x = ((CGFloat)targetWidth - CGRectGetWidth(image.extent)) * 0.5 -
+        CGFloat x = ((CGFloat)renderWidth - CGRectGetWidth(image.extent)) * 0.5 -
             CGRectGetMinX(image.extent);
-        CGFloat y = ((CGFloat)targetHeight - CGRectGetHeight(image.extent)) * 0.5 -
+        CGFloat y = ((CGFloat)renderHeight - CGRectGetHeight(image.extent)) * 0.5 -
             CGRectGetMinY(image.extent);
         image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(x, y)];
         CIImage *background = [[CIImage imageWithColor:CIColor.blackColor]
-            imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
+            imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = [[image imageByCompositingOverImage:background]
-            imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
+            imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
-            initWithPixelBuffer:targetBuffer];
+            initWithPixelBuffer:renderBuffer];
         NSError *startError = nil;
         CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         CIRenderTask *task = [VCAMContext startTaskToRender:image
@@ -255,10 +576,18 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         NSError *completionError = nil;
         CIRenderInfo *renderInfo = task == nil ? nil
             : [task waitUntilCompletedAndReturnError:&completionError];
-        elapsed = CFAbsoluteTimeGetCurrent() - started;
-        rendered = task != nil && renderInfo != nil &&
+        BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
-        if (!rendered) {
+        rendered = coreImageRendered && (!compressedTarget ||
+            VCAMTransferIntoCompressedTarget(stagingBuffer, targetBuffer,
+                                             compressedReplacementBuffer));
+        if (rendered && compressedTarget) {
+            VCAMRememberCompressedVirtualFrame(compressedReplacementBuffer,
+                                               targetBuffer);
+            *replacementBufferOut = CVPixelBufferRetain(compressedReplacementBuffer);
+        }
+        elapsed = CFAbsoluteTimeGetCurrent() - started;
+        if (!coreImageRendered) {
             static dispatch_once_t renderFailureToken;
             dispatch_once(&renderFailureToken, ^{
                 NSString *message = [NSString stringWithFormat:
@@ -278,10 +607,32 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         rendered = NO;
     } @finally {
         if (readerLocked) [VCAMReaderLock unlock];
+        if (compressedReplacementBuffer != NULL) {
+            CVPixelBufferRelease(compressedReplacementBuffer);
+        }
+        if (stagingBuffer != NULL) CVPixelBufferRelease(stagingBuffer);
         if (scratch != NULL) CVPixelBufferRelease(scratch);
     }
 
+    if (!rendered && compressedTarget && replacementBufferOut != NULL &&
+        *replacementBufferOut == NULL) {
+        rendered = VCAMCopyLastCompressedVirtualFrame(
+            targetBuffer, replacementBufferOut);
+    }
+
     if (rendered) {
+        if (compressedTarget) {
+            static volatile int compressedRenders = 0;
+            int compressedRenderCount = __sync_add_and_fetch(&compressedRenders, 1);
+            if (compressedRenderCount <= 4) {
+                char message[224] = {0};
+                snprintf(message, sizeof(message),
+                         "compressed replacement rendered count=%d size=%zux%zu format=%08x elapsedMs=%.2f",
+                         compressedRenderCount, targetWidth, targetHeight,
+                         targetFormat, elapsed * 1000.0);
+                VCAMRefLog(message);
+            }
+        }
         if (realtimeBudget && elapsed > 0.050) {
             int slowCount = __sync_add_and_fetch(&VCAMConsecutiveSlowRenders, 1);
             if (slowCount <= 4 || slowCount % 120 == 0) {

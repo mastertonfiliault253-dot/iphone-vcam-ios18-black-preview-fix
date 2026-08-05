@@ -87,6 +87,234 @@ static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
         [value isEqualToString:expected];
 }
 
+enum { VCAMRecordingFrameOutcomeCapacity = 128 };
+
+typedef struct {
+    BOOL valid;
+    BOOL succeeded;
+    CMTime presentationTime;
+    int32_t width;
+    int32_t height;
+    uint64_t serial;
+} VCAMRecordingFrameOutcome;
+
+static VCAMRecordingFrameOutcome
+    VCAMRecordingFrameOutcomes[VCAMRecordingFrameOutcomeCapacity];
+static uint64_t VCAMRecordingFrameOutcomeSerial;
+static uintptr_t VCAMRecordingAuthorizingStream;
+static CFAbsoluteTime VCAMRecordingAuthorizingStreamLastSeen;
+static CFAbsoluteTime VCAMRecordingConcurrentUntil;
+
+static NSLock *VCAMRecordingFrameOutcomeLock(void) {
+    static NSLock *lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSLock new]; });
+    return lock;
+}
+
+static BOOL VCAMUsablePresentationTime(CMTime time) {
+    return CMTIME_IS_NUMERIC(time);
+}
+
+static void VCAMRecordRecordingFrameOutcome(id output,
+                                            CMSampleBufferRef sampleBuffer,
+                                            CVPixelBufferRef pixelBuffer,
+                                            BOOL succeeded) {
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    if (!VCAMUsablePresentationTime(presentationTime) || pixelBuffer == NULL) return;
+    int32_t width = (int32_t)CVPixelBufferGetWidth(pixelBuffer);
+    int32_t height = (int32_t)CVPixelBufferGetHeight(pixelBuffer);
+    NSLock *lock = VCAMRecordingFrameOutcomeLock();
+    [lock lock];
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    id node = VCAMSafeObjectResult(output, sel_registerName("node"));
+    uintptr_t stream = (uintptr_t)(__bridge void *)(node ?: output);
+    BOOL concurrentStreamDetected = NO;
+    if (VCAMRecordingAuthorizingStream == 0 ||
+        VCAMRecordingAuthorizingStream == stream ||
+        now - VCAMRecordingAuthorizingStreamLastSeen > 1.0) {
+        VCAMRecordingAuthorizingStream = stream;
+        VCAMRecordingAuthorizingStreamLastSeen = now;
+    } else {
+        // The encoded output does not expose a stable public graph identity.
+        // Fail all streams closed while two raw recording outputs overlap so
+        // one stream's PTS can never authorize another stream's real frame.
+        concurrentStreamDetected = YES;
+        VCAMRecordingConcurrentUntil = now + 2.0;
+        VCAMRecordingAuthorizingStream = stream;
+        VCAMRecordingAuthorizingStreamLastSeen = now;
+        for (NSUInteger index = 0;
+             index < VCAMRecordingFrameOutcomeCapacity; index++) {
+            VCAMRecordingFrameOutcomes[index].succeeded = NO;
+        }
+    }
+    succeeded = succeeded && now >= VCAMRecordingConcurrentUntil;
+    NSInteger matchingIndex = -1;
+    NSInteger emptyIndex = -1;
+    NSInteger oldestIndex = 0;
+    uint64_t oldestSerial = UINT64_MAX;
+    for (NSUInteger index = 0; index < VCAMRecordingFrameOutcomeCapacity; index++) {
+        VCAMRecordingFrameOutcome *entry = &VCAMRecordingFrameOutcomes[index];
+        if (!entry->valid) {
+            if (emptyIndex < 0) emptyIndex = (NSInteger)index;
+            continue;
+        }
+        if (entry->width == width && entry->height == height &&
+            CMTimeCompare(entry->presentationTime, presentationTime) == 0) {
+            matchingIndex = (NSInteger)index;
+            break;
+        }
+        if (entry->serial < oldestSerial) {
+            oldestSerial = entry->serial;
+            oldestIndex = (NSInteger)index;
+        }
+    }
+    if (matchingIndex >= 0) {
+        // Failure wins when duplicate branches report the same frame.
+        VCAMRecordingFrameOutcomes[matchingIndex].succeeded =
+            VCAMRecordingFrameOutcomes[matchingIndex].succeeded && succeeded;
+        VCAMRecordingFrameOutcomes[matchingIndex].serial =
+            ++VCAMRecordingFrameOutcomeSerial;
+    } else {
+        NSInteger replacementIndex = emptyIndex >= 0 ? emptyIndex : oldestIndex;
+        VCAMRecordingFrameOutcomes[replacementIndex] = (VCAMRecordingFrameOutcome){
+            .valid = YES,
+            .succeeded = succeeded,
+            .presentationTime = presentationTime,
+            .width = width,
+            .height = height,
+            .serial = ++VCAMRecordingFrameOutcomeSerial,
+        };
+    }
+    [lock unlock];
+    if (concurrentStreamDetected) {
+        static volatile int concurrentEvents = 0;
+        int eventCount = __sync_add_and_fetch(&concurrentEvents, 1);
+        if (eventCount <= 8 || eventCount % 300 == 0) {
+            char message[176] = {0};
+            snprintf(message, sizeof(message),
+                     "concurrent recording streams fail closed count=%d",
+                     eventCount);
+            VCAMRefLog(message);
+        }
+    }
+}
+
+static BOOL VCAMEncodedRecordingSampleCanPass(CMSampleBufferRef sampleBuffer) {
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (!VCAMUsablePresentationTime(presentationTime) || format == NULL) return NO;
+    CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format);
+    BOOL found = NO;
+    BOOL succeeded = NO;
+    NSLock *lock = VCAMRecordingFrameOutcomeLock();
+    [lock lock];
+    for (NSUInteger index = 0; index < VCAMRecordingFrameOutcomeCapacity; index++) {
+        VCAMRecordingFrameOutcome *entry = &VCAMRecordingFrameOutcomes[index];
+        if (!entry->valid || entry->width != dimensions.width ||
+            entry->height != dimensions.height ||
+            CMTimeCompare(entry->presentationTime, presentationTime) != 0) continue;
+        found = YES;
+        succeeded = entry->succeeded;
+        entry->valid = NO;
+        break;
+    }
+    [lock unlock];
+    return found && succeeded;
+}
+
+static BOOL VCAMOutputIsCameraVideoCompressor(id output) {
+    id node = VCAMSafeObjectResult(output, sel_registerName("node"));
+    NSString *nodeClass = node == nil ? nil : NSStringFromClass([node class]);
+    NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
+    return VCAMStringMatches(nodeClass, @"BWVideoCompressorNode") &&
+        [nodeName isKindOfClass:NSString.class] &&
+        [nodeName containsString:@"Video Compressor"];
+}
+
+static BOOL VCAMSampleContainsEncodedCameraVideo(CMSampleBufferRef sampleBuffer) {
+    if (sampleBuffer == NULL || CMSampleBufferGetDataBuffer(sampleBuffer) == NULL) {
+        return NO;
+    }
+    CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+    OSType subtype = format == NULL ? 0 : CMFormatDescriptionGetMediaSubType(format);
+    return subtype == kCMVideoCodecType_H264 ||
+        subtype == kCMVideoCodecType_HEVC || subtype == (OSType)'hev1';
+}
+
+static void VCAMCopyDictionaryEntry(const void *key, const void *value,
+                                    void *context) {
+    CFDictionarySetValue((CFMutableDictionaryRef)context, key, value);
+}
+
+static void VCAMCopyAttachmentMode(CMAttachmentBearerRef source,
+                                   CMAttachmentBearerRef destination,
+                                   CMAttachmentMode mode) {
+    CFDictionaryRef attachments = CMCopyDictionaryOfAttachments(
+        kCFAllocatorDefault, source, mode);
+    if (attachments == NULL) return;
+    CMSetAttachments(destination, attachments, mode);
+    CFRelease(attachments);
+}
+
+static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
+    CMSampleBufferRef originalSampleBuffer,
+    CVPixelBufferRef replacementImageBuffer) {
+    if (originalSampleBuffer == NULL || replacementImageBuffer == NULL) return NULL;
+    CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(
+        originalSampleBuffer);
+    if (format == NULL) return NULL;
+    CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format);
+    if (dimensions.width != (int32_t)CVPixelBufferGetWidth(replacementImageBuffer) ||
+        dimensions.height != (int32_t)CVPixelBufferGetHeight(replacementImageBuffer) ||
+        CMFormatDescriptionGetMediaSubType(format) !=
+            CVPixelBufferGetPixelFormatType(replacementImageBuffer)) return NULL;
+
+    CMSampleTimingInfo timing;
+    memset(&timing, 0, sizeof(timing));
+    if (CMSampleBufferGetSampleTimingInfo(originalSampleBuffer, 0, &timing) != noErr) {
+        return NULL;
+    }
+    CMSampleBufferRef replacementSampleBuffer = NULL;
+    OSStatus createStatus = CMSampleBufferCreateReadyWithImageBuffer(
+        kCFAllocatorDefault, replacementImageBuffer, format, &timing,
+        &replacementSampleBuffer);
+    if (createStatus != noErr || replacementSampleBuffer == NULL) {
+        static volatile int creationFailures = 0;
+        int failureCount = __sync_add_and_fetch(&creationFailures, 1);
+        if (failureCount <= 8 || failureCount % 300 == 0) {
+            char message[176] = {0};
+            snprintf(message, sizeof(message),
+                     "compressed replacement sample creation failed count=%d status=%d",
+                     failureCount, (int)createStatus);
+            VCAMRefLog(message);
+        }
+        return NULL;
+    }
+
+    VCAMCopyAttachmentMode(originalSampleBuffer, replacementSampleBuffer,
+                           kCMAttachmentMode_ShouldPropagate);
+    VCAMCopyAttachmentMode(originalSampleBuffer, replacementSampleBuffer,
+                           kCMAttachmentMode_ShouldNotPropagate);
+    CFArrayRef sourceSampleAttachments = CMSampleBufferGetSampleAttachmentsArray(
+        originalSampleBuffer, false);
+    CFArrayRef destinationSampleAttachments = CMSampleBufferGetSampleAttachmentsArray(
+        replacementSampleBuffer, true);
+    if (sourceSampleAttachments != NULL && destinationSampleAttachments != NULL &&
+        CFArrayGetCount(sourceSampleAttachments) > 0 &&
+        CFArrayGetCount(destinationSampleAttachments) > 0) {
+        CFDictionaryRef sourceDictionary = (CFDictionaryRef)CFArrayGetValueAtIndex(
+            sourceSampleAttachments, 0);
+        CFMutableDictionaryRef destinationDictionary =
+            (CFMutableDictionaryRef)CFArrayGetValueAtIndex(
+                destinationSampleAttachments, 0);
+        CFDictionaryRemoveAllValues(destinationDictionary);
+        CFDictionaryApplyFunction(sourceDictionary, VCAMCopyDictionaryEntry,
+                                  destinationDictionary);
+    }
+    return replacementSampleBuffer;
+}
+
 static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
                                                             CVPixelBufferRef pixelBuffer) {
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
@@ -220,6 +448,25 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
     BOOL replacementAllowed = replacementRoute != VCAMReplacementRouteNone;
     VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementRoute);
+    if (originalImageBuffer == NULL &&
+        VCAMOutputIsCameraVideoCompressor(self) &&
+        VCAMSampleContainsEncodedCameraVideo(sampleBuffer) &&
+        VCAMVirtualModeIsEnabled()) {
+        if (!VCAMEncodedRecordingSampleCanPass(sampleBuffer)) {
+            static volatile int guardedEncodedSamples = 0;
+            int guardedCount = __sync_add_and_fetch(&guardedEncodedSamples, 1);
+            if (guardedCount <= 8 || guardedCount % 300 == 0) {
+                char message[176] = {0};
+                snprintf(message, sizeof(message),
+                         "guarding encoded recording sample count=%d reason=missing-or-failed-virtual-frame",
+                         guardedCount);
+                VCAMRefLog(message);
+            }
+            return;
+        }
+        %orig(sampleBuffer);
+        return;
+    }
     if (originalImageBuffer == NULL) {
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
@@ -246,22 +493,19 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         VCAMRefLog(msg);
     }
 
+    CVPixelBufferRef replacementImageBuffer = NULL;
+    CMSampleBufferRef replacementSampleBuffer = NULL;
+    BOOL replacementSucceeded = NO;
     @autoreleasepool {
         @try {
-            BOOL replacementSucceeded = drawReplacementOntoBuffer(
+            replacementSucceeded = drawReplacementOntoBuffer(
                 originalImageBuffer,
-                replacementRoute != VCAMReplacementRouteStillPhoto);
-            if (!replacementSucceeded && VCAMVirtualModeIsEnabled()) {
-                static volatile int suppressedSamples = 0;
-                int suppressedCount = __sync_add_and_fetch(&suppressedSamples, 1);
-                if (suppressedCount <= 8 || suppressedCount % 300 == 0) {
-                    char message[192] = {0};
-                    snprintf(message, sizeof(message),
-                             "suppressing real sample after replacement failure count=%d route=%s",
-                             suppressedCount, VCAMReplacementRouteName(replacementRoute));
-                    VCAMRefLog(message);
-                }
-                return;
+                replacementRoute != VCAMReplacementRouteStillPhoto,
+                &replacementImageBuffer);
+            if (replacementSucceeded && replacementImageBuffer != NULL) {
+                replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
+                    sampleBuffer, replacementImageBuffer);
+                replacementSucceeded = replacementSampleBuffer != NULL;
             }
         } @catch (NSException *exception) {
             static dispatch_once_t exceptionToken;
@@ -269,9 +513,51 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                 VCAMRefLog([NSString stringWithFormat:@"replacement render exception %@",
                     exception.name].UTF8String);
             });
-            if (VCAMVirtualModeIsEnabled()) return;
+            replacementSucceeded = NO;
         }
     }
+
+    if (replacementRoute == VCAMReplacementRouteVideoRecording) {
+        VCAMRecordRecordingFrameOutcome(self, sampleBuffer, originalImageBuffer,
+                                        replacementSucceeded);
+    }
+
+    BOOL virtualModeEnabled = VCAMVirtualModeIsEnabled();
+    if (!replacementSucceeded && virtualModeEnabled) {
+        static volatile int suppressedSamples = 0;
+        int suppressedCount = __sync_add_and_fetch(&suppressedSamples, 1);
+        if (suppressedCount <= 8 || suppressedCount % 300 == 0) {
+            char message[224] = {0};
+            const char *reason = replacementRoute == VCAMReplacementRouteVideoRecording
+                ? "no-safe-compressed-virtual-fallback"
+                : "replacement-failed";
+            snprintf(message, sizeof(message),
+                     "suppressing real sample after replacement failure count=%d route=%s reason=%s",
+                     suppressedCount, VCAMReplacementRouteName(replacementRoute), reason);
+            VCAMRefLog(message);
+        }
+        if (replacementSampleBuffer != NULL) CFRelease(replacementSampleBuffer);
+        if (replacementImageBuffer != NULL) CVPixelBufferRelease(replacementImageBuffer);
+        return;
+    }
+
+    if (replacementSucceeded && replacementSampleBuffer != NULL) {
+        static volatile int emittedCompressedSamples = 0;
+        int emittedCount = __sync_add_and_fetch(&emittedCompressedSamples, 1);
+        if (emittedCount <= 4) {
+            char message[176] = {0};
+            snprintf(message, sizeof(message),
+                     "emitting compressed replacement sample count=%d route=%s",
+                     emittedCount, VCAMReplacementRouteName(replacementRoute));
+            VCAMRefLog(message);
+        }
+        %orig(replacementSampleBuffer);
+        CFRelease(replacementSampleBuffer);
+        CVPixelBufferRelease(replacementImageBuffer);
+        return;
+    }
+    if (replacementSampleBuffer != NULL) CFRelease(replacementSampleBuffer);
+    if (replacementImageBuffer != NULL) CVPixelBufferRelease(replacementImageBuffer);
 
     %orig(sampleBuffer);
 }

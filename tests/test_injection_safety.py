@@ -50,7 +50,9 @@ class InjectionSafetyTests(unittest.TestCase):
         )
         self.assertNotIn("UIKit", frameworks_line)
         self.assertNotIn("AVFoundation", frameworks_line)
-        self.assertNotIn("VideoToolbox", frameworks_line)
+        self.assertIn("VideoToolbox", frameworks_line)
+        self.assertNotIn("VTDecompressionSession", implementation)
+        self.assertNotIn("VTCompressionSession", implementation)
 
     def test_mediaserver_replaces_only_validated_consumer_outputs(self) -> None:
         implementation = (
@@ -73,6 +75,35 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("CVIsCompressedPixelFormatAvailable", implementation)
         self.assertIn("0x5b387630", implementation)
         self.assertIn("0x7d387630", implementation)
+        self.assertIn("VTPixelTransferSessionTransferImage", implementation)
+        self.assertIn("kVTScalingMode_Normal", implementation)
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", implementation)
+        self.assertIn("VCAMCreateCompressedStagingBuffer", implementation)
+        self.assertIn("CVPixelBufferCopyCreationAttributes", implementation)
+        self.assertIn("VCAMCreateCompressedTargetBuffer", implementation)
+        self.assertIn("CMSampleBufferCreateReadyWithImageBuffer", entry)
+        self.assertIn("CMCopyDictionaryOfAttachments", entry)
+        self.assertIn("CVBufferRemoveAllAttachments", implementation)
+        self.assertIn("VCAMMergeGraphAttachments", implementation)
+        self.assertNotIn(
+            "CVBufferRemoveAllAttachments(replacementTargetBuffer)",
+            implementation,
+        )
+        self.assertIn(
+            "CFEqual(VCAMCompressedTargetCreationAttributes, creationAttributes)",
+            implementation,
+        )
+        self.assertIn("VCAMCopyLastCompressedVirtualFrame", implementation)
+        self.assertIn(
+            "VCAMLastCompressedVirtualFrameCreationAttributes",
+            implementation,
+        )
+        self.assertIn(
+            "CFEqual(VCAMLastCompressedVirtualFrameCreationAttributes,",
+            implementation,
+        )
+        self.assertIn("using last virtual compressed frame", implementation)
+        self.assertIn("compressed pixel transfer failed", implementation)
         self.assertIn("CIRenderDestination", implementation)
         self.assertIn("waitUntilCompletedAndReturnError", implementation)
         self.assertIn("@finally", implementation)
@@ -106,6 +137,16 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn('@"Preview Scaler"', entry)
         self.assertIn('@"Movie File Zoomer"', entry)
         self.assertIn("VCAMReplacementRouteVideoRecording", entry)
+        self.assertIn('VCAMStringMatches(nodeClass, @"BWVideoCompressorNode")', entry)
+        self.assertIn("VCAMRecordRecordingFrameOutcome", entry)
+        self.assertIn("VCAMEncodedRecordingSampleCanPass", entry)
+        self.assertIn("VCAMRecordingFrameOutcomeCapacity = 128", entry)
+        self.assertIn("guarding encoded recording sample", entry)
+        self.assertIn("no-safe-compressed-virtual-fallback", entry)
+        self.assertIn("CMTIME_IS_NUMERIC", entry)
+        self.assertIn("concurrent recording streams fail closed", entry)
+        self.assertIn('VCAMSafeObjectResult(output, sel_registerName("node"))', entry)
+        self.assertNotIn("VCAMResetRecordingFrameOutcomes", entry)
         self.assertIn("VCAMReplacementRouteGenericPixelTransfer", entry)
         self.assertIn("if (targetSupported) return VCAMReplacementRouteGenericPixelTransfer", entry)
         self.assertIn('VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode")', entry)
@@ -132,6 +173,33 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("configuration.replaceAudio = NO", configuration)
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
+
+    def test_landscape_sensor_outputs_are_pre_rotated_before_downstream_metadata(self) -> None:
+        implementation = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        render = implementation.split("CIImage *image =", 1)[1].split(
+            "CIRenderDestination *destination", 1
+        )[0]
+
+        self.assertIn("#import <ImageIO/CGImageProperties.h>", implementation)
+        self.assertIn("targetWidth > targetHeight &&", render)
+        self.assertIn(
+            "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
+            render,
+        )
+        self.assertIn("imageByApplyingOrientation:kCGImagePropertyOrientationLeft", render)
+        self.assertLess(
+            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationLeft"),
+            render.index("CGAffineTransformMakeScale"),
+        )
+        frameworks_line = next(
+            line
+            for line in makefile.splitlines()
+            if line.startswith("VCAMMediaServerClient_FRAMEWORKS")
+        )
+        self.assertIn("ImageIO", frameworks_line)
 
 
 if __name__ == "__main__":

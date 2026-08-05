@@ -8,7 +8,8 @@ void VCAMRefLog(const char *message);
 void loadReplacementMedia(void);
 BOOL VCAMVirtualModeIsEnabled(void);
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer);
-BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget);
+BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget,
+                               CVPixelBufferRef *replacementBufferOut);
 
 #ifdef __cplusplus
 }

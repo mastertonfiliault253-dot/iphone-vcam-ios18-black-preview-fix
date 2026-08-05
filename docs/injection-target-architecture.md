@@ -29,9 +29,22 @@ use an interprocess file lock so startup order cannot replace a newer choice.
 preview, browser/WebRTC conversion, still capture and movie recording. It
 renders observed BGRA, `420v`/`420f`, public compressed and the device-private
 recording formats `[8v0`/`}8v0`, subject to strict dimensions and buffer-layout
-checks. Once requested mode is enabled, render failure is fail-closed: retain
-the last virtual frame, render black, or suppress the consumer sample. Real
-camera samples are allowed only after an explicit restore request.
+checks. A portrait shared source is pre-rotated left before it is fitted into a
+landscape sensor buffer, compensating for the downstream clockwise display
+transform while leaving portrait preview buffers unchanged.
+
+Compressed recording never asks Core Image to write a private surface. Core
+Image renders into a target-sized public `420v` staging buffer; VideoToolbox
+then transfers into a private-format clone created from the camera buffer's
+creation attributes. The original timing, format and attachments are retained
+when the clone is emitted. A bounded PTS outcome ring guards the camera video
+compressor, so only encoded frames proven to originate from a successful
+virtual replacement can reach the writer. If conversion fails, the original
+raw frame is never forwarded: a last-known-good virtual compressed frame with
+the current timing is reused when its exact creation attributes match, or the
+sample is suppressed when no safe fallback exists. The encoded guard remains a
+second fail-closed boundary. Once requested mode is enabled, no real camera
+frame is allowed through until an explicit restore request.
 
 ## Decode behavior
 

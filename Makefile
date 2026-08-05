@@ -21,7 +21,7 @@ VCAMMediaServerClient_FILES = \
 	Sources/Hooks/VCAMMediaServerRefImageUtils.m \
 	$(VCAM_SHARED_FILES)
 VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=0 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation Metal
+VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation ImageIO Metal VideoToolbox
 
 # SpringBoard owns the white-dot UI, configuration broker, media picker and
 # preview. It reads published frames but never decodes RTSP or local video.
