@@ -3,6 +3,11 @@
 #import <CoreMedia/CoreMedia.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <sys/time.h>
+#import <unistd.h>
+#import <fcntl.h>
+#import <string.h>
+#import <time.h>
 
 // This can be a static image or video file
 static NSString *VCAMReferenceMediaPath(void) {
@@ -12,6 +17,25 @@ static NSString *VCAMReferenceMediaPath(void) {
     return @"/var/mobile/Media/VCAM/selected.mov";
 }
 
+
+void VCAMRefLog(const char *message) {
+    struct timeval tv = {0};
+    gettimeofday(&tv, NULL);
+    time_t now = tv.tv_sec;
+    struct tm brokenDown = {0};
+    localtime_r(&now, &brokenDown);
+    char stamp[64] = {0};
+    strftime(stamp, sizeof(stamp), "%H:%M:%S", &brokenDown);
+    char line[1024] = {0};
+    snprintf(line, sizeof(line), "[%d][%s.%03d] %s\n",
+             getpid(), stamp, (int)(tv.tv_usec / 1000), message);
+    int descriptor = open("/var/tmp/vcam-ref-msd.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (descriptor >= 0) {
+        (void)write(descriptor, line, strlen(line));
+        close(descriptor);
+    }
+}
 typedef enum {
     VCamModeNone = 0,
     VCamModeImage,
@@ -27,11 +51,17 @@ static NSObject *vcamLock = nil;
 
 void loadReplacementMedia(void) {
     NSString *kReplacementMediaPath = VCAMReferenceMediaPath();
+    char loadPathBuf[1024] = {0};
+    snprintf(loadPathBuf, sizeof(loadPathBuf), "load path=%s exists=%d",
+             kReplacementMediaPath.UTF8String ?: "(nil)",
+             (int)[[NSFileManager defaultManager] fileExistsAtPath:kReplacementMediaPath]);
+    VCAMRefLog(loadPathBuf);
     if (!vcamLock) {
         vcamLock = [[NSObject alloc] init];
     }
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:kReplacementMediaPath]) {
+        VCAMRefLog("load file missing");
         return;
     }
 
@@ -41,6 +71,7 @@ void loadReplacementMedia(void) {
         if (image && image.CGImage) {
             replacementImage = CGImageRetain(image.CGImage);
             currentMode = VCamModeImage;
+            VCAMRefLog("load mode=image");
         }
     }
     else if ([extension isEqualToString:@"mp4"] || [extension isEqualToString:@"mov"]) {
@@ -50,11 +81,15 @@ void loadReplacementMedia(void) {
         NSError *error = nil;
         AVAssetReader *assetReader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
         if (error) {
+            char errBuf[256] = {0};
+            snprintf(errBuf, sizeof(errBuf), "load video reader init error=%s", error.localizedDescription.UTF8String ?: "(nil)");
+            VCAMRefLog(errBuf);
             return;
         }
 
         NSArray *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
         if (videoTracks.count == 0) {
+            VCAMRefLog("load video no video tracks");
             return;
         }
 
@@ -64,11 +99,23 @@ void loadReplacementMedia(void) {
         videoOutput.alwaysCopiesSampleData = NO;
 
         if (![assetReader canAddOutput:videoOutput]) {
+            VCAMRefLog("load video cannot add output");
             return;
         }
 
         [assetReader addOutput:videoOutput];
         [assetReader startReading];
+        if (assetReader.status != AVAssetReaderStatusReading) {
+            char stBuf[128] = {0};
+            snprintf(stBuf, sizeof(stBuf), "load video startReading status=%ld error=%s",
+                     (long)assetReader.status, assetReader.error.localizedDescription.UTF8String ?: "(none)");
+            VCAMRefLog(stBuf);
+        } else {
+            char okBuf[256] = {0};
+            snprintf(okBuf, sizeof(okBuf), "load video reader started size=%.0fx%.0f",
+                     videoTrack.naturalSize.width, videoTrack.naturalSize.height);
+            VCAMRefLog(okBuf);
+        }
 
         videoFrames = [[NSMutableArray alloc] init];
         int frameCount = 0;
@@ -97,6 +144,14 @@ void loadReplacementMedia(void) {
 
         if (frameCount > 0) {
             currentMode = VCamModeVideo;
+            char doneBuf[128] = {0};
+            snprintf(doneBuf, sizeof(doneBuf), "load video frames=%d mode=video", frameCount);
+            VCAMRefLog(doneBuf);
+        } else {
+            char emptyBuf[128] = {0};
+            snprintf(emptyBuf, sizeof(emptyBuf), "load video zero frames status=%ld",
+                     (long)assetReader.status);
+            VCAMRefLog(emptyBuf);
         }
 
         [assetReader cancelReading];
@@ -108,6 +163,15 @@ void loadReplacementMedia(void) {
 }
 
 void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
+    static int drawCalls = 0;
+    drawCalls++;
+    if (drawCalls <= 5) {
+        char drawBuf[192] = {0};
+        snprintf(drawBuf, sizeof(drawBuf), "draw call=%d mode=%d target=%zux%zu",
+                 drawCalls, (int)currentMode,
+                 CVPixelBufferGetWidth(targetBuffer), CVPixelBufferGetHeight(targetBuffer));
+        VCAMRefLog(drawBuf);
+    }
     @synchronized(vcamLock) {
         CIImage *replacementCIImage = nil;
 

@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 
+void VCAMRefLog(const char *message);
 void loadReplacementMedia(void);
 void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer);
 
