@@ -1,6 +1,7 @@
 #import "VCAMMediaServerRefImageUtils.h"
 
 #import <CoreImage/CoreImage.h>
+#import <CoreVideo/CVPixelFormatDescription.h>
 #import <Metal/Metal.h>
 #import "../Shared/VCAMSharedFrame.h"
 
@@ -15,10 +16,11 @@
 
 static VCAMSharedFrameReader *VCAMReader;
 static CVPixelBufferPoolRef VCAMScratchPool;
+static CVPixelBufferRef VCAMLastVirtualFrame;
 static CIContext *VCAMContext;
 static NSLock *VCAMReaderLock;
-static volatile int VCAMRenderingDisabled;
 static volatile int VCAMConsecutiveSlowRenders;
+static volatile int VCAMConfiguredEnabled;
 
 static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     double a = *(const double *)left;
@@ -26,13 +28,22 @@ static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
-static void VCAMDisableRendering(const char *reason) {
-    if (__sync_lock_test_and_set(&VCAMRenderingDisabled, 1) != 0) return;
-    char message[192] = {0};
-    snprintf(message, sizeof(message),
-             "replacement rendering disabled until mediaserverd restart reason=%s",
-             reason != NULL ? reason : "unknown");
-    VCAMRefLog(message);
+static void VCAMReloadConfiguredMode(void) {
+    @autoreleasepool {
+        NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:
+            @"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+        (void)__sync_lock_test_and_set(
+            &VCAMConfiguredEnabled,
+            [values[@"enabled"] boolValue] ? 1 : 0);
+    }
+}
+
+static void VCAMPreferencesChanged(__unused CFNotificationCenterRef center,
+                                   __unused void *observer,
+                                   __unused CFStringRef name,
+                                   __unused const void *object,
+                                   __unused CFDictionaryRef userInfo) {
+    VCAMReloadConfiguredMode();
 }
 
 void VCAMRefLog(const char *message) {
@@ -54,27 +65,39 @@ void VCAMRefLog(const char *message) {
 }
 
 void loadReplacementMedia(void) {
-    VCAMReader = VCAMSharedFrameReaderCreate();
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    VCAMContext = device != nil
-        ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
-        : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
-    VCAMReaderLock = [NSLock new];
-    NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @2};
-    NSDictionary *pixelAttributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
-        (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-    };
-    CVReturn result = CVPixelBufferPoolCreate(kCFAllocatorDefault,
-                                               (__bridge CFDictionaryRef)poolAttributes,
-                                               (__bridge CFDictionaryRef)pixelAttributes,
-                                               &VCAMScratchPool);
-    VCAMRefLog(result == kCVReturnSuccess
-        ? "shared-frame reader initialized"
-        : "shared-frame scratch pool initialization failed");
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        VCAMReader = VCAMSharedFrameReaderCreate();
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        VCAMContext = device != nil
+            ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
+            : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        VCAMReaderLock = [NSLock new];
+        NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @2};
+        NSDictionary *pixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
+            (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+        };
+        CVReturn result = CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                                   (__bridge CFDictionaryRef)poolAttributes,
+                                                   (__bridge CFDictionaryRef)pixelAttributes,
+                                                   &VCAMScratchPool);
+        VCAMReloadConfiguredMode();
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+            VCAMPreferencesChanged, CFSTR("com.codex.vcam/preferences.changed"),
+            NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        VCAMRefLog(result == kCVReturnSuccess
+            ? "shared-frame reader initialized"
+            : "shared-frame scratch pool initialization failed");
+    });
+}
+
+BOOL VCAMVirtualModeIsEnabled(void) {
+    return VCAMConfiguredEnabled != 0;
 }
 
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
@@ -83,8 +106,11 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
     size_t height = CVPixelBufferGetHeight(targetBuffer);
     size_t shortEdge = MIN(width, height);
     size_t longEdge = MAX(width, height);
-    if (shortEdge < 120 || longEdge < 160 || longEdge > 1920 ||
-        width > SIZE_MAX / height || width * height > (size_t)1920 * 1080 ||
+    // The terminal still-photo output on the test device is 4224x3024. Keep a
+    // bounded ceiling that also covers 4K video without accepting arbitrary
+    // IOSurfaces inside mediaserverd.
+    if (shortEdge < 120 || longEdge < 160 || longEdge > 4608 ||
+        width > SIZE_MAX / height || width * height > (size_t)4608 * 3456 ||
         CVPixelBufferGetIOSurface(targetBuffer) == NULL) return NO;
 
     OSType format = CVPixelBufferGetPixelFormatType(targetBuffer);
@@ -93,11 +119,24 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
             CVPixelBufferGetPlaneCount(targetBuffer) == 0 &&
             CVPixelBufferGetBytesPerRow(targetBuffer) >= width * 4;
     }
+    BOOL compressedVideoRange =
+        format == kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
+        format == (OSType)0x5b387630 || // observed private compressed '[8v0'
+        format == (OSType)0x7d387630;   // observed private compressed '}8v0'
     if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
-        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
+        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
+        !compressedVideoRange) return NO;
     if ((width & 1) != 0 || (height & 1) != 0 ||
         !CVPixelBufferIsPlanar(targetBuffer) ||
         CVPixelBufferGetPlaneCount(targetBuffer) != 2) return NO;
+    if (compressedVideoRange) {
+        // Apple explicitly forbids CPU interpretation of compressed planes.
+        // Core Image/Metal owns the write; the IOSurface and device capability
+        // checks are the only safe validation available here.
+        return CVIsCompressedPixelFormatAvailable(format) ||
+            format == (OSType)0x5b387630 || format == (OSType)0x7d387630;
+    }
     return CVPixelBufferGetWidthOfPlane(targetBuffer, 0) == width &&
         CVPixelBufferGetHeightOfPlane(targetBuffer, 0) == height &&
         CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0) >= width &&
@@ -106,9 +145,24 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
         CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1) >= width;
 }
 
-BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
-    if (VCAMRenderingDisabled != 0 || !VCAMTargetBufferIsSupported(targetBuffer) ||
-        VCAMReader == NULL || VCAMContext == nil ||
+static BOOL VCAMFillBlackSharedFrame(CVPixelBufferRef pixelBuffer) {
+    if (pixelBuffer == NULL ||
+        CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) return NO;
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    uint8_t *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+    for (size_t row = 0; row < height; row++) {
+        uint8_t *line = base + row * bytesPerRow;
+        memset(line, 0, width * 4);
+        for (size_t column = 0; column < width; column++) line[column * 4 + 3] = 255;
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    return YES;
+}
+
+BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget) {
+    if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
         VCAMScratchPool == NULL) return NO;
 
     size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
@@ -121,13 +175,37 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     @try {
         [VCAMReaderLock lock];
         readerLocked = YES;
+        if (VCAMConfiguredEnabled == 0) {
+            if (VCAMLastVirtualFrame != NULL) {
+                CVPixelBufferRelease(VCAMLastVirtualFrame);
+                VCAMLastVirtualFrame = NULL;
+            }
+            return NO;
+        }
         if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
                                                &scratch) != kCVReturnSuccess) return NO;
         BOOL copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
                                                       1000000000ULL, &metadata);
+        if (!copied) {
+            // An enabled virtual camera must never expose a real frame merely
+            // because the producer paused. A stale shared virtual frame is a
+            // safer fallback than black and is still immutable while copied.
+            copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch, 0, &metadata);
+        }
+        if (copied) {
+            if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
+            VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
+        } else if (VCAMLastVirtualFrame != NULL) {
+            CVPixelBufferRelease(scratch);
+            scratch = CVPixelBufferRetain(VCAMLastVirtualFrame);
+        } else if (VCAMFillBlackSharedFrame(scratch)) {
+            VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
+            VCAMRefLog("virtual mode pending: rendering black instead of real camera");
+        } else {
+            return NO;
+        }
         [VCAMReaderLock unlock];
         readerLocked = NO;
-        if (!copied) return NO;
 
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
         CGFloat scale = MIN((CGFloat)targetWidth / CGRectGetWidth(image.extent),
@@ -167,7 +245,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                     completionError.localizedDescription ?: @"none"];
                 VCAMRefLog(message.UTF8String);
             });
-            VCAMDisableRendering("render-error");
         }
     } @catch (NSException *exception) {
         static dispatch_once_t exceptionToken;
@@ -176,7 +253,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                 @"replacement render exception %@", exception.name ?: @"unknown"];
             VCAMRefLog(message.UTF8String);
         });
-        VCAMDisableRendering("render-exception");
         rendered = NO;
     } @finally {
         if (readerLocked) [VCAMReaderLock unlock];
@@ -184,11 +260,30 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     }
 
     if (rendered) {
-        if (elapsed > 0.050) {
+        if (realtimeBudget && elapsed > 0.050) {
             int slowCount = __sync_add_and_fetch(&VCAMConsecutiveSlowRenders, 1);
-            if (slowCount >= 3) VCAMDisableRendering("three-consecutive-renders-over-50ms");
-        } else {
+            if (slowCount <= 4 || slowCount % 120 == 0) {
+                char message[192] = {0};
+                snprintf(message, sizeof(message),
+                         "replacement render slow count=%d elapsedMs=%.2f",
+                         slowCount, elapsed * 1000.0);
+                VCAMRefLog(message);
+            }
+        } else if (realtimeBudget) {
             (void)__sync_lock_test_and_set(&VCAMConsecutiveSlowRenders, 0);
+        }
+
+        if (!realtimeBudget) {
+            static volatile int highResolutionRenders = 0;
+            int highResolutionCount = __sync_add_and_fetch(&highResolutionRenders, 1);
+            if (highResolutionCount <= 4) {
+                char message[224] = {0};
+                snprintf(message, sizeof(message),
+                         "high-resolution replacement render count=%d size=%zux%zu elapsedMs=%.2f",
+                         highResolutionCount, targetWidth, targetHeight,
+                         elapsed * 1000.0);
+                VCAMRefLog(message);
+            }
         }
 
         static double renderMilliseconds[120] = {0};

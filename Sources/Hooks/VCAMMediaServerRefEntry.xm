@@ -58,18 +58,81 @@ static BOOL VCAMBasicOutputSignatureWasSeen(id output, NSString *basicSignature)
     }
 }
 
-static BOOL VCAMMatchesValidatedReplacementOutput(CVPixelBufferRef pixelBuffer) {
-    if (!VCAMTargetBufferIsSupported(pixelBuffer)) return NO;
-    // This is the only consumer-facing output shape already proven on this
-    // device. Unknown Camera/WebRTC outputs are logged but fail open until their
-    // stable signature and synchronous render cost have been measured.
-    return CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA &&
-        CVPixelBufferGetWidth(pixelBuffer) == 750 &&
-        CVPixelBufferGetHeight(pixelBuffer) == 1334;
+typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
+    VCAMReplacementRouteNone = 0,
+    VCAMReplacementRouteLegacyPreview,
+    VCAMReplacementRouteVideoConverter,
+    VCAMReplacementRouteCameraPreview,
+    VCAMReplacementRouteVideoRecording,
+    VCAMReplacementRouteStillPhoto,
+};
+
+static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
+    switch (route) {
+        case VCAMReplacementRouteLegacyPreview: return "legacy-preview";
+        case VCAMReplacementRouteVideoConverter: return "video-converter";
+        case VCAMReplacementRouteCameraPreview: return "camera-preview";
+        case VCAMReplacementRouteVideoRecording: return "video-recording";
+        case VCAMReplacementRouteStillPhoto: return "still-photo";
+        case VCAMReplacementRouteNone: return "none";
+    }
+    return "none";
+}
+
+static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
+    return [value isKindOfClass:NSString.class] &&
+        [expected isKindOfClass:NSString.class] &&
+        [value isEqualToString:expected];
+}
+
+static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
+                                                            CVPixelBufferRef pixelBuffer) {
+    if (!VCAMTargetBufferIsSupported(pixelBuffer)) return VCAMReplacementRouteNone;
+    id node = VCAMSafeObjectResult(output, sel_registerName("node"));
+    NSString *nodeClass = node == nil ? nil : NSStringFromClass([node class]);
+    NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+
+    // Retain the original device-proven BGRA path for clients which still ask
+    // for this exact shape.
+    if (pixelFormat == kCVPixelFormatType_32BGRA && width == 750 && height == 1334) {
+        return VCAMReplacementRouteLegacyPreview;
+    }
+
+    // These are the terminal conversion roles observed for Safari getUserMedia
+    // and the stock Camera preview. They are deliberately independent of the
+    // physical camera node name, so every physical source converges on the same
+    // consumer-facing replacement path.
+    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
+        VCAMStringMatches(nodeName, @"Video Data Converter/Scaler/Zoomer")) {
+        return VCAMReplacementRouteVideoConverter;
+    }
+    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
+        VCAMStringMatches(nodeName, @"Preview Scaler")) {
+        return VCAMReplacementRouteCameraPreview;
+    }
+    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
+        VCAMStringMatches(nodeName, @"Movie File Zoomer")) {
+        return VCAMReplacementRouteVideoRecording;
+    }
+
+    // Stock Camera still capture reaches this last standard 8-bit pixel stage
+    // immediately before the photo encoder. Match the role rather than a lens
+    // name or one fixed sensor resolution.
+    if (VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode") &&
+        VCAMStringMatches(nodeName, @"Meteor Headroom") &&
+        pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
+        width * height > (size_t)1920 * 1080) {
+        return VCAMReplacementRouteStillPhoto;
+    }
+    return VCAMReplacementRouteNone;
 }
 
 static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
-                                   CVPixelBufferRef pixelBuffer, BOOL replacementAllowed) {
+                                   CVPixelBufferRef pixelBuffer,
+                                   VCAMReplacementRoute replacementRoute) {
     CMFormatDescriptionRef description = CMSampleBufferGetFormatDescription(sampleBuffer);
     OSType subtype = description == NULL ? 0 : CMFormatDescriptionGetMediaSubType(description);
     OSType pixelFormat = pixelBuffer == NULL ? 0 : CVPixelBufferGetPixelFormatType(pixelBuffer);
@@ -77,7 +140,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     size_t height = pixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(pixelBuffer);
     NSString *basicSignature = [NSString stringWithFormat:@"%zu/%zu/%u/%u/%d/%d",
         width, height, pixelFormat, subtype,
-        CMSampleBufferGetDataBuffer(sampleBuffer) != NULL, replacementAllowed];
+        CMSampleBufferGetDataBuffer(sampleBuffer) != NULL,
+        replacementRoute != VCAMReplacementRouteNone];
     if (VCAMBasicOutputSignatureWasSeen(output, basicSignature)) return;
 
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
@@ -108,13 +172,15 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     VCAMFourCCString(subtype, subtypeFourCC);
     char message[700] = {0};
     snprintf(message, sizeof(message),
-             "output signature output=%p outputClass=%s outputName=%s node=%p nodeClass=%s nodeName=%s size=%zux%zu pixel=%s/%08x subtype=%s/%08x planes=%zu data=%d supported=%d allowed=%d",
+             "output signature output=%p outputClass=%s outputName=%s node=%p nodeClass=%s nodeName=%s size=%zux%zu pixel=%s/%08x subtype=%s/%08x planes=%zu data=%d supported=%d allowed=%d route=%s",
              output, outputClass.UTF8String, outputName.UTF8String, node,
              nodeClass.UTF8String, nodeName.UTF8String,
              width, height, pixelFourCC, pixelFormat, subtypeFourCC, subtype,
              pixelBuffer == NULL ? 0 : CVPixelBufferGetPlaneCount(pixelBuffer),
              CMSampleBufferGetDataBuffer(sampleBuffer) != NULL,
-             VCAMTargetBufferIsSupported(pixelBuffer), replacementAllowed);
+             VCAMTargetBufferIsSupported(pixelBuffer),
+             replacementRoute != VCAMReplacementRouteNone,
+             VCAMReplacementRouteName(replacementRoute));
     VCAMRefLog(message);
 }
 
@@ -139,9 +205,16 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         return;
     }
 
+    // Usually completed by the constructor warm-up. dispatch_once inside the
+    // renderer makes this a no-op; an unusually early first frame waits for the
+    // same initialization instead of racing a partially published context.
+    loadReplacementMedia();
+
     CVPixelBufferRef originalImageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    BOOL replacementAllowed = VCAMMatchesValidatedReplacementOutput(originalImageBuffer);
-    VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementAllowed);
+    VCAMReplacementRoute replacementRoute =
+        VCAMReplacementRouteForOutput(self, originalImageBuffer);
+    BOOL replacementAllowed = replacementRoute != VCAMReplacementRouteNone;
+    VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementRoute);
     if (originalImageBuffer == NULL) {
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
@@ -161,28 +234,37 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         char format[5] = {0};
         OSType pixelFormat = CVPixelBufferGetPixelFormatType(originalImageBuffer);
         VCAMFourCCString(pixelFormat, format);
-        snprintf(msg, sizeof(msg), "emitSampleBuffer video count=%d size=%zux%zu format=%s/%08x",
+        snprintf(msg, sizeof(msg), "emitSampleBuffer video count=%d size=%zux%zu format=%s/%08x route=%s",
                  videoSampleCount, CVPixelBufferGetWidth(originalImageBuffer),
-                 CVPixelBufferGetHeight(originalImageBuffer), format, pixelFormat);
+                 CVPixelBufferGetHeight(originalImageBuffer), format, pixelFormat,
+                 VCAMReplacementRouteName(replacementRoute));
         VCAMRefLog(msg);
     }
 
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        VCAMRefLog("first video sample: loading replacement media");
-        loadReplacementMedia();
-        VCAMRefLog("loadReplacementMedia finished");
-    });
-
     @autoreleasepool {
         @try {
-            (void)drawReplacementOntoBuffer(originalImageBuffer);
+            BOOL replacementSucceeded = drawReplacementOntoBuffer(
+                originalImageBuffer,
+                replacementRoute != VCAMReplacementRouteStillPhoto);
+            if (!replacementSucceeded && VCAMVirtualModeIsEnabled()) {
+                static volatile int suppressedSamples = 0;
+                int suppressedCount = __sync_add_and_fetch(&suppressedSamples, 1);
+                if (suppressedCount <= 8 || suppressedCount % 300 == 0) {
+                    char message[192] = {0};
+                    snprintf(message, sizeof(message),
+                             "suppressing real sample after replacement failure count=%d route=%s",
+                             suppressedCount, VCAMReplacementRouteName(replacementRoute));
+                    VCAMRefLog(message);
+                }
+                return;
+            }
         } @catch (NSException *exception) {
             static dispatch_once_t exceptionToken;
             dispatch_once(&exceptionToken, ^{
                 VCAMRefLog([NSString stringWithFormat:@"replacement render exception %@",
                     exception.name].UTF8String);
             });
+            if (VCAMVirtualModeIsEnabled()) return;
         }
     }
 
@@ -193,4 +275,10 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
 
 %ctor {
     VCAMRefLog("ctor: VCAMMediaServerRefEntry loaded");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            loadReplacementMedia();
+            VCAMRefLog("ctor: replacement renderer initialized");
+        }
+    });
 }
