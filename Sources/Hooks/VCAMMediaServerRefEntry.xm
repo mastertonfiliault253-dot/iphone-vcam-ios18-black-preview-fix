@@ -64,6 +64,7 @@ typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
     VCAMReplacementRouteVideoConverter,
     VCAMReplacementRouteCameraPreview,
     VCAMReplacementRouteVideoRecording,
+    VCAMReplacementRouteGenericPixelTransfer,
     VCAMReplacementRouteStillPhoto,
 };
 
@@ -73,6 +74,7 @@ static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
         case VCAMReplacementRouteVideoConverter: return "video-converter";
         case VCAMReplacementRouteCameraPreview: return "camera-preview";
         case VCAMReplacementRouteVideoRecording: return "video-recording";
+        case VCAMReplacementRouteGenericPixelTransfer: return "generic-pixel-transfer";
         case VCAMReplacementRouteStillPhoto: return "still-photo";
         case VCAMReplacementRouteNone: return "none";
     }
@@ -87,45 +89,48 @@ static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
 
 static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
                                                             CVPixelBufferRef pixelBuffer) {
-    if (!VCAMTargetBufferIsSupported(pixelBuffer)) return VCAMReplacementRouteNone;
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
     NSString *nodeClass = node == nil ? nil : NSStringFromClass([node class]);
     NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
-    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-    size_t width = CVPixelBufferGetWidth(pixelBuffer);
-    size_t height = CVPixelBufferGetHeight(pixelBuffer);
-
-    // Retain the original device-proven BGRA path for clients which still ask
-    // for this exact shape.
-    if (pixelFormat == kCVPixelFormatType_32BGRA && width == 750 && height == 1334) {
-        return VCAMReplacementRouteLegacyPreview;
-    }
+    BOOL targetSupported = VCAMTargetBufferIsSupported(pixelBuffer);
+    OSType pixelFormat = pixelBuffer == NULL ? 0 :
+        CVPixelBufferGetPixelFormatType(pixelBuffer);
+    size_t width = pixelBuffer == NULL ? 0 : CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = pixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(pixelBuffer);
 
     // These are the terminal conversion roles observed for Safari getUserMedia
     // and the stock Camera preview. They are deliberately independent of the
-    // physical camera node name, so every physical source converges on the same
-    // consumer-facing replacement path.
-    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
-        VCAMStringMatches(nodeName, @"Video Data Converter/Scaler/Zoomer")) {
-        return VCAMReplacementRouteVideoConverter;
-    }
-    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
-        VCAMStringMatches(nodeName, @"Preview Scaler")) {
-        return VCAMReplacementRouteCameraPreview;
-    }
-    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode") &&
-        VCAMStringMatches(nodeName, @"Movie File Zoomer")) {
-        return VCAMReplacementRouteVideoRecording;
+    // physical camera node name. A known terminal role remains selected even
+    // for a future unsupported pixel format so enabled mode drops that sample
+    // instead of leaking a real frame. Other supported pixel-transfer nodes
+    // cover public AVFoundation consumers whose private role name differs.
+    if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode")) {
+        if (VCAMStringMatches(nodeName, @"Video Data Converter/Scaler/Zoomer")) {
+            return VCAMReplacementRouteVideoConverter;
+        }
+        if (VCAMStringMatches(nodeName, @"Preview Scaler")) {
+            return VCAMReplacementRouteCameraPreview;
+        }
+        if (VCAMStringMatches(nodeName, @"Movie File Zoomer")) {
+            return VCAMReplacementRouteVideoRecording;
+        }
+        if (targetSupported) return VCAMReplacementRouteGenericPixelTransfer;
     }
 
     // Stock Camera still capture reaches this last standard 8-bit pixel stage
     // immediately before the photo encoder. Match the role rather than a lens
-    // name or one fixed sensor resolution.
+    // name, resolution or pixel format. Unsupported future formats fail closed
+    // in the hook rather than reaching the encoder as a real frame.
     if (VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode") &&
-        VCAMStringMatches(nodeName, @"Meteor Headroom") &&
-        pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
-        width * height > (size_t)1920 * 1080) {
+        VCAMStringMatches(nodeName, @"Meteor Headroom") && pixelBuffer != NULL) {
         return VCAMReplacementRouteStillPhoto;
+    }
+
+    // Retain the original device-proven BGRA path for clients which still ask
+    // for this exact shape.
+    if (targetSupported && pixelFormat == kCVPixelFormatType_32BGRA &&
+        width == 750 && height == 1334) {
+        return VCAMReplacementRouteLegacyPreview;
     }
     return VCAMReplacementRouteNone;
 }

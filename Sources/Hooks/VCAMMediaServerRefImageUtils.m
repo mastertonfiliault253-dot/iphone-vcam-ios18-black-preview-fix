@@ -20,7 +20,9 @@ static CVPixelBufferRef VCAMLastVirtualFrame;
 static CIContext *VCAMContext;
 static NSLock *VCAMReaderLock;
 static volatile int VCAMConsecutiveSlowRenders;
-static volatile int VCAMConfiguredEnabled;
+// -1 means no valid configuration has been read yet. Treat that state as
+// enabled/fail-closed until an explicit valid false is observed.
+static volatile int VCAMConfiguredMode = -1;
 
 static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     double a = *(const double *)left;
@@ -32,9 +34,17 @@ static void VCAMReloadConfiguredMode(void) {
     @autoreleasepool {
         NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:
             @"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
-        (void)__sync_lock_test_and_set(
-            &VCAMConfiguredEnabled,
-            [values[@"enabled"] boolValue] ? 1 : 0);
+        id enabledValue = values[@"enabled"];
+        if ([enabledValue isKindOfClass:NSNumber.class]) {
+            (void)__sync_lock_test_and_set(
+                &VCAMConfiguredMode,
+                [enabledValue boolValue] ? 1 : 0);
+        } else {
+            static dispatch_once_t invalidConfigurationToken;
+            dispatch_once(&invalidConfigurationToken, ^{
+                VCAMRefLog("configuration unreadable; retaining last virtual-camera mode");
+            });
+        }
     }
 }
 
@@ -97,7 +107,7 @@ void loadReplacementMedia(void) {
 }
 
 BOOL VCAMVirtualModeIsEnabled(void) {
-    return VCAMConfiguredEnabled != 0;
+    return VCAMConfiguredMode != 0;
 }
 
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
@@ -175,7 +185,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
     @try {
         [VCAMReaderLock lock];
         readerLocked = YES;
-        if (VCAMConfiguredEnabled == 0) {
+        if (VCAMConfiguredMode == 0) {
             if (VCAMLastVirtualFrame != NULL) {
                 CVPixelBufferRelease(VCAMLastVirtualFrame);
                 VCAMLastVirtualFrame = NULL;
