@@ -19,8 +19,14 @@ daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcamd.plist
 if [ -e "$daemon_plist" ]; then
     launchctl bootout user/foreground/com.codex.vcamd >/dev/null 2>&1 || \
         launchctl bootout system/com.codex.vcamd >/dev/null 2>&1 || true
-    launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || true
-    launchctl kickstart -k user/foreground/com.codex.vcamd >/dev/null 2>&1 || true
+    for attempt in 1 2 3 4 5; do
+        launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || true
+        if launchctl print user/foreground/com.codex.vcamd >/dev/null 2>&1; then
+            launchctl kickstart -k user/foreground/com.codex.vcamd >/dev/null 2>&1 || true
+            break
+        fi
+        sleep 1
+    done
 fi
 
 exit 0

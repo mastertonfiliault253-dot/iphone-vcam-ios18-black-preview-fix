@@ -1,5 +1,9 @@
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
+#import <errno.h>
+#import <stdio.h>
+#import <string.h>
+#import <unistd.h>
 
 #import "VCAMFrameProducer.h"
 #import "../Core/VCAMConfiguration.h"
@@ -8,6 +12,37 @@
 static VCAMFrameProducer *VCAMProducer;
 static VCAMSharedFrameWriter *VCAMWriter;
 static dispatch_source_t VCAMTimer;
+
+enum {
+    MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES = 7,
+    VCAMWorkerMemoryLimitMB = 256,
+};
+
+typedef struct {
+    int32_t memlimit_active;
+    uint32_t memlimit_active_attr;
+    int32_t memlimit_inactive;
+    uint32_t memlimit_inactive_attr;
+} VCAMMemorystatusMemlimitProperties;
+
+extern int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags,
+                                void *buffer, size_t bufferSize);
+
+static BOOL VCAMRaiseJetsamMemoryLimit(void) {
+    VCAMMemorystatusMemlimitProperties properties = {0};
+    properties.memlimit_active = VCAMWorkerMemoryLimitMB;
+    properties.memlimit_inactive = VCAMWorkerMemoryLimitMB;
+    int result = memorystatus_control(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES,
+                                      getpid(), 0, &properties, sizeof(properties));
+    if (result == 0) {
+        fprintf(stderr, "vcamd jetsam memory limit set to %d MB\n",
+                VCAMWorkerMemoryLimitMB);
+    } else {
+        fprintf(stderr, "vcamd failed to set jetsam memory limit: %s\n", strerror(errno));
+    }
+    fflush(stderr);
+    return result == 0;
+}
 
 static void VCAMPublishTick(void) {
     @autoreleasepool {
@@ -50,6 +85,7 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
+    VCAMRaiseJetsamMemoryLimit();
     @autoreleasepool {
         VCAMWriter = VCAMSharedFrameWriterCreate();
         if (VCAMWriter == NULL) return 2;

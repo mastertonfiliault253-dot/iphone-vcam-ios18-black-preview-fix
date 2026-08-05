@@ -31,15 +31,27 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("tweaksupport", launchd)
         self.assertIn("launchctl bootstrap system", postinst)
         self.assertIn("launchctl kickstart -k user/foreground/com.codex.vcamd", postinst)
+        self.assertIn("for attempt in 1 2 3 4 5", postinst)
+        self.assertIn("launchctl print user/foreground/com.codex.vcamd", postinst)
         self.assertIn("launchctl bootout user/foreground/com.codex.vcamd", prerm)
 
-    def test_realtime_worker_is_not_subject_to_background_jetsam_limit(self) -> None:
+    def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:
         launchd_path = (
             ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcamd.plist"
         )
         launchd = plistlib.loads(launchd_path.read_bytes())
         self.assertEqual(launchd["ProcessType"], "Interactive")
         self.assertNotIn("JetsamProperties", launchd)
+
+        main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
+        self.assertIn("MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES", main)
+        self.assertIn("memlimit_active = VCAMWorkerMemoryLimitMB", main)
+        self.assertIn("memlimit_inactive = VCAMWorkerMemoryLimitMB", main)
+        self.assertIn("VCAMWorkerMemoryLimitMB = 256", main)
+        self.assertLess(
+            main.index("VCAMRaiseJetsamMemoryLimit();"),
+            main.index("VCAMSharedFrameWriterCreate();"),
+        )
 
     def test_package_scheme_is_rootless_only(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
