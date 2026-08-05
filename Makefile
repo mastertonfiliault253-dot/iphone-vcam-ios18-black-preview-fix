@@ -48,6 +48,7 @@ vcamd_FILES = \
 	$(VCAM_SHARED_FILES)
 vcamd_ARCHS = arm64
 vcamd_INSTALL_PATH = /usr/libexec
+vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements
 vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
 vcamd_FRAMEWORKS = AVFoundation AudioToolbox CoreMedia CoreVideo Foundation ImageIO QuartzCore VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib

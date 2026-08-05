@@ -55,6 +55,8 @@ jobs:
           lipo "$media_client" -verify_arch arm64 arm64e
           lipo "$springboard_client" -verify_arch arm64 arm64e
           lipo "$worker" -verify_arch arm64
+          ldid -e "$worker" > /tmp/vcamd-entitlements.plist
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.private.memorystatus' /tmp/vcamd-entitlements.plist | grep -qx true
           obsolete_count="$(find .theos/_ -type f \( -name VCAM.dylib -o -name VCAMAppClient.dylib -o -name VCAMWebKitClient.dylib \) -print | wc -l | tr -d ' ')"
           test "$obsolete_count" -eq 0
       - uses: actions/upload-artifact@v4

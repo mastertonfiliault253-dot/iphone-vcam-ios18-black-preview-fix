@@ -41,7 +41,16 @@ class PackagingArchitectureTests(unittest.TestCase):
         )
         launchd = plistlib.loads(launchd_path.read_bytes())
         self.assertEqual(launchd["ProcessType"], "Interactive")
+        self.assertEqual(launchd["UserName"], "mobile")
         self.assertNotIn("JetsamProperties", launchd)
+
+        entitlements = plistlib.loads((ROOT / "vcamd.entitlements").read_bytes())
+        self.assertEqual(entitlements, {"com.apple.private.memorystatus": True})
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements",
+            makefile,
+        )
 
         main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
         self.assertIn("MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES", main)
