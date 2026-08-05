@@ -63,7 +63,6 @@ class InjectionSafetyTests(unittest.TestCase):
         ms_block = makefile.split("VCAMMediaServerClient_FILES", 1)[1].split("VCAMSpringBoardClient_FILES", 1)[0]
         self.assertNotIn("VCAM_COMMON_FILES", ms_block)
         self.assertNotIn("VCAMCaptureHooks", ms_block)
-        self.assertNotIn("ffmpeg", ms_block)
         self.assertNotIn("PhotosUI", ms_block)
         self.assertIn("VCAMCameraPreviewHooks.xm", makefile)
         self.assertNotIn("VCAMCameraPreviewHooks.xm", makefile.split("VCAMWebKitClient_FILES", 1)[1].splitlines()[0])

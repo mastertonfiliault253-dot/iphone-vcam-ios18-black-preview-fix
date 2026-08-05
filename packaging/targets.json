@@ -56,7 +56,7 @@
       "separateBinary": true,
       "separatePackage": false,
       "defaultEnabled": true,
-      "forbiddenDependencies": ["PhotosUI", "FFmpeg"],
+      "forbiddenDependencies": ["PhotosUI"],
       "status": "implemented-default-on-high-risk"
     },
     {

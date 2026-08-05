@@ -2,6 +2,10 @@
 #import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
 #import <UIKit/UIKit.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/hwcontext.h>
 #import <objc/runtime.h>
 #import <sys/time.h>
 #import <unistd.h>
@@ -56,7 +60,113 @@ static NSUInteger currentFrameIndex = 0;
 static CIContext *sharedCIContext = NULL;
 static NSObject *vcamLock = nil;
 
+static enum AVPixelFormat VCAMRefSelectHardwarePixelFormat(AVCodecContext *context,
+                                                                    const enum AVPixelFormat *formats) {
+    (void)context;
+    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
+        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static BOOL VCAMRefLoadRTSPFrames(NSString *urlString,
+                                  NSMutableArray *frames,
+                                  int maxFrames) {
+    if (urlString.length == 0 || frames == nil || maxFrames <= 0) return NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ avformat_network_init(); });
+
+    AVFormatContext *formatContext = NULL;
+    AVCodecContext *codecContext = NULL;
+    AVBufferRef *hardwareDevice = NULL;
+    AVPacket *packet = NULL;
+    AVFrame *frame = NULL;
+    AVDictionary *options = NULL;
+    int videoStream = -1;
+    const AVCodec *decoder = NULL;
+    BOOL ok = NO;
+
+    av_dict_set(&options, "rtsp_transport", "tcp", 0);
+    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
+    av_dict_set(&options, "fflags", "nobuffer", 0);
+    av_dict_set(&options, "flags", "low_delay", 0);
+    av_dict_set(&options, "reorder_queue_size", "0", 0);
+    av_dict_set(&options, "timeout", "3000000", 0);
+
+    if (avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options) < 0) goto cleanup;
+    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+    videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (videoStream < 0) goto cleanup;
+    AVStream *stream = formatContext->streams[videoStream];
+    decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (decoder == NULL) goto cleanup;
+    codecContext = avcodec_alloc_context3(decoder);
+    if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
+    codecContext->get_format = VCAMRefSelectHardwarePixelFormat;
+    codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    codecContext->thread_count = 1;
+    if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                               NULL, NULL, 0) < 0) goto cleanup;
+    codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
+    if (codecContext->hw_device_ctx == NULL || avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
+
+    packet = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (packet == NULL || frame == NULL) goto cleanup;
+
+    CFTimeInterval start = CFAbsoluteTimeGetCurrent();
+    while ((int)frames.count < maxFrames &&
+           (CFAbsoluteTimeGetCurrent() - start) < 6.0 &&
+           av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStream &&
+            avcodec_send_packet(codecContext, packet) >= 0) {
+            while (avcodec_receive_frame(codecContext, frame) >= 0) {
+                if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
+                    CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)frame->data[3];
+                    CVPixelBufferRetain(pixelBuffer);
+                    [frames addObject:(__bridge id)pixelBuffer];
+                }
+                av_frame_unref(frame);
+            }
+        }
+        av_packet_unref(packet);
+    }
+    ok = (frames.count > 0);
+
+cleanup:
+    av_dict_free(&options);
+    av_packet_free(&packet);
+    av_frame_free(&frame);
+    av_buffer_unref(&hardwareDevice);
+    avcodec_free_context(&codecContext);
+    avformat_close_input(&formatContext);
+    return ok;
+}
+
 void loadReplacementMedia(void) {
+    NSDictionary *daemonConfig = [NSDictionary dictionaryWithContentsOfFile:@"/var/tmp/com.codex.vcam.plist"];
+    if (daemonConfig == nil) {
+        daemonConfig = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+    }
+    NSString *source = [daemonConfig[@"source"] lowercaseString];
+    NSString *rtspURL = [daemonConfig[@"rtspURL"] isKindOfClass:NSString.class] ? daemonConfig[@"rtspURL"] : nil;
+    if ([source isEqualToString:@"rtsp"] && rtspURL.length > 0) {
+        videoFrames = [[NSMutableArray alloc] init];
+        int maxFrames = 30;
+        char rtspBuf[512] = {0};
+        snprintf(rtspBuf, sizeof(rtspBuf), "rtsp: loading %s", rtspURL.UTF8String ?: "(nil)");
+        VCAMRefLog(rtspBuf);
+        BOOL rtspOK = VCAMRefLoadRTSPFrames(rtspURL, videoFrames, maxFrames);
+        if (rtspOK) {
+            currentMode = VCamModeVideo;
+            char doneBuf[128] = {0};
+            snprintf(doneBuf, sizeof(doneBuf), "rtsp: frames=%lu mode=video", (unsigned long)videoFrames.count);
+            VCAMRefLog(doneBuf);
+        } else {
+            VCAMRefLog("rtsp: failed to load frames");
+        }
+        return;
+    }
     NSString *kReplacementMediaPath = VCAMReferenceMediaPath();
     char loadPathBuf[1024] = {0};
     snprintf(loadPathBuf, sizeof(loadPathBuf), "load path=%s exists=%d",
