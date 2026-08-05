@@ -11,6 +11,31 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 extern NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) __attribute__((weak_import));
 extern NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) __attribute__((weak_import));
 
+#include <sys/time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <time.h>
+
+static void VCAMSBLog(const char *message) {
+    struct timeval tv = {0};
+    gettimeofday(&tv, NULL);
+    time_t now = tv.tv_sec;
+    struct tm brokenDown = {0};
+    localtime_r(&now, &brokenDown);
+    char stamp[64] = {0};
+    strftime(stamp, sizeof(stamp), "%H:%M:%S", &brokenDown);
+    char line[1024] = {0};
+    snprintf(line, sizeof(line), "[%d][%s.%03d] %s\n",
+             getpid(), stamp, (int)(tv.tv_usec / 1000), message);
+    int descriptor = open("/var/tmp/vcam-sb-ui.log",
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (descriptor >= 0) {
+        (void)write(descriptor, line, strlen(line));
+        close(descriptor);
+    }
+}
+
 @interface VCAMPassthroughView : UIView
 @end
 
@@ -113,7 +138,22 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     static UIWindow *overlayWindow;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        UIWindowScene *activeScene = nil;
+        for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+            if ([candidate isKindOfClass:UIWindowScene.class] &&
+                candidate.activationState == UISceneActivationStateForegroundActive) {
+                activeScene = (UIWindowScene *)candidate;
+                break;
+            }
+        }
+        if (activeScene != nil) {
+            overlayWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
+            overlayWindow.frame = activeScene.coordinateSpace.bounds;
+            VCAMSBLog("overlay: created with windowScene");
+        } else {
+            overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+            VCAMSBLog("overlay: no windowScene, created with frame");
+        }
         overlayWindow.windowLevel = 1500.0;
         overlayWindow.rootViewController = [VCAMPassthroughViewController new];
         overlayWindow.hidden = NO;
@@ -194,6 +234,13 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 - (void)installButtonWhenWindowIsReady {
     NSAssert(NSThread.isMainThread, @"VCAM picker UI must run on the main thread");
     UIWindow *window = [self cameraWindow];
+    if (window != nil) {
+        char winBuf[256] = {0};
+        snprintf(winBuf, sizeof(winBuf), "install: window=%@ level=%.1f hidden=%d frame=%.0fx%.0f",
+                 NSStringFromClass(window.class), (double)window.windowLevel, window.hidden,
+                 CGRectGetWidth(window.bounds), CGRectGetHeight(window.bounds));
+        VCAMSBLog(winBuf);
+    }
     if (window == nil) {
         if (self.remainingWindowRetries-- > 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
@@ -257,6 +304,12 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     NSDictionary *values = [VCAMConfiguration currentValues];
     self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
     [window bringSubviewToFront:self.button];
+    char attachBuf[256] = {0};
+    snprintf(attachBuf, sizeof(attachBuf), "attach: superview=%@ hidden=%d visible=%d win=%@",
+             NSStringFromClass(self.button.superview.class), self.button.hidden,
+             [self isFloatingButtonVisibleForValues:values],
+             NSStringFromClass(window.class));
+    VCAMSBLog(attachBuf);
 }
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
