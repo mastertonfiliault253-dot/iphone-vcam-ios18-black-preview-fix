@@ -109,22 +109,50 @@ static BOOL VCAMRefLoadRTSPFrames(NSString *urlString,
     av_dict_set(&options, "reorder_queue_size", "0", 0);
     av_dict_set(&options, "timeout", "3000000", 0);
 
-    if (avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options) < 0) goto cleanup;
-    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+    int openResult = avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options);
+    if (openResult < 0) {
+        char errBuf[128] = {0};
+        av_strerror(openResult, errBuf, sizeof(errBuf));
+        char logBuf[256] = {0};
+        snprintf(logBuf, sizeof(logBuf), "rtsp: open_input failed %d %s", openResult, errBuf);
+        VCAMRefLog(logBuf);
+        goto cleanup;
+    }
+    VCAMRefLog("rtsp: open_input ok");
+    if (avformat_find_stream_info(formatContext, NULL) < 0) {
+        VCAMRefLog("rtsp: find_stream_info failed");
+        goto cleanup;
+    }
+    VCAMRefLog("rtsp: find_stream_info ok");
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (videoStream < 0) goto cleanup;
+    if (videoStream < 0) {
+        VCAMRefLog("rtsp: no video stream");
+        goto cleanup;
+    }
+    VCAMRefLog("rtsp: video stream found");
     AVStream *stream = formatContext->streams[videoStream];
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (decoder == NULL) goto cleanup;
+    if (decoder == NULL) {
+        VCAMRefLog("rtsp: decoder not found");
+        goto cleanup;
+    }
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
     codecContext->get_format = VCAMRefSelectHardwarePixelFormat;
     codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codecContext->thread_count = 1;
     if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                               NULL, NULL, 0) < 0) goto cleanup;
+                               NULL, NULL, 0) < 0) {
+        VCAMRefLog("rtsp: videotoolbox hwdevice create failed");
+        goto cleanup;
+    }
+    VCAMRefLog("rtsp: videotoolbox hwdevice ok");
     codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
-    if (codecContext->hw_device_ctx == NULL || avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
+    if (codecContext->hw_device_ctx == NULL || avcodec_open2(codecContext, decoder, NULL) < 0) {
+        VCAMRefLog("rtsp: avcodec_open2 failed");
+        goto cleanup;
+    }
+    VCAMRefLog("rtsp: decoder opened");
 
     packet = av_packet_alloc();
     frame = av_frame_alloc();
@@ -146,6 +174,11 @@ static BOOL VCAMRefLoadRTSPFrames(NSString *urlString,
             }
         }
         av_packet_unref(packet);
+    }
+    {
+        char doneBuf[128] = {0};
+        snprintf(doneBuf, sizeof(doneBuf), "rtsp: decoded %lu frames", (unsigned long)frames.count);
+        VCAMRefLog(doneBuf);
     }
     ok = (frames.count > 0);
 
