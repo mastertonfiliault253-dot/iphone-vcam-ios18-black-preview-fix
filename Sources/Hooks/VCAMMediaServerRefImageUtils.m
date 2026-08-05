@@ -171,6 +171,10 @@ void loadReplacementMedia(void) {
 
 void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     static int drawCalls = 0;
+    static CFAbsoluteTime lastRenderTime = 0;
+    static NSInteger rotationDegrees = 0;
+    static BOOL mirrorHorizontally = NO;
+    static int configRefreshCount = 0;
     drawCalls++;
     if (drawCalls <= 5) {
         char drawBuf[192] = {0};
@@ -178,6 +182,30 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                  drawCalls, (int)currentMode,
                  CVPixelBufferGetWidth(targetBuffer), CVPixelBufferGetHeight(targetBuffer));
         VCAMRefLog(drawBuf);
+    }
+    // Only draw into preview-sized buffers; the large sensor/photo nodes would
+    // otherwise overload the GPU at ~600 fps and stall the camera pipeline.
+    size_t targetWidthPixels = CVPixelBufferGetWidth(targetBuffer);
+    size_t targetHeightPixels = CVPixelBufferGetHeight(targetBuffer);
+    if (targetWidthPixels * targetHeightPixels > 2200000) {
+        return;
+    }
+    // Throttle rendering to 30 fps; upstream emits several video nodes at a
+    // much higher combined rate.
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (lastRenderTime > 0 && (now - lastRenderTime) < (1.0 / 30.0)) {
+        return;
+    }
+    lastRenderTime = now;
+    // Refresh rotation/mirror from the daemon-readable config occasionally so
+    // control-panel changes apply without restarting mediaserverd.
+    if (configRefreshCount++ % 30 == 0) {
+        NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/tmp/com.codex.vcam.plist"];
+        if (cfg == nil) {
+            cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+        }
+        rotationDegrees = [cfg[@"rotationDegrees"] integerValue] % 360;
+        mirrorHorizontally = [cfg[@"mirrorHorizontally"] boolValue];
     }
     @synchronized(vcamLock) {
         CIImage *replacementCIImage = nil;
@@ -195,8 +223,23 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
             return;
         }
 
-        CGFloat targetWidth = CVPixelBufferGetWidth(targetBuffer);
-        CGFloat targetHeight = CVPixelBufferGetHeight(targetBuffer);
+        // Apply config rotation/mirror around the frame center before scaling.
+        if (rotationDegrees != 0 || mirrorHorizontally) {
+            CGRect extent = replacementCIImage.extent;
+            CGAffineTransform orient = CGAffineTransformTranslate(
+                CGAffineTransformIdentity,
+                -CGRectGetMidX(extent), -CGRectGetMidY(extent));
+            if (rotationDegrees != 0) {
+                orient = CGAffineTransformRotate(orient, rotationDegrees * M_PI / 180.0);
+            }
+            if (mirrorHorizontally) {
+                orient = CGAffineTransformScale(orient, -1.0, 1.0);
+            }
+            replacementCIImage = [replacementCIImage imageByApplyingTransform:orient];
+        }
+
+        CGFloat targetWidth = (CGFloat)targetWidthPixels;
+        CGFloat targetHeight = (CGFloat)targetHeightPixels;
         CGRect replacementExtent = replacementCIImage.extent;
 
         CGFloat scaleX = targetWidth / replacementExtent.size.width;

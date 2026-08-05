@@ -11,6 +11,26 @@ extern NSDictionary<NSString *, NSNumber *> *VCAMCaptureHookDiagnosticSnapshot(v
 extern NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) __attribute__((weak_import));
 extern NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) __attribute__((weak_import));
 
+@interface VCAMPassthroughView : UIView
+@end
+
+@implementation VCAMPassthroughView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return (hit == self) ? nil : hit;
+}
+@end
+
+@interface VCAMPassthroughViewController : UIViewController
+@end
+
+@implementation VCAMPassthroughViewController
+- (void)loadView {
+    self.view = [[VCAMPassthroughView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+}
+- (BOOL)prefersStatusBarHidden { return YES; }
+@end
+
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
                                            const void *object, CFDictionaryRef userInfo) {
     (void)center; (void)name; (void)object; (void)userInfo;
@@ -88,7 +108,22 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     return nil;
 }
 
+- (UIWindow *)springBoardOverlayWindow {
+    if (![self isSpringBoardHost]) return nil;
+    static UIWindow *overlayWindow;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        overlayWindow.windowLevel = 1500.0;
+        overlayWindow.rootViewController = [VCAMPassthroughViewController new];
+        overlayWindow.hidden = NO;
+    });
+    return overlayWindow;
+}
+
 - (nullable UIWindow *)cameraWindow {
+    UIWindow *overlay = [self springBoardOverlayWindow];
+    if (overlay != nil) return overlay;
     UIWindow *springBoardWindow = [self springBoardHomeWindow];
     if (springBoardWindow != nil) return springBoardWindow;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
