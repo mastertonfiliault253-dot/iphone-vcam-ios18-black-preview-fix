@@ -355,43 +355,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     NSString *urlString = self.configuration.rtspURL.absoluteString;
     const char *url = urlString.UTF8String;
 
-    av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
-    // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
-    // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
-    // could display error-concealed inter frames after a delayed packet.
-    av_dict_set(&options, "timeout", "3000000", 0);
-
-    if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
-    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
-
-    videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (videoStream < 0) goto cleanup;
-    stream = formatContext->streams[videoStream];
-    decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (decoder == NULL) goto cleanup;
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d",
-        useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
-        stream->codecpar->width, stream->codecpar->height, stream->codecpar->format]];
-    codecContext = avcodec_alloc_context3(decoder);
-    if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
-
-    codecContext->err_recognition = AV_EF_CAREFUL;
-    codecContext->thread_count = useHardware ? 1 : 2;
-    if (useHardware) {
-        codecContext->get_format = VCAMSelectHardwarePixelFormat;
-        if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                                   NULL, NULL, 0) < 0) goto cleanup;
-        codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
-        if (codecContext->hw_device_ctx == NULL) goto cleanup;
-    }
-    if (avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
-
-    packet = av_packet_alloc();
-    frame = av_frame_alloc();
-    if (packet == NULL || frame == NULL) goto cleanup;
-
+    // Under ARC, every cleanup jump must stay outside the lifetime entry of a
+    // strongly capturing block. Install the handler before the first possible
+    // goto so all failure paths can safely share the cleanup label.
     handleDecodedFrame = ^(AVFrame *decodedFrame) {
         if ((decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) != 0 ||
             decodedFrame->decode_error_flags != 0) {
@@ -439,6 +405,43 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             }
         }
     };
+
+    av_dict_set(&options, "rtsp_transport", "tcp", 0);
+    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
+    // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
+    // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
+    // could display error-concealed inter frames after a delayed packet.
+    av_dict_set(&options, "timeout", "3000000", 0);
+
+    if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
+    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+
+    videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (videoStream < 0) goto cleanup;
+    stream = formatContext->streams[videoStream];
+    decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (decoder == NULL) goto cleanup;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d",
+        useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
+        stream->codecpar->width, stream->codecpar->height, stream->codecpar->format]];
+    codecContext = avcodec_alloc_context3(decoder);
+    if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
+
+    codecContext->err_recognition = AV_EF_CAREFUL;
+    codecContext->thread_count = useHardware ? 1 : 2;
+    if (useHardware) {
+        codecContext->get_format = VCAMSelectHardwarePixelFormat;
+        if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                   NULL, NULL, 0) < 0) goto cleanup;
+        codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
+        if (codecContext->hw_device_ctx == NULL) goto cleanup;
+    }
+    if (avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
+
+    packet = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (packet == NULL || frame == NULL) goto cleanup;
 
     recoveryStartedAt = CACurrentMediaTime();
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
