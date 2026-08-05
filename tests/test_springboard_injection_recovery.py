@@ -45,6 +45,16 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         self.assertIn("/var/tmp/vcam-postinst-inject.log", postinst)
         self.assertNotIn("TweakLoader.dylib", postinst)
         self.assertNotIn("sbreload", postinst)
+        self.assertIn("for inject_attempt in 1 2 3 4 5", postinst)
+        self.assertIn('if [ "$observed_pid" = "$target_pid" ]', postinst)
+        self.assertIn(
+            'retry target=$target_name old_pid=$target_pid new_pid=$observed_pid',
+            postinst,
+        )
+        self.assertIn(
+            'completed target=$target_name pid=$target_pid attempt=$inject_attempt',
+            postinst,
+        )
         for forbidden in ("Camera", "MobileSafari", "SafariViewService", "WebKit"):
             self.assertNotIn(f"vcam_best_effort_inject {forbidden}", postinst)
 

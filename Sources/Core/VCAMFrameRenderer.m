@@ -79,7 +79,8 @@
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (id)kCVPixelBufferWidthKey: @(width),
         (id)kCVPixelBufferHeightKey: @(height),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
     };
     CVReturn status = CVPixelBufferPoolCreate(kCFAllocatorDefault,
                                                (__bridge CFDictionaryRef)poolAttributes,

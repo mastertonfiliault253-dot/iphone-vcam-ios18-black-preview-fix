@@ -93,9 +93,14 @@ class PackagingArchitectureTests(unittest.TestCase):
 
     def test_headless_renderer_has_no_core_image_or_gpu_context(self) -> None:
         renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(encoding="utf-8")
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("CGBitmapContextCreate", renderer)
         self.assertIn("VTCreateCGImageFromCVPixelBuffer", renderer)
+        self.assertIn("kCVPixelBufferCGImageCompatibilityKey", renderer)
+        self.assertIn("kCVPixelBufferCGBitmapContextCompatibilityKey", renderer)
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", renderer)
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", producer)
         self.assertNotIn("CIContext", renderer)
         self.assertNotIn("CoreImage", makefile.split("vcamd_FRAMEWORKS", 1)[1].splitlines()[0])
         self.assertIn("vcamd_ARCHS = arm64", makefile)

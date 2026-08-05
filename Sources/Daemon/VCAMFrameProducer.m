@@ -95,7 +95,8 @@
             (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
             (id)kCVPixelBufferWidthKey: @(width),
             (id)kCVPixelBufferHeightKey: @(height),
-            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+            (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+            (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
         };
         if (CVPixelBufferCreate(kCFAllocatorDefault, width, height,
                                 kCVPixelFormatType_32BGRA,

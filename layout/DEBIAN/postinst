@@ -58,20 +58,35 @@ vcam_best_effort_inject() {
         return 0
     fi
 
-    target_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
-        sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || target_pid=""
-    if [ -z "$target_pid" ]; then
-        vcam_log_injection "pending target=$target_name reason=process-not-found"
-        return 0
-    fi
+    for inject_attempt in 1 2 3 4 5; do
+        target_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
+            sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || target_pid=""
+        if [ -z "$target_pid" ]; then
+            vcam_log_injection "retry target=$target_name old_pid=none new_pid=none reason=process-not-found attempt=$inject_attempt"
+            sleep 1
+            continue
+        fi
 
-    vcam_log_injection "attempt target=$target_name pid=$target_pid dylib=$target_dylib"
-    if "$injector" "$target_pid" "$target_dylib" >> "$vcam_inject_log" 2>&1; then
-        vcam_log_injection "success target=$target_name pid=$target_pid"
-    else
-        inject_status="$?"
-        vcam_log_injection "failed target=$target_name pid=$target_pid status=$inject_status"
-    fi
+        vcam_log_injection "attempt target=$target_name pid=$target_pid dylib=$target_dylib attempt=$inject_attempt"
+        inject_status=0
+        "$injector" "$target_pid" "$target_dylib" >> "$vcam_inject_log" 2>&1 || inject_status="$?"
+        sleep 1
+
+        observed_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
+            sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || observed_pid=""
+        if [ "$observed_pid" = "$target_pid" ]; then
+            if [ "$inject_status" -eq 0 ]; then
+                vcam_log_injection "completed target=$target_name pid=$target_pid attempt=$inject_attempt"
+                return 0
+            fi
+            vcam_log_injection "retry target=$target_name old_pid=$target_pid new_pid=$observed_pid reason=injector-status-$inject_status attempt=$inject_attempt"
+        else
+            vcam_log_injection "retry target=$target_name old_pid=$target_pid new_pid=$observed_pid reason=pid-changed attempt=$inject_attempt"
+        fi
+        sleep 1
+    done
+
+    vcam_log_injection "exhausted target=$target_name attempts=5"
     return 0
 }
 
