@@ -330,7 +330,6 @@ void loadReplacementMedia(void) {
 
 void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     static int drawCalls = 0;
-    static CFAbsoluteTime lastRenderTime = 0;
     static NSInteger rotationDegrees = 0;
     static BOOL mirrorHorizontally = NO;
     static int configRefreshCount = 0;
@@ -342,20 +341,15 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                  CVPixelBufferGetWidth(targetBuffer), CVPixelBufferGetHeight(targetBuffer));
         VCAMRefLog(drawBuf);
     }
-    // Only draw into preview-sized buffers; the large sensor/photo nodes would
-    // otherwise overload the GPU at ~600 fps and stall the camera pipeline.
+    // Draw only into the screen-sized preview node (iPhone SE2: 750x1334).
+    // Other sensor/photo/analysis nodes are left untouched so the camera
+    // pipeline stays responsive; rendering every preview frame avoids flicker
+    // and keeps GPU load low.
     size_t targetWidthPixels = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeightPixels = CVPixelBufferGetHeight(targetBuffer);
-    if (targetWidthPixels * targetHeightPixels > 5000000) {
+    if (targetWidthPixels != 750 || targetHeightPixels != 1334) {
         return;
     }
-    // Throttle rendering to 30 fps; upstream emits several video nodes at a
-    // much higher combined rate.
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (lastRenderTime > 0 && (now - lastRenderTime) < (1.0 / 30.0)) {
-        return;
-    }
-    lastRenderTime = now;
     // Refresh rotation/mirror from the daemon-readable config occasionally so
     // control-panel changes apply without restarting mediaserverd.
     if (configRefreshCount++ % 30 == 0) {
@@ -382,19 +376,18 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
             return;
         }
 
-        // Apply config rotation/mirror around the frame center before scaling.
+        // Apply config rotation with the GPU-native orientation API; affine
+        // rotation around the center stalled the camera thread on-device.
         if (rotationDegrees != 0 || mirrorHorizontally) {
-            CGRect extent = replacementCIImage.extent;
-            CGAffineTransform orient = CGAffineTransformTranslate(
-                CGAffineTransformIdentity,
-                -CGRectGetMidX(extent), -CGRectGetMidY(extent));
-            if (rotationDegrees != 0) {
-                orient = CGAffineTransformRotate(orient, rotationDegrees * M_PI / 180.0);
+            NSInteger orientation = 1;
+            switch ((rotationDegrees % 360 + 360) % 360) {
+                case 0: orientation = mirrorHorizontally ? 2 : 1; break;
+                case 90: orientation = mirrorHorizontally ? 7 : 6; break;
+                case 180: orientation = mirrorHorizontally ? 4 : 3; break;
+                case 270: orientation = mirrorHorizontally ? 5 : 8; break;
+                default: break;
             }
-            if (mirrorHorizontally) {
-                orient = CGAffineTransformScale(orient, -1.0, 1.0);
-            }
-            replacementCIImage = [replacementCIImage imageByApplyingTransform:orient];
+            replacementCIImage = [replacementCIImage imageByApplyingOrientation:orientation];
         }
 
         CGFloat targetWidth = (CGFloat)targetWidthPixels;
