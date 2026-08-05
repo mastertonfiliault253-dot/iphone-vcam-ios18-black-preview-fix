@@ -6,6 +6,7 @@ install -d -o mobile -g mobile -m 0755 /var/mobile/Media/VCAM
 if [ -e /var/mobile/Library/Preferences/com.codex.vcam.plist ] && [ ! -e /var/mobile/Media/VCAM/com.codex.vcam.plist ]; then
     cp /var/mobile/Library/Preferences/com.codex.vcam.plist /var/mobile/Media/VCAM/com.codex.vcam.plist
 fi
+
 if [ -e /var/mobile/Media/VCAM/com.codex.vcam.plist ]; then
     chown mobile:mobile /var/mobile/Media/VCAM/com.codex.vcam.plist
     chmod 0644 /var/mobile/Media/VCAM/com.codex.vcam.plist
@@ -92,5 +93,18 @@ vcam_best_effort_inject() {
 
 vcam_best_effort_inject SpringBoard /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
 vcam_best_effort_inject mediaserverd /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
+
+inject_daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcaminjectd.plist
+if [ -e "$inject_daemon_plist" ]; then
+    launchctl bootout system/com.codex.vcaminjectd >/dev/null 2>&1 || true
+    for attempt in 1 2 3 4 5; do
+        launchctl bootstrap system "$inject_daemon_plist" >/dev/null 2>&1 || true
+        if launchctl print system/com.codex.vcaminjectd >/dev/null 2>&1; then
+            launchctl kickstart -k system/com.codex.vcaminjectd >/dev/null 2>&1 || true
+            break
+        fi
+        sleep 1
+    done
+fi
 
 exit 0

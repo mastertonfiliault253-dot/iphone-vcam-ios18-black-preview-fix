@@ -112,7 +112,10 @@
                                                 symbol:@"repeat"
                                                  color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                 action:@selector(loopTapped)]];
-    [stack addArrangedSubview:[self sectionLabel:@"恢复"]];
+    [stack addArrangedSubview:[self sectionLabel:@"相机切换"]];
+    [stack addArrangedSubview:[self actionButton:@"启用虚拟相机" symbol:@"video.fill"
+                                                  color:[UIColor colorWithRed:0.12 green:0.68 blue:0.34 alpha:1]
+                                                 action:@selector(enableTapped)]];
     [stack addArrangedSubview:[self actionButton:@"恢复真实相机" symbol:@"camera"
                                                   color:[UIColor colorWithRed:0.88 green:0.20 blue:0.24 alpha:1]
                                                  action:@selector(restoreTapped)]];
@@ -235,6 +238,7 @@
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
+- (void)enableTapped { [self.delegate controlPanelDidRequestEnableVirtualCamera:self]; }
 - (void)restoreTapped { [self.delegate controlPanelDidRequestRestoreCamera:self]; }
 
 @end

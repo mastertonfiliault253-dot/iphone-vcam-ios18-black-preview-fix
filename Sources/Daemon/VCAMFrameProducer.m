@@ -7,6 +7,27 @@
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
 
+static BOOL VCAMObjectsEqual(id left, id right) {
+    return left == right || (left != nil && [left isEqual:right]);
+}
+
+static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
+                                                VCAMConfiguration *right) {
+    if (left == nil || right == nil) return NO;
+    return left.enabled == right.enabled &&
+        left.replaceAudio == right.replaceAudio &&
+        left.loopMedia == right.loopMedia &&
+        left.mirrorHorizontally == right.mirrorHorizontally &&
+        left.rotationDegrees == right.rotationDegrees &&
+        left.sourceKind == right.sourceKind &&
+        left.contentMode == right.contentMode &&
+        left.preferredFramesPerSecond == right.preferredFramesPerSecond &&
+        left.localDecoderMode == right.localDecoderMode &&
+        VCAMObjectsEqual(left.mediaPath, right.mediaPath) &&
+        VCAMObjectsEqual(left.obsWebSocketURL, right.obsWebSocketURL) &&
+        VCAMObjectsEqual(left.rtspURL, right.rtspURL);
+}
+
 @interface VCAMFrameProducer () {
     CMSampleBufferRef _templateSample;
     CGSize _templateSize;
@@ -36,6 +57,14 @@
 
 - (void)reload {
     dispatch_sync(self.stateQueue, ^{
+        VCAMConfiguration *nextConfiguration = [VCAMConfiguration loadCurrent];
+        BOOL sourceHealthy = self.source != nil || !nextConfiguration.enabled ||
+            nextConfiguration.sourceKind == VCAMSourceKindCamera;
+        if (sourceHealthy &&
+            VCAMConfigurationsProduceSameFrames(self.configuration, nextConfiguration)) {
+            [VCAMConfiguration appendProcessLog:@"vcamd reload skipped unchanged media configuration"];
+            return;
+        }
         [self.source stop];
         self.source = nil;
         if (self->_templateSample != NULL) {
@@ -43,7 +72,7 @@
             self->_templateSample = NULL;
         }
         self->_templateSize = CGSizeZero;
-        self.configuration = [VCAMConfiguration loadCurrent];
+        self.configuration = nextConfiguration;
         if (!self.configuration.enabled || self.configuration.sourceKind == VCAMSourceKindCamera) return;
         switch (self.configuration.sourceKind) {
             case VCAMSourceKindLocalMedia:

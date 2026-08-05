@@ -60,10 +60,13 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     NSUInteger _diagnosticHardwareFrames;
     double _diagnosticFrameIntervals[256];
     NSUInteger _diagnosticFrameIntervalCount;
+    AVFrame *_pendingSoftwareFrame;
+    BOOL _softwareConversionScheduled;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong) dispatch_queue_t decodeQueue;
+@property(nonatomic, strong) dispatch_queue_t conversionQueue;
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
 @end
@@ -77,6 +80,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _configuration = configuration;
         _renderer = renderer;
         _decodeQueue = dispatch_queue_create("com.codex.vcam.rtsp.decode", DISPATCH_QUEUE_SERIAL);
+        _conversionQueue = dispatch_queue_create("com.codex.vcam.rtsp.convert", DISPATCH_QUEUE_SERIAL);
         _hardwareDecodeEnabled = YES;
     }
     return self;
@@ -110,7 +114,61 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _latestFrameSequence = 0;
         _lastDisplayFrameSequence = 0;
         _lastRenderedFrameSequence = 0;
+        if (_pendingSoftwareFrame != NULL) av_frame_free(&_pendingSoftwareFrame);
     }
+}
+
+- (void)drainLatestSoftwareFrames {
+    while (YES) {
+        AVFrame *frame = NULL;
+        @synchronized (self) {
+            if (!self.running || _pendingSoftwareFrame == NULL) {
+                _softwareConversionScheduled = NO;
+                return;
+            }
+            frame = _pendingSoftwareFrame;
+            _pendingSoftwareFrame = NULL;
+        }
+
+        @autoreleasepool {
+            CVPixelBufferRef pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
+            if (pixelBuffer != NULL) {
+                [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
+                CVPixelBufferRelease(pixelBuffer);
+            } else {
+                static dispatch_once_t conversionFailureToken;
+                dispatch_once(&conversionFailureToken, ^{
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"rtsp software conversion failed format=%d size=%dx%d",
+                        frame->format, frame->width, frame->height]];
+                });
+            }
+        }
+        av_frame_free(&frame);
+    }
+}
+
+- (BOOL)enqueueLatestSoftwareFrame:(AVFrame *)frame {
+    AVFrame *snapshot = frame == NULL ? NULL : av_frame_clone(frame);
+    if (snapshot == NULL) return NO;
+    BOOL scheduleConversion = NO;
+    @synchronized (self) {
+        if (!self.running) {
+            av_frame_free(&snapshot);
+            return NO;
+        }
+        if (_pendingSoftwareFrame != NULL) av_frame_free(&_pendingSoftwareFrame);
+        _pendingSoftwareFrame = snapshot;
+        if (!_softwareConversionScheduled) {
+            _softwareConversionScheduled = YES;
+            scheduleConversion = YES;
+        }
+    }
+    if (scheduleConversion) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(self.conversionQueue, ^{ [weakSelf drainLatestSoftwareFrames]; });
+    }
+    return YES;
 }
 
 - (void)dealloc {
@@ -189,13 +247,25 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         frame->format == AV_PIX_FMT_YUVJ420P;
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
     if (!planar420 && !nv12) return NULL;
+    if (frame->data[0] == NULL || frame->data[1] == NULL ||
+        (planar420 && frame->data[2] == NULL)) return NULL;
+
+    // Decode every compressed frame so H.264 reference state remains intact,
+    // but do the expensive YUV conversion at the shared-frame resolution. The
+    // previous 1080x1920 BGRA intermediate was then scaled to 720x1280, which
+    // made software decode fall behind a real-time RTSP sender.
+    const int maximumDimension = 1280;
+    double scale = MIN(1.0, (double)maximumDimension /
+        (double)MAX(frame->width, frame->height));
+    int outputWidth = MAX(1, (int)lrint((double)frame->width * scale));
+    int outputHeight = MAX(1, (int)lrint((double)frame->height * scale));
     NSDictionary *attributes = @{
         (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
         (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
     };
     CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn createStatus = CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
-                                                (size_t)frame->height,
+    CVReturn createStatus = CVPixelBufferCreate(kCFAllocatorDefault, (size_t)outputWidth,
+                                                (size_t)outputHeight,
                                                 kCVPixelFormatType_32BGRA,
                                                 (__bridge CFDictionaryRef)attributes,
                                                 &pixelBuffer);
@@ -219,22 +289,31 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     }
     uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
     size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    for (int y = 0; y < frame->height; y++) {
-        const uint8_t *luma = frame->data[0] + y * frame->linesize[0];
-        const uint8_t *chromaU = frame->data[1] + (y / 2) * frame->linesize[1];
+    BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
+        frame->color_range == AVCOL_RANGE_JPEG;
+    for (int y = 0; y < outputHeight; y++) {
+        int sourceY = MIN(frame->height - 1,
+                          (int)((int64_t)y * frame->height / outputHeight));
+        const uint8_t *luma = frame->data[0] + sourceY * frame->linesize[0];
+        const uint8_t *chromaU = frame->data[1] + (sourceY / 2) * frame->linesize[1];
         const uint8_t *chromaV = planar420
-            ? frame->data[2] + (y / 2) * frame->linesize[2] : NULL;
+            ? frame->data[2] + (sourceY / 2) * frame->linesize[2] : NULL;
         uint8_t *row = destination + (size_t)y * destinationStride;
-        for (int x = 0; x < frame->width; x++) {
-            int sampleY = luma[x];
-            int sampleU = planar420 ? chromaU[x / 2] : chromaU[(x / 2) * 2];
-            int sampleV = planar420 ? chromaV[x / 2] : chromaU[(x / 2) * 2 + 1];
-            int c = MAX(0, sampleY - 16);
+        for (int x = 0; x < outputWidth; x++) {
+            int sourceX = MIN(frame->width - 1,
+                              (int)((int64_t)x * frame->width / outputWidth));
+            int sampleY = luma[sourceX];
+            int sampleU = planar420 ? chromaU[sourceX / 2] : chromaU[(sourceX / 2) * 2];
+            int sampleV = planar420 ? chromaV[sourceX / 2] : chromaU[(sourceX / 2) * 2 + 1];
+            int c = fullRange ? sampleY : MAX(0, sampleY - 16);
             int d = sampleU - 128;
             int e = sampleV - 128;
-            int red = (298 * c + 409 * e + 128) >> 8;
-            int green = (298 * c - 100 * d - 208 * e + 128) >> 8;
-            int blue = (298 * c + 516 * d + 128) >> 8;
+            int red = fullRange ? c + ((359 * e + 128) >> 8)
+                                : (298 * c + 409 * e + 128) >> 8;
+            int green = fullRange ? c - ((88 * d + 183 * e + 128) >> 8)
+                                  : (298 * c - 100 * d - 208 * e + 128) >> 8;
+            int blue = fullRange ? c + ((454 * d + 128) >> 8)
+                                 : (298 * c + 516 * d + 128) >> 8;
             row[x * 4 + 0] = (uint8_t)MAX(0, MIN(255, blue));
             row[x * 4 + 1] = (uint8_t)MAX(0, MIN(255, green));
             row[x * 4 + 2] = (uint8_t)MAX(0, MIN(255, red));
@@ -256,20 +335,31 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
     BOOL useHardware = self.hardwareDecodeEnabled;
-    BOOL producedFrame = NO;
-    BOOL loggedSoftwareFrame = NO;
-    BOOL loggedSoftwareConversionFailure = NO;
+    __block BOOL producedFrame = NO;
+    __block BOOL loggedSoftwareFrame = NO;
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
-    NSUInteger videoPacketsWithoutFrame = 0;
+    __block BOOL loggedCorruptInput = NO;
+    // Joining an RTP stream in the middle of a GOP can produce a superficially
+    // decodable but reference-corrupted picture. Publish only after FFmpeg has
+    // emitted a clean key frame, and return to the same bounded recovery state
+    // whenever the demuxer or decoder reports corruption.
+    __block BOOL waitingForKeyPacket = YES;
+    __block BOOL awaitingCleanKeyFrame = NO;
+    __block NSUInteger recoveryPackets = 0;
+    const NSUInteger recoveryPacketLimit = 120;
+    __block CFTimeInterval recoveryStartedAt = 0;
+    const CFTimeInterval recoveryTimeLimit = 5.0;
+    __block NSUInteger videoPacketsWithoutFrame = 0;
+    void (^handleDecodedFrame)(AVFrame *) = nil;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
     const char *url = urlString.UTF8String;
 
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
-    av_dict_set(&options, "fflags", "nobuffer", 0);
-    av_dict_set(&options, "flags", "low_delay", 0);
-    av_dict_set(&options, "reorder_queue_size", "0", 0);
+    // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
+    // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
+    // could display error-concealed inter frames after a delayed packet.
     av_dict_set(&options, "timeout", "3000000", 0);
 
     if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
@@ -287,8 +377,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
-    codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    codecContext->thread_count = 1;
+    codecContext->err_recognition = AV_EF_CAREFUL;
+    codecContext->thread_count = useHardware ? 1 : 2;
     if (useHardware) {
         codecContext->get_format = VCAMSelectHardwarePixelFormat;
         if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
@@ -302,58 +392,172 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
+    handleDecodedFrame = ^(AVFrame *decodedFrame) {
+        if ((decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) != 0 ||
+            decodedFrame->decode_error_flags != 0) {
+            BOOL alreadyRecovering = waitingForKeyPacket || awaitingCleanKeyFrame;
+            waitingForKeyPacket = YES;
+            awaitingCleanKeyFrame = NO;
+            if (!alreadyRecovering) {
+                recoveryPackets = 0;
+                recoveryStartedAt = CACurrentMediaTime();
+            }
+            if (!loggedCorruptInput) {
+                loggedCorruptInput = YES;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"rtsp corrupt frame dropped flags=%d decodeErrors=%d; waiting for keyframe",
+                    decodedFrame->flags, decodedFrame->decode_error_flags]];
+            }
+            return;
+        }
+        if (awaitingCleanKeyFrame) {
+            if ((decodedFrame->flags & AV_FRAME_FLAG_KEY) == 0) return;
+            awaitingCleanKeyFrame = NO;
+            recoveryPackets = 0;
+            recoveryStartedAt = 0;
+            [VCAMConfiguration appendProcessLog:@"rtsp recovered on clean decoded key frame"];
+        }
+        if (decodedFrame->format == AV_PIX_FMT_VIDEOTOOLBOX && decodedFrame->data[3] != NULL) {
+            CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)decodedFrame->data[3];
+            [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
+            producedFrame = YES;
+            videoPacketsWithoutFrame = 0;
+            return;
+        }
+        if (!useHardware) {
+            if (!loggedSoftwareFrame) {
+                loggedSoftwareFrame = YES;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"rtsp software frame format=%d size=%dx%d lines=%d,%d,%d",
+                    decodedFrame->format, decodedFrame->width, decodedFrame->height,
+                    decodedFrame->linesize[0], decodedFrame->linesize[1],
+                    decodedFrame->linesize[2]]];
+            }
+            if ([self enqueueLatestSoftwareFrame:decodedFrame]) {
+                producedFrame = YES;
+                videoPacketsWithoutFrame = 0;
+            }
+        }
+    };
+
+    recoveryStartedAt = CACurrentMediaTime();
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        if ((waitingForKeyPacket || awaitingCleanKeyFrame) &&
+            recoveryStartedAt > 0 &&
+            CACurrentMediaTime() - recoveryStartedAt > recoveryTimeLimit) {
+            [VCAMConfiguration appendProcessLog:
+                @"rtsp clean-key recovery exceeded five seconds; reconnecting"];
+            av_packet_unref(packet);
+            break;
+        }
         if (packet->stream_index == videoStream) {
             videoPacketsWithoutFrame += 1;
-            int sendResult = avcodec_send_packet(codecContext, packet);
-            if (sendResult >= 0) {
-                while (self.running) {
-                    int receiveResult = avcodec_receive_frame(codecContext, frame);
-                    if (receiveResult < 0) {
-                        if (receiveResult != AVERROR(EAGAIN) && receiveResult != AVERROR_EOF &&
-                            !loggedReceiveFailure) {
-                            loggedReceiveFailure = YES;
-                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                @"rtsp receive_frame failed hardware=%d error=%@", useHardware,
-                                VCAMFFmpegErrorDescription(receiveResult)]];
+            if (waitingForKeyPacket || awaitingCleanKeyFrame) {
+                recoveryPackets += 1;
+                if (recoveryPackets > recoveryPacketLimit) {
+                    [VCAMConfiguration appendProcessLog:
+                        @"rtsp key-frame recovery timed out; reconnecting"];
+                    av_packet_unref(packet);
+                    break;
+                }
+            }
+            if ((packet->flags & AV_PKT_FLAG_CORRUPT) != 0) {
+                BOOL alreadyRecovering = waitingForKeyPacket || awaitingCleanKeyFrame;
+                waitingForKeyPacket = YES;
+                awaitingCleanKeyFrame = NO;
+                if (!alreadyRecovering) {
+                    recoveryPackets = 0;
+                    recoveryStartedAt = CACurrentMediaTime();
+                }
+                avcodec_flush_buffers(codecContext);
+                if (!loggedCorruptInput) {
+                    loggedCorruptInput = YES;
+                    [VCAMConfiguration appendProcessLog:@"rtsp corrupt packet dropped; waiting for keyframe"];
+                }
+                av_packet_unref(packet);
+                continue;
+            }
+            if (waitingForKeyPacket && (packet->flags & AV_PKT_FLAG_KEY) == 0) {
+                av_packet_unref(packet);
+                continue;
+            }
+            if (waitingForKeyPacket) {
+                avcodec_flush_buffers(codecContext);
+                waitingForKeyPacket = NO;
+                awaitingCleanKeyFrame = YES;
+                recoveryPackets = 0;
+            }
+            int sendResult = AVERROR(EAGAIN);
+            BOOL restartSession = NO;
+            while (self.running) {
+                sendResult = avcodec_send_packet(codecContext, packet);
+                if (sendResult != AVERROR(EAGAIN)) break;
+
+                // EAGAIN means the decoder still owns output for an earlier
+                // packet. Drain one frame, then retry this exact packet; never
+                // unref/drop a compressed H.264 packet before it is accepted.
+                int receiveResult = avcodec_receive_frame(codecContext, frame);
+                if (receiveResult >= 0) {
+                    handleDecodedFrame(frame);
+                    av_frame_unref(frame);
+                    if (waitingForKeyPacket) {
+                        avcodec_flush_buffers(codecContext);
+                        if ((packet->flags & AV_PKT_FLAG_KEY) != 0 &&
+                            (packet->flags & AV_PKT_FLAG_CORRUPT) == 0) {
+                            waitingForKeyPacket = NO;
+                            awaitingCleanKeyFrame = YES;
+                            recoveryPackets = 0;
+                            continue;
                         }
                         break;
                     }
-                    if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3] != NULL) {
-                        CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)frame->data[3];
-                        [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
-                        producedFrame = YES;
-                        videoPacketsWithoutFrame = 0;
-                    } else if (!useHardware) {
-                        if (!loggedSoftwareFrame) {
-                            loggedSoftwareFrame = YES;
-                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                @"rtsp software frame format=%d size=%dx%d lines=%d,%d,%d",
-                                frame->format, frame->width, frame->height, frame->linesize[0],
-                                frame->linesize[1], frame->linesize[2]]];
-                        }
-                        CVPixelBufferRef pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
-                        if (pixelBuffer != NULL) {
-                            [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
-                            CVPixelBufferRelease(pixelBuffer);
-                            producedFrame = YES;
-                            videoPacketsWithoutFrame = 0;
-                        } else if (!loggedSoftwareConversionFailure) {
-                            loggedSoftwareConversionFailure = YES;
-                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                @"rtsp software conversion failed format=%d size=%dx%d",
-                                frame->format, frame->width, frame->height]];
-                        }
-                    }
-                    av_frame_unref(frame);
+                    continue;
                 }
-            } else if (sendResult != AVERROR(EAGAIN) && !loggedSendFailure) {
-                loggedSendFailure = YES;
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"rtsp send_packet failed hardware=%d error=%@", useHardware,
-                    VCAMFFmpegErrorDescription(sendResult)]];
+                restartSession = YES;
+                if (!loggedReceiveFailure) {
+                    loggedReceiveFailure = YES;
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"rtsp decoder made no progress while retrying packet error=%@",
+                        VCAMFFmpegErrorDescription(receiveResult)]];
+                }
+                break;
+            }
+            if (sendResult >= 0 && !waitingForKeyPacket) {
+                while (self.running) {
+                    int receiveResult = avcodec_receive_frame(codecContext, frame);
+                    if (receiveResult < 0) {
+                        if (receiveResult != AVERROR(EAGAIN)) {
+                            restartSession = YES;
+                            if (!loggedReceiveFailure) {
+                                loggedReceiveFailure = YES;
+                                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                    @"rtsp receive_frame ended hardware=%d error=%@; reconnecting",
+                                    useHardware, VCAMFFmpegErrorDescription(receiveResult)]];
+                            }
+                        }
+                        break;
+                    }
+                    handleDecodedFrame(frame);
+                    av_frame_unref(frame);
+                    if (waitingForKeyPacket) {
+                        avcodec_flush_buffers(codecContext);
+                        break;
+                    }
+                }
+            } else if (sendResult != AVERROR(EAGAIN)) {
+                if (!loggedSendFailure) {
+                    loggedSendFailure = YES;
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"rtsp send_packet failed hardware=%d error=%@", useHardware,
+                        VCAMFFmpegErrorDescription(sendResult)]];
+                }
+                restartSession = YES;
             }
             if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 60) {
+                av_packet_unref(packet);
+                break;
+            }
+            if (restartSession) {
                 av_packet_unref(packet);
                 break;
             }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "scheme": "rootless",
-  "delivery": "single-package-two-injections-one-worker",
+  "delivery": "single-package-two-injections-two-isolated-daemons",
   "currentPackage": {
     "identifier": "com.codex.vcam",
     "implementedTarget": "VCAMSystemBridge"
@@ -33,6 +33,15 @@
       "executables": ["vcamd"],
       "injected": false,
       "sources": ["local-image", "local-video", "obs-websocket", "rtsp-ffmpeg-videotoolbox"]
+    },
+    {
+      "name": "vcaminjectd",
+      "binary": "vcaminjectd",
+      "role": "exact-target-restart-injection-recovery",
+      "bundleIds": [],
+      "executables": ["vcaminjectd"],
+      "injected": false,
+      "allowedTargets": ["SpringBoard", "mediaserverd"]
     }
   ]
 }

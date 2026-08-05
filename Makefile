@@ -5,7 +5,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard mediaserverd
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = VCAMMediaServerClient VCAMSpringBoardClient
-TOOL_NAME = vcamd
+TOOL_NAME = vcamd vcaminjectd
 
 VCAM_SHARED_FILES = Sources/Shared/VCAMSharedFrame.m
 VCAM_MODULE_CACHE_FLAGS = -fmodules-cache-path=$(THEOS_PROJECT_DIR)/.theos/module-cache
@@ -53,6 +53,15 @@ vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DI
 vcamd_FRAMEWORKS = AVFoundation AudioToolbox CoreMedia CoreVideo Foundation ImageIO QuartzCore VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 vcamd_LIBRARIES = avformat avcodec avutil
+
+# A tiny root watchdog repairs only the two allowed dylib mappings after a
+# SpringBoard/mediaserverd restart. It never decodes media and never targets an
+# application process.
+vcaminjectd_FILES = Sources/Daemon/VCAMInjectionMonitor.m
+vcaminjectd_ARCHS = arm64
+vcaminjectd_INSTALL_PATH = /usr/libexec
+vcaminjectd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type $(VCAM_MODULE_CACHE_FLAGS)
+vcaminjectd_FRAMEWORKS = Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/tool.mk

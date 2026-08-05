@@ -10,7 +10,12 @@ authentication decisions.
 Only two Apple processes are injected:
 
 - `mediaserverd`: reads a fresh 720×1280 BGRA frame from a three-slot shared
-  mmap and overlays only the on-device-validated 750×1334 `BWNodeOutput` node.
+  mmap. The current probe build replaces the already validated 750×1334 BGRA
+  `BWNodeOutput`; other ordinary IOSurface-backed `BGRA`, `420v` and `420f`
+  outputs through 1080p are logged by stable signature and fail open until
+  their render cost is verified. HDR/10-bit and high-resolution still buffers
+  also fail open. A render error or three consecutive renders over 50 ms
+  disables replacement for that mediaserverd lifetime.
   It has no FFmpeg, AVAssetReader, UIKit or network client.
 - `SpringBoard`: hosts the draggable white dot, configuration broker, unified
   image/video picker and the latest-frame preview.
@@ -20,6 +25,11 @@ image/video playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode,
 rotation/mirroring/content mode, and publication of only the latest frame. A
 missing or stale frame fails open to the real camera. Audio is not replaced;
 the real microphone continues through the normal pipeline.
+
+`vcaminjectd` is a second package-owned LaunchDaemon, also not an injected
+dylib. It runs as root and repairs only the two allowed mappings after
+`mediaserverd` or SpringBoard changes PID. It never targets Camera, Safari,
+WebKit or third-party application processes.
 
 This keeps the useful `BWNodeOutput` seam from EthanArbuckle/vcam-ios while
 avoiding its hard-coded path, 60-frame preload and callback-index timing.
@@ -33,7 +43,8 @@ when enabled, without pre-decoding the entire asset into memory.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
   `wss://` address in the panel.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
-  it requests TCP, low-delay operation and VideoToolbox hardware decoding.
+  it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
+  where available, and a latest-only bounded software-conversion fallback.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries
@@ -68,5 +79,6 @@ python -m py_compile desktop\*.py scripts\*.py
 4. Launch and close camera-using apps repeatedly; check `mediaserverd`,
    SpringBoard and `vcamd` crash/watchdog logs.
 5. Confirm the microphone remains the real input.
-6. Validate any additional camera node size on-device before expanding the
-   current 750×1334 safety gate.
+6. Validate every newly observed node signature, format and synchronous render
+   cost on-device before adding it to the positive SDR-video allowlist or
+   enabling a still path.

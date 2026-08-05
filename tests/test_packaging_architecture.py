@@ -8,16 +8,18 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class PackagingArchitectureTests(unittest.TestCase):
-    def test_manifest_describes_two_injections_and_one_worker(self) -> None:
+    def test_manifest_describes_two_injections_and_two_isolated_daemons(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
         targets = {target["name"]: target for target in manifest["targets"]}
         self.assertEqual(
             set(targets),
-            {"VCAMMediaServerClient", "VCAMSpringBoardClient", "vcamd"},
+            {"VCAMMediaServerClient", "VCAMSpringBoardClient", "vcamd", "vcaminjectd"},
         )
         self.assertTrue(targets["VCAMMediaServerClient"]["injected"])
         self.assertTrue(targets["VCAMSpringBoardClient"]["injected"])
         self.assertFalse(targets["vcamd"]["injected"])
+        self.assertFalse(targets["vcaminjectd"]["injected"])
+        self.assertEqual(targets["vcaminjectd"]["allowedTargets"], ["SpringBoard", "mediaserverd"])
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
 
     def test_launchdaemon_runs_package_worker_from_rootless_prefix(self) -> None:
@@ -34,6 +36,15 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("for attempt in 1 2 3 4 5", postinst)
         self.assertIn("launchctl print user/foreground/com.codex.vcamd", postinst)
         self.assertIn("launchctl bootout user/foreground/com.codex.vcamd", prerm)
+
+        injection_launchd = (
+            ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcaminjectd.plist"
+        ).read_text(encoding="utf-8")
+        self.assertIn("<string>/var/jb/usr/libexec/vcaminjectd</string>", injection_launchd)
+        self.assertIn("<string>root</string>", injection_launchd)
+        self.assertIn("launchctl bootstrap system", postinst)
+        self.assertIn("system/com.codex.vcaminjectd", postinst)
+        self.assertIn("system/com.codex.vcaminjectd", prerm)
 
     def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:
         launchd_path = (

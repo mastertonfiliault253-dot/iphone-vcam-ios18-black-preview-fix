@@ -376,6 +376,11 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self toggleLoopPlayback];
 }
 
+- (void)controlPanelDidRequestEnableVirtualCamera:(VCAMControlPanelViewController *)panel {
+    (void)panel;
+    [self dismissPanelThen:^{ [self enableVirtualCamera]; }];
+}
+
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self dismissPanelThen:^{ [self restoreRealCamera]; }];
@@ -577,8 +582,50 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     [self dismissPanelThen:^{ [self showMessage:@"画面填充方式已切换" error:NO]; }];
 }
 
+- (void)enableVirtualCamera {
+    NSDictionary<NSString *, id> *values = [VCAMConfiguration currentValues];
+    NSString *configuredSource = [values[@"source"] isKindOfClass:NSString.class]
+        ? [values[@"source"] lowercaseString] : nil;
+    NSString *rtspURL = [values[@"rtspURL"] isKindOfClass:NSString.class] ? values[@"rtspURL"] : nil;
+    NSString *obsURL = [values[@"obsWebSocketURL"] isKindOfClass:NSString.class]
+        ? values[@"obsWebSocketURL"] : nil;
+    NSString *mediaPath = [values[@"mediaPath"] isKindOfClass:NSString.class] ? values[@"mediaPath"] : nil;
+    BOOL hasRTSP = [rtspURL.lowercaseString hasPrefix:@"rtsp://"];
+    BOOL hasOBS = [obsURL.lowercaseString hasPrefix:@"ws://"] ||
+        [obsURL.lowercaseString hasPrefix:@"wss://"];
+    BOOL hasLocalMedia = mediaPath.length > 0;
+    NSString *source = nil;
+    if ([configuredSource isEqualToString:@"rtsp"] && hasRTSP) {
+        source = @"rtsp";
+    } else if ([configuredSource isEqualToString:@"obs"] && hasOBS) {
+        source = @"obs";
+    } else if ([configuredSource isEqualToString:@"local"] && hasLocalMedia) {
+        source = @"local";
+    } else {
+        if ([rtspURL.lowercaseString hasPrefix:@"rtsp://"]) {
+            source = @"rtsp";
+        } else if ([obsURL.lowercaseString hasPrefix:@"ws://"] ||
+                   [obsURL.lowercaseString hasPrefix:@"wss://"]) {
+            source = @"obs";
+        } else if (mediaPath.length > 0) {
+            source = @"local";
+        }
+    }
+    if (source.length == 0) {
+        [self showMessage:@"请先选择本地媒体或配置 OBS/RTSP 直播源" error:YES];
+        return;
+    }
+
+    if (![self updatePreferences:@{@"enabled": @YES, @"source": source}]) {
+        [self showMessage:@"启用虚拟相机失败" error:YES];
+        return;
+    }
+    [self postConfigurationChanged];
+    [self showMessage:@"虚拟相机已启用" error:NO];
+}
+
 - (void)restoreRealCamera {
-    if (![self updatePreferences:@{@"source": @"camera", @"enabled": @NO}]) {
+    if (![self updatePreferences:@{@"enabled": @NO}]) {
         [self showMessage:@"恢复真实相机失败" error:YES];
         return;
     }

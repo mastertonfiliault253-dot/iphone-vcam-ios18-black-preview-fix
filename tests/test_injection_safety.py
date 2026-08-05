@@ -29,7 +29,7 @@ class InjectionSafetyTests(unittest.TestCase):
             target_line,
             "TWEAK_NAME = VCAMMediaServerClient VCAMSpringBoardClient",
         )
-        self.assertIn("TOOL_NAME = vcamd", makefile)
+        self.assertIn("TOOL_NAME = vcamd vcaminjectd", makefile)
         for removed in ("VCAMAppClient", "VCAMWebKitClient", "VCAMDaemonProbe"):
             self.assertNotIn(removed, target_line)
 
@@ -52,17 +52,42 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("AVFoundation", frameworks_line)
         self.assertNotIn("VideoToolbox", frameworks_line)
 
-    def test_mediaserver_keeps_validated_node_gate_and_fails_open(self) -> None:
+    def test_mediaserver_probes_common_formats_but_replaces_only_validated_output(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
-        self.assertIn("targetWidth != 750 || targetHeight != 1334", implementation)
+        for pixel_format in (
+            "kCVPixelFormatType_32BGRA",
+            "kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange",
+            "kCVPixelFormatType_420YpCbCr8BiPlanarFullRange",
+        ):
+            self.assertIn(pixel_format, implementation)
+        self.assertIn("longEdge > 1920", implementation)
+        self.assertIn("width * height > (size_t)1920 * 1080", implementation)
+        self.assertIn("CVPixelBufferGetIOSurface", implementation)
+        self.assertIn("CVPixelBufferGetPlaneCount(targetBuffer) != 2", implementation)
+        self.assertIn("CVPixelBufferGetBytesPerRowOfPlane", implementation)
+        self.assertIn("CIRenderDestination", implementation)
+        self.assertIn("waitUntilCompletedAndReturnError", implementation)
+        self.assertIn("@finally", implementation)
+        self.assertIn("kCVPixelBufferMetalCompatibilityKey", implementation)
+        self.assertIn("VCAMDisableRendering", implementation)
+        self.assertIn("three-consecutive-renders-over-50ms", implementation)
+        self.assertIn("replacement render window count=120", implementation)
         self.assertIn("1000000000ULL", implementation)
         self.assertIn("BWNodeOutput", entry)
         self.assertIn("%orig(sampleBuffer)", entry)
+        self.assertIn("output signature", entry)
+        self.assertIn("VCAMMatchesValidatedReplacementOutput", entry)
+        self.assertIn("CVPixelBufferGetWidth(pixelBuffer) == 750", entry)
+        self.assertIn("CVPixelBufferGetHeight(pixelBuffer) == 1334", entry)
+        self.assertIn("NSPointerFunctionsObjectPointerPersonality", entry)
+        self.assertIn("method_getReturnType", entry)
+        self.assertNotIn("[node description]", entry)
+        self.assertNotIn("VCAMOutputLooksAuxiliary", entry)
 
     def test_real_microphone_is_forced(self) -> None:
         configuration = (

@@ -5,7 +5,9 @@
 #import "../Shared/VCAMSharedFrame.h"
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -14,7 +16,24 @@
 static VCAMSharedFrameReader *VCAMReader;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CIContext *VCAMContext;
-static CGColorSpaceRef VCAMColorSpace;
+static NSLock *VCAMReaderLock;
+static volatile int VCAMRenderingDisabled;
+static volatile int VCAMConsecutiveSlowRenders;
+
+static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
+    double a = *(const double *)left;
+    double b = *(const double *)right;
+    return (a > b) - (a < b);
+}
+
+static void VCAMDisableRendering(const char *reason) {
+    if (__sync_lock_test_and_set(&VCAMRenderingDisabled, 1) != 0) return;
+    char message[192] = {0};
+    snprintf(message, sizeof(message),
+             "replacement rendering disabled until mediaserverd restart reason=%s",
+             reason != NULL ? reason : "unknown");
+    VCAMRefLog(message);
+}
 
 void VCAMRefLog(const char *message) {
     struct timeval value = {0};
@@ -40,13 +59,14 @@ void loadReplacementMedia(void) {
     VCAMContext = device != nil
         ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
         : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
-    VCAMColorSpace = CGColorSpaceCreateDeviceRGB();
+    VCAMReaderLock = [NSLock new];
     NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @2};
     NSDictionary *pixelAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
         (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
     CVReturn result = CVPixelBufferPoolCreate(kCFAllocatorDefault,
                                                (__bridge CFDictionaryRef)poolAttributes,
@@ -57,48 +77,156 @@ void loadReplacementMedia(void) {
         : "shared-frame scratch pool initialization failed");
 }
 
-void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
-    if (targetBuffer == NULL || VCAMReader == NULL || VCAMScratchPool == NULL) return;
+BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
+    if (targetBuffer == NULL) return NO;
+    size_t width = CVPixelBufferGetWidth(targetBuffer);
+    size_t height = CVPixelBufferGetHeight(targetBuffer);
+    size_t shortEdge = MIN(width, height);
+    size_t longEdge = MAX(width, height);
+    if (shortEdge < 120 || longEdge < 160 || longEdge > 1920 ||
+        width > SIZE_MAX / height || width * height > (size_t)1920 * 1080 ||
+        CVPixelBufferGetIOSurface(targetBuffer) == NULL) return NO;
 
-    // This node was confirmed on-device. Widen only after validating additional
-    // node sizes; drawing into unrelated camera graph buffers can freeze the GPU.
+    OSType format = CVPixelBufferGetPixelFormatType(targetBuffer);
+    if (format == kCVPixelFormatType_32BGRA) {
+        return !CVPixelBufferIsPlanar(targetBuffer) &&
+            CVPixelBufferGetPlaneCount(targetBuffer) == 0 &&
+            CVPixelBufferGetBytesPerRow(targetBuffer) >= width * 4;
+    }
+    if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
+    if ((width & 1) != 0 || (height & 1) != 0 ||
+        !CVPixelBufferIsPlanar(targetBuffer) ||
+        CVPixelBufferGetPlaneCount(targetBuffer) != 2) return NO;
+    return CVPixelBufferGetWidthOfPlane(targetBuffer, 0) == width &&
+        CVPixelBufferGetHeightOfPlane(targetBuffer, 0) == height &&
+        CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0) >= width &&
+        CVPixelBufferGetWidthOfPlane(targetBuffer, 1) == width / 2 &&
+        CVPixelBufferGetHeightOfPlane(targetBuffer, 1) == height / 2 &&
+        CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1) >= width;
+}
+
+BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
+    if (VCAMRenderingDisabled != 0 || !VCAMTargetBufferIsSupported(targetBuffer) ||
+        VCAMReader == NULL || VCAMContext == nil ||
+        VCAMScratchPool == NULL) return NO;
+
     size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeight = CVPixelBufferGetHeight(targetBuffer);
-    if (targetWidth != 750 || targetHeight != 1334) return;
-
     CVPixelBufferRef scratch = NULL;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
-                                           &scratch) != kCVReturnSuccess) return;
     VCAMSharedFrameMetadata metadata = {0};
-    BOOL copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
-                                                  1000000000ULL, &metadata);
-    if (!copied) {
-        CVPixelBufferRelease(scratch);
-        return;
+    BOOL readerLocked = NO;
+    BOOL rendered = NO;
+    CFAbsoluteTime elapsed = 0;
+    @try {
+        [VCAMReaderLock lock];
+        readerLocked = YES;
+        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
+                                               &scratch) != kCVReturnSuccess) return NO;
+        BOOL copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
+                                                      1000000000ULL, &metadata);
+        [VCAMReaderLock unlock];
+        readerLocked = NO;
+        if (!copied) return NO;
+
+        CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
+        CGFloat scale = MIN((CGFloat)targetWidth / CGRectGetWidth(image.extent),
+                            (CGFloat)targetHeight / CGRectGetHeight(image.extent));
+        image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+        CGFloat x = ((CGFloat)targetWidth - CGRectGetWidth(image.extent)) * 0.5 -
+            CGRectGetMinX(image.extent);
+        CGFloat y = ((CGFloat)targetHeight - CGRectGetHeight(image.extent)) * 0.5 -
+            CGRectGetMinY(image.extent);
+        image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(x, y)];
+        CIImage *background = [[CIImage imageWithColor:CIColor.blackColor]
+            imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
+        image = [[image imageByCompositingOverImage:background]
+            imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
+
+        CIRenderDestination *destination = [[CIRenderDestination alloc]
+            initWithPixelBuffer:targetBuffer];
+        NSError *startError = nil;
+        CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+        CIRenderTask *task = [VCAMContext startTaskToRender:image
+                                                  fromRect:image.extent
+                                             toDestination:destination
+                                                   atPoint:CGPointZero
+                                                     error:&startError];
+        NSError *completionError = nil;
+        CIRenderInfo *renderInfo = task == nil ? nil
+            : [task waitUntilCompletedAndReturnError:&completionError];
+        elapsed = CFAbsoluteTimeGetCurrent() - started;
+        rendered = task != nil && renderInfo != nil &&
+            startError == nil && completionError == nil;
+        if (!rendered) {
+            static dispatch_once_t renderFailureToken;
+            dispatch_once(&renderFailureToken, ^{
+                NSString *message = [NSString stringWithFormat:
+                    @"replacement render failed start=%@ completion=%@",
+                    startError.localizedDescription ?: @"none",
+                    completionError.localizedDescription ?: @"none"];
+                VCAMRefLog(message.UTF8String);
+            });
+            VCAMDisableRendering("render-error");
+        }
+    } @catch (NSException *exception) {
+        static dispatch_once_t exceptionToken;
+        dispatch_once(&exceptionToken, ^{
+            NSString *message = [NSString stringWithFormat:
+                @"replacement render exception %@", exception.name ?: @"unknown"];
+            VCAMRefLog(message.UTF8String);
+        });
+        VCAMDisableRendering("render-exception");
+        rendered = NO;
+    } @finally {
+        if (readerLocked) [VCAMReaderLock unlock];
+        if (scratch != NULL) CVPixelBufferRelease(scratch);
     }
 
-    CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
-    CGFloat scale = MIN((CGFloat)targetWidth / CGRectGetWidth(image.extent),
-                        (CGFloat)targetHeight / CGRectGetHeight(image.extent));
-    image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
-    CGFloat x = ((CGFloat)targetWidth - CGRectGetWidth(image.extent)) * 0.5 - CGRectGetMinX(image.extent);
-    CGFloat y = ((CGFloat)targetHeight - CGRectGetHeight(image.extent)) * 0.5 - CGRectGetMinY(image.extent);
-    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(x, y)];
-    CIImage *background = [[CIImage imageWithColor:CIColor.blackColor]
-        imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
-    image = [[image imageByCompositingOverImage:background]
-        imageByCroppingToRect:CGRectMake(0, 0, targetWidth, targetHeight)];
-    [VCAMContext render:image toCVPixelBuffer:targetBuffer
-                 bounds:CGRectMake(0, 0, targetWidth, targetHeight)
-             colorSpace:VCAMColorSpace];
-    CVPixelBufferRelease(scratch);
+    if (rendered) {
+        if (elapsed > 0.050) {
+            int slowCount = __sync_add_and_fetch(&VCAMConsecutiveSlowRenders, 1);
+            if (slowCount >= 3) VCAMDisableRendering("three-consecutive-renders-over-50ms");
+        } else {
+            (void)__sync_lock_test_and_set(&VCAMConsecutiveSlowRenders, 0);
+        }
 
-    static unsigned int renderedFrames = 0;
-    renderedFrames += 1;
-    if (renderedFrames <= 3) {
-        char message[160] = {0};
-        snprintf(message, sizeof(message), "rendered shared frame sequence=%llu",
-                 (unsigned long long)metadata.sequence);
-        VCAMRefLog(message);
+        static double renderMilliseconds[120] = {0};
+        static NSUInteger renderMillisecondsCount = 0;
+        BOOL reportWindow = NO;
+        double p50 = 0;
+        double p95 = 0;
+        double maximum = 0;
+        @synchronized (VCAMContext) {
+            renderMilliseconds[renderMillisecondsCount++] = elapsed * 1000.0;
+            if (renderMillisecondsCount == 120) {
+                qsort(renderMilliseconds, renderMillisecondsCount,
+                      sizeof(renderMilliseconds[0]), VCAMCompareRenderMilliseconds);
+                p50 = renderMilliseconds[59];
+                p95 = renderMilliseconds[113];
+                maximum = renderMilliseconds[119];
+                renderMillisecondsCount = 0;
+                reportWindow = YES;
+            }
+        }
+        if (reportWindow) {
+            char metrics[192] = {0};
+            snprintf(metrics, sizeof(metrics),
+                     "replacement render window count=120 p50Ms=%.2f p95Ms=%.2f maxMs=%.2f",
+                     p50, p95, maximum);
+            VCAMRefLog(metrics);
+        }
+
+        static volatile int renderedFrames = 0;
+        int frameCount = __sync_add_and_fetch(&renderedFrames, 1);
+        if (frameCount <= 3) {
+            char message[200] = {0};
+            snprintf(message, sizeof(message),
+                     "rendered shared frame sequence=%llu format=%08x elapsedMs=%.2f",
+                     (unsigned long long)metadata.sequence,
+                     CVPixelBufferGetPixelFormatType(targetBuffer), elapsed * 1000.0);
+            VCAMRefLog(message);
+        }
     }
+    return rendered;
 }

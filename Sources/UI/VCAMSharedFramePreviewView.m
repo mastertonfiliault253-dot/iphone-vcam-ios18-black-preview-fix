@@ -24,7 +24,8 @@
         self.backgroundColor = UIColor.blackColor;
         self.layer.cornerRadius = 14.0;
         self.layer.masksToBounds = YES;
-        ((AVSampleBufferDisplayLayer *)self.layer).videoGravity = AVLayerVideoGravityResizeAspect;
+        AVSampleBufferDisplayLayer *displayLayer = (AVSampleBufferDisplayLayer *)self.layer;
+        displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
         _reader = VCAMSharedFrameReaderCreate();
         NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @3};
         NSDictionary *pixelAttributes = @{
