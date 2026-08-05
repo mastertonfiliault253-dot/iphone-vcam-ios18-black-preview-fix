@@ -1,5 +1,6 @@
 import json
 import pathlib
+import plistlib
 import unittest
 
 
@@ -31,6 +32,14 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("launchctl bootstrap system", postinst)
         self.assertIn("launchctl kickstart -k user/foreground/com.codex.vcamd", postinst)
         self.assertIn("launchctl bootout user/foreground/com.codex.vcamd", prerm)
+
+    def test_realtime_worker_is_not_subject_to_background_jetsam_limit(self) -> None:
+        launchd_path = (
+            ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcamd.plist"
+        )
+        launchd = plistlib.loads(launchd_path.read_bytes())
+        self.assertEqual(launchd["ProcessType"], "Interactive")
+        self.assertNotIn("JetsamProperties", launchd)
 
     def test_package_scheme_is_rootless_only(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
