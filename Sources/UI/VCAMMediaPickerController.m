@@ -28,7 +28,7 @@ static void VCAMSBLog(const char *message) {
     char line[1024] = {0};
     snprintf(line, sizeof(line), "[%d][%s.%03d] %s\n",
              getpid(), stamp, (int)(tv.tv_usec / 1000), message);
-    int descriptor = open("/var/tmp/vcam-sb-ui.log",
+    int descriptor = open("/var/mobile/Media/VCAM/vcam-sb-ui.log",
                           O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (descriptor >= 0) {
         (void)write(descriptor, line, strlen(line));
@@ -138,25 +138,39 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     static UIWindow *overlayWindow;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        UIWindowScene *activeScene = nil;
-        for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
-            if ([candidate isKindOfClass:UIWindowScene.class] &&
-                candidate.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)candidate;
-                break;
+        // SpringBoard's status bar window already floats above every app;
+        // attach there first (known reliable), then fall back to our own
+        // scene-aware window, then a plain full-screen window.
+        SEL statusBarSelector = NSSelectorFromString(@"statusBarWindow");
+        if ([UIApplication.sharedApplication respondsToSelector:statusBarSelector]) {
+            UIWindow *statusWindow = ((UIWindow *(*)(id, SEL))objc_msgSend)(
+                UIApplication.sharedApplication, statusBarSelector);
+            if (statusWindow != nil && !statusWindow.hidden) {
+                overlayWindow = statusWindow;
+                VCAMSBLog("overlay: using SpringBoard statusBarWindow");
             }
         }
-        if (activeScene != nil) {
-            overlayWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
-            overlayWindow.frame = activeScene.coordinateSpace.bounds;
-            VCAMSBLog("overlay: created with windowScene");
-        } else {
-            overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-            VCAMSBLog("overlay: no windowScene, created with frame");
+        if (overlayWindow == nil) {
+            UIWindowScene *activeScene = nil;
+            for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+                if ([candidate isKindOfClass:UIWindowScene.class] &&
+                    candidate.activationState == UISceneActivationStateForegroundActive) {
+                    activeScene = (UIWindowScene *)candidate;
+                    break;
+                }
+            }
+            if (activeScene != nil) {
+                overlayWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
+                overlayWindow.frame = activeScene.coordinateSpace.bounds;
+                VCAMSBLog("overlay: created with windowScene");
+            } else {
+                overlayWindow = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+                VCAMSBLog("overlay: no windowScene, created with frame");
+            }
+            overlayWindow.windowLevel = 1500.0;
+            overlayWindow.rootViewController = [VCAMPassthroughViewController new];
+            overlayWindow.hidden = NO;
         }
-        overlayWindow.windowLevel = 1500.0;
-        overlayWindow.rootViewController = [VCAMPassthroughViewController new];
-        overlayWindow.hidden = NO;
     });
     return overlayWindow;
 }
