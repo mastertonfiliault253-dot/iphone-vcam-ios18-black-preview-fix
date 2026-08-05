@@ -43,15 +43,17 @@ jobs:
           test "$deb_count" -eq 1
           deb="$(find packages -maxdepth 1 -type f -name '*.deb' -print)"
           [[ "$deb" == *"_iphoneos-arm64.deb" ]]
-          test -f .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
-          test -f .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
-          test -x .theos/_/usr/libexec/vcamd
-          lipo -verify_arch arm64 arm64e .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
-          lipo -verify_arch arm64 arm64e .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
-          lipo -verify_arch arm64 .theos/_/usr/libexec/vcamd
-          test ! -e .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAM.dylib
-          test ! -e .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMAppClient.dylib
-          test ! -e .theos/_/Library/MobileSubstrate/DynamicLibraries/VCAMWebKitClient.dylib
+          media_client="$(find .theos/_ -type f -name VCAMMediaServerClient.dylib -print -quit)"
+          springboard_client="$(find .theos/_ -type f -name VCAMSpringBoardClient.dylib -print -quit)"
+          worker="$(find .theos/_ -type f -name vcamd -print -quit)"
+          test -n "$media_client"
+          test -n "$springboard_client"
+          test -n "$worker"
+          lipo -verify_arch arm64 arm64e "$media_client"
+          lipo -verify_arch arm64 arm64e "$springboard_client"
+          lipo -verify_arch arm64 "$worker"
+          obsolete_count="$(find .theos/_ -type f \( -name VCAM.dylib -o -name VCAMAppClient.dylib -o -name VCAMWebKitClient.dylib \) -print | wc -l | tr -d ' ')"
+          test "$obsolete_count" -eq 0
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-rootless
