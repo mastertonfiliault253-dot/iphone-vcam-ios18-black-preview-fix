@@ -87,11 +87,15 @@ class PackagingArchitectureTests(unittest.TestCase):
     def test_package_scheme_is_rootless_only(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
         build = (ROOT / "scripts" / "build-all.sh").read_text(encoding="utf-8")
+        wsl_build = (ROOT / "scripts" / "build-rootless-wsl.sh").read_text(encoding="utf-8")
         self.assertEqual(manifest["scheme"], "rootless")
         self.assertIn("THEOS_PACKAGE_SCHEME=rootless", build)
         self.assertNotIn("THEOS_PACKAGE_SCHEME=roothide", build)
         self.assertFalse((ROOT / "scripts" / "build-roothide-wsl.sh").exists())
         self.assertTrue((ROOT / "scripts" / "build-rootless-wsl.sh").exists())
+        self.assertIn("EXPECTED_PACKAGE_VERSION", wsl_build)
+        self.assertIn('"$PROJECT_ROOT/control"', wsl_build)
+        self.assertNotIn("worker7", wsl_build)
 
     def test_shared_transport_is_triple_buffered_atomic_and_stale_aware(self) -> None:
         header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(encoding="utf-8")
@@ -105,18 +109,28 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("VCAMSharedFrameVersion = 2", implementation)
         self.assertIn("_Atomic(uint64_t) requestedState", implementation)
         self.assertIn("atomic_compare_exchange_weak_explicit", implementation)
-        self.assertIn("VCAMSharedFrameWriterSetActive", header)
         self.assertIn("VCAMSharedFrameSetRequestedActive", header)
         self.assertIn("VCAMSharedFrameReaderGetActiveState", header)
         self.assertIn("if (!VCAMSharedFrameHeaderIsValid(writer->header))", implementation)
         self.assertIn("O_RDWR | O_CREAT", implementation)
         self.assertIn("VCAMSharedFrameInitializeHeader(header, active)", implementation)
+        self.assertIn("flock(descriptor, LOCK_EX)", implementation)
+        writer_create = implementation.split("VCAMSharedFrameWriter *VCAMSharedFrameWriterCreate", 1)[1].split(
+            "void VCAMSharedFrameWriterDestroy", 1
+        )[0]
+        self.assertLess(writer_create.index("VCAMSharedFrameLockExclusive"), writer_create.index("HeaderIsValid"))
+        self.assertLess(writer_create.index("HeaderIsValid"), writer_create.index("VCAMSharedFrameUnlock"))
+        mode_write = implementation.split("bool VCAMSharedFrameSetRequestedActive", 1)[1].split(
+            "VCAMSharedFrameReader *VCAMSharedFrameReaderCreate", 1
+        )[0]
+        self.assertLess(mode_write.index("VCAMSharedFrameLockExclusive"), mode_write.index("HeaderIsValid"))
+        self.assertLess(mode_write.index("HeaderIsValid"), mode_write.index("VCAMSharedFrameUnlock"))
         writer_destroy = implementation.split("void VCAMSharedFrameWriterDestroy", 1)[1].split(
             "bool VCAMSharedFrameWriterPublish", 1
         )[0]
         self.assertNotIn("writer->header->requestedState", writer_destroy)
         writer_publish = implementation.split("bool VCAMSharedFrameWriterPublish", 1)[1].split(
-            "void VCAMSharedFrameWriterSetActive", 1
+            "bool VCAMSharedFrameSetRequestedActive", 1
         )[0]
         self.assertNotIn("writer->header->requestedState", writer_publish)
 
@@ -127,10 +141,8 @@ class PackagingArchitectureTests(unittest.TestCase):
             self.assertIn(source, producer)
         self.assertIn("VCAMSharedFrameWriterPublish", main)
         self.assertNotIn("VCAMSharedFrameWriterClear", main)
-        self.assertGreaterEqual(
-            main.count("VCAMSharedFrameWriterSetActive(VCAMWriter, [VCAMProducer isEnabled])"),
-            2,
-        )
+        self.assertNotIn("VCAMSharedFrameWriterSetActive", main)
+        self.assertNotIn("VCAMSharedFrameSetRequestedActive", main)
         self.assertIn("if (pixelBuffer != NULL) VCAMSharedFrameWriterPublish", main)
         self.assertIn("preferences.changed", main)
         is_enabled = producer.split("- (BOOL)isEnabled", 1)[1].split(
@@ -138,6 +150,38 @@ class PackagingArchitectureTests(unittest.TestCase):
         )[0]
         self.assertIn("self.configuration.enabled", is_enabled)
         self.assertNotIn("self.source != nil", is_enabled)
+
+    def test_springboard_is_the_only_requested_mode_writer(self) -> None:
+        header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(encoding="utf-8")
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
+        worker = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
+        springboard_entry = (ROOT / "Sources" / "Hooks" / "VCAMSpringBoardEntry.xm").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("VCAMSharedFrameWriterSetActive", header)
+        self.assertNotIn("VCAMSharedFrameWriterClear", header)
+        daemon_sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (ROOT / "Sources" / "Daemon").glob("**/*")
+            if path.is_file()
+        )
+        self.assertNotIn("VCAMSharedFrameSetRequestedActive", worker)
+        self.assertNotIn("VCAMSharedFrameSetRequestedActive", daemon_sources)
+        self.assertEqual(configuration.count("VCAMSharedFrameSetRequestedActive"), 1)
+        self.assertIn("@synchronized (self)", configuration)
+        self.assertIn("VCAMSynchronizeSharedRequestedState(readBack, error)", configuration)
+        self.assertIn(
+            "VCAMSynchronizeSharedRequestedState(\n                [self readValuesFromDisk]",
+            configuration,
+        )
+        self.assertIn("[VCAMConfiguration startWriteBroker]", springboard_entry)
+
+        synchronize = configuration.split("static BOOL VCAMSynchronizeSharedRequestedState", 1)[1].split(
+            "+ (BOOL)writeValuesDirectly", 1
+        )[0]
+        self.assertIn("[enabledValue isKindOfClass:NSNumber.class]", synchronize)
+        self.assertIn("return YES", synchronize)
 
     def test_headless_renderer_has_no_core_image_or_gpu_context(self) -> None:
         renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(encoding="utf-8")

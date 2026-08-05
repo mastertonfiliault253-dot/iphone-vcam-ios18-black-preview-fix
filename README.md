@@ -9,13 +9,13 @@ authentication decisions.
 
 Only two Apple processes are injected:
 
-- `mediaserverd`: reads a fresh 720×1280 BGRA frame from a three-slot shared
-  mmap. The current probe build replaces the already validated 750×1334 BGRA
-  `BWNodeOutput`; other ordinary IOSurface-backed `BGRA`, `420v` and `420f`
-  outputs through 1080p are logged by stable signature and fail open until
-  their render cost is verified. HDR/10-bit and high-resolution still buffers
-  also fail open. A render error or three consecutive renders over 50 ms
-  disables replacement for that mediaserverd lifetime.
+- `mediaserverd`: reads the latest 720×1280 BGRA frame from a three-slot shared
+  mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
+  browser/WebRTC, still capture and movie recording. Rendering supports the
+  observed BGRA, bi-planar YUV and device-private compressed recording formats.
+  Once virtual mode is enabled, a missing, stale or unrenderable source never
+  exposes a real camera frame: the last virtual frame is retained when possible,
+  otherwise a black frame is emitted or that consumer sample is suppressed.
   It has no FFmpeg, AVAssetReader, UIKit or network client.
 - `SpringBoard`: hosts the draggable white dot, configuration broker, unified
   image/video picker and the latest-frame preview.
@@ -23,8 +23,10 @@ Only two Apple processes are injected:
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns local
 image/video playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode,
 rotation/mirroring/content mode, and publication of only the latest frame. A
-missing or stale frame fails open to the real camera. Audio is not replaced;
-the real microphone continues through the normal pipeline.
+source or decoder failure stops publication but does not disable virtual mode.
+SpringBoard is the sole enable/restore control-plane writer, so a delayed worker
+reload cannot overwrite a newer user choice. Audio is not replaced; the real
+microphone continues through the normal pipeline.
 
 `vcaminjectd` is a second package-owned LaunchDaemon, also not an injected
 dylib. It runs as root and repairs only the two allowed mappings after
@@ -60,7 +62,9 @@ export THEOS=/path/to/theos
 ```
 
 On this Windows workspace, `scripts/build-rootless-wsl.sh` uses `/opt/theos` and
-stages an `iphoneos-arm64` package under `dist/worker1-rootless`.
+stages an `iphoneos-arm64` package under `dist/wsl-rootless`. This local build is
+only a compile check; the installable artifact is produced by the private macOS
+CI workflow.
 
 Host checks:
 
@@ -73,12 +77,12 @@ python -m py_compile desktop\*.py scripts\*.py
 
 1. Confirm loaded images stay static and long videos loop without increasing
    memory each cycle.
-2. Disconnect/reconnect OBS and RTSP; stale shared frames must reveal the real
-   camera rather than freeze the previous image.
+2. Disconnect/reconnect OBS and RTSP; a source outage must freeze the last
+   virtual frame or show black, never reveal the real camera.
 3. Verify the panel preview and the capture output show the same current frame.
 4. Launch and close camera-using apps repeatedly; check `mediaserverd`,
    SpringBoard and `vcamd` crash/watchdog logs.
 5. Confirm the microphone remains the real input.
-6. Validate every newly observed node signature, format and synchronous render
-   cost on-device before adding it to the positive SDR-video allowlist or
-   enabling a still path.
+6. Validate front, back, tele, ultra-wide and external routes on the hardware
+   that exposes them. A supported architecture is not a substitute for captured
+   on-device route and output evidence.

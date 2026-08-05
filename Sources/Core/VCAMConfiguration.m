@@ -83,6 +83,26 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
            (data.length == 0 || VCAMWriteAll(descriptor, data.bytes, data.length));
 }
 
+static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *values,
+                                                NSError **error) {
+    id enabledValue = values[@"enabled"];
+    if (![enabledValue isKindOfClass:NSNumber.class]) {
+        // Missing or unreadable configuration stays fail-closed. Never turn an
+        // unknown value into an explicit request to expose the real camera.
+        VCAMAppendDiagnostics(@"shared requested mode retained: no persisted enabled value");
+        return YES;
+    }
+    BOOL enabled = [enabledValue boolValue];
+    BOOL written = VCAMSharedFrameSetRequestedActive(enabled);
+    VCAMAppendDiagnostics([NSString stringWithFormat:
+        @"shared requested mode enabled=%d written=%d", enabled, written]);
+    if (!written && error != NULL) {
+        *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:4
+                                userInfo:@{NSLocalizedDescriptionKey: @"SpringBoard 无法同步共享相机状态"}];
+    }
+    return written;
+}
+
 @interface VCAMConfiguration ()
 @property(nonatomic, readwrite) BOOL enabled;
 @property(nonatomic, readwrite) BOOL replaceAudio;
@@ -283,6 +303,7 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
 }
 
 + (BOOL)writeValuesDirectly:(NSDictionary<NSString *, id> *)changes error:(NSError **)error {
+    @synchronized (self) {
     if (![self validateChanges:changes error:error]) return NO;
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *path = self.configurationPath;
@@ -296,11 +317,12 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     if (merged == nil) merged = [NSMutableDictionary dictionary];
     [merged addEntriesFromDictionary:changes];
     BOOL written = [merged writeToFile:path atomically:YES];
+    NSDictionary *readBack = nil;
     if (written) {
         [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
                                  NSFilePosixPermissions: @0644}
                   ofItemAtPath:path error:nil];
-        NSDictionary *readBack = [NSDictionary dictionaryWithContentsOfFile:path];
+        readBack = [NSDictionary dictionaryWithContentsOfFile:path];
         for (NSString *key in changes) {
             id expected = changes[key];
             id actual = readBack[key];
@@ -315,27 +337,20 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
         path, written ? 1 : 0, (unsigned long)merged.count,
         [manager fileExistsAtPath:path] ? 1 : 0, changes.allKeys]);
     BOOL notifyConfigurationChanged = written;
-    if (written) {
-        id requestedEnabled = changes[@"enabled"];
-        if ([requestedEnabled isKindOfClass:NSNumber.class]) {
-            BOOL enabled = [requestedEnabled boolValue];
-            BOOL sharedStateWritten = VCAMSharedFrameSetRequestedActive(enabled);
-            VCAMAppendDiagnostics([NSString stringWithFormat:
-                @"shared requested mode enabled=%d written=%d",
-                enabled, sharedStateWritten]);
-            if (!sharedStateWritten) written = NO;
-        }
+    if (written && !VCAMSynchronizeSharedRequestedState(readBack, error)) {
+        written = NO;
     }
     if (notifyConfigurationChanged) {
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.codex.vcam/preferences.changed"),
                                              NULL, NULL, true);
     }
-    if (!written && error != NULL) {
+    if (!written && error != NULL && *error == nil) {
         *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:4
                                 userInfo:@{NSLocalizedDescriptionKey: @"SpringBoard 无法同步共享相机状态"}];
     }
     return written;
+    }
 }
 
 + (BOOL)submitChangesToBroker:(NSDictionary<NSString *, id> *)changes error:(NSError **)error {
@@ -597,6 +612,14 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     if (!self.isWriteBrokerHost) return;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        @synchronized (self) {
+            NSError *stateError = nil;
+            BOOL stateSynchronized = VCAMSynchronizeSharedRequestedState(
+                [self readValuesFromDisk], &stateError);
+            VCAMAppendDiagnostics([NSString stringWithFormat:
+                @"broker initial shared state synchronized=%d error=%@",
+                stateSynchronized, stateError.localizedDescription ?: @"(none)"]);
+        }
         VCAMAppendDiagnostics([NSString stringWithFormat:
             @"broker starting pid=%d tag=%s configPath=%@ mediaDir=%@",
             (int)getpid(), VCAMBuildTag(), self.configurationPath, self.mediaDirectoryPath]);

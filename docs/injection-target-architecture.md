@@ -20,15 +20,18 @@ is not replaced.
 
 The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 720×1280 BGRA.
 Publication uses atomic slot and sequence metadata. Consumers copy without
-waiting; a missing, changing, inactive or older-than-one-second frame is rejected
-so the normal camera sample passes through unchanged.
+waiting. SpringBoard is the sole writer of the requested enable/restore state;
+`vcamd` publishes pixels only and cannot overwrite that state after a delayed
+configuration reload. Shared-header initialization and requested-state updates
+use an interprocess file lock so startup order cannot replace a newer choice.
 
-`mediaserverd` recognizes only ordinary IOSurface-backed `BGRA`, `420v` and
-`420f` buffers from 160×120 through 1080p, with exact packed/plane-layout
-checks. The probe build replaces only the previously validated 750×1334 BGRA
-output. Unknown output signatures, high-resolution still, 10-bit/HDR and other
-formats remain observation-only until device evidence proves a safe positive
-allowlist entry and acceptable synchronous render cost.
+`mediaserverd` recognizes validated consumer roles at `BWNodeOutput`: camera
+preview, browser/WebRTC conversion, still capture and movie recording. It
+renders observed BGRA, `420v`/`420f`, public compressed and the device-private
+recording formats `[8v0`/`}8v0`, subject to strict dimensions and buffer-layout
+checks. Once requested mode is enabled, render failure is fail-closed: retain
+the last virtual frame, render black, or suppress the consumer sample. Real
+camera samples are allowed only after an explicit restore request.
 
 ## Decode behavior
 
@@ -42,6 +45,6 @@ allowlist entry and acceptable synchronous render cost.
   runs on a latest-only queue, while every compressed packet is still consumed
   in order; corruption enters a bounded clean-key-frame recovery state.
 
-SpringBoard remains the only configuration writer. `vcamd`, running as `mobile`,
+SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,
 reads imported media directly from `/var/mobile/Media/VCAM`; mediaserverd never
 opens the selected media file.

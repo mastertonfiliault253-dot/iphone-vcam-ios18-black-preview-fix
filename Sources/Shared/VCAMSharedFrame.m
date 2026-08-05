@@ -1,9 +1,11 @@
 #import "VCAMSharedFrame.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -107,6 +109,18 @@ static bool VCAMSharedFrameHeaderSetRequestedActive(VCAMSharedFrameHeader *heade
     return false;
 }
 
+static bool VCAMSharedFrameLockExclusive(int descriptor) {
+    int result = 0;
+    do {
+        result = flock(descriptor, LOCK_EX);
+    } while (result != 0 && errno == EINTR);
+    return result == 0;
+}
+
+static void VCAMSharedFrameUnlock(int descriptor) {
+    while (flock(descriptor, LOCK_UN) != 0 && errno == EINTR) {}
+}
+
 const char *VCAMSharedFrameFileSystemPath(void) {
     return VCAMSharedFramePath;
 }
@@ -135,12 +149,17 @@ VCAMSharedFrameWriter *VCAMSharedFrameWriterCreate(void) {
         return NULL;
     }
     writer->header = writer->mapping;
+    if (!VCAMSharedFrameLockExclusive(writer->descriptor)) {
+        VCAMSharedFrameWriterDestroy(writer);
+        return NULL;
+    }
     if (!VCAMSharedFrameHeaderIsValid(writer->header)) {
         memset(writer->mapping, 0, writer->mappedBytes);
-        // Unknown/new transport state is fail-closed until vcamd reads the
-        // explicit configuration and synchronizes this flag.
+        // Unknown/new transport state is fail-closed until SpringBoard
+        // publishes the canonical persisted state.
         VCAMSharedFrameInitializeHeader(writer->header, true);
     }
+    VCAMSharedFrameUnlock(writer->descriptor);
     return writer;
 }
 
@@ -190,15 +209,6 @@ bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
     return true;
 }
 
-void VCAMSharedFrameWriterSetActive(VCAMSharedFrameWriter *writer, bool active) {
-    if (writer == NULL || writer->header == NULL) return;
-    (void)VCAMSharedFrameHeaderSetRequestedActive(writer->header, active);
-}
-
-void VCAMSharedFrameWriterClear(VCAMSharedFrameWriter *writer) {
-    VCAMSharedFrameWriterSetActive(writer, false);
-}
-
 bool VCAMSharedFrameSetRequestedActive(bool active) {
     int descriptor = open(VCAMSharedFramePath, O_RDWR | O_CREAT, 0644);
     if (descriptor < 0) return false;
@@ -219,6 +229,11 @@ bool VCAMSharedFrameSetRequestedActive(bool active) {
         close(descriptor);
         return false;
     }
+    if (!VCAMSharedFrameLockExclusive(descriptor)) {
+        munmap(mapping, sizeof(VCAMSharedFrameHeader));
+        close(descriptor);
+        return false;
+    }
     VCAMSharedFrameHeader *header = mapping;
     bool valid = VCAMSharedFrameHeaderIsValid(header);
     if (!valid) {
@@ -227,6 +242,7 @@ bool VCAMSharedFrameSetRequestedActive(bool active) {
     } else {
         valid = VCAMSharedFrameHeaderSetRequestedActive(header, active);
     }
+    VCAMSharedFrameUnlock(descriptor);
     munmap(mapping, sizeof(VCAMSharedFrameHeader));
     close(descriptor);
     return valid;

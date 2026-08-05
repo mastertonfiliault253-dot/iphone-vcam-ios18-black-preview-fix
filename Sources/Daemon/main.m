@@ -95,7 +95,6 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{
         [VCAMProducer reload];
-        VCAMSharedFrameWriterSetActive(VCAMWriter, [VCAMProducer isEnabled]);
         VCAMScheduleTimer();
     });
 }
@@ -107,7 +106,6 @@ int main(int argc, char *argv[]) {
         VCAMWriter = VCAMSharedFrameWriterCreate();
         if (VCAMWriter == NULL) return 2;
         VCAMProducer = [VCAMFrameProducer new];
-        VCAMSharedFrameWriterSetActive(VCAMWriter, [VCAMProducer isEnabled]);
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL, VCAMConfigurationChanged,
                                         CFSTR("com.codex.vcam/preferences.changed"),
