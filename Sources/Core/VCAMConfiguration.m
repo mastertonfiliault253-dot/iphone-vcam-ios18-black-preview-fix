@@ -1,4 +1,5 @@
 #import "VCAMConfiguration.h"
+#import "../Shared/VCAMSharedFrame.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <errno.h>
@@ -70,7 +71,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.7.0+global2";
+    return "com.codex.vcam/0.7.1+global3";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -313,14 +314,26 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
         @"writeValuesDirectly path=%@ written=%d mergedCount=%lu fileExists=%d keys=%@",
         path, written ? 1 : 0, (unsigned long)merged.count,
         [manager fileExistsAtPath:path] ? 1 : 0, changes.allKeys]);
-    if (!written && error != NULL) {
-        *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:4
-                                userInfo:@{NSLocalizedDescriptionKey: @"SpringBoard 无法写入共享配置"}];
-    }
+    BOOL notifyConfigurationChanged = written;
     if (written) {
+        id requestedEnabled = changes[@"enabled"];
+        if ([requestedEnabled isKindOfClass:NSNumber.class]) {
+            BOOL enabled = [requestedEnabled boolValue];
+            BOOL sharedStateWritten = VCAMSharedFrameSetRequestedActive(enabled);
+            VCAMAppendDiagnostics([NSString stringWithFormat:
+                @"shared requested mode enabled=%d written=%d",
+                enabled, sharedStateWritten]);
+            if (!sharedStateWritten) written = NO;
+        }
+    }
+    if (notifyConfigurationChanged) {
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.codex.vcam/preferences.changed"),
                                              NULL, NULL, true);
+    }
+    if (!written && error != NULL) {
+        *error = [NSError errorWithDomain:@"com.codex.vcam.configuration" code:4
+                                userInfo:@{NSLocalizedDescriptionKey: @"SpringBoard 无法同步共享相机状态"}];
     }
     return written;
 }

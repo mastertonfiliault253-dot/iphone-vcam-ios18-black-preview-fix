@@ -102,6 +102,23 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("slotSequence[slot], 0", implementation)
         self.assertIn("maximumAgeNanoseconds", implementation)
         self.assertIn("active", implementation)
+        self.assertIn("VCAMSharedFrameVersion = 2", implementation)
+        self.assertIn("_Atomic(uint64_t) requestedState", implementation)
+        self.assertIn("atomic_compare_exchange_weak_explicit", implementation)
+        self.assertIn("VCAMSharedFrameWriterSetActive", header)
+        self.assertIn("VCAMSharedFrameSetRequestedActive", header)
+        self.assertIn("VCAMSharedFrameReaderGetActiveState", header)
+        self.assertIn("if (!VCAMSharedFrameHeaderIsValid(writer->header))", implementation)
+        self.assertIn("O_RDWR | O_CREAT", implementation)
+        self.assertIn("VCAMSharedFrameInitializeHeader(header, active)", implementation)
+        writer_destroy = implementation.split("void VCAMSharedFrameWriterDestroy", 1)[1].split(
+            "bool VCAMSharedFrameWriterPublish", 1
+        )[0]
+        self.assertNotIn("writer->header->requestedState", writer_destroy)
+        writer_publish = implementation.split("bool VCAMSharedFrameWriterPublish", 1)[1].split(
+            "void VCAMSharedFrameWriterSetActive", 1
+        )[0]
+        self.assertNotIn("writer->header->requestedState", writer_publish)
 
     def test_worker_hides_source_selection_and_publication(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
@@ -109,8 +126,18 @@ class PackagingArchitectureTests(unittest.TestCase):
         for source in ("VCAMLocalMediaSource", "VCAMOBSStreamSource", "VCAMRTSPStreamSource"):
             self.assertIn(source, producer)
         self.assertIn("VCAMSharedFrameWriterPublish", main)
-        self.assertIn("VCAMSharedFrameWriterClear", main)
+        self.assertNotIn("VCAMSharedFrameWriterClear", main)
+        self.assertGreaterEqual(
+            main.count("VCAMSharedFrameWriterSetActive(VCAMWriter, [VCAMProducer isEnabled])"),
+            2,
+        )
+        self.assertIn("if (pixelBuffer != NULL) VCAMSharedFrameWriterPublish", main)
         self.assertIn("preferences.changed", main)
+        is_enabled = producer.split("- (BOOL)isEnabled", 1)[1].split(
+            "- (NSInteger)preferredFramesPerSecond", 1
+        )[0]
+        self.assertIn("self.configuration.enabled", is_enabled)
+        self.assertNotIn("self.source != nil", is_enabled)
 
     def test_headless_renderer_has_no_core_image_or_gpu_context(self) -> None:
         renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(encoding="utf-8")

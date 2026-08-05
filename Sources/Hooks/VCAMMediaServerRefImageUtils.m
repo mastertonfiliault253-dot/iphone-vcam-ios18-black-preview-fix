@@ -106,8 +106,19 @@ void loadReplacementMedia(void) {
     });
 }
 
+static BOOL VCAMEffectiveVirtualModeIsEnabledLocked(void) {
+    bool sharedActive = false;
+    BOOL sharedAvailable = VCAMSharedFrameReaderGetActiveState(
+        VCAMReader, &sharedActive);
+    return sharedAvailable ? sharedActive : VCAMConfiguredMode != 0;
+}
+
 BOOL VCAMVirtualModeIsEnabled(void) {
-    return VCAMConfiguredMode != 0;
+    loadReplacementMedia();
+    [VCAMReaderLock lock];
+    BOOL enabled = VCAMEffectiveVirtualModeIsEnabledLocked();
+    [VCAMReaderLock unlock];
+    return enabled;
 }
 
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
@@ -185,7 +196,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
     @try {
         [VCAMReaderLock lock];
         readerLocked = YES;
-        if (VCAMConfiguredMode == 0) {
+        BOOL virtualModeEnabled = VCAMEffectiveVirtualModeIsEnabledLocked();
+        if (!virtualModeEnabled) {
             if (VCAMLastVirtualFrame != NULL) {
                 CVPixelBufferRelease(VCAMLastVirtualFrame);
                 VCAMLastVirtualFrame = NULL;

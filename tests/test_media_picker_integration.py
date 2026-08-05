@@ -176,6 +176,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('updatePreferences:@{@"enabled": @NO}', picker)
         self.assertNotIn('@"source": @"camera", @"enabled": @NO', picker)
         self.assertIn('CFSTR("com.codex.vcam/preferences.changed")', picker)
+        self.assertIn("VCAMSharedFrameSetRequestedActive", configuration)
+        self.assertIn("if (!sharedStateWritten) written = NO", configuration)
 
 
 if __name__ == "__main__":

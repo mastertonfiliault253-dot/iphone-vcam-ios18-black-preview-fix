@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
-static const uint32_t VCAMSharedFrameVersion = 1;
+static const uint32_t VCAMSharedFrameVersion = 2;
 static const char *const VCAMSharedFramePath = "/var/tmp/com.codex.vcam.frames";
 static const size_t VCAMSharedFrameBytesPerRow = VCAMSharedFrameWidth * 4;
 static const size_t VCAMSharedFrameSlotBytes = VCAMSharedFrameBytesPerRow * VCAMSharedFrameHeight;
@@ -25,7 +25,10 @@ typedef struct {
     uint32_t bytesPerRow;
     uint32_t pixelFormat;
     uint64_t slotBytes;
-    _Atomic(uint32_t) active;
+    // Low bit is the requested enabled state; upper bits are a monotonically
+    // increasing generation. One atomic word prevents torn mode/generation
+    // reads and makes concurrent SpringBoard/vcamd writers orderable.
+    _Atomic(uint64_t) requestedState;
     _Atomic(uint32_t) publishedSlot;
     _Atomic(uint64_t) publishedSequence;
     _Atomic(uint64_t) publishedTimestampNanoseconds;
@@ -71,6 +74,39 @@ static bool VCAMSharedFrameHeaderIsValid(const VCAMSharedFrameHeader *header) {
         header->slotBytes == VCAMSharedFrameSlotBytes;
 }
 
+static void VCAMSharedFrameInitializeHeader(VCAMSharedFrameHeader *header,
+                                            bool active) {
+    if (header == NULL) return;
+    memset(header, 0, sizeof(*header));
+    header->version = VCAMSharedFrameVersion;
+    header->headerBytes = sizeof(VCAMSharedFrameHeader);
+    header->slotCount = VCAMSharedFrameSlotCount;
+    header->width = VCAMSharedFrameWidth;
+    header->height = VCAMSharedFrameHeight;
+    header->bytesPerRow = (uint32_t)VCAMSharedFrameBytesPerRow;
+    header->pixelFormat = kCVPixelFormatType_32BGRA;
+    header->slotBytes = VCAMSharedFrameSlotBytes;
+    atomic_store_explicit(&header->requestedState, active ? 1 : 0,
+                          memory_order_release);
+    atomic_thread_fence(memory_order_release);
+    // Publish the magic last so readers never accept a partial header.
+    header->magic = VCAMSharedFrameMagic;
+}
+
+static bool VCAMSharedFrameHeaderSetRequestedActive(VCAMSharedFrameHeader *header,
+                                                    bool active) {
+    if (header == NULL || !VCAMSharedFrameHeaderIsValid(header)) return false;
+    uint64_t current = atomic_load_explicit(&header->requestedState,
+                                            memory_order_acquire);
+    for (NSUInteger attempt = 0; attempt < 64; attempt++) {
+        uint64_t next = ((current + 2ULL) & ~1ULL) | (active ? 1ULL : 0ULL);
+        if (atomic_compare_exchange_weak_explicit(
+                &header->requestedState, &current, next,
+                memory_order_acq_rel, memory_order_acquire)) return true;
+    }
+    return false;
+}
+
 const char *VCAMSharedFrameFileSystemPath(void) {
     return VCAMSharedFramePath;
 }
@@ -98,26 +134,21 @@ VCAMSharedFrameWriter *VCAMSharedFrameWriterCreate(void) {
         VCAMSharedFrameWriterDestroy(writer);
         return NULL;
     }
-    memset(writer->mapping, 0, writer->mappedBytes);
     writer->header = writer->mapping;
-    writer->header->magic = VCAMSharedFrameMagic;
-    writer->header->version = VCAMSharedFrameVersion;
-    writer->header->headerBytes = sizeof(VCAMSharedFrameHeader);
-    writer->header->slotCount = VCAMSharedFrameSlotCount;
-    writer->header->width = VCAMSharedFrameWidth;
-    writer->header->height = VCAMSharedFrameHeight;
-    writer->header->bytesPerRow = (uint32_t)VCAMSharedFrameBytesPerRow;
-    writer->header->pixelFormat = kCVPixelFormatType_32BGRA;
-    writer->header->slotBytes = VCAMSharedFrameSlotBytes;
-    atomic_store_explicit(&writer->header->active, 0, memory_order_release);
+    if (!VCAMSharedFrameHeaderIsValid(writer->header)) {
+        memset(writer->mapping, 0, writer->mappedBytes);
+        // Unknown/new transport state is fail-closed until vcamd reads the
+        // explicit configuration and synchronizes this flag.
+        VCAMSharedFrameInitializeHeader(writer->header, true);
+    }
     return writer;
 }
 
 void VCAMSharedFrameWriterDestroy(VCAMSharedFrameWriter *writer) {
     if (writer == NULL) return;
-    if (writer->header != NULL) {
-        atomic_store_explicit(&writer->header->active, 0, memory_order_release);
-    }
+    // Preserve both the requested mode and last published virtual frame across
+    // worker restarts. A decoder/worker exit must freeze virtual output rather
+    // than expose the real camera.
     if (writer->mapping != NULL) munmap(writer->mapping, writer->mappedBytes);
     if (writer->descriptor >= 0) close(writer->descriptor);
     free(writer);
@@ -156,13 +187,49 @@ bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
                           memory_order_relaxed);
     atomic_store_explicit(&writer->header->publishedSlot, slot, memory_order_relaxed);
     atomic_store_explicit(&writer->header->publishedSequence, sequence, memory_order_release);
-    atomic_store_explicit(&writer->header->active, 1, memory_order_release);
     return true;
 }
 
-void VCAMSharedFrameWriterClear(VCAMSharedFrameWriter *writer) {
+void VCAMSharedFrameWriterSetActive(VCAMSharedFrameWriter *writer, bool active) {
     if (writer == NULL || writer->header == NULL) return;
-    atomic_store_explicit(&writer->header->active, 0, memory_order_release);
+    (void)VCAMSharedFrameHeaderSetRequestedActive(writer->header, active);
+}
+
+void VCAMSharedFrameWriterClear(VCAMSharedFrameWriter *writer) {
+    VCAMSharedFrameWriterSetActive(writer, false);
+}
+
+bool VCAMSharedFrameSetRequestedActive(bool active) {
+    int descriptor = open(VCAMSharedFramePath, O_RDWR | O_CREAT, 0644);
+    if (descriptor < 0) return false;
+    struct stat metadata = {0};
+    if (fstat(descriptor, &metadata) != 0) {
+        close(descriptor);
+        return false;
+    }
+    if ((size_t)metadata.st_size < VCAMSharedFrameMappedBytes() &&
+        ftruncate(descriptor, (off_t)VCAMSharedFrameMappedBytes()) != 0) {
+        close(descriptor);
+        return false;
+    }
+    fchmod(descriptor, 0644);
+    void *mapping = mmap(NULL, sizeof(VCAMSharedFrameHeader),
+                         PROT_READ | PROT_WRITE, MAP_SHARED, descriptor, 0);
+    if (mapping == MAP_FAILED) {
+        close(descriptor);
+        return false;
+    }
+    VCAMSharedFrameHeader *header = mapping;
+    bool valid = VCAMSharedFrameHeaderIsValid(header);
+    if (!valid) {
+        VCAMSharedFrameInitializeHeader(header, active);
+        valid = true;
+    } else {
+        valid = VCAMSharedFrameHeaderSetRequestedActive(header, active);
+    }
+    munmap(mapping, sizeof(VCAMSharedFrameHeader));
+    close(descriptor);
+    return valid;
 }
 
 VCAMSharedFrameReader *VCAMSharedFrameReaderCreate(void) {
@@ -213,6 +280,16 @@ void VCAMSharedFrameReaderDestroy(VCAMSharedFrameReader *reader) {
     free(reader);
 }
 
+bool VCAMSharedFrameReaderGetActiveState(VCAMSharedFrameReader *reader,
+                                         bool *active) {
+    if (reader == NULL || active == NULL ||
+        !VCAMSharedFrameReaderEnsureMapped(reader)) return false;
+    uint64_t requestedState = atomic_load_explicit(
+        &reader->header->requestedState, memory_order_acquire);
+    *active = (requestedState & 1ULL) != 0;
+    return true;
+}
+
 bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      CVPixelBufferRef destination,
                                      uint64_t maximumAgeNanoseconds,
@@ -222,7 +299,8 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
         CVPixelBufferGetWidth(destination) != VCAMSharedFrameWidth ||
         CVPixelBufferGetHeight(destination) != VCAMSharedFrameHeight ||
         CVPixelBufferGetPixelFormatType(destination) != kCVPixelFormatType_32BGRA ||
-        atomic_load_explicit(&reader->header->active, memory_order_acquire) == 0) {
+        (atomic_load_explicit(&reader->header->requestedState,
+                              memory_order_acquire) & 1ULL) == 0) {
         return false;
     }
 

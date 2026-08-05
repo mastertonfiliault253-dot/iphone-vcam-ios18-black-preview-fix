@@ -88,6 +88,8 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMConfiguredMode = -1", implementation)
         self.assertIn("[enabledValue isKindOfClass:NSNumber.class]", implementation)
         self.assertIn("VCAMConfiguredMode != 0", implementation)
+        self.assertIn("VCAMSharedFrameReaderGetActiveState", implementation)
+        self.assertNotIn("VCAMRequestedModeOverride", implementation)
         self.assertNotIn("[values[@\"enabled\"] boolValue]", implementation)
         self.assertIn("/var/mobile/Media/VCAM/com.codex.vcam.plist", implementation)
         self.assertIn("com.codex.vcam/preferences.changed", implementation)

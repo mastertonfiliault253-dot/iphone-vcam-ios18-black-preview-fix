@@ -101,7 +101,9 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 
 - (BOOL)isEnabled {
     __block BOOL enabled = NO;
-    dispatch_sync(self.stateQueue, ^{ enabled = self.configuration.enabled && self.source != nil; });
+    // This reports the user's requested virtual-camera mode, not decoder
+    // health. A missing/reconnecting source must keep mediaserverd fail-closed.
+    dispatch_sync(self.stateQueue, ^{ enabled = self.configuration.enabled; });
     return enabled;
 }
 

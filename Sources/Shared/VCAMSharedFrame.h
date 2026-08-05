@@ -29,12 +29,20 @@ VCAMSharedFrameWriter *_Nullable VCAMSharedFrameWriterCreate(void);
 void VCAMSharedFrameWriterDestroy(VCAMSharedFrameWriter *_Nullable writer);
 bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
                                   CVPixelBufferRef pixelBuffer);
+void VCAMSharedFrameWriterSetActive(VCAMSharedFrameWriter *writer, bool active);
 void VCAMSharedFrameWriterClear(VCAMSharedFrameWriter *writer);
+
+/// Updates only the requested virtual-camera state in an existing shared
+/// transport. SpringBoard uses this after an atomic configuration write so
+/// mediaserverd observes enable/restore without reading mobile's sandbox.
+bool VCAMSharedFrameSetRequestedActive(bool active);
 
 /// Consumer interface. Copying is non-blocking and fails when the producer is
 /// absent, a frame is stale, or a slot changes while it is being copied.
 VCAMSharedFrameReader *VCAMSharedFrameReaderCreate(void);
 void VCAMSharedFrameReaderDestroy(VCAMSharedFrameReader *_Nullable reader);
+bool VCAMSharedFrameReaderGetActiveState(VCAMSharedFrameReader *reader,
+                                         bool *active);
 bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      CVPixelBufferRef destination,
                                      uint64_t maximumAgeNanoseconds,
