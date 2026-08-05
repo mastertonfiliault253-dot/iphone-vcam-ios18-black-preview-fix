@@ -71,6 +71,12 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AV_PIX_FMT_YUV420P", rtsp)
         self.assertIn("AV_PIX_FMT_NV12", rtsp)
         self.assertIn("switching to FFmpeg software decode", rtsp)
+        software_conversion = rtsp.split(
+            "- (CVPixelBufferRef)copyBGRAFromSoftwareFrame:", 1
+        )[1].split("- (BOOL)decodeOneSession", 1)[0]
+        self.assertIn("kCVPixelBufferCGImageCompatibilityKey", software_conversion)
+        self.assertIn("kCVPixelBufferCGBitmapContextCompatibilityKey", software_conversion)
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", software_conversion)
         self.assertIn("_latestPixelBuffer", rtsp)
         self.assertIn("< 3.5", rtsp)
         self.assertIn("Sources/Sources/VCAMRTSPStreamSource.m", makefile)

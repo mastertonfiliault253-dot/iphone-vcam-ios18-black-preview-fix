@@ -29,4 +29,53 @@ if [ -e "$daemon_plist" ]; then
     done
 fi
 
+# Dopamine normally has systemhook load ElleKit's TweakLoader. If that loader
+# is missing from an already-running target, recover this package's two exact
+# clients without widening injection to Camera, WebKit or third-party apps.
+vcam_inject_log=/var/tmp/vcam-postinst-inject.log
+: > "$vcam_inject_log" 2>/dev/null || true
+
+vcam_log_injection() {
+    printf '%s\n' "$*" >> "$vcam_inject_log" 2>/dev/null || true
+}
+
+vcam_best_effort_inject() {
+    target_name="$1"
+    target_dylib="$2"
+    injector=/var/jb/usr/bin/opainject
+
+    case "$target_name" in
+        SpringBoard) process_pattern='/SpringBoard.app/SpringBoard' ;;
+        mediaserverd) process_pattern='/usr/sbin/mediaserverd' ;;
+        *)
+            vcam_log_injection "refused target=$target_name"
+            return 0
+            ;;
+    esac
+
+    if [ ! -x "$injector" ] || [ ! -f "$target_dylib" ]; then
+        vcam_log_injection "unavailable target=$target_name injector=$injector dylib=$target_dylib"
+        return 0
+    fi
+
+    target_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
+        sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || target_pid=""
+    if [ -z "$target_pid" ]; then
+        vcam_log_injection "pending target=$target_name reason=process-not-found"
+        return 0
+    fi
+
+    vcam_log_injection "attempt target=$target_name pid=$target_pid dylib=$target_dylib"
+    if "$injector" "$target_pid" "$target_dylib" >> "$vcam_inject_log" 2>&1; then
+        vcam_log_injection "success target=$target_name pid=$target_pid"
+    else
+        inject_status="$?"
+        vcam_log_injection "failed target=$target_name pid=$target_pid status=$inject_status"
+    fi
+    return 0
+}
+
+vcam_best_effort_inject SpringBoard /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
+vcam_best_effort_inject mediaserverd /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
+
 exit 0

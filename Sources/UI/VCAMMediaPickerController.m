@@ -6,6 +6,8 @@
 #import <objc/message.h>
 #import "../Core/VCAMConfiguration.h"
 
+static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
+
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
                                            const void *object, CFDictionaryRef userInfo) {
     (void)center; (void)name; (void)object; (void)userInfo;
@@ -37,11 +39,14 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.started) return;
         self.started = YES;
-        self.remainingWindowRetries = 20;
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(applicationDidBecomeActive:)
-                                                     name:UIApplicationDidBecomeActiveNotification
-                                                   object:nil];
+        self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
+        NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
+        [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
+                              name:UIApplicationDidBecomeActiveNotification object:nil];
+        [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
+                              name:UIWindowDidBecomeKeyNotification object:nil];
+        [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
+                              name:UISceneDidActivateNotification object:nil];
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         (__bridge const void *)self,
                                         VCAMPickerConfigurationChanged,
@@ -52,13 +57,13 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
 }
 
 - (void)configurationDidChange {
-    self.remainingWindowRetries = 20;
+    self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
     [self installButtonWhenWindowIsReady];
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
-    self.remainingWindowRetries = 20;
+    self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
     [self installButtonWhenWindowIsReady];
 }
 

@@ -190,14 +190,30 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
     if (!planar420 && !nv12) return NULL;
     NSDictionary *attributes = @{
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
     };
     CVPixelBufferRef pixelBuffer = NULL;
-    if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
-                            (size_t)frame->height, kCVPixelFormatType_32BGRA,
-                            (__bridge CFDictionaryRef)attributes,
-                            &pixelBuffer) != kCVReturnSuccess) return NULL;
-    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+    CVReturn createStatus = CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
+                                                (size_t)frame->height,
+                                                kCVPixelFormatType_32BGRA,
+                                                (__bridge CFDictionaryRef)attributes,
+                                                &pixelBuffer);
+    if (createStatus != kCVReturnSuccess) {
+        static dispatch_once_t createFailureToken;
+        dispatch_once(&createFailureToken, ^{
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"rtsp CPU pixel buffer create failed status=%d", createStatus]];
+        });
+        return NULL;
+    }
+    CVReturn lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    if (lockStatus != kCVReturnSuccess) {
+        static dispatch_once_t lockFailureToken;
+        dispatch_once(&lockFailureToken, ^{
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"rtsp CPU pixel buffer lock failed status=%d", lockStatus]];
+        });
         CVPixelBufferRelease(pixelBuffer);
         return NULL;
     }
