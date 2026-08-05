@@ -328,6 +328,39 @@ void loadReplacementMedia(void) {
     }
 }
 
+typedef struct {
+    void *buffer;
+    CFAbsoluteTime time;
+} VCAMRenderSlot;
+
+static CFAbsoluteTime VCAMLastRenderTimeForBuffer(CVPixelBufferRef buffer) {
+    static VCAMRenderSlot slots[16];
+    static int count = 0;
+    for (int i = 0; i < count; i++) {
+        if (slots[i].buffer == buffer) return slots[i].time;
+    }
+    return 0;
+}
+
+static void VCAMSetLastRenderTimeForBuffer(CVPixelBufferRef buffer, CFAbsoluteTime time) {
+    static VCAMRenderSlot slots[16];
+    static int count = 0;
+    for (int i = 0; i < count; i++) {
+        if (slots[i].buffer == buffer) {
+            slots[i].time = time;
+            return;
+        }
+    }
+    if (count < 16) {
+        slots[count].buffer = buffer;
+        slots[count].time = time;
+        count++;
+    } else {
+        slots[0].buffer = buffer;
+        slots[0].time = time;
+    }
+}
+
 void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     static int drawCalls = 0;
     static NSInteger rotationDegrees = 0;
@@ -341,15 +374,33 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                  CVPixelBufferGetWidth(targetBuffer), CVPixelBufferGetHeight(targetBuffer));
         VCAMRefLog(drawBuf);
     }
-    // Draw only into the screen-sized preview node (iPhone SE2: 750x1334).
-    // Other sensor/photo/analysis nodes are left untouched so the camera
-    // pipeline stays responsive; rendering every preview frame avoids flicker
-    // and keeps GPU load low.
+    // Draw into all pipeline video nodes up to 5MP (the preview may be any of
+    // them), but throttle each node independently to 30 fps so no single
+    // real-time path is starved and the GPU is not overloaded.
     size_t targetWidthPixels = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeightPixels = CVPixelBufferGetHeight(targetBuffer);
-    if (targetWidthPixels != 750 || targetHeightPixels != 1334) {
+    const char *skipReason = NULL;
+    if (targetWidthPixels * targetHeightPixels > 5000000) {
+        skipReason = "size";
+    }
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime last = VCAMLastRenderTimeForBuffer(targetBuffer);
+    if (skipReason == NULL && last > 0 && (now - last) < (1.0 / 30.0)) {
+        skipReason = "throttle";
+    }
+    if (skipReason != NULL) {
+        static int skippedLogged = 0;
+        skippedLogged++;
+        if (skippedLogged <= 8 || skippedLogged % 300 == 0) {
+            char skipBuf[192] = {0};
+            snprintf(skipBuf, sizeof(skipBuf), "draw SKIP %s call=%d target=%zux%zu",
+                     skipReason, skippedLogged,
+                     targetWidthPixels, targetHeightPixels);
+            VCAMRefLog(skipBuf);
+        }
         return;
     }
+    VCAMSetLastRenderTimeForBuffer(targetBuffer, now);
     // Refresh rotation/mirror from the daemon-readable config occasionally so
     // control-panel changes apply without restarting mediaserverd.
     if (configRefreshCount++ % 30 == 0) {
