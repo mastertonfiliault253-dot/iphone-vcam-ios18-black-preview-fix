@@ -313,7 +313,7 @@ void drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     // otherwise overload the GPU at ~600 fps and stall the camera pipeline.
     size_t targetWidthPixels = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeightPixels = CVPixelBufferGetHeight(targetBuffer);
-    if (targetWidthPixels * targetHeightPixels > 2200000) {
+    if (targetWidthPixels * targetHeightPixels > 5000000) {
         return;
     }
     // Throttle rendering to 30 fps; upstream emits several video nodes at a
