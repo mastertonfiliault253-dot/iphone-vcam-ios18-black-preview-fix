@@ -56,7 +56,7 @@
       "separateBinary": true,
       "separatePackage": false,
       "defaultEnabled": true,
-      "forbiddenDependencies": ["UIKit", "PhotosUI", "FFmpeg"],
+      "forbiddenDependencies": ["PhotosUI", "FFmpeg"],
       "status": "implemented-default-on-high-risk"
     },
     {

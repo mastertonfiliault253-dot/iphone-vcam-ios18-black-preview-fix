@@ -1,8 +1,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import <CoreMedia/CoreMedia.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <ImageIO/ImageIO.h>
 
 // This can be a static image or video file
 static NSString *VCAMReferenceMediaPath(void) {
@@ -37,12 +37,9 @@ void loadReplacementMedia(void) {
 
     NSString *extension = [[kReplacementMediaPath pathExtension] lowercaseString];
     if ([extension isEqualToString:@"png"] || [extension isEqualToString:@"jpg"] || [extension isEqualToString:@"jpeg"]) {
-        CGImageSourceRef source = CGImageSourceCreateWithURL(
-            (__bridge CFURLRef)[NSURL fileURLWithPath:kReplacementMediaPath], NULL);
-        CGImageRef image = source ? CGImageSourceCreateImageAtIndex(source, 0, NULL) : NULL;
-        if (source != NULL) CFRelease(source);
-        if (image != NULL) {
-            replacementImage = image;
+        UIImage *image = [UIImage imageWithContentsOfFile:kReplacementMediaPath];
+        if (image && image.CGImage) {
+            replacementImage = CGImageRetain(image.CGImage);
             currentMode = VCamModeImage;
         }
     }

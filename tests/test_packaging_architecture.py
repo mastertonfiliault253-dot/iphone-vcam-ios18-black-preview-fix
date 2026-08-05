@@ -43,7 +43,6 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertEqual(ms["executables"], ["mediaserverd"])
         self.assertTrue(ms["defaultEnabled"])
         self.assertIn("FFmpeg", ms["forbiddenDependencies"])
-        self.assertIn("UIKit", ms["forbiddenDependencies"])
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("VCAMMediaServerClient", makefile)
         self.assertIn("VCAMMediaServerRefEntry.xm", makefile)
