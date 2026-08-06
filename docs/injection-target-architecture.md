@@ -70,7 +70,9 @@ the original sample, and either construction path remains fail-closed.
 - Local video uses one incremental `AVAssetReaderTrackOutput` configured for
   uncompressed BGRA samples, driven by source PTS and sample duration. It
   retains only the current decoded frame, does not preload the asset into a
-  frame array, and rebuilds the reader at EOF when looping is enabled.
+  frame array, and rebuilds the reader at EOF when looping is enabled. Core
+  Media marker samples without a pixel buffer are released and skipped with a
+  hard limit of eight before the reader fails closed.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and
@@ -81,3 +83,20 @@ the original sample, and either construction path remains fail-closed.
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,
 reads imported media directly from `/var/mobile/Media/VCAM`; mediaserverd never
 opens the selected media file.
+
+## Remote queue sink evaluation
+
+On iOS 16, `BWRemoteQueueSinkNode` consumes `CMSampleBufferRef` through
+`renderSampleBuffer:forInput:` for remote capture clients. It is not the sole
+camera exit: SmartCam analysis is upstream, while Camera preview, still capture
+and movie recording use separate sink pipelines. Remote queues also carry
+non-video media such as metadata and depth.
+
+The mediaserverd client therefore keeps the proven source, preview, still and
+recording routes. Its remote-queue hook is diagnostic-only in this release: it
+records bounded video/non-video counters and format signatures, then always
+forwards the original sample unchanged. Device evidence must prove the exact
+Safari and third-party VideoDataOutput coverage before this point can become a
+video-only fail-closed safety net. A global RemoteQueue or RemoteOperation C
+sender hook is intentionally not used because it loses the sink/input context
+needed to distinguish video frames from configuration, metadata and depth.

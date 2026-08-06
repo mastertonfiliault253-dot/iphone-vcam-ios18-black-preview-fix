@@ -558,6 +558,60 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     VCAMRefLog(message);
 }
 
+// BWRemoteQueueSinkNode consumes frames for remote VideoDataOutput clients and
+// therefore has no BWNodeOutput of its own for the graph probe below to see.
+// Keep this hook diagnostic-only until device traces prove its exact coverage;
+// preview, still-photo, recording and SmartCam consumers use other pipelines.
+%hook BWRemoteQueueSinkNode
+
+- (void)renderSampleBuffer:(CMSampleBufferRef)sampleBuffer forInput:(id)input {
+    CMFormatDescriptionRef description = sampleBuffer == NULL ? NULL
+        : CMSampleBufferGetFormatDescription(sampleBuffer);
+    CMMediaType mediaType = description == NULL ? 0
+        : CMFormatDescriptionGetMediaType(description);
+    if (mediaType == kCMMediaType_Video) {
+        static volatile int remoteVideoSamples = 0;
+        int sampleCount = __sync_add_and_fetch(&remoteVideoSamples, 1);
+        if (sampleCount <= 12 || sampleCount % 300 == 0) {
+            CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            OSType subtype = CMFormatDescriptionGetMediaSubType(description);
+            OSType pixelFormat = imageBuffer == NULL ? 0
+                : CVPixelBufferGetPixelFormatType(imageBuffer);
+            size_t width = imageBuffer == NULL ? 0 : CVPixelBufferGetWidth(imageBuffer);
+            size_t height = imageBuffer == NULL ? 0 : CVPixelBufferGetHeight(imageBuffer);
+            NSString *inputClass = input == nil ? @"(none)"
+                : (NSStringFromClass([input class]) ?: @"(none)");
+            NSString *inputName = VCAMSafeStringValue(
+                VCAMSafeObjectResult(input, sel_registerName("name")));
+            BOOL marked = VCAMSampleHasMatchingPropagationMarker(sampleBuffer, imageBuffer);
+            char subtypeFourCC[5] = {0};
+            char pixelFourCC[5] = {0};
+            VCAMFourCCString(subtype, subtypeFourCC);
+            VCAMFourCCString(pixelFormat, pixelFourCC);
+            char message[420] = {0};
+            snprintf(message, sizeof(message),
+                     "remote queue sink diagnostic video count=%d inputClass=%s inputName=%s size=%zux%zu pixel=%s/%08x subtype=%s/%08x marked=%d",
+                     sampleCount, inputClass.UTF8String, inputName.UTF8String,
+                     width, height, pixelFourCC, pixelFormat,
+                     subtypeFourCC, subtype, marked);
+            VCAMRefLog(message);
+        }
+    } else if (sampleBuffer != NULL) {
+        static volatile int remoteNonVideoSamples = 0;
+        int sampleCount = __sync_add_and_fetch(&remoteNonVideoSamples, 1);
+        if (sampleCount <= 4) {
+            char message[160] = {0};
+            snprintf(message, sizeof(message),
+                     "remote queue sink diagnostic non-video count=%d mediaType=%08x",
+                     sampleCount, (unsigned int)mediaType);
+            VCAMRefLog(message);
+        }
+    }
+    %orig(sampleBuffer, input);
+}
+
+%end
+
 %hook BWNodeOutput
 
 - (void)emitSampleBuffer:(CMSampleBufferRef)sampleBuffer {

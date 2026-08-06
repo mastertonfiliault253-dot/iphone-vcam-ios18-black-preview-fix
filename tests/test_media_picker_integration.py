@@ -195,6 +195,32 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             self.assertIn(field, first_sample)
         self.assertIn("sourceTransform:self.videoTransform", source)
 
+    def test_video_reader_skips_only_a_bounded_number_of_non_pixel_markers(self) -> None:
+        source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
+        advance = source.split("- (BOOL)advanceVideoFrame", 1)[1].split(
+            "- (CMTime)durationForCurrentVideoFrame", 1
+        )[0]
+
+        self.assertIn("static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 8;", source)
+        self.assertIn(
+            "while (skippedNonPixelSamples < VCAMVideoNonPixelSampleSkipLimit)",
+            advance,
+        )
+        self.assertEqual(advance.count("copyNextSampleBuffer"), 1)
+        self.assertIn("kCMSampleBufferAttachmentKey_EmptyMedia", advance)
+        self.assertIn("kCMSampleBufferAttachmentKey_PermanentEmptyMedia", advance)
+        self.assertIn("CMSampleBufferGetNumSamples(sample)", advance)
+        self.assertIn("CMSampleBufferDataIsReady(sample)", advance)
+        skip_path = advance.split("if (pixelBuffer != NULL) break;", 1)[1].split(
+            "if (sample == NULL || pixelBuffer == NULL)", 1
+        )[0]
+        self.assertIn("CFRelease(sample);", skip_path)
+        self.assertIn("sample = NULL;", skip_path)
+        self.assertIn("skippedNonPixelSamples += 1;", skip_path)
+        self.assertNotIn("reportVideoReaderFailure", skip_path)
+        self.assertIn("local reader skipped non-pixel sample", skip_path)
+        self.assertIn("if (permanentEmptyMedia) break;", skip_path)
+
     def test_video_reader_rebases_after_two_catch_up_frames(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
         playback = source.split("- (CVPixelBufferRef)copyCurrentVideoPixelBufferForTemplate:", 1)[1].split(

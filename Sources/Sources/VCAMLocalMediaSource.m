@@ -10,6 +10,7 @@
 
 static NSString * const VCAMDiagnosticPath = @"/var/mobile/Library/Preferences/com.codex.vcam.diagnostics.log";
 static const NSUInteger VCAMVideoCatchUpLimit = 2;
+static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 8;
 static NSDictionary<NSString *, id> *VCAMLocalPerformanceSnapshot;
 
 NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) {
@@ -306,32 +307,69 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 - (BOOL)advanceVideoFrame {
-    CMSampleBufferRef sample = [self.videoOutput copyNextSampleBuffer];
-    if (sample == NULL) {
-        AVAssetReaderStatus status = self.videoReader.status;
-        if (status == AVAssetReaderStatusFailed || status == AVAssetReaderStatusCancelled) {
-            [self reportVideoReaderFailureWithStatus:status error:self.videoReader.error];
+    CMSampleBufferRef sample = NULL;
+    CVPixelBufferRef pixelBuffer = NULL;
+    NSUInteger skippedNonPixelSamples = 0;
+    BOOL permanentEmptyMedia = NO;
+    while (skippedNonPixelSamples < VCAMVideoNonPixelSampleSkipLimit) {
+        sample = [self.videoOutput copyNextSampleBuffer];
+        if (sample == NULL) {
+            AVAssetReaderStatus status = self.videoReader.status;
+            if (status == AVAssetReaderStatusFailed || status == AVAssetReaderStatusCancelled) {
+                [self reportVideoReaderFailureWithStatus:status error:self.videoReader.error];
+            }
+            return NO;
         }
-        return NO;
-    }
-    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
-    CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sample);
-    FourCharCode mediaSubtype = formatDescription == NULL
-        ? 0 : CMFormatDescriptionGetMediaSubType(formatDescription);
-    if (!_readerFirstSampleLogged) {
-        _readerFirstSampleLogged = YES;
+
+        pixelBuffer = CMSampleBufferGetImageBuffer(sample);
+        CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sample);
+        FourCharCode mediaSubtype = formatDescription == NULL
+            ? 0 : CMFormatDescriptionGetMediaSubType(formatDescription);
+        CFTypeRef emptyMediaAttachment = CMGetAttachment(
+            sample, kCMSampleBufferAttachmentKey_EmptyMedia, NULL);
+        CFTypeRef permanentEmptyMediaAttachment = CMGetAttachment(
+            sample, kCMSampleBufferAttachmentKey_PermanentEmptyMedia, NULL);
+        BOOL emptyMedia = emptyMediaAttachment != NULL &&
+            CFGetTypeID(emptyMediaAttachment) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue((CFBooleanRef)emptyMediaAttachment);
+        permanentEmptyMedia = permanentEmptyMediaAttachment != NULL &&
+            CFGetTypeID(permanentEmptyMediaAttachment) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue((CFBooleanRef)permanentEmptyMediaAttachment);
+        CMItemCount sampleCount = CMSampleBufferGetNumSamples(sample);
+        BOOL dataReady = CMSampleBufferDataIsReady(sample);
+        if (!_readerFirstSampleLogged) {
+            _readerFirstSampleLogged = YES;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"local reader first-sample mediaSubtype=%08x hasImageBuffer=%d hasDataBuffer=%d emptyMedia=%d permanentEmptyMedia=%d numSamples=%ld dataReady=%d outputClass=%@ status=%ld",
+                (unsigned int)mediaSubtype, pixelBuffer != NULL,
+                CMSampleBufferGetDataBuffer(sample) != NULL, emptyMedia,
+                permanentEmptyMedia, (long)sampleCount, dataReady,
+                NSStringFromClass(self.videoOutput.class), (long)self.videoReader.status]];
+        }
+        if (pixelBuffer != NULL) break;
+
+        skippedNonPixelSamples += 1;
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"local reader first-sample mediaSubtype=%08x hasImageBuffer=%d hasDataBuffer=%d outputClass=%@ status=%ld",
-            (unsigned int)mediaSubtype, pixelBuffer != NULL,
-            CMSampleBufferGetDataBuffer(sample) != NULL,
-            NSStringFromClass(self.videoOutput.class), (long)self.videoReader.status]];
-    }
-    if (pixelBuffer == NULL) {
+            @"local reader skipped non-pixel sample count=%lu mediaSubtype=%08x emptyMedia=%d permanentEmptyMedia=%d numSamples=%ld dataReady=%d status=%ld",
+            (unsigned long)skippedNonPixelSamples, (unsigned int)mediaSubtype,
+            emptyMedia, permanentEmptyMedia, (long)sampleCount, dataReady,
+            (long)self.videoReader.status]];
         CFRelease(sample);
+        sample = NULL;
+        if (permanentEmptyMedia) break;
+    }
+
+    if (sample == NULL || pixelBuffer == NULL) {
+        if (sample != NULL) CFRelease(sample);
         NSError *sampleError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:4
                                                userInfo:@{NSLocalizedDescriptionKey:
-                                                   @"Incremental video reader returned a sample without pixels"}];
+                                                   permanentEmptyMedia
+                                                       ? @"Incremental video reader reached a permanent empty-media marker"
+                                                       : @"Incremental video reader exceeded the non-pixel sample limit"}];
         [self reportVideoReaderFailureWithStatus:self.videoReader.status error:sampleError];
+        [self.videoReader cancelReading];
+        self.videoOutput = nil;
+        self.videoReader = nil;
         return NO;
     }
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sample);

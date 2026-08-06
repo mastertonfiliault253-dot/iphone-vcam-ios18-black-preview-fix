@@ -292,6 +292,25 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertLess(failure_path.index("return;"), len(failure_path))
         self.assertNotIn("%orig(", failure_path)
 
+    def test_remote_queue_sink_probe_is_diagnostic_only(self) -> None:
+        remote_sink = _between(
+            self.entry,
+            "%hook BWRemoteQueueSinkNode",
+            "%end",
+        )
+        self.assertIn(
+            "- (void)renderSampleBuffer:(CMSampleBufferRef)sampleBuffer forInput:(id)input",
+            remote_sink,
+        )
+        self.assertIn("CMFormatDescriptionGetMediaType", remote_sink)
+        self.assertIn("kCMMediaType_Video", remote_sink)
+        self.assertIn("remote queue sink diagnostic", remote_sink)
+        self.assertIn("%orig(sampleBuffer, input);", remote_sink)
+        self.assertNotIn("drawReplacementOntoBuffer", remote_sink)
+        self.assertNotIn("VCAMCreateSampleBufferWithReplacementImage", remote_sink)
+        self.assertNotIn("VCAMVirtualModeIsEnabled", remote_sink)
+        self.assertNotIn("return;", remote_sink)
+
 
 if __name__ == "__main__":
     unittest.main()
