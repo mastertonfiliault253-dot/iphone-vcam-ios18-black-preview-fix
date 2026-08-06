@@ -257,15 +257,17 @@ static void VCAMCopyAttachmentMode(CMAttachmentBearerRef source,
 
 static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     CMSampleBufferRef originalSampleBuffer,
-    CVPixelBufferRef replacementImageBuffer) {
+    CVPixelBufferRef replacementImageBuffer,
+    BOOL allowPrivateCameraFormatFallback) {
     if (originalSampleBuffer == NULL || replacementImageBuffer == NULL) return NULL;
     CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(
         originalSampleBuffer);
     if (format == NULL) return NULL;
     CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format);
+    OSType sourceSubtype = CMFormatDescriptionGetMediaSubType(format);
     if (dimensions.width != (int32_t)CVPixelBufferGetWidth(replacementImageBuffer) ||
         dimensions.height != (int32_t)CVPixelBufferGetHeight(replacementImageBuffer) ||
-        CMFormatDescriptionGetMediaSubType(format) !=
+        sourceSubtype !=
             CVPixelBufferGetPixelFormatType(replacementImageBuffer)) return NULL;
 
     CMSampleTimingInfo timing;
@@ -277,17 +279,73 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     OSStatus createStatus = CMSampleBufferCreateReadyWithImageBuffer(
         kCFAllocatorDefault, replacementImageBuffer, format, &timing,
         &replacementSampleBuffer);
+    OSStatus derivedFormatStatus = noErr;
+    BOOL attemptedDerivedFormat = NO;
+    BOOL derivedFormatMatchesSource = NO;
+    BOOL privateCompressedCameraFormat =
+        sourceSubtype == (OSType)0x5b387630 || // observed '[8v0'
+        sourceSubtype == (OSType)0x7d387630;   // observed '}8v0'
+    if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&
+        createStatus == kCMSampleBufferError_InvalidMediaFormat) {
+        // Some private camera formats carry format-description extensions
+        // that do not match an otherwise compatible clone created from the
+        // source buffer's own pixel attributes. Derive the retry description
+        // from the replacement image itself so CoreMedia sees the exact
+        // attachment contract it validates. The original sample timing and
+        // sample-level attachments are still copied below.
+        attemptedDerivedFormat = YES;
+        if (replacementSampleBuffer != NULL) {
+            CFRelease(replacementSampleBuffer);
+            replacementSampleBuffer = NULL;
+        }
+        CMVideoFormatDescriptionRef derivedFormat = NULL;
+        derivedFormatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            kCFAllocatorDefault, replacementImageBuffer, &derivedFormat);
+        if (derivedFormatStatus == noErr && derivedFormat != NULL) {
+            CMVideoDimensions derivedDimensions =
+                CMVideoFormatDescriptionGetDimensions(derivedFormat);
+            derivedFormatMatchesSource =
+                derivedDimensions.width == dimensions.width &&
+                derivedDimensions.height == dimensions.height &&
+                CMFormatDescriptionGetMediaSubType(derivedFormat) ==
+                    sourceSubtype;
+            if (derivedFormatMatchesSource) {
+                createStatus = CMSampleBufferCreateReadyWithImageBuffer(
+                    kCFAllocatorDefault, replacementImageBuffer, derivedFormat,
+                    &timing, &replacementSampleBuffer);
+            }
+        }
+        if (derivedFormat != NULL) {
+            CFRelease(derivedFormat);
+        }
+    }
     if (createStatus != noErr || replacementSampleBuffer == NULL) {
+        if (replacementSampleBuffer != NULL) {
+            CFRelease(replacementSampleBuffer);
+            replacementSampleBuffer = NULL;
+        }
         static volatile int creationFailures = 0;
         int failureCount = __sync_add_and_fetch(&creationFailures, 1);
         if (failureCount <= 8 || failureCount % 300 == 0) {
-            char message[176] = {0};
+            char message[256] = {0};
             snprintf(message, sizeof(message),
-                     "compressed replacement sample creation failed count=%d status=%d",
-                     failureCount, (int)createStatus);
+                     "compressed replacement sample creation failed count=%d status=%d derivedAttempt=%d derivedStatus=%d derivedMatch=%d",
+                     failureCount, (int)createStatus, attemptedDerivedFormat,
+                     (int)derivedFormatStatus, derivedFormatMatchesSource);
             VCAMRefLog(message);
         }
         return NULL;
+    }
+    if (attemptedDerivedFormat) {
+        static volatile int derivedFormatRecoveries = 0;
+        int recoveryCount = __sync_add_and_fetch(&derivedFormatRecoveries, 1);
+        if (recoveryCount <= 8 || recoveryCount % 300 == 0) {
+            char message[160] = {0};
+            snprintf(message, sizeof(message),
+                     "compressed replacement sample used derived format count=%d",
+                     recoveryCount);
+            VCAMRefLog(message);
+        }
     }
 
     VCAMCopyAttachmentMode(originalSampleBuffer, replacementSampleBuffer,
@@ -421,6 +479,9 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     // instead of leaking a real frame.
     if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode")) {
         if (VCAMStringMatches(nodeName, @"Video Data Converter/Scaler/Zoomer")) {
+            return VCAMReplacementRouteVideoConverter;
+        }
+        if (VCAMStringMatches(nodeName, @"Video Data Converter/Rotator/Zoomer")) {
             return VCAMReplacementRouteVideoConverter;
         }
         if (VCAMStringMatches(nodeName, @"Preview Scaler")) {
@@ -609,7 +670,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                 &replacementImageBuffer);
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
-                    sampleBuffer, replacementImageBuffer);
+                    sampleBuffer, replacementImageBuffer,
+                    replacementRoute == VCAMReplacementRouteCameraSourceVideo);
                 replacementSucceeded = replacementSampleBuffer != NULL;
             }
             if (replacementSucceeded &&

@@ -63,9 +63,10 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ),
         )
 
-    def test_only_three_exact_pixel_transfer_terminals_and_meteor_still_remain(self) -> None:
+    def test_only_device_observed_exact_pixel_transfer_terminals_and_meteor_still_remain(self) -> None:
         for terminal_name, route_name in (
             ("Video Data Converter/Scaler/Zoomer", "VideoConverter"),
+            ("Video Data Converter/Rotator/Zoomer", "VideoConverter"),
             ("Preview Scaler", "CameraPreview"),
             ("Movie File Zoomer", "VideoRecording"),
         ):
@@ -84,6 +85,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("VCAMReplacementRouteLegacyPreview", self.entry)
         self.assertNotIn("width == 750", self.route_function)
         self.assertNotIn("height == 1334", self.route_function)
+        self.assertNotIn('@"Video Data Converter/Zoomer"', self.route_function)
 
     def test_fanout_and_inference_nodes_are_never_direct_replacement_routes(self) -> None:
         self.assertNotIn('@"BWFanOutNode"', self.route_function)
@@ -127,6 +129,81 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "VCAMWritePropagationMarker(\n                    replacementSampleBuffer, replacementImageBuffer)",
             source_marker_path,
         )
+
+    def test_invalid_private_format_retries_with_buffer_derived_description(self) -> None:
+        sample_builder = _between(
+            self.entry,
+            "static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage",
+            "static CFStringRef const VCAMPropagationMarkerKey",
+        )
+        original_create = "CMSampleBufferCreateReadyWithImageBuffer("
+        retry_guard = "createStatus == kCMSampleBufferError_InvalidMediaFormat"
+        derived_create = "CMVideoFormatDescriptionCreateForImageBuffer("
+        retry_region = _between(
+            sample_builder,
+            "if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&",
+            "if (createStatus != noErr || replacementSampleBuffer == NULL)",
+        )
+
+        self.assertEqual(sample_builder.count(original_create), 2)
+        self.assertEqual(sample_builder.count(derived_create), 1)
+        self.assertEqual(retry_region.count(original_create), 1)
+        self.assertEqual(retry_region.count(derived_create), 1)
+        self.assertIn(retry_guard, sample_builder)
+        self.assertIn("sourceSubtype == (OSType)0x5b387630", sample_builder)
+        self.assertIn("sourceSubtype == (OSType)0x7d387630", sample_builder)
+        self.assertRegex(
+            self.hook,
+            re.compile(
+                r'VCAMCreateSampleBufferWithReplacementImage\('
+                r'\s*sampleBuffer,\s*replacementImageBuffer,\s*'
+                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\)',
+                re.DOTALL,
+            ),
+        )
+        self.assertIn("replacementImageBuffer, &derivedFormat", sample_builder)
+        self.assertIn("replacementImageBuffer, derivedFormat", sample_builder)
+        self.assertIn("derivedFormatMatchesSource", sample_builder)
+        self.assertIn("derivedDimensions.width == dimensions.width", sample_builder)
+        self.assertIn("derivedDimensions.height == dimensions.height", sample_builder)
+        self.assertIn(
+            "CMFormatDescriptionGetMediaSubType(derivedFormat) ==",
+            sample_builder,
+        )
+        self.assertIn("sourceSubtype", sample_builder)
+        self.assertLess(
+            retry_region.index("if (derivedFormatMatchesSource)"),
+            retry_region.index("replacementImageBuffer, derivedFormat"),
+        )
+        self.assertIn("if (derivedFormat != NULL)", sample_builder)
+        self.assertIn("CFRelease(derivedFormat);", sample_builder)
+        derived_declaration = sample_builder.index(
+            "CMVideoFormatDescriptionRef derivedFormat = NULL"
+        )
+        derived_release = sample_builder.index("CFRelease(derivedFormat);")
+        self.assertNotIn("return", sample_builder[derived_declaration:derived_release])
+        self.assertGreater(
+            derived_release,
+            sample_builder.index("replacementImageBuffer, derivedFormat"),
+        )
+        self.assertIn("if (createStatus != noErr || replacementSampleBuffer == NULL)", sample_builder)
+        failure_path = _between(
+            sample_builder,
+            "if (createStatus != noErr || replacementSampleBuffer == NULL)",
+            "if (attemptedDerivedFormat)",
+        )
+        self.assertIn(
+            "if (replacementSampleBuffer != NULL)",
+            failure_path,
+        )
+        self.assertIn("CFRelease(replacementSampleBuffer);", failure_path)
+        self.assertLess(
+            failure_path.index("CFRelease(replacementSampleBuffer);"),
+            failure_path.index("return NULL;"),
+        )
+        self.assertLess(sample_builder.index(original_create), sample_builder.index(retry_guard))
+        self.assertLess(sample_builder.index(retry_guard), sample_builder.index(derived_create))
+        self.assertIn("compressed replacement sample used derived format", sample_builder)
 
     def test_downstream_fast_path_requires_its_own_matching_numeric_marker(self) -> None:
         matcher = _between(
@@ -213,6 +290,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "if (replacementSucceeded && replacementSampleBuffer != NULL)",
         )
         self.assertLess(failure_path.index("return;"), len(failure_path))
+        self.assertNotIn("%orig(", failure_path)
 
 
 if __name__ == "__main__":

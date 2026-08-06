@@ -56,6 +56,14 @@ sample is suppressed when no safe fallback exists. The encoded guard remains a
 second fail-closed boundary. Once requested mode is enabled, no real camera
 frame is allowed through until an explicit restore request.
 
+When CoreMedia rejects an observed private compressed camera-source clone
+because the source format description does not match the clone's attachment
+contract, mediaserverd retries sample construction with a format description
+derived from that clone. The retry is restricted to the exact private camera
+formats and `kCMSampleBufferError_InvalidMediaFormat`; other routes and errors
+cannot silently change format. Timing and sample attachments still come from
+the original sample, and either construction path remains fail-closed.
+
 ## Decode behavior
 
 - Images are decoded once by Core Image and rendered as a static source.
