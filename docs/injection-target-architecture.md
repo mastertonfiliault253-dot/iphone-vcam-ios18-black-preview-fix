@@ -72,7 +72,9 @@ the original sample, and either construction path remains fail-closed.
   retains only the current decoded frame, does not preload the asset into a
   frame array, and rebuilds the reader at EOF when looping is enabled. Core
   Media marker samples without a pixel buffer are released and skipped with a
-  hard limit of eight before the reader fails closed.
+  hard limit of 32 before the reader fails closed. The limit is deliberately
+  above the eight consecutive zero-sample markers observed on iOS 16.5 while
+  remaining bounded when an output never produces pixels.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and

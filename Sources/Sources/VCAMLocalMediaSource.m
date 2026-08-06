@@ -10,7 +10,7 @@
 
 static NSString * const VCAMDiagnosticPath = @"/var/mobile/Library/Preferences/com.codex.vcam.diagnostics.log";
 static const NSUInteger VCAMVideoCatchUpLimit = 2;
-static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 8;
+static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 32;
 static NSDictionary<NSString *, id> *VCAMLocalPerformanceSnapshot;
 
 NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) {

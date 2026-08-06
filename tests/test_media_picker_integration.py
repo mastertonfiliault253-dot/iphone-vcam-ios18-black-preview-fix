@@ -201,7 +201,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "- (CMTime)durationForCurrentVideoFrame", 1
         )[0]
 
-        self.assertIn("static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 8;", source)
+        self.assertIn("static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 32;", source)
         self.assertIn(
             "while (skippedNonPixelSamples < VCAMVideoNonPixelSampleSkipLimit)",
             advance,
