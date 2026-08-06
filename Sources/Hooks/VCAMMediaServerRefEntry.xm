@@ -60,21 +60,19 @@ static BOOL VCAMBasicOutputSignatureWasSeen(id output, NSString *basicSignature)
 
 typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
     VCAMReplacementRouteNone = 0,
-    VCAMReplacementRouteLegacyPreview,
+    VCAMReplacementRouteCameraSourceVideo,
     VCAMReplacementRouteVideoConverter,
     VCAMReplacementRouteCameraPreview,
     VCAMReplacementRouteVideoRecording,
-    VCAMReplacementRouteGenericPixelTransfer,
     VCAMReplacementRouteStillPhoto,
 };
 
 static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
     switch (route) {
-        case VCAMReplacementRouteLegacyPreview: return "legacy-preview";
+        case VCAMReplacementRouteCameraSourceVideo: return "camera-source-video";
         case VCAMReplacementRouteVideoConverter: return "video-converter";
         case VCAMReplacementRouteCameraPreview: return "camera-preview";
         case VCAMReplacementRouteVideoRecording: return "video-recording";
-        case VCAMReplacementRouteGenericPixelTransfer: return "generic-pixel-transfer";
         case VCAMReplacementRouteStillPhoto: return "still-photo";
         case VCAMReplacementRouteNone: return "none";
     }
@@ -315,23 +313,112 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     return replacementSampleBuffer;
 }
 
+static CFStringRef const VCAMPropagationMarkerKey =
+    CFSTR("com.codex.vcam.virtual-frame.v1");
+
+static BOOL VCAMRouteUsesPropagationMarker(VCAMReplacementRoute route) {
+    return route == VCAMReplacementRouteVideoConverter ||
+        route == VCAMReplacementRouteCameraPreview ||
+        route == VCAMReplacementRouteVideoRecording;
+}
+
+static BOOL VCAMWritePropagationMarker(CMSampleBufferRef sampleBuffer,
+                                       CVPixelBufferRef imageBuffer) {
+    if (sampleBuffer == NULL || imageBuffer == NULL) return NO;
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    if (!CMTIME_IS_NUMERIC(presentationTime)) return NO;
+    NSDictionary<NSString *, NSNumber *> *marker = @{
+        @"version": @1,
+        @"value": @(presentationTime.value),
+        @"timescale": @(presentationTime.timescale),
+        @"flags": @(presentationTime.flags),
+        @"epoch": @(presentationTime.epoch),
+    };
+    CMSetAttachment(sampleBuffer, VCAMPropagationMarkerKey,
+                    (__bridge CFDictionaryRef)marker,
+                    kCMAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(imageBuffer, VCAMPropagationMarkerKey,
+                          (__bridge CFDictionaryRef)marker,
+                          kCVAttachmentMode_ShouldPropagate);
+    return YES;
+}
+
+static BOOL VCAMPropagationMarkerGetTime(CFTypeRef markerObject,
+                                         CMTime *presentationTimeOut) {
+    if (markerObject == NULL || presentationTimeOut == NULL ||
+        CFGetTypeID(markerObject) != CFDictionaryGetTypeID()) return NO;
+    NSDictionary *marker = (__bridge NSDictionary *)markerObject;
+    NSNumber *version = [marker objectForKey:@"version"];
+    NSNumber *value = [marker objectForKey:@"value"];
+    NSNumber *timescale = [marker objectForKey:@"timescale"];
+    NSNumber *flags = [marker objectForKey:@"flags"];
+    NSNumber *epoch = [marker objectForKey:@"epoch"];
+    if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
+        ![value isKindOfClass:NSNumber.class] ||
+        ![timescale isKindOfClass:NSNumber.class] ||
+        ![flags isKindOfClass:NSNumber.class] ||
+        ![epoch isKindOfClass:NSNumber.class]) return NO;
+    CMTime markerTime = {
+        .value = value.longLongValue,
+        .timescale = timescale.intValue,
+        .flags = (CMTimeFlags)flags.unsignedIntValue,
+        .epoch = epoch.longLongValue,
+    };
+    if (!CMTIME_IS_NUMERIC(markerTime)) return NO;
+    *presentationTimeOut = markerTime;
+    return YES;
+}
+
+static BOOL VCAMSampleHasMatchingPropagationMarker(
+    CMSampleBufferRef sampleBuffer,
+    CVPixelBufferRef imageBuffer) {
+    if (sampleBuffer == NULL) return NO;
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    if (!CMTIME_IS_NUMERIC(presentationTime)) return NO;
+
+    CMAttachmentMode sampleMode = kCMAttachmentMode_ShouldNotPropagate;
+    CFTypeRef sampleMarker = CMGetAttachment(sampleBuffer,
+                                             VCAMPropagationMarkerKey,
+                                             &sampleMode);
+    CMTime markerTime = kCMTimeInvalid;
+    if (sampleMode == kCMAttachmentMode_ShouldPropagate &&
+        VCAMPropagationMarkerGetTime(sampleMarker, &markerTime) &&
+        CMTIME_IS_NUMERIC(markerTime) &&
+        CMTimeCompare(markerTime, presentationTime) == 0) return YES;
+
+    if (imageBuffer == NULL) return NO;
+    CVAttachmentMode imageMode = kCVAttachmentMode_ShouldNotPropagate;
+    CFTypeRef imageMarker = CVBufferGetAttachment(imageBuffer,
+                                                  VCAMPropagationMarkerKey,
+                                                  &imageMode);
+    markerTime = kCMTimeInvalid;
+    return imageMode == kCVAttachmentMode_ShouldPropagate &&
+        VCAMPropagationMarkerGetTime(imageMarker, &markerTime) &&
+        CMTIME_IS_NUMERIC(markerTime) &&
+        CMTimeCompare(markerTime, presentationTime) == 0;
+}
+
 static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
                                                             CVPixelBufferRef pixelBuffer) {
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
     NSString *nodeClass = node == nil ? nil : NSStringFromClass([node class]);
+    NSString *outputName = VCAMSafeObjectResult(output, sel_registerName("name"));
     NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
-    BOOL targetSupported = VCAMTargetBufferIsSupported(pixelBuffer);
-    OSType pixelFormat = pixelBuffer == NULL ? 0 :
-        CVPixelBufferGetPixelFormatType(pixelBuffer);
-    size_t width = pixelBuffer == NULL ? 0 : CVPixelBufferGetWidth(pixelBuffer);
-    size_t height = pixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(pixelBuffer);
+
+    // This is the device-observed raw VideoCapture branch feeding SmartCam and
+    // other camera analysis consumers. Route by the exact output role, not by
+    // buffer format support: a recognized source role must fail closed when a
+    // future format cannot be rendered instead of exposing the physical frame.
+    if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
+        VCAMStringMatches(outputName, @"VideoCapture")) {
+        return VCAMReplacementRouteCameraSourceVideo;
+    }
 
     // These are the terminal conversion roles observed for Safari getUserMedia
     // and the stock Camera preview. They are deliberately independent of the
     // physical camera node name. A known terminal role remains selected even
     // for a future unsupported pixel format so enabled mode drops that sample
-    // instead of leaking a real frame. Other supported pixel-transfer nodes
-    // cover public AVFoundation consumers whose private role name differs.
+    // instead of leaking a real frame.
     if (VCAMStringMatches(nodeClass, @"BWPixelTransferNode")) {
         if (VCAMStringMatches(nodeName, @"Video Data Converter/Scaler/Zoomer")) {
             return VCAMReplacementRouteVideoConverter;
@@ -342,7 +429,6 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         if (VCAMStringMatches(nodeName, @"Movie File Zoomer")) {
             return VCAMReplacementRouteVideoRecording;
         }
-        if (targetSupported) return VCAMReplacementRouteGenericPixelTransfer;
     }
 
     // Stock Camera still capture reaches this last standard 8-bit pixel stage
@@ -354,12 +440,6 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         return VCAMReplacementRouteStillPhoto;
     }
 
-    // Retain the original device-proven BGRA path for clients which still ask
-    // for this exact shape.
-    if (targetSupported && pixelFormat == kCVPixelFormatType_32BGRA &&
-        width == 750 && height == 1334) {
-        return VCAMReplacementRouteLegacyPreview;
-    }
     return VCAMReplacementRouteNone;
 }
 
@@ -471,10 +551,35 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
         if (nullBufferCount <= 3) VCAMRefLog("emitSampleBuffer video buffer NULL");
+        if (replacementAllowed && VCAMVirtualModeIsEnabled()) {
+            VCAMRefLog("suppressing routed sample with NULL image buffer");
+            return;
+        }
         %orig(sampleBuffer);
         return;
     }
     if (!replacementAllowed) {
+        %orig(sampleBuffer);
+        return;
+    }
+
+    BOOL propagatedReplacement =
+        VCAMRouteUsesPropagationMarker(replacementRoute) &&
+        VCAMSampleHasMatchingPropagationMarker(sampleBuffer, originalImageBuffer);
+    if (propagatedReplacement) {
+        if (replacementRoute == VCAMReplacementRouteVideoRecording) {
+            VCAMRecordRecordingFrameOutcome(self, sampleBuffer,
+                                            originalImageBuffer, YES);
+        }
+        static volatile int propagatedSamples = 0;
+        int propagatedCount = __sync_add_and_fetch(&propagatedSamples, 1);
+        if (propagatedCount <= 8 || propagatedCount % 300 == 0) {
+            char message[176] = {0};
+            snprintf(message, sizeof(message),
+                     "passing propagated virtual frame count=%d route=%s",
+                     propagatedCount, VCAMReplacementRouteName(replacementRoute));
+            VCAMRefLog(message);
+        }
         %orig(sampleBuffer);
         return;
     }
@@ -506,6 +611,11 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
                     sampleBuffer, replacementImageBuffer);
                 replacementSucceeded = replacementSampleBuffer != NULL;
+            }
+            if (replacementSucceeded &&
+                replacementRoute == VCAMReplacementRouteCameraSourceVideo) {
+                replacementSucceeded = VCAMWritePropagationMarker(
+                    replacementSampleBuffer, replacementImageBuffer);
             }
         } @catch (NSException *exception) {
             static dispatch_once_t exceptionToken;

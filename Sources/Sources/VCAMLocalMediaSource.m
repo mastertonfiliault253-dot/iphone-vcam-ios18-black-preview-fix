@@ -68,6 +68,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     CFTimeInterval _diagnosticLastSourceFrameHostTime;
     double _diagnosticSourceFrameIntervals[256];
     NSUInteger _diagnosticSourceFrameIntervalCount;
+    BOOL _readerFirstSampleLogged;
     BOOL _readerFirstFrameLogged;
     BOOL _readerFailureLogged;
     NSUInteger _readerLoopCount;
@@ -76,7 +77,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) AVURLAsset *asset;
 @property(nonatomic, strong, nullable) AVAssetReader *videoReader;
-@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *videoOutput;
+@property(nonatomic, strong, nullable) AVAssetReaderVideoCompositionOutput *videoOutput;
 @property(nonatomic, strong, nullable) AVAssetReader *audioReader;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *audioOutput;
 @property(nonatomic) Float64 audioSampleRate;
@@ -214,6 +215,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 - (BOOL)startVideoReader:(NSError **)error {
     [self resetVideoPlaybackState];
     [self resetDiagnosticWindow];
+    _readerFirstSampleLogged = NO;
     _readerFirstFrameLogged = NO;
     _readerFailureLogged = NO;
     _readerLoopCount = 0;
@@ -263,17 +265,20 @@ static int VCAMCompareDouble(const void *left, const void *right) {
                                           error:readerError];
         return NO;
     }
-    AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
-        assetReaderTrackOutputWithTrack:videoTrack
-                          outputSettings:@{
-                              (id)kCVPixelBufferPixelFormatTypeKey:
-                                  @(kCVPixelFormatType_32BGRA),
-                          }];
+    AVAssetReaderVideoCompositionOutput *output = [AVAssetReaderVideoCompositionOutput
+        assetReaderVideoCompositionOutputWithVideoTracks:@[videoTrack]
+                                             videoSettings:@{
+                                                 (id)kCVPixelBufferPixelFormatTypeKey:
+                                                     @(kCVPixelFormatType_32BGRA),
+                                             }];
+    // Keep the decoded pixels in source-track geometry. VCAMFrameRenderer is
+    // the single owner of preferredTransform plus user rotation/mirroring.
+    output.videoComposition = nil;
     output.alwaysCopiesSampleData = NO;
     if (![reader canAddOutput:output]) {
         NSError *outputError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:3
                                                userInfo:@{NSLocalizedDescriptionKey:
-                                                   @"Cannot attach the incremental video reader output"}];
+                                                   @"Cannot attach the uncompressed incremental video reader output"}];
         if (error != NULL && *error == nil) {
             *error = outputError;
         }
@@ -291,8 +296,9 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     _readerFailureLogged = NO;
     if (_readerLoopCount <= 3 || _readerLoopCount % 50 == 0) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"local reader ready status=%ld loop=%lu output=%08x", (long)reader.status,
-            (unsigned long)_readerLoopCount, (unsigned int)kCVPixelFormatType_32BGRA]];
+            @"local reader ready status=%ld loop=%lu output=%08x outputClass=%@", (long)reader.status,
+            (unsigned long)_readerLoopCount, (unsigned int)kCVPixelFormatType_32BGRA,
+            NSStringFromClass(output.class)]];
     }
     return YES;
 }
@@ -307,6 +313,17 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         return NO;
     }
     CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
+    CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sample);
+    FourCharCode mediaSubtype = formatDescription == NULL
+        ? 0 : CMFormatDescriptionGetMediaSubType(formatDescription);
+    if (!_readerFirstSampleLogged) {
+        _readerFirstSampleLogged = YES;
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local reader first-sample mediaSubtype=%08x hasImageBuffer=%d hasDataBuffer=%d outputClass=%@ status=%ld",
+            (unsigned int)mediaSubtype, pixelBuffer != NULL,
+            CMSampleBufferGetDataBuffer(sample) != NULL,
+            NSStringFromClass(self.videoOutput.class), (long)self.videoReader.status]];
+    }
     if (pixelBuffer == NULL) {
         CFRelease(sample);
         NSError *sampleError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:4

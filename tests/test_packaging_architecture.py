@@ -8,6 +8,18 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class PackagingArchitectureTests(unittest.TestCase):
+    def test_package_version_matches_runtime_build_tag(self) -> None:
+        control = (ROOT / "control").read_text(encoding="utf-8")
+        version = next(
+            line.split(":", 1)[1].strip()
+            for line in control.splitlines()
+            if line.startswith("Version:")
+        )
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f'com.codex.vcam/{version}', configuration)
+
     def test_manifest_describes_two_injections_and_two_isolated_daemons(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
         targets = {target["name"]: target for target in manifest["targets"]}

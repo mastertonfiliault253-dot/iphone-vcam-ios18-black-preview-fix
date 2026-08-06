@@ -25,13 +25,20 @@ waiting. SpringBoard is the sole writer of the requested enable/restore state;
 configuration reload. Shared-header initialization and requested-state updates
 use an interprocess file lock so startup order cannot replace a newer choice.
 
-`mediaserverd` recognizes validated consumer roles at `BWNodeOutput`: camera
-preview, browser/WebRTC conversion, still capture and movie recording. It
-renders observed BGRA, `420v`/`420f`, public compressed and the device-private
-recording formats `[8v0`/`}8v0`, subject to strict dimensions and buffer-layout
-checks. A portrait shared source is pre-rotated left before it is fitted into a
-landscape sensor buffer, compensating for the downstream clockwise display
-transform while leaving portrait preview buffers unchanged.
+`mediaserverd` recognizes the exact upstream
+`BWMultiStreamCameraSourceNode / VideoCapture` role before preview, recording
+and Smart Camera analysis split. A successful upstream replacement carries a
+versioned, propagating full-PTS marker. The three exact downstream pixel-transfer
+roles (browser/WebRTC conversion, Camera preview and movie recording) skip a
+duplicate render only when their own sample or image buffer retains that marker
+with the same numeric PTS; otherwise they render again and remain fail-closed.
+Fan-out and inference nodes are never matched directly, and still capture keeps
+its independent exact `Meteor Headroom` route. It renders observed BGRA,
+`420v`/`420f`, public compressed and the device-private recording formats
+`[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. A portrait
+shared source is pre-rotated left before it is fitted into a landscape sensor
+buffer, compensating for the downstream clockwise display transform while
+leaving portrait preview buffers unchanged.
 
 Compressed recording never asks Core Image to write a private surface. Core
 Image renders into a target-sized public `420v` staging buffer; VideoToolbox
@@ -49,10 +56,11 @@ frame is allowed through until an explicit restore request.
 ## Decode behavior
 
 - Images are decoded once by Core Image and rendered as a static source.
-- Local video uses one incremental `AVAssetReaderTrackOutput` driven by source
-  PTS and sample duration. It retains only the current decoded frame, does not
-  preload the asset into a frame array, and rebuilds the reader at EOF when
-  looping is enabled.
+- Local video uses one incremental `AVAssetReaderVideoCompositionOutput`, which
+  only produces uncompressed video samples, driven by source PTS and sample
+  duration. It retains only the current decoded frame, does not preload the
+  asset into a frame array, and rebuilds the reader at EOF when looping is
+  enabled.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and
