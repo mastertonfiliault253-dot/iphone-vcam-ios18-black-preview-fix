@@ -9,6 +9,7 @@
 #import <unistd.h>
 
 static NSString * const VCAMDiagnosticPath = @"/var/mobile/Library/Preferences/com.codex.vcam.diagnostics.log";
+static const NSUInteger VCAMVideoCatchUpLimit = 2;
 static NSDictionary<NSString *, id> *VCAMLocalPerformanceSnapshot;
 
 NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnapshot(void) {
@@ -43,8 +44,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 @interface VCAMLocalMediaSource () {
     CGImageRef _stillImage;
-    CVPixelBufferRef _currentPlayerPixelBuffer;
-    CMTime _currentPlayerItemTime;
+    CMSampleBufferRef _currentVideoSample;
+    CMTime _currentVideoPTS;
+    CMTime _videoMediaStartPTS;
+    CFTimeInterval _videoHostStart;
     CMSampleBufferRef _lastRenderedVideoSample;
     CMTime _lastRenderedSourcePTS;
     size_t _lastRenderedWidth;
@@ -62,33 +65,24 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     CFTimeInterval _diagnosticRenderMaximum;
     CMTime _diagnosticWindowItemStart;
     OSType _diagnosticLastTemplateFormat;
-    CMSampleBufferRef _tripleBGRAFrame;
-    CMSampleBufferRef _tripleVideoRangeFrame;
-    CMSampleBufferRef _tripleFullRangeFrame;
-    CMTime _tripleCurrentPTS;
-    CMTime _tripleMediaStartPTS;
-    CFTimeInterval _tripleHostStart;
     CFTimeInterval _diagnosticLastSourceFrameHostTime;
     double _diagnosticSourceFrameIntervals[256];
     NSUInteger _diagnosticSourceFrameIntervalCount;
+    BOOL _readerFirstFrameLogged;
+    BOOL _readerFailureLogged;
+    NSUInteger _readerLoopCount;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) AVURLAsset *asset;
+@property(nonatomic, strong, nullable) AVAssetReader *videoReader;
+@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *videoOutput;
 @property(nonatomic, strong, nullable) AVAssetReader *audioReader;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *audioOutput;
-@property(nonatomic, strong, nullable) AVPlayerItem *playerItem;
-@property(nonatomic, strong, nullable) AVPlayer *player;
-@property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *playerVideoOutput;
-@property(nonatomic, strong, nullable) AVAssetReader *tripleVideoReader;
-@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *tripleBGRAOutput;
-@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *tripleVideoRangeOutput;
-@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *tripleFullRangeOutput;
 @property(nonatomic) Float64 audioSampleRate;
 @property(nonatomic) UInt32 audioChannelCount;
 @property(nonatomic) BOOL running;
 @property(nonatomic) CGAffineTransform videoTransform;
-@property(nonatomic) OSType playerOutputPixelFormat;
 @end
 
 @implementation VCAMLocalMediaSource
@@ -100,11 +94,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         _configuration = configuration;
         _renderer = renderer;
         _videoTransform = CGAffineTransformIdentity;
-        _currentPlayerItemTime = kCMTimeInvalid;
+        _currentVideoPTS = kCMTimeInvalid;
+        _videoMediaStartPTS = kCMTimeInvalid;
         _lastRenderedSourcePTS = kCMTimeInvalid;
         _diagnosticWindowItemStart = kCMTimeInvalid;
-        _tripleCurrentPTS = kCMTimeInvalid;
-        _tripleMediaStartPTS = kCMTimeInvalid;
     }
     return self;
 }
@@ -130,40 +123,26 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     }
     if (_stillImage == NULL) {
         self.asset = [AVURLAsset URLAssetWithURL:url options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
-        BOOL videoStarted = self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple
-            ? [self startTripleVideoReader:error]
-            : [self startVideoPlayer:error];
-        if (!videoStarted) {
-            return NO;
-        }
+        if (![self startVideoReader:error]) return NO;
         [self rebuildAudioReaderForSampleRate:0 channelCount:0 error:nil];
     }
     self.running = YES;
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"local start ok decoder=%ld still=%d asset=%d player=%d", (long)self.configuration.localDecoderMode, _stillImage != NULL, self.asset != nil, self.player != nil]];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"local start ok decoder=singleReader still=%d asset=%d reader=%d",
+        _stillImage != NULL, self.asset != nil, self.videoReader != nil]];
     return YES;
 }
 
 - (void)stop {
     @synchronized (self) {
-        [self.player pause];
-        if (self.playerItem != nil) {
-            [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                            name:AVPlayerItemDidPlayToEndTimeNotification
-                                                          object:self.playerItem];
-        }
-        if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
+        [self.videoReader cancelReading];
         [self.audioReader cancelReading];
-        [self.tripleVideoReader cancelReading];
-        self.player = nil;
-        self.playerItem = nil;
-        self.playerVideoOutput = nil;
         self.audioReader = nil;
         self.audioOutput = nil;
         if (_stillImage != NULL) {
             CGImageRelease(_stillImage);
             _stillImage = NULL;
         }
-        [self resetTripleVideoReaderState];
         [self resetVideoPlaybackState];
         VCAMPublishLocalPerformanceSnapshot(@{});
         self.running = NO;
@@ -171,38 +150,24 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 - (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (_stillImage != NULL) CGImageRelease(_stillImage);
-    [self resetTripleVideoReaderState];
     [self resetVideoPlaybackState];
 }
 
-- (void)releaseTripleFrames {
-    if (_tripleBGRAFrame != NULL) CFRelease(_tripleBGRAFrame);
-    if (_tripleVideoRangeFrame != NULL) CFRelease(_tripleVideoRangeFrame);
-    if (_tripleFullRangeFrame != NULL) CFRelease(_tripleFullRangeFrame);
-    _tripleBGRAFrame = NULL;
-    _tripleVideoRangeFrame = NULL;
-    _tripleFullRangeFrame = NULL;
-    _tripleCurrentPTS = kCMTimeInvalid;
-}
-
-- (void)resetTripleVideoReaderState {
-    [self.tripleVideoReader cancelReading];
-    [self releaseTripleFrames];
-    self.tripleVideoReader = nil;
-    self.tripleBGRAOutput = nil;
-    self.tripleVideoRangeOutput = nil;
-    self.tripleFullRangeOutput = nil;
-    _tripleMediaStartPTS = kCMTimeInvalid;
-    _tripleHostStart = 0;
+- (void)resetVideoReaderState {
+    [self.videoReader cancelReading];
+    if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
+    _currentVideoSample = NULL;
+    _currentVideoPTS = kCMTimeInvalid;
+    _videoMediaStartPTS = kCMTimeInvalid;
+    _videoHostStart = 0;
+    self.videoReader = nil;
+    self.videoOutput = nil;
 }
 
 - (void)resetVideoPlaybackState {
-    if (_currentPlayerPixelBuffer != NULL) CVPixelBufferRelease(_currentPlayerPixelBuffer);
+    [self resetVideoReaderState];
     if (_lastRenderedVideoSample != NULL) CFRelease(_lastRenderedVideoSample);
-    _currentPlayerPixelBuffer = NULL;
-    _currentPlayerItemTime = kCMTimeInvalid;
     _lastRenderedVideoSample = NULL;
     _lastRenderedSourcePTS = kCMTimeInvalid;
     _lastRenderedWidth = 0;
@@ -235,8 +200,23 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     _diagnosticWindowItemStart = kCMTimeInvalid;
 }
 
-- (BOOL)startTripleVideoReader:(NSError **)error {
+- (void)reportVideoReaderFailureWithStatus:(AVAssetReaderStatus)status
+                                     error:(NSError *)error {
+    if (_readerFailureLogged) return;
+    _readerFailureLogged = YES;
+    NSString *message = [NSString stringWithFormat:
+        @"local reader failed status=%ld error=%@", (long)status,
+        error.localizedDescription ?: @"(none)"];
+    [VCAMConfiguration appendProcessLog:message];
+    VCAMWriteDiagnostic(@"[DEBUG-vcamdiag] %@", message);
+}
+
+- (BOOL)startVideoReader:(NSError **)error {
     [self resetVideoPlaybackState];
+    [self resetDiagnosticWindow];
+    _readerFirstFrameLogged = NO;
+    _readerFailureLogged = NO;
+    _readerLoopCount = 0;
     AVAssetTrack *videoTrack = [[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     if (videoTrack == nil) {
         if (error != NULL) {
@@ -249,115 +229,177 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     self.videoTransform = videoTrack.preferredTransform;
     CGFloat transformAngle = atan2(self.videoTransform.b, self.videoTransform.a) * 180.0 / M_PI;
     VCAMWriteDiagnostic(
-        @"[DEBUG-vcamdiag] asset decoderMode=upstreamTriple natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%ld requestedFps=%ld",
+        @"[DEBUG-vcamdiag] asset decoderMode=singleReader natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%ld requestedFps=%ld",
         videoTrack.naturalSize.width, videoTrack.naturalSize.height,
         self.videoTransform.a, self.videoTransform.b, self.videoTransform.c,
         self.videoTransform.d, self.videoTransform.tx, self.videoTransform.ty,
         transformAngle, (long)self.configuration.rotationDegrees,
         (long)self.configuration.preferredFramesPerSecond);
-    return [self rebuildTripleVideoReader:error];
+    if (![self rebuildVideoReader:error]) return NO;
+    if (![self advanceVideoFrame]) {
+        AVAssetReaderStatus status = self.videoReader.status;
+        NSError *firstFrameError = self.videoReader.error ?: [NSError
+            errorWithDomain:@"VCAMLocalMediaSource"
+                       code:5
+                   userInfo:@{NSLocalizedDescriptionKey:
+                       @"Unable to decode the first video frame"}];
+        if (error != NULL) *error = firstFrameError;
+        [self reportVideoReaderFailureWithStatus:status error:firstFrameError];
+        [self resetVideoReaderState];
+        return NO;
+    }
+    return YES;
 }
 
-- (BOOL)rebuildTripleVideoReader:(NSError **)error {
-    [self resetTripleVideoReaderState];
-    [self resetDiagnosticWindow];
+- (BOOL)rebuildVideoReader:(NSError **)error {
+    [self resetVideoReaderState];
     AVAssetTrack *videoTrack = [[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     if (videoTrack == nil) return NO;
-    AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:self.asset error:error];
-    if (reader == nil) return NO;
-    AVAssetReaderTrackOutput *(^makeOutput)(OSType) = ^AVAssetReaderTrackOutput *(OSType pixelFormat) {
-        AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
-            assetReaderTrackOutputWithTrack:videoTrack
-                              outputSettings:@{(id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat)}];
-        output.alwaysCopiesSampleData = NO;
-        return output;
-    };
-    AVAssetReaderTrackOutput *bgra = makeOutput(kCVPixelFormatType_32BGRA);
-    AVAssetReaderTrackOutput *videoRange = makeOutput(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
-    AVAssetReaderTrackOutput *fullRange = makeOutput(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
-    if (![reader canAddOutput:bgra] || ![reader canAddOutput:videoRange] || ![reader canAddOutput:fullRange]) {
+    NSError *readerError = nil;
+    AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:self.asset error:&readerError];
+    if (reader == nil) {
+        if (error != NULL) *error = readerError;
+        [self reportVideoReaderFailureWithStatus:AVAssetReaderStatusUnknown
+                                          error:readerError];
+        return NO;
+    }
+    AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
+        assetReaderTrackOutputWithTrack:videoTrack
+                          outputSettings:@{
+                              (id)kCVPixelBufferPixelFormatTypeKey:
+                                  @(kCVPixelFormatType_32BGRA),
+                          }];
+    output.alwaysCopiesSampleData = NO;
+    if (![reader canAddOutput:output]) {
+        NSError *outputError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:3
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"Cannot attach the incremental video reader output"}];
         if (error != NULL && *error == nil) {
-            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:3
-                                     userInfo:@{NSLocalizedDescriptionKey: @"Cannot attach all three upstream decoder outputs"}];
+            *error = outputError;
+        }
+        [self reportVideoReaderFailureWithStatus:reader.status error:outputError];
+        return NO;
+    }
+    [reader addOutput:output];
+    self.videoReader = reader;
+    self.videoOutput = output;
+    if (![reader startReading]) {
+        if (error != NULL && *error == nil) *error = reader.error;
+        [self reportVideoReaderFailureWithStatus:reader.status error:reader.error];
+        return NO;
+    }
+    _readerFailureLogged = NO;
+    if (_readerLoopCount <= 3 || _readerLoopCount % 50 == 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local reader ready status=%ld loop=%lu output=%08x", (long)reader.status,
+            (unsigned long)_readerLoopCount, (unsigned int)kCVPixelFormatType_32BGRA]];
+    }
+    return YES;
+}
+
+- (BOOL)advanceVideoFrame {
+    CMSampleBufferRef sample = [self.videoOutput copyNextSampleBuffer];
+    if (sample == NULL) {
+        AVAssetReaderStatus status = self.videoReader.status;
+        if (status == AVAssetReaderStatusFailed || status == AVAssetReaderStatusCancelled) {
+            [self reportVideoReaderFailureWithStatus:status error:self.videoReader.error];
         }
         return NO;
     }
-    [reader addOutput:bgra];
-    [reader addOutput:videoRange];
-    [reader addOutput:fullRange];
-    if (![reader startReading]) {
-        if (error != NULL && *error == nil) *error = reader.error;
+    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
+    if (pixelBuffer == NULL) {
+        CFRelease(sample);
+        NSError *sampleError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:4
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"Incremental video reader returned a sample without pixels"}];
+        [self reportVideoReaderFailureWithStatus:self.videoReader.status error:sampleError];
         return NO;
     }
-    self.tripleVideoReader = reader;
-    self.tripleBGRAOutput = bgra;
-    self.tripleVideoRangeOutput = videoRange;
-    self.tripleFullRangeOutput = fullRange;
-    return YES;
-}
-
-- (BOOL)advanceTripleVideoFrame {
-    CMSampleBufferRef bgra = [self.tripleBGRAOutput copyNextSampleBuffer];
-    CMSampleBufferRef videoRange = [self.tripleVideoRangeOutput copyNextSampleBuffer];
-    CMSampleBufferRef fullRange = [self.tripleFullRangeOutput copyNextSampleBuffer];
-    if (bgra == NULL || videoRange == NULL || fullRange == NULL) {
-        if (bgra != NULL) CFRelease(bgra);
-        if (videoRange != NULL) CFRelease(videoRange);
-        if (fullRange != NULL) CFRelease(fullRange);
-        return NO;
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sample);
+    if (!CMTIME_IS_NUMERIC(presentationTime)) {
+        presentationTime = CMTIME_IS_NUMERIC(_currentVideoPTS)
+            ? CMTimeAdd(_currentVideoPTS, [self durationForCurrentVideoFrame])
+            : kCMTimeZero;
     }
-    [self releaseTripleFrames];
-    _tripleBGRAFrame = bgra;
-    _tripleVideoRangeFrame = videoRange;
-    _tripleFullRangeFrame = fullRange;
-    _tripleCurrentPTS = CMSampleBufferGetPresentationTimeStamp(videoRange);
+    if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
+    _currentVideoSample = sample;
+    _currentVideoPTS = presentationTime;
     _diagnosticNewFrames += 1;
     [self recordDiagnosticSourceFrame];
+    if (!_readerFirstFrameLogged) {
+        _readerFirstFrameLogged = YES;
+        Float64 seconds = CMTimeGetSeconds(_currentVideoPTS);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local reader first-frame pts=%.6f size=%zux%zu format=%08x status=%ld",
+            isfinite(seconds) ? seconds : 0,
+            CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer),
+            (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
+            (long)self.videoReader.status]];
+    }
     return YES;
 }
 
-- (CMTime)durationForTripleFrame {
-    CMTime duration = _tripleVideoRangeFrame == NULL ? kCMTimeInvalid
-        : CMSampleBufferGetDuration(_tripleVideoRangeFrame);
+- (CMTime)durationForCurrentVideoFrame {
+    CMTime duration = _currentVideoSample == NULL ? kCMTimeInvalid
+        : CMSampleBufferGetDuration(_currentVideoSample);
     if (!CMTIME_IS_NUMERIC(duration) || CMTimeCompare(duration, kCMTimeZero) <= 0) {
         duration = CMTimeMake(1, (int32_t)MAX(1, self.configuration.preferredFramesPerSecond));
     }
     return duration;
 }
 
-- (CVPixelBufferRef)copyCurrentTriplePixelBufferForTemplate:(CMSampleBufferRef)templateBuffer
-                                                   itemTime:(CMTime *)itemTimeOut {
-    if (_tripleVideoRangeFrame == NULL && ![self advanceTripleVideoFrame]) return NULL;
+- (BOOL)restartVideoReaderAfterEndAtHostTime:(CFTimeInterval)hostTime {
+    if (self.videoReader.status != AVAssetReaderStatusCompleted ||
+        !self.configuration.loopMedia) return NO;
+    _readerLoopCount += 1;
+    if (_readerLoopCount <= 3 || _readerLoopCount % 50 == 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local reader eof loop=%lu", (unsigned long)_readerLoopCount]];
+    }
+    NSError *error = nil;
+    if (![self rebuildVideoReader:&error] || ![self advanceVideoFrame]) {
+        [self reportVideoReaderFailureWithStatus:self.videoReader.status error:error ?: self.videoReader.error];
+        return NO;
+    }
+    _videoHostStart = hostTime;
+    _videoMediaStartPTS = _currentVideoPTS;
+    return YES;
+}
+
+- (CVPixelBufferRef)copyCurrentVideoPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer
+                                                  itemTime:(CMTime *)itemTimeOut {
+    (void)templateBuffer;
     CFTimeInterval now = CACurrentMediaTime();
-    if (_tripleHostStart == 0 || !CMTIME_IS_VALID(_tripleMediaStartPTS)) {
-        _tripleHostStart = now;
-        _tripleMediaStartPTS = _tripleCurrentPTS;
+    if (_currentVideoSample == NULL && ![self advanceVideoFrame] &&
+        ![self restartVideoReaderAfterEndAtHostTime:now]) {
+        return NULL;
+    }
+    if (_videoHostStart == 0 || !CMTIME_IS_NUMERIC(_videoMediaStartPTS)) {
+        _videoHostStart = now;
+        _videoMediaStartPTS = _currentVideoPTS;
     }
     NSUInteger catchUpCount = 0;
-    while (catchUpCount < 8) {
-        CMTime nextDuePTS = CMTimeAdd(_tripleCurrentPTS, [self durationForTripleFrame]);
-        Float64 dueSeconds = CMTimeGetSeconds(CMTimeSubtract(nextDuePTS, _tripleMediaStartPTS));
-        if (!isfinite(dueSeconds) || now - _tripleHostStart + 0.001 < dueSeconds) break;
-        if (![self advanceTripleVideoFrame]) {
-            if (!self.configuration.loopMedia || ![self rebuildTripleVideoReader:nil] ||
-                ![self advanceTripleVideoFrame]) break;
-            _tripleHostStart = now;
-            _tripleMediaStartPTS = _tripleCurrentPTS;
+    while (catchUpCount < VCAMVideoCatchUpLimit) {
+        CMTime nextDuePTS = CMTimeAdd(_currentVideoPTS, [self durationForCurrentVideoFrame]);
+        Float64 dueSeconds = CMTimeGetSeconds(CMTimeSubtract(nextDuePTS, _videoMediaStartPTS));
+        if (!isfinite(dueSeconds) || now - _videoHostStart + 0.001 < dueSeconds) break;
+        if (![self advanceVideoFrame]) {
+            [self restartVideoReaderAfterEndAtHostTime:now];
             break;
         }
         catchUpCount += 1;
     }
-    if (itemTimeOut != NULL) *itemTimeOut = _tripleCurrentPTS;
-    CVImageBufferRef templateImage = templateBuffer == NULL ? NULL : CMSampleBufferGetImageBuffer(templateBuffer);
-    OSType requested = templateImage == NULL ? kCVPixelFormatType_32BGRA
-        : CVPixelBufferGetPixelFormatType(templateImage);
-    CMSampleBufferRef selected = _tripleBGRAFrame;
-    if (requested == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
-        selected = _tripleVideoRangeFrame;
-    } else if (requested == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
-        selected = _tripleFullRangeFrame;
+    if (catchUpCount == VCAMVideoCatchUpLimit) {
+        CMTime nextDuePTS = CMTimeAdd(_currentVideoPTS, [self durationForCurrentVideoFrame]);
+        Float64 dueSeconds = CMTimeGetSeconds(CMTimeSubtract(nextDuePTS, _videoMediaStartPTS));
+        if (isfinite(dueSeconds) && now - _videoHostStart + 0.001 >= dueSeconds) {
+            _videoHostStart = now;
+            _videoMediaStartPTS = _currentVideoPTS;
+        }
     }
-    CVPixelBufferRef pixelBuffer = selected == NULL ? NULL : CMSampleBufferGetImageBuffer(selected);
+    if (itemTimeOut != NULL) *itemTimeOut = _currentVideoPTS;
+    CVPixelBufferRef pixelBuffer = _currentVideoSample == NULL ? NULL
+        : CMSampleBufferGetImageBuffer(_currentVideoSample);
     return pixelBuffer == NULL ? NULL : CVPixelBufferRetain(pixelBuffer);
 }
 
@@ -366,94 +408,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 - (AVPlayer *)previewPlayer {
-    @synchronized (self) { return self.player; }
-}
-
-- (void)configurePlayerVideoOutputForPixelFormat:(OSType)pixelFormat {
-    _diagnosticOutputReconfigurations += 1;
-    if (self.playerVideoOutput != nil) [self.playerItem removeOutput:self.playerVideoOutput];
-    NSDictionary *attributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-    };
-    AVPlayerItemVideoOutput *output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attributes];
-    [self.playerItem addOutput:output];
-    self.playerVideoOutput = output;
-    self.playerOutputPixelFormat = pixelFormat;
-    if (_currentPlayerPixelBuffer != NULL) {
-        CVPixelBufferRelease(_currentPlayerPixelBuffer);
-        _currentPlayerPixelBuffer = NULL;
-    }
-}
-
-- (BOOL)startVideoPlayer:(NSError **)error {
-    [self resetVideoPlaybackState];
-    AVAssetTrack *videoTrack = [[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
-    if (videoTrack == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource"
-                                         code:2
-                                     userInfo:@{NSLocalizedDescriptionKey: @"Media contains neither an image nor a video track"}];
-        }
-        return NO;
-    }
-    self.videoTransform = videoTrack.preferredTransform;
-    CGFloat transformAngle = atan2(self.videoTransform.b, self.videoTransform.a) * 180.0 / M_PI;
-    VCAMWriteDiagnostic(
-        @"[DEBUG-vcamdiag] asset natural=%.0fx%.0f transform=[%.3f %.3f %.3f %.3f %.1f %.1f] angle=%.1f configRotation=%ld requestedFps=%ld",
-        videoTrack.naturalSize.width, videoTrack.naturalSize.height,
-        self.videoTransform.a, self.videoTransform.b, self.videoTransform.c,
-        self.videoTransform.d, self.videoTransform.tx, self.videoTransform.ty,
-        transformAngle, (long)self.configuration.rotationDegrees,
-        (long)self.configuration.preferredFramesPerSecond);
-    AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:self.asset];
-    self.playerItem = item;
-    [self configurePlayerVideoOutputForPixelFormat:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange];
-    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
-    player.muted = YES;
-    player.volume = 0;
-    player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-    if ([player respondsToSelector:@selector(setAutomaticallyWaitsToMinimizeStalling:)]) {
-        player.automaticallyWaitsToMinimizeStalling = NO;
-    }
-    self.player = player;
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(playerItemDidPlayToEnd:)
-                                                 name:AVPlayerItemDidPlayToEndTimeNotification
-                                               object:item];
-    [player play];
-    return YES;
-}
-
-- (void)playerItemDidPlayToEnd:(NSNotification *)notification {
-    if (!self.running || !self.configuration.loopMedia || notification.object != self.playerItem) return;
-    [self.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero
-          completionHandler:^(BOOL finished) {
-        if (finished && self.running) [self.player play];
-    }];
-}
-
-- (CVPixelBufferRef)copyCurrentPlayerPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer
-                                                   itemTime:(CMTime *)itemTimeOut {
-    (void)templateBuffer;
-    CMTime itemTime = [self.playerVideoOutput itemTimeForHostTime:CACurrentMediaTime()];
-    if (!CMTIME_IS_VALID(itemTime)) itemTime = self.player.currentTime;
-    if ([self.playerVideoOutput hasNewPixelBufferForItemTime:itemTime]) {
-        CMTime displayTime = kCMTimeInvalid;
-        CVPixelBufferRef newest = [self.playerVideoOutput copyPixelBufferForItemTime:itemTime
-                                                                   itemTimeForDisplay:&displayTime];
-        if (newest != NULL) {
-            _diagnosticNewFrames += 1;
-            [self recordDiagnosticSourceFrame];
-            if (_currentPlayerPixelBuffer != NULL) CVPixelBufferRelease(_currentPlayerPixelBuffer);
-            _currentPlayerPixelBuffer = newest;
-            _currentPlayerItemTime = CMTIME_IS_VALID(displayTime) ? displayTime : itemTime;
-        }
-    }
-    if (itemTimeOut != NULL) *itemTimeOut = _currentPlayerItemTime;
-    if (_currentPlayerPixelBuffer == NULL) return NULL;
-    return CVPixelBufferRetain(_currentPlayerPixelBuffer);
+    return nil;
 }
 
 - (void)emitDiagnosticsForTemplate:(CMSampleBufferRef)templateBuffer
@@ -490,16 +445,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         itemAdvance = CMTimeGetSeconds(CMTimeSubtract(sourceTime, _diagnosticWindowItemStart));
         if (!isfinite(itemAdvance)) itemAdvance = 0;
     }
-    size_t sourceWidth = _currentPlayerPixelBuffer == NULL ? 0 : CVPixelBufferGetWidth(_currentPlayerPixelBuffer);
-    size_t sourceHeight = _currentPlayerPixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(_currentPlayerPixelBuffer);
-    if (self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple &&
-        _tripleVideoRangeFrame != NULL) {
-        CVPixelBufferRef triplePixelBuffer = CMSampleBufferGetImageBuffer(_tripleVideoRangeFrame);
-        if (triplePixelBuffer != NULL) {
-            sourceWidth = CVPixelBufferGetWidth(triplePixelBuffer);
-            sourceHeight = CVPixelBufferGetHeight(triplePixelBuffer);
-        }
-    }
+    CVPixelBufferRef sourcePixelBuffer = _currentVideoSample == NULL ? NULL
+        : CMSampleBufferGetImageBuffer(_currentVideoSample);
+    size_t sourceWidth = sourcePixelBuffer == NULL ? 0 : CVPixelBufferGetWidth(sourcePixelBuffer);
+    size_t sourceHeight = sourcePixelBuffer == NULL ? 0 : CVPixelBufferGetHeight(sourcePixelBuffer);
     size_t targetWidth = templateImage == NULL ? 0 : CVPixelBufferGetWidth(templateImage);
     size_t targetHeight = templateImage == NULL ? 0 : CVPixelBufferGetHeight(templateImage);
     double averageRenderMilliseconds = _diagnosticRenders == 0 ? 0 :
@@ -511,10 +460,8 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         NSUInteger p95Index = (NSUInteger)ceil(_diagnosticSourceFrameIntervalCount * 0.95) - 1;
         sourceFrameP95Milliseconds = _diagnosticSourceFrameIntervals[p95Index];
     }
-    NSString *decoderMode = self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple
-        ? @"upstreamTriple" : @"singlePlayer";
-    float playbackRate = self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple
-        ? 1.0f : self.player.rate;
+    NSString *decoderMode = @"singleReader";
+    float playbackRate = self.videoReader.status == AVAssetReaderStatusReading ? 1.0f : 0.0f;
     double sourceFPS = elapsed <= 0 ? 0 : ((double)_diagnosticNewFrames / elapsed);
     VCAMPublishLocalPerformanceSnapshot(@{
         @"decoderMode": decoderMode,
@@ -547,10 +494,10 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (void)tickDirectPreviewDiagnostics {
     @synchronized (self) {
-        if (!self.running || self.playerVideoOutput == nil) return;
+        if (!self.running || self.videoOutput == nil) return;
         CMTime sourcePTS = kCMTimeInvalid;
-        CVPixelBufferRef pixelBuffer = [self copyCurrentPlayerPixelBufferForTemplate:NULL
-                                                                            itemTime:&sourcePTS];
+        CVPixelBufferRef pixelBuffer = [self copyCurrentVideoPixelBufferForTemplate:NULL
+                                                                           itemTime:&sourcePTS];
         [self emitDiagnosticsForTemplate:NULL
                               sourceTime:sourcePTS
                           renderDuration:0
@@ -608,9 +555,8 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         }
 
         CMTime sourcePTS = kCMTimeInvalid;
-        CVPixelBufferRef imageBuffer = self.configuration.localDecoderMode == VCAMLocalDecoderModeUpstreamTriple
-            ? [self copyCurrentTriplePixelBufferForTemplate:templateBuffer itemTime:&sourcePTS]
-            : [self copyCurrentPlayerPixelBufferForTemplate:templateBuffer itemTime:&sourcePTS];
+        CVPixelBufferRef imageBuffer = [self copyCurrentVideoPixelBufferForTemplate:templateBuffer
+                                                                            itemTime:&sourcePTS];
         if (imageBuffer == NULL) {
             [self emitDiagnosticsForTemplate:templateBuffer sourceTime:sourcePTS
                               renderDuration:0 hadFrame:NO cacheHit:NO];

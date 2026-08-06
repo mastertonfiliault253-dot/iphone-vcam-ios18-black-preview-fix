@@ -34,7 +34,7 @@ class LocalPlaybackPerformanceAnalyzerTests(unittest.TestCase):
 
     def test_accepts_stable_thirty_fps_playback(self) -> None:
         lines = [
-            "[DEBUG-vcamdiag] perf window=1.000 decoderMode=upstreamTriple "
+            "[DEBUG-vcamdiag] perf window=1.000 decoderMode=singleReader "
             "sourceFrames=30 sourceFrameP95Ms=34.2 itemAdvance=1.000 droppedSourceFrames=0"
             for _ in range(6)
         ]

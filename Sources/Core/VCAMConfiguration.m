@@ -12,13 +12,15 @@ static const uint16_t VCAMConfigurationBrokerPort = 46321;
 static const NSUInteger VCAMConfigurationMaximumRequestBytes = 1024 * 1024;
 static const uint8_t VCAMConfigurationBrokerUpdateCommand = 1;
 static const uint8_t VCAMConfigurationBrokerReadCommand = 2;
-static const uint8_t VCAMConfigurationBrokerImportCommand = 3;
+static const uint8_t VCAMConfigurationBrokerLegacyImportCommand = 3;
 static const uint8_t VCAMConfigurationBrokerFetchMediaCommand = 4;
+static const uint8_t VCAMConfigurationBrokerImportCommand = 5;
 
 static BOOL VCAMReadAll(int descriptor, void *bytes, size_t length) {
     uint8_t *cursor = bytes;
     while (length > 0) {
         ssize_t count = read(descriptor, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return NO;
         cursor += count;
         length -= (size_t)count;
@@ -30,6 +32,7 @@ static BOOL VCAMWriteAll(int descriptor, const void *bytes, size_t length) {
     const uint8_t *cursor = bytes;
     while (length > 0) {
         ssize_t count = write(descriptor, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return NO;
         cursor += count;
         length -= (size_t)count;
@@ -71,7 +74,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.7.2+global4";
+    return "com.codex.vcam/0.7.3+mediafix1";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -81,6 +84,31 @@ static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *messa
     return VCAMWriteAll(descriptor, &status, sizeof(status)) &&
            VCAMWriteAll(descriptor, &networkLength, sizeof(networkLength)) &&
            (data.length == 0 || VCAMWriteAll(descriptor, data.bytes, data.length));
+}
+
+static NSDictionary<NSString *, id> *VCAMReadBrokerMessage(int descriptor) {
+    uint8_t status = 0;
+    uint32_t networkLength = 0;
+    if (!VCAMReadAll(descriptor, &status, sizeof(status)) ||
+        !VCAMReadAll(descriptor, &networkLength, sizeof(networkLength))) return nil;
+    NSUInteger length = ntohl(networkLength);
+    if (length > 4096) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:length];
+    if (length > 0 && !VCAMReadAll(descriptor, data.mutableBytes, length)) return nil;
+    NSString *message = length > 0
+        ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
+    if (message == nil) return nil;
+    return @{ @"success": @(status == 1), @"message": message };
+}
+
+static BOOL VCAMDrainBrokerPayload(int descriptor, unsigned long long length) {
+    uint8_t buffer[16 * 1024];
+    while (length > 0) {
+        size_t requested = (size_t)MIN((unsigned long long)sizeof(buffer), length);
+        if (!VCAMReadAll(descriptor, buffer, requested)) return NO;
+        length -= requested;
+    }
+    return YES;
 }
 
 static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *values,
@@ -396,53 +424,102 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
                                   : [self submitChangesToBroker:changes error:error];
 }
 
-+ (nullable NSString *)receiveImportedMediaFromClient:(int)client
-                                                header:(NSDictionary<NSString *, id> *)header
-                                                 error:(NSError **)error {
-    NSNumber *fileSizeValue = header[@"fileSize"];
++ (nullable NSDictionary<NSString *, id> *)validatedMediaImportHeader:
+        (NSDictionary<NSString *, id> *)header error:(NSError **)error {
+    id fileSizeValue = header[@"fileSize"];
+    if (![fileSizeValue isKindOfClass:NSNumber.class]) {
+        if (error != NULL) *error = VCAMConfigurationError(20, @"Invalid media file size");
+        return nil;
+    }
     unsigned long long fileSize = [fileSizeValue unsignedLongLongValue];
     if (fileSize == 0 || fileSize > 16ULL * 1024ULL * 1024ULL * 1024ULL) {
         if (error != NULL) *error = VCAMConfigurationError(20, @"Invalid media file size");
         return nil;
     }
     NSString *suggestedName = [header[@"suggestedName"] isKindOfClass:NSString.class]
-        ? header[@"suggestedName"] : @"selected.mov";
-    NSString *extension = suggestedName.pathExtension.lowercaseString;
+        ? [header[@"suggestedName"] lastPathComponent] : nil;
+    NSString *sourceName = [header[@"sourceName"] isKindOfClass:NSString.class]
+        ? [header[@"sourceName"] lastPathComponent] : nil;
     NSSet<NSString *> *allowedExtensions = [NSSet setWithArray:
         @[@"mov", @"mp4", @"m4v", @"png", @"jpg", @"jpeg", @"heic", @"heif"]];
-    if (![allowedExtensions containsObject:extension]) {
+    NSString *normalizedName = nil;
+    for (NSString *candidate in @[suggestedName ?: @"", sourceName ?: @""]) {
+        if ([allowedExtensions containsObject:candidate.pathExtension.lowercaseString]) {
+            normalizedName = candidate;
+            break;
+        }
+    }
+    if (normalizedName.length == 0) {
         if (error != NULL) *error = VCAMConfigurationError(27, @"Unsupported image or video type");
         return nil;
     }
+    return @{ @"fileSize": @(fileSize), @"suggestedName": normalizedName };
+}
+
++ (nullable NSString *)receiveImportedMediaFromClient:(int)client
+                                                header:(NSDictionary<NSString *, id> *)header
+                                                 error:(NSError **)error {
+    unsigned long long fileSize = [header[@"fileSize"] unsignedLongLongValue];
+    NSString *suggestedName = header[@"suggestedName"];
+    NSString *extension = suggestedName.pathExtension.lowercaseString;
 
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *directory = self.mediaDirectoryPath;
     if (![manager createDirectoryAtPath:directory withIntermediateDirectories:YES
-                              attributes:nil error:error]) return nil;
+                              attributes:nil error:error]) {
+        VCAMDrainBrokerPayload(client, fileSize);
+        return nil;
+    }
     NSString *incoming = [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@".incoming-%@.%@", NSUUID.UUID.UUIDString, extension]];
     NSString *destination = [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@"selected.%@", extension]];
     int output = open(incoming.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (output < 0) {
+        int openError = errno;
+        VCAMDrainBrokerPayload(client, fileSize);
         if (error != NULL) *error = VCAMConfigurationError(21, @"Unable to create shared VCAM media file");
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"broker import open failed errno=%d name=%@", openError, suggestedName]);
         return nil;
     }
     const size_t bufferSize = 256 * 1024;
     void *buffer = malloc(bufferSize);
+    if (buffer == NULL) {
+        close(output);
+        [manager removeItemAtPath:incoming error:nil];
+        VCAMDrainBrokerPayload(client, fileSize);
+        if (error != NULL) *error = VCAMConfigurationError(29, @"Unable to allocate the VCAM import buffer");
+        return nil;
+    }
     unsigned long long remaining = fileSize;
-    BOOL success = buffer != NULL;
-    while (success && remaining > 0) {
+    BOOL readSuccess = YES;
+    BOOL writeSuccess = YES;
+    int transferError = 0;
+    while (readSuccess && remaining > 0) {
         size_t requested = (size_t)MIN((unsigned long long)bufferSize, remaining);
-        success = VCAMReadAll(client, buffer, requested) && VCAMWriteAll(output, buffer, requested);
+        readSuccess = VCAMReadAll(client, buffer, requested);
+        if (!readSuccess) {
+            transferError = errno;
+            break;
+        }
+        if (writeSuccess && !VCAMWriteAll(output, buffer, requested)) {
+            writeSuccess = NO;
+            transferError = errno;
+        }
         remaining -= requested;
     }
     free(buffer);
-    fsync(output);
+    BOOL syncSuccess = fsync(output) == 0;
+    if (!syncSuccess && transferError == 0) transferError = errno;
     close(output);
+    BOOL success = readSuccess && writeSuccess && syncSuccess && remaining == 0;
     if (!success) {
         [manager removeItemAtPath:incoming error:nil];
         if (error != NULL) *error = VCAMConfigurationError(22, @"Media transfer to SpringBoard was interrupted");
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"broker import transfer failed errno=%d remaining=%llu name=%@",
+            transferError, remaining, suggestedName]);
         return nil;
     }
     NSError *moveError = nil;
@@ -484,6 +561,7 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     NSDictionary *header = @{ @"suggestedName": suggestedName ?: sourceURL.lastPathComponent ?: @"selected.mov",
+                              @"sourceName": sourceURL.lastPathComponent ?: @"",
                               @"fileSize": @((unsigned long long)metadata.st_size) };
     NSData *headerData = [NSJSONSerialization dataWithJSONObject:header options:0 error:error];
     uint8_t command = VCAMConfigurationBrokerImportCommand;
@@ -492,25 +570,47 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
                    VCAMWriteAll(descriptor, &command, sizeof(command)) &&
                    VCAMWriteAll(descriptor, &networkLength, sizeof(networkLength)) &&
                    VCAMWriteAll(descriptor, headerData.bytes, headerData.length);
+    NSDictionary<NSString *, id> *preflight = success ? VCAMReadBrokerMessage(descriptor) : nil;
+    if (preflight == nil || ![preflight[@"success"] boolValue]) {
+        close(input);
+        close(descriptor);
+        NSString *message = [preflight[@"message"] isKindOfClass:NSString.class]
+            ? preflight[@"message"] : nil;
+        if (error != NULL) *error = VCAMConfigurationError(
+            26, message.length > 0 ? message : @"VCAM media import preflight failed");
+        return nil;
+    }
+
     uint8_t buffer[256 * 1024];
-    while (success) {
-        ssize_t count = read(input, buffer, sizeof(buffer));
-        if (count == 0) break;
-        if (count < 0 || !VCAMWriteAll(descriptor, buffer, (size_t)count)) success = NO;
+    unsigned long long remaining = (unsigned long long)metadata.st_size;
+    NSString *transferMessage = nil;
+    while (success && remaining > 0) {
+        size_t requested = (size_t)MIN((unsigned long long)sizeof(buffer), remaining);
+        ssize_t count = read(input, buffer, requested);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            success = NO;
+            transferMessage = @"The selected media changed or became unreadable during import";
+            break;
+        }
+        if (!VCAMWriteAll(descriptor, buffer, (size_t)count)) {
+            success = NO;
+            transferMessage = @"Media transfer to SpringBoard was interrupted";
+            break;
+        }
+        remaining -= (unsigned long long)count;
     }
     close(input);
-    uint8_t response = 0;
-    uint32_t responseNetworkLength = 0;
-    success = success && VCAMReadAll(descriptor, &response, sizeof(response)) &&
-              VCAMReadAll(descriptor, &responseNetworkLength, sizeof(responseNetworkLength));
-    NSUInteger responseLength = ntohl(responseNetworkLength);
-    success = success && responseLength <= 4096;
-    NSMutableData *responseData = success ? [NSMutableData dataWithLength:responseLength] : nil;
-    if (success && responseLength > 0) success = VCAMReadAll(descriptor, responseData.mutableBytes, responseLength);
+    shutdown(descriptor, SHUT_WR);
+    NSDictionary<NSString *, id> *response = VCAMReadBrokerMessage(descriptor);
     close(descriptor);
-    NSString *message = success ? [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding] : nil;
-    if (!success || response != 1) {
-        if (error != NULL) *error = VCAMConfigurationError(26, message.length > 0 ? message : @"VCAM media import failed");
+    NSString *message = [response[@"message"] isKindOfClass:NSString.class]
+        ? response[@"message"] : nil;
+    if (!success || response == nil || ![response[@"success"] boolValue]) {
+        NSString *failureMessage = !success && transferMessage.length > 0
+            ? transferMessage
+            : (message.length > 0 ? message : @"VCAM media import failed");
+        if (error != NULL) *error = VCAMConfigurationError(26, failureMessage);
         return nil;
     }
     return message;
@@ -557,10 +657,13 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     success = success && headerLength > 0 && headerLength <= 4096;
     NSMutableData *headerData = success ? [NSMutableData dataWithLength:headerLength] : nil;
     if (success) success = VCAMReadAll(descriptor, headerData.mutableBytes, headerLength);
-    NSDictionary *responseHeader = success
+    id decodedResponseHeader = success
         ? [NSJSONSerialization JSONObjectWithData:headerData options:0 error:nil] : nil;
-    NSNumber *fileSizeValue = [responseHeader isKindOfClass:NSDictionary.class] ? responseHeader[@"fileSize"] : nil;
-    unsigned long long fileSize = [fileSizeValue unsignedLongLongValue];
+    NSDictionary<NSString *, id> *responseHeader =
+        [decodedResponseHeader isKindOfClass:NSDictionary.class] ? decodedResponseHeader : nil;
+    id fileSizeValue = responseHeader[@"fileSize"];
+    success = success && [fileSizeValue isKindOfClass:NSNumber.class];
+    unsigned long long fileSize = success ? [fileSizeValue unsignedLongLongValue] : 0;
     success = success && fileSize > 0 && fileSize <= 16ULL * 1024ULL * 1024ULL * 1024ULL;
 
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -640,6 +743,11 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
             while (YES) {
                 int client = accept(server, NULL, NULL);
                 if (client < 0) continue;
+                int noSignal = 1;
+                setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
+                struct timeval clientTimeout = {.tv_sec = 120, .tv_usec = 0};
+                setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &clientTimeout, sizeof(clientTimeout));
+                setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &clientTimeout, sizeof(clientTimeout));
                 @autoreleasepool {
                     uint8_t command = 0;
                     BOOL success = VCAMReadAll(client, &command, sizeof(command));
@@ -652,20 +760,54 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
                         close(client);
                         continue;
                     }
-                    if (success && command == VCAMConfigurationBrokerImportCommand) {
+                    BOOL importCommand = success &&
+                        (command == VCAMConfigurationBrokerLegacyImportCommand ||
+                         command == VCAMConfigurationBrokerImportCommand);
+                    if (importCommand) {
+                        BOOL preflightRequired = command == VCAMConfigurationBrokerImportCommand;
                         uint32_t networkLength = 0;
                         success = VCAMReadAll(client, &networkLength, sizeof(networkLength));
                         NSUInteger length = ntohl(networkLength);
                         success = success && length > 0 && length <= 4096;
                         NSMutableData *data = success ? [NSMutableData dataWithLength:length] : nil;
                         if (success) success = VCAMReadAll(client, data.mutableBytes, length);
-                        NSDictionary *header = success
+                        id decodedHeader = success
                             ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+                        NSDictionary<NSString *, id> *headerDictionary =
+                            [decodedHeader isKindOfClass:NSDictionary.class] ? decodedHeader : nil;
                         NSError *importError = nil;
-                        NSString *destination = success && [header isKindOfClass:NSDictionary.class]
-                            ? [self receiveImportedMediaFromClient:client header:header error:&importError] : nil;
-                        VCAMWriteBrokerMessage(client, destination != nil,
-                                               destination ?: importError.localizedDescription);
+                        NSDictionary *validatedHeader = success && headerDictionary != nil
+                            ? [self validatedMediaImportHeader:headerDictionary error:&importError] : nil;
+                        if (validatedHeader == nil && importError == nil) {
+                            importError = VCAMConfigurationError(28, @"Invalid VCAM media import request");
+                        }
+                        BOOL preflightWritten = YES;
+                        if (preflightRequired) {
+                            preflightWritten = VCAMWriteBrokerMessage(
+                                client, validatedHeader != nil, importError.localizedDescription);
+                        }
+                        VCAMAppendDiagnostics([NSString stringWithFormat:
+                            @"broker import preflight required=%d accepted=%d written=%d name=%@ size=%@ error=%@",
+                            preflightRequired, validatedHeader != nil, preflightWritten,
+                            validatedHeader[@"suggestedName"] ?: headerDictionary[@"suggestedName"] ?: @"(none)",
+                            validatedHeader[@"fileSize"] ?: headerDictionary[@"fileSize"] ?: @0,
+                            importError.localizedDescription ?: @"(none)"]);
+                        if (validatedHeader == nil || !preflightWritten) {
+                            if (!preflightRequired) {
+                                VCAMWriteBrokerMessage(client, NO, importError.localizedDescription);
+                            }
+                            close(client);
+                            continue;
+                        }
+                        NSString *destination = [self receiveImportedMediaFromClient:client
+                                                                                header:validatedHeader
+                                                                                 error:&importError];
+                        BOOL finalWritten = VCAMWriteBrokerMessage(
+                            client, destination != nil, destination ?: importError.localizedDescription);
+                        VCAMAppendDiagnostics([NSString stringWithFormat:
+                            @"broker import complete success=%d written=%d destination=%@ error=%@",
+                            destination != nil, finalWritten, destination ?: @"(none)",
+                            importError.localizedDescription ?: @"(none)"]);
                         close(client);
                         continue;
                     }

@@ -15,7 +15,7 @@ replacement seam.
 | --- | --- | --- |
 | Media path | Hard-coded `/tmp/test.png` or commented DCIM MOV | SpringBoard picker and shared configuration |
 | Image | UIImage/CGImage | Core Image in isolated `vcamd` |
-| Local video | AVAssetReader preloads at most 60 BGRA frames | One AVPlayerItemVideoOutput, sampled by media time |
+| Local video | AVAssetReader preloads at most 60 BGRA frames | One incremental AVAssetReaderTrackOutput, paced by source PTS without frame-array preload |
 | Loop | Callback index modulo the short frame array | Complete asset timeline loops at end-of-item |
 | Memory | Frame array remains resident; README notes leaks | Only source state, renderer pools and latest shared frames stay resident |
 | OBS | None | WebSocket/JPEG latest-frame source in `vcamd` |

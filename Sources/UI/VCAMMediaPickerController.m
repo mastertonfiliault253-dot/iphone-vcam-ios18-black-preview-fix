@@ -15,6 +15,51 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     dispatch_async(dispatch_get_main_queue(), ^{ [controller performSelector:@selector(configurationDidChange)]; });
 }
 
+static BOOL VCAMIsSupportedMediaExtension(NSString *extension) {
+    static NSSet<NSString *> *extensions;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        extensions = [NSSet setWithArray:
+            @[@"mov", @"mp4", @"m4v", @"png", @"jpg", @"jpeg", @"heic", @"heif"]];
+    });
+    return [extensions containsObject:extension.lowercaseString ?: @""];
+}
+
+static NSString *VCAMConcreteProviderTypeIdentifier(NSItemProvider *provider, UTType *mediaKind) {
+    NSString *fallbackIdentifier = nil;
+    for (NSString *identifier in provider.registeredTypeIdentifiers) {
+        UTType *registeredType = [UTType typeWithIdentifier:identifier];
+        if (registeredType == nil || ![registeredType conformsToType:mediaKind]) continue;
+        if (fallbackIdentifier == nil) fallbackIdentifier = identifier;
+        if (VCAMIsSupportedMediaExtension(registeredType.preferredFilenameExtension)) {
+            return identifier;
+        }
+    }
+    return fallbackIdentifier ?: mediaKind.identifier;
+}
+
+static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
+                                         NSURL *temporaryURL,
+                                         NSString *typeIdentifier) {
+    NSString *extension = temporaryURL.pathExtension.lowercaseString;
+    UTType *mediaType = [UTType typeWithIdentifier:typeIdentifier];
+    if (!VCAMIsSupportedMediaExtension(extension)) {
+        extension = mediaType.preferredFilenameExtension.lowercaseString;
+    }
+    if (!VCAMIsSupportedMediaExtension(extension)) {
+        extension = suggestedName.pathExtension.lowercaseString;
+    }
+
+    NSString *baseName = suggestedName.lastPathComponent.stringByDeletingPathExtension;
+    if (baseName.length == 0) {
+        baseName = temporaryURL.lastPathComponent.stringByDeletingPathExtension;
+    }
+    if (baseName.length == 0) baseName = @"selected";
+    return VCAMIsSupportedMediaExtension(extension)
+        ? [baseName stringByAppendingPathExtension:extension]
+        : (suggestedName.lastPathComponent ?: temporaryURL.lastPathComponent ?: @"selected.mov");
+}
+
 @interface VCAMMediaPickerController () <PHPickerViewControllerDelegate,
                                           UIDocumentPickerDelegate,
                                           VCAMControlPanelDelegate,
@@ -417,8 +462,9 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     if (result == nil) return;
     NSItemProvider *provider = result.itemProvider;
     NSString *mediaType = [provider hasItemConformingToTypeIdentifier:UTTypeMovie.identifier]
-        ? UTTypeMovie.identifier : ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]
-            ? UTTypeImage.identifier : nil);
+        ? VCAMConcreteProviderTypeIdentifier(provider, UTTypeMovie)
+        : ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]
+            ? VCAMConcreteProviderTypeIdentifier(provider, UTTypeImage) : nil);
     if (mediaType == nil) {
         [self showMessage:@"无法读取所选图片或视频" error:YES];
         return;
@@ -429,7 +475,8 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
             [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];
             return;
         }
-        [self installMediaFromTemporaryURL:url suggestedName:suggestedName];
+        NSString *normalizedName = VCAMNormalizedMediaName(suggestedName, url, mediaType);
+        [self installMediaFromTemporaryURL:url suggestedName:normalizedName];
     }];
 }
 

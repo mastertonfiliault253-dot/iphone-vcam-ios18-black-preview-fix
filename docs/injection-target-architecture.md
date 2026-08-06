@@ -49,8 +49,10 @@ frame is allowed through until an explicit restore request.
 ## Decode behavior
 
 - Images are decoded once by Core Image and rendered as a static source.
-- Local video uses one `AVPlayerItemVideoOutput` driven by media time. It does
-  not preload the asset into a frame array and loops at end-of-item when enabled.
+- Local video uses one incremental `AVAssetReaderTrackOutput` driven by source
+  PTS and sample duration. It retains only the current decoded frame, does not
+  preload the asset into a frame array, and rebuilds the reader at EOF when
+  looping is enabled.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and
