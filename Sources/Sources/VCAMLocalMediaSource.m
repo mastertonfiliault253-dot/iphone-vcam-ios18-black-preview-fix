@@ -266,16 +266,16 @@ static int VCAMCompareDouble(const void *left, const void *right) {
                                           error:readerError];
         return NO;
     }
-    // A non-nil BGRA output setting makes AVAssetReaderTrackOutput decode one
-    // uncompressed pixel sample at a time. Unlike VideoCompositionOutput it
-    // does not require a composition, so the decoded pixels stay in source
-    // track geometry and VCAMFrameRenderer remains the single owner of the
-    // preferred transform plus user rotation/mirroring.
+    // Request the native iOS H.264 decode surface instead of BGRA. On iOS 16.5
+    // the worker observed an unbounded stream of zero-sample markers for BGRA,
+    // while video-range bi-planar output keeps the hardware-friendly decoded
+    // CVPixelBuffer contract. VCAMFrameRenderer performs the one required color
+    // conversion while applying the source transform and user controls.
     AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
         assetReaderTrackOutputWithTrack:videoTrack
                           outputSettings:@{
                               (id)kCVPixelBufferPixelFormatTypeKey:
-                                  @(kCVPixelFormatType_32BGRA),
+                                  @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
                           }];
     output.alwaysCopiesSampleData = NO;
     if (![reader canAddOutput:output]) {
@@ -300,7 +300,8 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     if (_readerLoopCount <= 3 || _readerLoopCount % 50 == 0) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"local reader ready status=%ld loop=%lu output=%08x outputClass=%@", (long)reader.status,
-            (unsigned long)_readerLoopCount, (unsigned int)kCVPixelFormatType_32BGRA,
+            (unsigned long)_readerLoopCount,
+            (unsigned int)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             NSStringFromClass(output.class)]];
     }
     return YES;

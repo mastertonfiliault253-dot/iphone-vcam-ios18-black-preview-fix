@@ -68,7 +68,9 @@ the original sample, and either construction path remains fail-closed.
 
 - Images are decoded once by Core Image and rendered as a static source.
 - Local video uses one incremental `AVAssetReaderTrackOutput` configured for
-  uncompressed BGRA samples, driven by source PTS and sample duration. It
+  native uncompressed `420v` bi-planar samples, driven by source PTS and sample
+  duration. `VCAMFrameRenderer` performs the single BGRA conversion needed by
+  the shared-frame target while it applies orientation and content mode. It
   retains only the current decoded frame, does not preload the asset into a
   frame array, and rebuilds the reader at EOF when looping is enabled. Core
   Media marker samples without a pixel buffer are released and skipped with a

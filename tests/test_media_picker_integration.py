@@ -175,7 +175,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("Unable to decode the first video frame", starter)
         self.assertLess(starter.index("rebuildVideoReader:error"), starter.index("advanceVideoFrame"))
 
-    def test_video_reader_uses_one_uncompressed_track_output_and_logs_first_sample_shape(self) -> None:
+    def test_video_reader_uses_one_native_track_output_and_logs_first_sample_shape(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
         reader_builder = source.split("- (BOOL)rebuildVideoReader:", 1)[1].split(
             "- (BOOL)advanceVideoFrame", 1
@@ -187,7 +187,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AVAssetReaderTrackOutput *videoOutput", source)
         self.assertEqual(reader_builder.count("assetReaderTrackOutputWithTrack"), 1)
         self.assertIn("assetReaderTrackOutputWithTrack:videoTrack", reader_builder)
-        self.assertIn("kCVPixelFormatType_32BGRA", reader_builder)
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", reader_builder)
+        self.assertNotIn("kCVPixelFormatType_32BGRA", reader_builder)
         self.assertNotIn("AVAssetReaderVideoCompositionOutput", reader_builder)
         self.assertNotIn("videoComposition", reader_builder)
         self.assertIn("local reader first-sample", first_sample)
