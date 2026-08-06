@@ -77,7 +77,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) AVURLAsset *asset;
 @property(nonatomic, strong, nullable) AVAssetReader *videoReader;
-@property(nonatomic, strong, nullable) AVAssetReaderVideoCompositionOutput *videoOutput;
+@property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *videoOutput;
 @property(nonatomic, strong, nullable) AVAssetReader *audioReader;
 @property(nonatomic, strong, nullable) AVAssetReaderTrackOutput *audioOutput;
 @property(nonatomic) Float64 audioSampleRate;
@@ -265,15 +265,17 @@ static int VCAMCompareDouble(const void *left, const void *right) {
                                           error:readerError];
         return NO;
     }
-    AVAssetReaderVideoCompositionOutput *output = [AVAssetReaderVideoCompositionOutput
-        assetReaderVideoCompositionOutputWithVideoTracks:@[videoTrack]
-                                             videoSettings:@{
-                                                 (id)kCVPixelBufferPixelFormatTypeKey:
-                                                     @(kCVPixelFormatType_32BGRA),
-                                             }];
-    // Keep the decoded pixels in source-track geometry. VCAMFrameRenderer is
-    // the single owner of preferredTransform plus user rotation/mirroring.
-    output.videoComposition = nil;
+    // A non-nil BGRA output setting makes AVAssetReaderTrackOutput decode one
+    // uncompressed pixel sample at a time. Unlike VideoCompositionOutput it
+    // does not require a composition, so the decoded pixels stay in source
+    // track geometry and VCAMFrameRenderer remains the single owner of the
+    // preferred transform plus user rotation/mirroring.
+    AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
+        assetReaderTrackOutputWithTrack:videoTrack
+                          outputSettings:@{
+                              (id)kCVPixelBufferPixelFormatTypeKey:
+                                  @(kCVPixelFormatType_32BGRA),
+                          }];
     output.alwaysCopiesSampleData = NO;
     if (![reader canAddOutput:output]) {
         NSError *outputError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:3

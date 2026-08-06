@@ -614,8 +614,17 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteCameraSourceVideo) {
+                // Standard 420f source buffers are rendered in place, so the
+                // renderer intentionally leaves replacementImageBuffer NULL.
+                // Mark that original sample/image pair after its pixels have
+                // been replaced. Private compressed source formats instead
+                // use the separately allocated replacement pair.
+                CMSampleBufferRef markerSampleBuffer = replacementSampleBuffer != NULL
+                    ? replacementSampleBuffer : sampleBuffer;
+                CVPixelBufferRef markerImageBuffer = replacementImageBuffer != NULL
+                    ? replacementImageBuffer : originalImageBuffer;
                 replacementSucceeded = VCAMWritePropagationMarker(
-                    replacementSampleBuffer, replacementImageBuffer);
+                    markerSampleBuffer, markerImageBuffer);
             }
         } @catch (NSException *exception) {
             static dispatch_once_t exceptionToken;

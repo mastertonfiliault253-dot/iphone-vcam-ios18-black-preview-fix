@@ -133,7 +133,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
         self.assertIn("CGImageSourceCreateImageAtIndex", source)
         self.assertIn("_stillImage", source)
-        self.assertIn("AVAssetReaderVideoCompositionOutput", source)
+        self.assertIn("AVAssetReaderTrackOutput", source)
         self.assertIn("copyNextSampleBuffer", source)
         self.assertIn("AVAssetReaderStatusCompleted", source)
         self.assertIn("CMSampleBufferGetPresentationTimeStamp", source)
@@ -150,7 +150,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         reader_builder = source.split("- (BOOL)rebuildVideoReader:", 1)[1].split(
             "- (BOOL)advanceVideoFrame", 1
         )[0]
-        self.assertEqual(reader_builder.count("assetReaderVideoCompositionOutputWithVideoTracks"), 1)
+        self.assertEqual(reader_builder.count("assetReaderTrackOutputWithTrack"), 1)
         reader_playback = source.split("- (BOOL)startVideoReader:", 1)[1].split(
             "- (BOOL)hasVideoAsset", 1
         )[0]
@@ -175,7 +175,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("Unable to decode the first video frame", starter)
         self.assertLess(starter.index("rebuildVideoReader:error"), starter.index("advanceVideoFrame"))
 
-    def test_video_reader_uses_one_uncompressed_composition_output_and_logs_first_sample_shape(self) -> None:
+    def test_video_reader_uses_one_uncompressed_track_output_and_logs_first_sample_shape(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
         reader_builder = source.split("- (BOOL)rebuildVideoReader:", 1)[1].split(
             "- (BOOL)advanceVideoFrame", 1
@@ -184,12 +184,12 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "- (CMTime)durationForCurrentVideoFrame", 1
         )[0]
 
-        self.assertIn("AVAssetReaderVideoCompositionOutput *videoOutput", source)
-        self.assertEqual(reader_builder.count("assetReaderVideoCompositionOutputWithVideoTracks"), 1)
-        self.assertIn("@[videoTrack]", reader_builder)
+        self.assertIn("AVAssetReaderTrackOutput *videoOutput", source)
+        self.assertEqual(reader_builder.count("assetReaderTrackOutputWithTrack"), 1)
+        self.assertIn("assetReaderTrackOutputWithTrack:videoTrack", reader_builder)
         self.assertIn("kCVPixelFormatType_32BGRA", reader_builder)
-        self.assertIn("output.videoComposition = nil;", reader_builder)
-        self.assertNotIn("assetReaderTrackOutputWithTrack", reader_builder)
+        self.assertNotIn("AVAssetReaderVideoCompositionOutput", reader_builder)
+        self.assertNotIn("videoComposition", reader_builder)
         self.assertIn("local reader first-sample", first_sample)
         for field in ("mediaSubtype=%08x", "hasImageBuffer=%d", "hasDataBuffer=%d", "outputClass=%@"):
             self.assertIn(field, first_sample)

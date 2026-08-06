@@ -38,7 +38,10 @@ its independent exact `Meteor Headroom` route. It renders observed BGRA,
 `[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. A portrait
 shared source is pre-rotated left before it is fitted into a landscape sensor
 buffer, compensating for the downstream clockwise display transform while
-leaving portrait preview buffers unchanged.
+leaving portrait preview buffers unchanged. The canonical shared canvas is
+then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
+and browser/WebRTC outputs do not expose the black safety background behind
+the centered render.
 
 Compressed recording never asks Core Image to write a private surface. Core
 Image renders into a target-sized public `420v` staging buffer; VideoToolbox
@@ -56,11 +59,10 @@ frame is allowed through until an explicit restore request.
 ## Decode behavior
 
 - Images are decoded once by Core Image and rendered as a static source.
-- Local video uses one incremental `AVAssetReaderVideoCompositionOutput`, which
-  only produces uncompressed video samples, driven by source PTS and sample
-  duration. It retains only the current decoded frame, does not preload the
-  asset into a frame array, and rebuilds the reader at EOF when looping is
-  enabled.
+- Local video uses one incremental `AVAssetReaderTrackOutput` configured for
+  uncompressed BGRA samples, driven by source PTS and sample duration. It
+  retains only the current decoded frame, does not preload the asset into a
+  frame array, and rebuilds the reader at EOF when looping is enabled.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and

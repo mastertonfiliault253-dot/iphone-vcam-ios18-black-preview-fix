@@ -101,11 +101,31 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertRegex(
             self.hook,
             re.compile(
+                r'if\s*\(replacementSucceeded\s*&&\s*'
                 r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo'
+                r'.*?markerSampleBuffer\s*=\s*replacementSampleBuffer\s*!=\s*NULL'
+                r'\s*\?\s*replacementSampleBuffer\s*:\s*sampleBuffer;'
+                r'.*?markerImageBuffer\s*=\s*replacementImageBuffer\s*!=\s*NULL'
+                r'\s*\?\s*replacementImageBuffer\s*:\s*originalImageBuffer;'
                 r'.*?VCAMWritePropagationMarker\('
-                r'\s*replacementSampleBuffer,\s*replacementImageBuffer\s*\)',
+                r'\s*markerSampleBuffer,\s*markerImageBuffer\s*\)',
                 re.DOTALL,
             ),
+        )
+
+    def test_uncompressed_source_marker_does_not_require_a_clone(self) -> None:
+        source_marker_path = _between(
+            self.hook,
+            "replacementRoute == VCAMReplacementRouteCameraSourceVideo",
+            "} @catch (NSException *exception)",
+        )
+        self.assertIn(": sampleBuffer", source_marker_path)
+        self.assertIn(": originalImageBuffer", source_marker_path)
+        self.assertIn("replacementSampleBuffer != NULL", source_marker_path)
+        self.assertIn("replacementImageBuffer != NULL", source_marker_path)
+        self.assertNotIn(
+            "VCAMWritePropagationMarker(\n                    replacementSampleBuffer, replacementImageBuffer)",
+            source_marker_path,
         )
 
     def test_downstream_fast_path_requires_its_own_matching_numeric_marker(self) -> None:
