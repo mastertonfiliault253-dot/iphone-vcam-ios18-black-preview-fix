@@ -483,6 +483,14 @@ cleanup:
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
     BOOL useHardware = self.hardwareDecodeEnabled;
+    // DIAGNOSTIC ONLY: when /var/mobile/Media/VCAM/.vcam-diagnostic-software
+    // exists, run one FFmpeg software session to determine whether a stream is
+    // decodable at all (vs. VideoToolbox-specific rejection). Production
+    // always uses the hardware path; this file is never created by the package.
+    if ([[NSFileManager defaultManager]
+            fileExistsAtPath:@"/var/mobile/Media/VCAM/.vcam-diagnostic-software"]) {
+        useHardware = NO;
+    }
     __block BOOL producedFrame = NO;
     __block BOOL loggedSoftwareFrame = NO;
     BOOL loggedReceiveFailure = NO;
