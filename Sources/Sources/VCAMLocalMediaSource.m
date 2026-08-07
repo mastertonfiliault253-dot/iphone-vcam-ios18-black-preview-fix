@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <libavcodec/avcodec.h>
 #import <libavformat/avformat.h>
+#import <libavutil/intreadwrite.h>
 #import <fcntl.h>
 #import <math.h>
 #import <stdarg.h>
@@ -50,9 +51,11 @@ static CVPixelBufferRef VCAMLocalCopyBGRAFromAVFrame(AVFrame *frame) {
     BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
         frame->format == AV_PIX_FMT_YUVJ420P;
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
-    if (!planar420 && !nv12) return NULL;
+    BOOL planar420p10 = frame->format == AV_PIX_FMT_YUV420P10LE;
+    BOOL p010 = frame->format == AV_PIX_FMT_P010LE;
+    if (!planar420 && !nv12 && !planar420p10 && !p010) return NULL;
     if (frame->data[0] == NULL || frame->data[1] == NULL ||
-        (planar420 && frame->data[2] == NULL)) return NULL;
+        ((planar420 || planar420p10) && frame->data[2] == NULL)) return NULL;
 
     const int maximumDimension = 1920;
     double scale = MIN(1.0, (double)maximumDimension /
@@ -76,6 +79,7 @@ static CVPixelBufferRef VCAMLocalCopyBGRAFromAVFrame(AVFrame *frame) {
     }
     uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
     size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    int shift = (planar420p10 || p010) ? 2 : 0;
     BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
         frame->color_range == AVCOL_RANGE_JPEG;
     for (int y = 0; y < outputHeight; y++) {
@@ -83,15 +87,34 @@ static CVPixelBufferRef VCAMLocalCopyBGRAFromAVFrame(AVFrame *frame) {
                           (int)((int64_t)y * frame->height / outputHeight));
         const uint8_t *luma = frame->data[0] + sourceY * frame->linesize[0];
         const uint8_t *chromaU = frame->data[1] + (sourceY / 2) * frame->linesize[1];
-        const uint8_t *chromaV = planar420
+        const uint8_t *chromaV = (planar420 || planar420p10)
             ? frame->data[2] + (sourceY / 2) * frame->linesize[2] : NULL;
         uint8_t *row = destination + (size_t)y * destinationStride;
         for (int x = 0; x < outputWidth; x++) {
             int sourceX = MIN(frame->width - 1,
                               (int)((int64_t)x * frame->width / outputWidth));
-            int sampleY = luma[sourceX];
-            int sampleU = planar420 ? chromaU[sourceX / 2] : chromaU[(sourceX / 2) * 2];
-            int sampleV = planar420 ? chromaV[sourceX / 2] : chromaU[(sourceX / 2) * 2 + 1];
+            int sampleY;
+            int sampleU;
+            int sampleV;
+            if (planar420 || nv12) {
+                sampleY = luma[sourceX];
+                if (planar420) {
+                    sampleU = chromaU[sourceX / 2];
+                    sampleV = chromaV[sourceX / 2];
+                } else {
+                    sampleU = chromaU[(sourceX / 2) * 2];
+                    sampleV = chromaU[(sourceX / 2) * 2 + 1];
+                }
+            } else {
+                sampleY = AV_RL16(luma + sourceX * 2) >> shift;
+                if (planar420p10) {
+                    sampleU = AV_RL16(chromaU + (sourceX / 2) * 2) >> shift;
+                    sampleV = AV_RL16(chromaV + (sourceX / 2) * 2) >> shift;
+                } else {
+                    sampleU = AV_RL16(chromaU + ((sourceX / 2) * 2) * 2) >> shift;
+                    sampleV = AV_RL16(chromaU + (((sourceX / 2) * 2) * 2) + 2) >> shift;
+                }
+            }
             int c = fullRange ? sampleY : MAX(0, sampleY - 16);
             int d = sampleU - 128;
             int e = sampleV - 128;
@@ -565,9 +588,13 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
     double fps = stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0
         ? av_q2d(stream->avg_frame_rate) : 0.0;
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"local ffmpeg ready size=%dx%d fps=%.2f", codecContext->width,
-        codecContext->height, fps]];
+        @"local ffmpeg ready size=%dx%d fps=%.2f codec=%s", codecContext->width,
+        codecContext->height, fps, codec->name]];
     if (![self advanceFFmpegFrame]) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local ffmpeg first-frame failed codec=%s pix_fmt=%d width=%d height=%d eof=%d",
+            codec->name, codecContext->pix_fmt, codecContext->width,
+            codecContext->height, _ffEndOfFile ? 1 : 0]];
         NSError *decodeError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:11
                                                userInfo:@{NSLocalizedDescriptionKey:
                                                    @"Unable to decode the first video frame (ffmpeg)"}];
@@ -604,6 +631,8 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
 
 - (BOOL)advanceFFmpegFrame {
     if (!_ffmpegMode || _ffCodecContext == NULL) return NO;
+    static int sendFailures = 0;
+    static int receiveFailures = 0;
     while (YES) {
         int receiveResult = avcodec_receive_frame(_ffCodecContext, _ffFrame);
         if (receiveResult == 0) return [self publishFFmpegFrame];
@@ -612,6 +641,12 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
             return NO;
         }
         if (receiveResult != AVERROR(EAGAIN)) {
+            if (receiveFailures < 4) {
+                receiveFailures += 1;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"local ffmpeg receive_frame failed code=%d error=%s",
+                    receiveResult, av_err2str(receiveResult)]];
+            }
             _ffEndOfFile = YES;
             return NO;
         }
@@ -628,8 +663,14 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
         if (_ffPacket->stream_index == _ffVideoStreamIndex) {
             int sendResult = avcodec_send_packet(_ffCodecContext, _ffPacket);
             if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+                if (sendFailures < 4) {
+                    sendFailures += 1;
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"local ffmpeg send_packet failed code=%d error=%s",
+                        sendResult, av_err2str(sendResult)]];
+                }
                 av_packet_unref(_ffPacket);
-                return NO;
+                continue;
             }
         }
         av_packet_unref(_ffPacket);
@@ -638,6 +679,11 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
 
 - (BOOL)publishFFmpegFrame {
     CVPixelBufferRef pixelBuffer = VCAMLocalCopyBGRAFromAVFrame(_ffFrame);
+    if (pixelBuffer == NULL) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local ffmpeg unsupported frame format=%d width=%d height=%d",
+            _ffFrame->format, _ffFrame->width, _ffFrame->height]];
+    }
     CMTime pts = VCAMLocalCMTimeFromAVFrame(_ffFrame, _ffVideoStream);
     av_frame_unref(_ffFrame);
     if (pixelBuffer == NULL) return NO;
