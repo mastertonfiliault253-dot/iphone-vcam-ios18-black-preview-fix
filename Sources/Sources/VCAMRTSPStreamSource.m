@@ -545,16 +545,17 @@ cleanup:
     stream = formatContext->streams[videoStream];
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (decoder == NULL) goto cleanup;
-    NSMutableString *extraHex = [NSMutableString string];
+    char extraHex[65] = {0};
     int extraBytes = MIN(32, stream->codecpar->extradata_size);
     for (int index = 0; index < extraBytes; index++) {
-        [extraHex appendFormat:@"%02x", stream->codecpar->extradata[index]];
+        snprintf(extraHex + index * 2, 3, "%02x", stream->codecpar->extradata[index]);
     }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
         @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
         useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
         stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
-        stream->codecpar->extradata_size, extraHex]];
+        stream->codecpar->extradata_size,
+        [NSString stringWithUTF8String:extraHex]]];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
