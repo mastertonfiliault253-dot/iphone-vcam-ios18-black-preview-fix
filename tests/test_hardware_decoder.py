@@ -38,6 +38,26 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("H264 annexB sps=%d pps=%d", decoder)
         self.assertIn("HEVC annexB vps=%d sps=%d pps=%d", decoder)
 
+    def test_packet_memory_is_owned_by_the_block_buffer(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("uint8_t *ownedBytes = malloc(feedLength)", decoder)
+        self.assertIn("memcpy(ownedBytes, feedBytes, feedLength)", decoder)
+        self.assertNotIn("CMBlockBufferReplaceDataBytes", decoder)
+
+    def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("[DEBUG-a4f2]", decoder)
+        self.assertNotIn("vcam-rtsp-pkt", rtsp)
+        self.assertNotIn("vcam-diagnostic-software", rtsp)
+        self.assertNotIn("rtsp packet dump", rtsp)
+
 
 if __name__ == "__main__":
     unittest.main()
