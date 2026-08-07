@@ -376,6 +376,7 @@ static CFStringRef const VCAMPropagationMarkerKey =
 
 static BOOL VCAMRouteUsesPropagationMarker(VCAMReplacementRoute route) {
     return route == VCAMReplacementRouteVideoConverter ||
+        route == VCAMReplacementRouteCameraPreview ||
         route == VCAMReplacementRouteVideoRecording;
 }
 

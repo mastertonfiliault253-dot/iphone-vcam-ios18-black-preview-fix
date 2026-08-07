@@ -1,6 +1,6 @@
 Package: com.codex.vcam
 Name: VCAM Media Bridge
-Version: 0.8.3+iphone12fix
+Version: 0.8.4+uifix
 Architecture: iphoneos-arm
 Description: System virtual-camera video bridge with isolated local, OBS and RTSP decoding.
 Maintainer: Local Build

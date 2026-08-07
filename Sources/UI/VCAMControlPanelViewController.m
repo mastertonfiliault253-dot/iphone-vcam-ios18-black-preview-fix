@@ -3,6 +3,11 @@
 
 @interface VCAMControlPanelViewController ()
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *status;
+@property(nonatomic, strong, nullable) UILabel *sourceLabel;
+@property(nonatomic, strong, nullable) UILabel *detailLabel;
+@property(nonatomic, strong, nullable) UIButton *mirrorButton;
+@property(nonatomic, strong, nullable) UIButton *contentModeButton;
+@property(nonatomic, strong, nullable) UIButton *loopButton;
 @end
 
 @implementation VCAMControlPanelViewController
@@ -100,18 +105,24 @@
                                                         color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
                                                        action:@selector(clockwiseTapped)]];
     [stack addArrangedSubview:rotationRow];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"镜像：%@", self.status[@"mirror"] ?: @"关闭"]
-                                                symbol:@"arrow.left.and.right.righttriangle.left.righttriangle.right"
-                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
-                                                action:@selector(mirrorTapped)]];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"填充方式：%@", self.status[@"contentMode"] ?: @"裁切填满"]
-                                                symbol:@"rectangle.inset.filled"
-                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
-                                                action:@selector(contentModeTapped)]];
-    [stack addArrangedSubview:[self actionButton:[NSString stringWithFormat:@"视频循环：%@", self.status[@"loop"] ?: @"开启"]
-                                                symbol:@"repeat"
-                                                 color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
-                                                action:@selector(loopTapped)]];
+    UIButton *mirrorButton = [self actionButton:[NSString stringWithFormat:@"镜像：%@", self.status[@"mirror"] ?: @"关闭"]
+                                         symbol:@"arrow.left.and.right.righttriangle.left.righttriangle.right"
+                                          color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
+                                         action:@selector(mirrorTapped)];
+    [stack addArrangedSubview:mirrorButton];
+    self.mirrorButton = mirrorButton;
+    UIButton *contentModeButton = [self actionButton:[NSString stringWithFormat:@"填充方式：%@", self.status[@"contentMode"] ?: @"裁切填满"]
+                                              symbol:@"rectangle.inset.filled"
+                                               color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
+                                              action:@selector(contentModeTapped)];
+    [stack addArrangedSubview:contentModeButton];
+    self.contentModeButton = contentModeButton;
+    UIButton *loopButton = [self actionButton:[NSString stringWithFormat:@"视频循环：%@", self.status[@"loop"] ?: @"开启"]
+                                       symbol:@"repeat"
+                                        color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1]
+                                       action:@selector(loopTapped)];
+    [stack addArrangedSubview:loopButton];
+    self.loopButton = loopButton;
     [stack addArrangedSubview:[self sectionLabel:@"相机切换"]];
     [stack addArrangedSubview:[self actionButton:@"启用虚拟相机" symbol:@"video.fill"
                                                   color:[UIColor colorWithRed:0.12 green:0.68 blue:0.34 alpha:1]
@@ -167,13 +178,16 @@
     [card addSubview:stack];
     [stack addArrangedSubview:[self labelWithText:@"当前源信息" size:14 weight:UIFontWeightSemibold
                                             color:[UIColor colorWithRed:0.35 green:0.68 blue:1 alpha:1]]];
-    [stack addArrangedSubview:[self labelWithText:self.status[@"source"] ?: @"真实相机"
-                                             size:17 weight:UIFontWeightBold color:UIColor.whiteColor]];
+    UILabel *source = [self labelWithText:self.status[@"source"] ?: @"真实相机"
+                                    size:17 weight:UIFontWeightBold color:UIColor.whiteColor];
+    [stack addArrangedSubview:source];
+    self.sourceLabel = source;
     UILabel *detail = [self labelWithText:self.status[@"detail"] ?: @"未启用替换"
                                       size:13 weight:UIFontWeightRegular
                                      color:[UIColor colorWithWhite:0.72 alpha:1]];
     detail.numberOfLines = 0;
     [stack addArrangedSubview:detail];
+    self.detailLabel = detail;
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
         [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
@@ -181,6 +195,22 @@
         [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
     ]];
     return card;
+}
+
+- (void)updateStatus:(NSDictionary<NSString *, NSString *> *)status {
+    _status = [status copy];
+    self.sourceLabel.text = status[@"source"] ?: @"真实相机";
+    self.detailLabel.text = status[@"detail"] ?: @"未启用替换";
+    [self updateButton:self.mirrorButton label:@"镜像" value:status[@"mirror"] ?: @"关闭"];
+    [self updateButton:self.contentModeButton label:@"填充方式" value:status[@"contentMode"] ?: @"裁切填满"];
+    [self updateButton:self.loopButton label:@"视频循环" value:status[@"loop"] ?: @"开启"];
+}
+
+- (void)updateButton:(UIButton *)button label:(NSString *)label value:(NSString *)value {
+    if (button == nil) return;
+    UIButtonConfiguration *configuration = button.configuration;
+    configuration.title = [NSString stringWithFormat:@"%@：%@", label, value];
+    button.configuration = configuration;
 }
 
 - (UILabel *)sectionLabel:(NSString *)text {

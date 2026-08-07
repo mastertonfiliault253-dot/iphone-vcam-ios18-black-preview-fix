@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <libavcodec/avcodec.h>
 #import <libavformat/avformat.h>
+#import <libavutil/hwcontext.h>
 #import <libavutil/intreadwrite.h>
 #import <fcntl.h>
 #import <math.h>
@@ -147,6 +148,15 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
     return CMTimeMakeWithSeconds(seconds, 600);
 }
 
+static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *context,
+                                                             const enum AVPixelFormat *formats) {
+    (void)context;
+    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
+        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
 @interface VCAMLocalMediaSource () {
     CGImageRef _stillImage;
     CMSampleBufferRef _currentVideoSample;
@@ -186,6 +196,7 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
     AVPacket *_ffPacket;
     int _ffVideoStreamIndex;
     AVStream *_ffVideoStream;
+    BOOL _ffUseHardware;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -564,9 +575,7 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
         return NO;
     }
     AVCodecContext *codecContext = avcodec_alloc_context3(codec);
-    if (codecContext == NULL ||
-        avcodec_parameters_to_context(codecContext, stream->codecpar) < 0 ||
-        avcodec_open2(codecContext, codec, NULL) < 0) {
+    if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) {
         if (codecContext != NULL) avcodec_free_context(&codecContext);
         avformat_close_input(&format);
         if (error != NULL) {
@@ -576,6 +585,47 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
         }
         return NO;
     }
+    codecContext->err_recognition = AV_EF_CAREFUL;
+    codecContext->thread_count = 4;
+    BOOL useHardware = NO;
+    AVBufferRef *hardwareDevice = NULL;
+    codecContext->get_format = VCAMLocalSelectHardwarePixelFormat;
+    if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                               NULL, NULL, 0) == 0 && hardwareDevice != NULL) {
+        codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
+        if (codecContext->hw_device_ctx != NULL &&
+            avcodec_open2(codecContext, codec, NULL) == 0) {
+            useHardware = YES;
+        } else {
+            if (codecContext->hw_device_ctx != NULL) av_buffer_unref(&codecContext->hw_device_ctx);
+            codecContext->get_format = NULL;
+            if (avcodec_open2(codecContext, codec, NULL) < 0) {
+                avcodec_free_context(&codecContext);
+                avformat_close_input(&format);
+                if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
+                if (error != NULL) {
+                    *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:10
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                                 @"FFmpeg could not open the local video decoder"}];
+                }
+                return NO;
+            }
+        }
+    } else {
+        codecContext->get_format = NULL;
+        if (avcodec_open2(codecContext, codec, NULL) < 0) {
+            avcodec_free_context(&codecContext);
+            avformat_close_input(&format);
+            if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
+            if (error != NULL) {
+                *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:10
+                                         userInfo:@{NSLocalizedDescriptionKey:
+                                             @"FFmpeg could not open the local video decoder"}];
+            }
+            return NO;
+        }
+    }
+    if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
     _ffFormatContext = format;
     _ffCodecContext = codecContext;
     _ffVideoStreamIndex = videoIndex;
@@ -583,13 +633,14 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
     _ffFrame = av_frame_alloc();
     _ffPacket = av_packet_alloc();
     _ffmpegMode = YES;
+    _ffUseHardware = useHardware;
     _ffEndOfFile = NO;
     _ffFirstFrameLogged = NO;
     double fps = stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0
         ? av_q2d(stream->avg_frame_rate) : 0.0;
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"local ffmpeg ready size=%dx%d fps=%.2f codec=%s", codecContext->width,
-        codecContext->height, fps, codec->name]];
+        @"local ffmpeg ready size=%dx%d fps=%.2f codec=%s hardware=%d", codecContext->width,
+        codecContext->height, fps, codec->name, useHardware ? 1 : 0]];
     if (![self advanceFFmpegFrame]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"local ffmpeg first-frame failed codec=%s pix_fmt=%d width=%d height=%d eof=%d",
@@ -678,7 +729,13 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
 }
 
 - (BOOL)publishFFmpegFrame {
-    CVPixelBufferRef pixelBuffer = VCAMLocalCopyBGRAFromAVFrame(_ffFrame);
+    CVPixelBufferRef pixelBuffer = NULL;
+    if (_ffUseHardware && _ffFrame->format == AV_PIX_FMT_VIDEOTOOLBOX &&
+        _ffFrame->data[3] != NULL) {
+        pixelBuffer = CVPixelBufferRetain((CVPixelBufferRef)_ffFrame->data[3]);
+    } else {
+        pixelBuffer = VCAMLocalCopyBGRAFromAVFrame(_ffFrame);
+    }
     if (pixelBuffer == NULL) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"local ffmpeg unsupported frame format=%d width=%d height=%d",

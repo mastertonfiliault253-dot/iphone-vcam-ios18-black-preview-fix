@@ -7,6 +7,9 @@
 #import "../Core/VCAMConfiguration.h"
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
+static const NSInteger VCAMFloatingDotTag = 0x5643414D;
+static const CGFloat VCAMOverlayWindowLevel = 2001.0;
+static BOOL VCAMPickerUIStarted = NO;
 
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
                                            const void *object, CFDictionaryRef userInfo) {
@@ -67,6 +70,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic, strong, nullable) UIButton *button;
 @property(nonatomic, weak, nullable) VCAMControlPanelViewController *panel;
 @property(nonatomic, weak, nullable) UIWindow *gestureWindow;
+@property(nonatomic, strong, nullable) UIWindow *overlayWindow;
 @property(nonatomic) NSInteger remainingWindowRetries;
 @property(nonatomic) BOOL started;
 @end
@@ -82,7 +86,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)startControlUI {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.started) return;
+        if (VCAMPickerUIStarted) return;
+        VCAMPickerUIStarted = YES;
         self.started = YES;
         self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
         NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
@@ -150,6 +155,19 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     return nil;
 }
 
+- (nullable UIWindow *)floatingWindow {
+    if (self.overlayWindow == nil) {
+        UIWindow *window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        window.windowLevel = VCAMOverlayWindowLevel;
+        window.backgroundColor = UIColor.clearColor;
+        window.userInteractionEnabled = YES;
+        window.rootViewController = [UIViewController new];
+        window.hidden = NO;
+        self.overlayWindow = window;
+    }
+    return self.overlayWindow;
+}
+
 - (NSString *)floatingPositionIdentifier {
     NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
     return bundle.length > 0 ? bundle : NSProcessInfo.processInfo.processName;
@@ -202,14 +220,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)installButtonWhenWindowIsReady {
     NSAssert(NSThread.isMainThread, @"VCAM picker UI must run on the main thread");
-    UIWindow *window = [self cameraWindow];
-    if (window == nil) {
-        if (self.remainingWindowRetries-- > 0) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
-        }
-        return;
-    }
+    UIWindow *window = [self floatingWindow];
 
     if (self.gestureWindow != window) {
         if (self.gestureWindow != nil) {
@@ -231,6 +242,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
     if (self.button == nil) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.tag = VCAMFloatingDotTag;
         button.accessibilityLabel = @"打开 VCAM 控制面板";
         button.backgroundColor = UIColor.clearColor;
         UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
@@ -245,7 +257,17 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         dot.layer.shadowOffset = CGSizeMake(0, 1);
         [button addSubview:dot];
         button.layer.shadowColor = UIColor.blackColor.CGColor;
-        [button addTarget:self action:@selector(showSourceMenu:) forControlEvents:UIControlEventTouchUpInside];
+        UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                                   action:@selector(showSourceMenu:)];
+        singleTap.numberOfTapsRequired = 1;
+        singleTap.numberOfTouchesRequired = 1;
+        [button addGestureRecognizer:singleTap];
+        UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                                   action:@selector(toggleFloatingButton:)];
+        doubleTap.numberOfTapsRequired = 2;
+        doubleTap.numberOfTouchesRequired = 1;
+        [button addGestureRecognizer:doubleTap];
+        [singleTap requireGestureRecognizerToFail:doubleTap];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
                                                                              action:@selector(dragButton:)];
         pan.maximumNumberOfTouches = 1;
@@ -254,6 +276,9 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     }
 
     if (self.button.superview != window) {
+        for (UIView *existing in window.subviews) {
+            if (existing.tag == VCAMFloatingDotTag) [existing removeFromSuperview];
+        }
         [self.button removeFromSuperview];
         self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
@@ -352,13 +377,24 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)showSourceMenu:(UIButton *)sender {
     (void)sender;
-    UIViewController *presenter = [self presentingViewController];
-    if (presenter == nil || self.panel != nil) return;
+    if (self.panel != nil) {
+        [self dismissPanelThen:nil];
+        return;
+    }
+    [self presentPanel];
+}
+
+- (void)presentPanel {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.panel != nil) return;
+        UIViewController *presenter = [self presentingViewController];
+        if (presenter == nil) return;
     VCAMControlPanelViewController *panel = [[VCAMControlPanelViewController alloc]
         initWithStatus:[self currentStatus]];
     panel.delegate = self;
     self.panel = panel;
     [presenter presentViewController:panel animated:!UIAccessibilityIsReduceMotionEnabled() completion:nil];
+    });
 }
 
 - (void)dismissPanelThen:(dispatch_block_t)completion {
@@ -555,8 +591,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
             return;
         }
         [self postConfigurationChanged];
-        [self showMessage:isRTSP ? @"已切换到手机直连 RTSP（TCP + VideoToolbox 硬解）" :
-                                      @"已切换到电脑 WebSocket 直播流" error:NO];
+        [self presentPanel];
     }]];
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
 }
@@ -585,8 +620,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         return;
     }
     [self postConfigurationChanged];
-    [self showMessage:videoTrack != nil ? @"已切换到所选视频；视频将按时间轴循环播放"
-                                         : @"已切换到所选图片；将持续输出静态画面" error:NO];
+    [self presentPanel];
 }
 
 - (void)rotateClockwise { [self changeRotationBy:90]; }
@@ -597,9 +631,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     NSInteger rotationDegrees = ([values[@"rotationDegrees"] integerValue] + delta) % 360;
     if (![self updatePreferences:@{@"rotationDegrees": @(rotationDegrees)}]) return;
     [self postConfigurationChanged];
-    [self dismissPanelThen:^{
-        [self showMessage:[NSString stringWithFormat:@"画面已旋转到 %ld°", (long)rotationDegrees] error:NO];
-    }];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)toggleMirror {
@@ -607,7 +639,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     BOOL enabled = ![values[@"mirrorHorizontally"] boolValue];
     if (![self updatePreferences:@{@"mirrorHorizontally": @(enabled)}]) return;
     [self postConfigurationChanged];
-    [self dismissPanelThen:^{ [self showMessage:enabled ? @"镜像已开启" : @"镜像已关闭" error:NO]; }];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)toggleLoopPlayback {
@@ -616,7 +648,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     BOOL enabled = !current;
     if (![self updatePreferences:@{@"loopMedia": @(enabled)}]) return;
     [self postConfigurationChanged];
-    [self dismissPanelThen:^{ [self showMessage:enabled ? @"视频循环已开启" : @"视频循环已关闭" error:NO]; }];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)cycleContentMode {
@@ -626,7 +658,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                      ([current isEqualToString:@"fit"] ? @"stretch" : @"fill");
     if (![self updatePreferences:@{@"contentMode": next}]) return;
     [self postConfigurationChanged];
-    [self dismissPanelThen:^{ [self showMessage:@"画面填充方式已切换" error:NO]; }];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)enableVirtualCamera {

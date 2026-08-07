@@ -444,7 +444,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
     codecContext->err_recognition = AV_EF_CAREFUL;
-    codecContext->thread_count = useHardware ? 1 : 2;
+    codecContext->thread_count = useHardware ? 1 : 4;
     if (useHardware) {
         codecContext->get_format = VCAMSelectHardwarePixelFormat;
         if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,

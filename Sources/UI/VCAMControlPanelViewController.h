@@ -24,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, weak) id<VCAMControlPanelDelegate> delegate;
 
 - (instancetype)initWithStatus:(NSDictionary<NSString *, NSString *> *)status;
+- (void)updateStatus:(NSDictionary<NSString *, NSString *> *)status;
 
 @end
 
