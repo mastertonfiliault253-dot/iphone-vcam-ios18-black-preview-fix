@@ -159,15 +159,6 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
     return CMTimeMakeWithSeconds(seconds, 600);
 }
 
-static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *context,
-                                                             const enum AVPixelFormat *formats) {
-    (void)context;
-    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
-        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
-    }
-    return AV_PIX_FMT_NONE;
-}
-
 @interface VCAMLocalMediaSource () {
     CGImageRef _stillImage;
     CMSampleBufferRef _currentVideoSample;
