@@ -120,7 +120,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         // ISO/IEC 14496-15 HEVCDecoderConfigurationRecord
         if (extraSize < 23) return nil;
         int nalHeaderLength = (extra[20] & 0x03) + 1;
-        int offset = 22;
+        int offset = 21;
         if (offset >= extraSize) return nil;
         int numArrays = extra[offset++];
         const uint8_t *vpsPointers[16] = {0};
@@ -171,6 +171,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             (size_t)nalHeaderLength,
             NULL,
             &_formatDescription);
+        NSLog(@"VCAMHardwareVideoDecoder HEVC nalu=%d vps=%d sps=%d pps=%d status=%d",
+              nalHeaderLength, vpsCount, spsCount, ppsCount, (int)status);
     }
     if (status != noErr || _formatDescription == NULL) return nil;
     return self;
