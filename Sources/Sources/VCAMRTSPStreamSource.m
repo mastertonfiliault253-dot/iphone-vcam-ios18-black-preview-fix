@@ -530,11 +530,16 @@ cleanup:
     stream = formatContext->streams[videoStream];
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (decoder == NULL) goto cleanup;
+    NSMutableString *extraHex = [NSMutableString string];
+    int extraBytes = MIN(32, stream->codecpar->extradata_size);
+    for (int index = 0; index < extraBytes; index++) {
+        [extraHex appendFormat:@"%02x", stream->codecpar->extradata[index]];
+    }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d",
+        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
         useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
         stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
-        stream->codecpar->extradata_size]];
+        stream->codecpar->extradata_size, extraHex]];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
@@ -568,13 +573,28 @@ cleanup:
             int diagIndex = __sync_add_and_fetch(&rtspPacketDiag, 1);
             if (diagIndex <= 3 && packet->size >= 4) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"rtsp packet diag idx=%d size=%d flags=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
+                    @"rtsp packet diag idx=%d size=%d flags=%d key=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
                     diagIndex, packet->size, packet->flags,
+                    (packet->flags & AV_PKT_FLAG_KEY) != 0 ? 1 : 0,
                     packet->data[0], packet->data[1], packet->data[2], packet->data[3],
                     packet->size > 4 ? packet->data[4] : 0,
                     packet->size > 5 ? packet->data[5] : 0,
                     packet->size > 6 ? packet->data[6] : 0,
                     packet->size > 7 ? packet->data[7] : 0]];
+            }
+            static volatile int rtspKeyPacketDiag = 0;
+            if ((packet->flags & AV_PKT_FLAG_KEY) != 0 && packet->size >= 4) {
+                int keyDiag = __sync_add_and_fetch(&rtspKeyPacketDiag, 1);
+                if (keyDiag <= 3) {
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"rtsp key packet diag idx=%d size=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
+                        keyDiag, packet->size,
+                        packet->data[0], packet->data[1], packet->data[2], packet->data[3],
+                        packet->size > 4 ? packet->data[4] : 0,
+                        packet->size > 5 ? packet->data[5] : 0,
+                        packet->size > 6 ? packet->data[6] : 0,
+                        packet->size > 7 ? packet->data[7] : 0]];
+                }
             }
             videoPacketsWithoutFrame += 1;
             if (waitingForKeyPacket || awaitingCleanKeyFrame) {
@@ -617,6 +637,7 @@ cleanup:
             }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
+            static volatile int consecutiveSendFailures = 0;
             while (self.running) {
                 sendResult = avcodec_send_packet(codecContext, packet);
                 if (sendResult != AVERROR(EAGAIN)) break;
@@ -640,6 +661,7 @@ cleanup:
                 break;
             }
             if (sendResult >= 0) {
+                __sync_lock_test_and_set(&consecutiveSendFailures, 0);
                 while (self.running) {
                     int receiveResult = avcodec_receive_frame(codecContext, frame);
                     if (receiveResult < 0) {
@@ -664,7 +686,14 @@ cleanup:
                         @"rtsp send_packet failed hardware=%d error=%@", useHardware,
                         VCAMFFmpegErrorDescription(sendResult)]];
                 }
-                restartSession = YES;
+                // A single bad packet (mid-GOP join, delayed RTP, transient
+                // parameter mismatch) must not tear down a healthy session.
+                // Skip it and keep reading; only reconnect after a long run
+                // of failures that cannot self-heal.
+                int failureCount = __sync_add_and_fetch(&consecutiveSendFailures, 1);
+                if (failureCount >= 200) {
+                    restartSession = YES;
+                }
             }
             if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 300) {
                 av_packet_unref(packet);
