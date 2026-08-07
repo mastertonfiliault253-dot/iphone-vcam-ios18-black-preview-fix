@@ -7,27 +7,41 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class InjectionMonitorTests(unittest.TestCase):
-    def test_monitor_has_the_exact_allowed_process_paths(self) -> None:
+    def test_monitor_repairs_only_system_clients_and_never_apps(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(source.count(".processPath ="), 7)
+        self.assertEqual(source.count(".processPath ="), 2)
         self.assertIn(
             '.processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"',
             source,
         )
         self.assertIn('.processPath = "/usr/sbin/mediaserverd"', source)
-        self.assertEqual(source.count(".dylibPath ="), 7)
-        for expected in (
+        self.assertEqual(source.count(".dylibPath ="), 2)
+        # Application clients (Camera, Safari, browsers) are loaded by ElleKit
+        # from the plist filter; opainject must never target an app process.
+        for forbidden in (
             "/Applications/Camera.app",
             "MobileSafari",
             "Google Chrome",
             "Microsoft Edge",
             "Firefox",
+            "SafariViewService",
+            "WebKit",
         ):
-            self.assertIn(expected, source)
-        for forbidden in ("SafariViewService", "WebKit"):
             self.assertNotIn(forbidden, source)
+        self.assertIn("application clients use ElleKit auto-injection", source)
+
+    def test_springboard_plist_filter_keeps_application_clients(self) -> None:
+        plist = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
+        for expected in (
+            "com.apple.camera",
+            "com.apple.mobilesafari",
+            "com.google.chrome.ios",
+            "com.microsoft.edge",
+            "org.mozilla.ios.firefox",
+        ):
+            self.assertIn(expected, plist)
 
     def test_monitor_retries_after_pid_change_and_requires_constructor_proof(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
