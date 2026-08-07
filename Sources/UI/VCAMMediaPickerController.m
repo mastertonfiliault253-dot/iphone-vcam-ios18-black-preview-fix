@@ -4,10 +4,12 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 #import "../Core/VCAMConfiguration.h"
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
+static const void *VCAMGestureTagKey = &VCAMGestureTagKey;
 static BOOL VCAMPickerUIStarted = NO;
 
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
@@ -229,7 +231,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     if (self.gestureWindow != window) {
         if (self.gestureWindow != nil) {
             for (UIGestureRecognizer *recognizer in [self.gestureWindow.gestureRecognizers copy]) {
-                if (recognizer.tag == VCAMFloatingDotTag ||
+                NSNumber *gestureTag = objc_getAssociatedObject(recognizer, VCAMGestureTagKey);
+                if ([gestureTag integerValue] == VCAMFloatingDotTag ||
                     (recognizer.delegate == self &&
                      [recognizer isKindOfClass:UITapGestureRecognizer.class])) {
                     [self.gestureWindow removeGestureRecognizer:recognizer];
@@ -238,7 +241,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         }
         UITapGestureRecognizer *toggle = [[UITapGestureRecognizer alloc] initWithTarget:self
                                                                                 action:@selector(toggleFloatingButton:)];
-        toggle.tag = VCAMFloatingDotTag;
+        objc_setAssociatedObject(toggle, VCAMGestureTagKey, @(VCAMFloatingDotTag),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         toggle.numberOfTouchesRequired = 3;
         toggle.numberOfTapsRequired = 2;
         toggle.cancelsTouchesInView = NO;
