@@ -498,7 +498,11 @@ static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
 - (BOOL)startFFmpegVideoReader:(NSError **)error {
     NSString *path = self.configuration.mediaPath;
     AVFormatContext *format = NULL;
-    if (avformat_open_input(&format, path.fileSystemRepresentation, NULL, NULL) != 0) {
+    int openResult = avformat_open_input(&format, path.fileSystemRepresentation, NULL, NULL);
+    if (openResult != 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local ffmpeg open failed code=%d error=%s", openResult,
+            av_err2str(openResult)]];
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:6
                                      userInfo:@{NSLocalizedDescriptionKey:
