@@ -392,18 +392,24 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
             static volatile int vcamRtspDumpCount = 0;
+            static volatile int vcamRtspKeyDumpCount = 0;
             int dumpIndex = __sync_add_and_fetch(&vcamRtspDumpCount, 1);
-            if (dumpIndex <= 3 && packet->size > 0) {
+            BOOL isKeyPacket = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            int keyDumpIndex = isKeyPacket
+                ? __sync_add_and_fetch(&vcamRtspKeyDumpCount, 1) : 0;
+            if ((dumpIndex <= 3 || keyDumpIndex == 1) && packet->size > 0) {
                 char dumpPath[96] = {0};
                 snprintf(dumpPath, sizeof(dumpPath),
-                         "/var/tmp/vcam-rtsp-pkt-%d.bin", dumpIndex);
+                         "/var/mobile/Media/VCAM/vcam-rtsp-pkt-%d.bin",
+                         keyDumpIndex == 1 ? 100 + dumpIndex : dumpIndex);
                 int dumpFd = open(dumpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (dumpFd >= 0) {
                     ssize_t writtenBytes = write(dumpFd, packet->data, (size_t)packet->size);
                     close(dumpFd);
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp packet dump idx=%d path=%@ size=%d written=%ld",
-                        dumpIndex, [NSString stringWithUTF8String:dumpPath],
+                        @"rtsp packet dump idx=%d key=%d path=%@ size=%d written=%ld",
+                        dumpIndex, isKeyPacket ? 1 : 0,
+                        [NSString stringWithUTF8String:dumpPath],
                         packet->size, (long)writtenBytes]];
                 }
             }
