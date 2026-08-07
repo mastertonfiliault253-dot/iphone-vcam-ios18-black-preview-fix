@@ -531,9 +531,10 @@ cleanup:
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (decoder == NULL) goto cleanup;
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d",
+        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d",
         useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
-        stream->codecpar->width, stream->codecpar->height, stream->codecpar->format]];
+        stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
+        stream->codecpar->extradata_size]];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
@@ -563,6 +564,18 @@ cleanup:
             break;
         }
         if (packet->stream_index == videoStream) {
+            static volatile int rtspPacketDiag = 0;
+            int diagIndex = __sync_add_and_fetch(&rtspPacketDiag, 1);
+            if (diagIndex <= 3 && packet->size >= 4) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"rtsp packet diag idx=%d size=%d flags=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
+                    diagIndex, packet->size, packet->flags,
+                    packet->data[0], packet->data[1], packet->data[2], packet->data[3],
+                    packet->size > 4 ? packet->data[4] : 0,
+                    packet->size > 5 ? packet->data[5] : 0,
+                    packet->size > 6 ? packet->data[6] : 0,
+                    packet->size > 7 ? packet->data[7] : 0]];
+            }
             videoPacketsWithoutFrame += 1;
             if (waitingForKeyPacket || awaitingCleanKeyFrame) {
                 recoveryPackets += 1;
@@ -599,6 +612,8 @@ cleanup:
                 awaitingCleanKeyFrame = YES;
                 recoveryPackets = 0;
                 recoveryStartedAt = CACurrentMediaTime();
+                [VCAMConfiguration appendProcessLog:
+                    @"rtsp recovery: fed key packet; waiting for clean decoded keyframe"];
             }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;

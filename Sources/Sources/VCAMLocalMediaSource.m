@@ -190,6 +190,7 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
     BOOL _readerFailureLogged;
     NSUInteger _readerLoopCount;
     BOOL _ffmpegMode;
+    BOOL _ffHwaccelMode;
     BOOL _ffEndOfFile;
     BOOL _ffFirstFrameLogged;
     AVFormatContext *_ffFormatContext;
@@ -213,11 +214,22 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
 @property(nonatomic) BOOL running;
 @property(nonatomic) CGAffineTransform videoTransform;
 - (BOOL)startFFmpegVideoReader:(NSError **)error;
+- (BOOL)startFFmpegHwaccelReader:(NSError **)error;
 - (void)closeFFmpegReader;
 - (BOOL)advanceFFmpegFrame;
+- (BOOL)advanceHwaccelFrame;
 - (BOOL)publishFFmpegFrame;
 - (BOOL)restartFFmpegAfterEndAtHostTime:(CFTimeInterval)hostTime;
 @end
+
+static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(
+    AVCodecContext *context, const enum AVPixelFormat *formats) {
+    (void)context;
+    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
+        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
+    }
+    return AV_PIX_FMT_NONE;
+}
 
 @implementation VCAMLocalMediaSource
 
@@ -384,7 +396,15 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
     [self resetVideoReaderState];
     [VCAMConfiguration appendProcessLog:
         @"local reader failed; switching to FFmpeg software decode"];
-    if (![self startFFmpegVideoReader:error]) return NO;
+    if ([self startFFmpegVideoReader:error]) return YES;
+    // The hand-rolled VideoToolbox session needs a valid avcC/hvcC in the
+    // container. Some files (or iOS-16.5 asset-reader quirks) only carry
+    // parameter sets in-band, so fall back to FFmpeg's own VideoToolbox
+    // hwaccel, which assembles the parameter sets from the stream and still
+    // decodes on the hardware decoder.
+    [VCAMConfiguration appendProcessLog:
+        @"local direct-VT failed; switching to FFmpeg videotoolbox hwaccel"];
+    if (![self startFFmpegHwaccelReader:error]) return NO;
     return YES;
 }
 
@@ -442,7 +462,9 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
 }
 
 - (BOOL)advanceVideoFrame {
-    if (_ffmpegMode) return [self advanceFFmpegFrame];
+    if (_ffmpegMode) {
+        return _ffHwaccelMode ? [self advanceHwaccelFrame] : [self advanceFFmpegFrame];
+    }
     CMSampleBufferRef sample = NULL;
     CVPixelBufferRef pixelBuffer = NULL;
     NSUInteger skippedNonPixelSamples = 0;
@@ -530,6 +552,201 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
             (long)self.videoReader.status]];
     }
     return YES;
+}
+
+- (BOOL)startFFmpegHwaccelReader:(NSError **)error {
+    NSString *path = self.configuration.mediaPath;
+    AVFormatContext *format = NULL;
+    int openResult = avformat_open_input(&format, path.fileSystemRepresentation, NULL, NULL);
+    if (openResult != 0) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:12
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg could not open the local video (hwaccel)"}];
+        }
+        return NO;
+    }
+    if (avformat_find_stream_info(format, NULL) < 0) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:13
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg could not read local stream info (hwaccel)"}];
+        }
+        return NO;
+    }
+    int videoIndex = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (videoIndex < 0) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:14
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg found no local video stream (hwaccel)"}];
+        }
+        return NO;
+    }
+    AVStream *stream = format->streams[videoIndex];
+    const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (decoder == NULL) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:15
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"No local video decoder available (hwaccel)"}];
+        }
+        return NO;
+    }
+    AVCodecContext *codecContext = avcodec_alloc_context3(decoder);
+    if (codecContext == NULL ||
+        avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) {
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:16
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"Could not configure local video decoder (hwaccel)"}];
+        }
+        return NO;
+    }
+    codecContext->err_recognition = AV_EF_CAREFUL;
+    codecContext->thread_count = 1;
+    codecContext->get_format = VCAMLocalSelectHardwarePixelFormat;
+    AVBufferRef *hardwareDevice = NULL;
+    if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                               NULL, NULL, 0) < 0 ||
+        (codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice)) == NULL) {
+        av_buffer_unref(&hardwareDevice);
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:17
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"VideoToolbox device unavailable for local video"}];
+        }
+        return NO;
+    }
+    av_buffer_unref(&hardwareDevice);
+    if (avcodec_open2(codecContext, decoder, NULL) < 0) {
+        avcodec_free_context(&codecContext);
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:18
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"Could not open local hardware decoder"}];
+        }
+        return NO;
+    }
+    _ffFormatContext = format;
+    _ffVideoStreamIndex = videoIndex;
+    _ffVideoStream = stream;
+    _ffCodecContext = codecContext;
+    _ffPacket = av_packet_alloc();
+    _ffFrame = av_frame_alloc();
+    if (_ffPacket == NULL || _ffFrame == NULL) {
+        [self closeFFmpegReader];
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:19
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"Out of memory for local hardware decoder"}];
+        }
+        return NO;
+    }
+    _ffmpegMode = YES;
+    _ffHwaccelMode = YES;
+    _ffEndOfFile = NO;
+    _ffFirstFrameLogged = NO;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"local hwaccel ready size=%dx%d codec=%s",
+        stream->codecpar->width, stream->codecpar->height,
+        avcodec_get_name(stream->codecpar->codec_id)]];
+    if (![self advanceHwaccelFrame]) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:20
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"Unable to decode the first video frame (hwaccel)"}];
+        }
+        [self closeFFmpegReader];
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)advanceHwaccelFrame {
+    if (!_ffmpegMode || !_ffHwaccelMode || _ffCodecContext == NULL) return NO;
+    while (YES) {
+        int readResult = av_read_frame(_ffFormatContext, _ffPacket);
+        if (readResult < 0) {
+            if (readResult == AVERROR_EOF && self.configuration.loopMedia) {
+                if (av_seek_frame(_ffFormatContext, _ffVideoStreamIndex, 0,
+                                  AVSEEK_FLAG_BACKWARD) < 0) return NO;
+                avcodec_flush_buffers(_ffCodecContext);
+                _ffEndOfFile = NO;
+                continue;
+            }
+            if (readResult == AVERROR_EOF) _ffEndOfFile = YES;
+            return NO;
+        }
+        if (_ffPacket->stream_index != _ffVideoStreamIndex) {
+            av_packet_unref(_ffPacket);
+            continue;
+        }
+        int sendResult = avcodec_send_packet(_ffCodecContext, _ffPacket);
+        av_packet_unref(_ffPacket);
+        if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+            static volatile int localHwaccelSendFailures = 0;
+            int failureCount = __sync_add_and_fetch(&localHwaccelSendFailures, 1);
+            if (failureCount <= 4) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"local hwaccel send_packet failed error=%d", sendResult]];
+            }
+            continue;
+        }
+        while (YES) {
+            int receiveResult = avcodec_receive_frame(_ffCodecContext, _ffFrame);
+            if (receiveResult == AVERROR(EAGAIN)) break;
+            if (receiveResult < 0) break;
+            if (_ffFrame->format == AV_PIX_FMT_VIDEOTOOLBOX &&
+                _ffFrame->data[3] != NULL) {
+                CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)_ffFrame->data[3];
+                CMTime pts = VCAMLocalCMTimeFromAVFrame(_ffFrame, _ffVideoStream);
+                CVPixelBufferRef retained = CVPixelBufferRetain(pixelBuffer);
+                CMVideoFormatDescriptionRef format = NULL;
+                if (CMVideoFormatDescriptionCreateForImageBuffer(
+                        kCFAllocatorDefault, retained, &format) == noErr) {
+                    CMSampleTimingInfo timing = {
+                        .duration = CMTimeMake(1, (int32_t)MAX(1, self.configuration.preferredFramesPerSecond)),
+                        .presentationTimeStamp = pts,
+                        .decodeTimeStamp = kCMTimeInvalid,
+                    };
+                    CMSampleBufferRef sample = NULL;
+                    if (CMSampleBufferCreateForImageBuffer(
+                            kCFAllocatorDefault, retained, true, NULL, NULL,
+                            format, &timing, &sample) == noErr) {
+                        if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
+                        _currentVideoSample = sample;
+                        _currentVideoPTS = pts;
+                        _diagnosticNewFrames += 1;
+                        [self recordDiagnosticSourceFrame];
+                        if (!_ffFirstFrameLogged) {
+                            _ffFirstFrameLogged = YES;
+                            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                @"local hwaccel first-frame pts=%.6f size=%zux%zu",
+                                CMTimeGetSeconds(pts),
+                                CVPixelBufferGetWidth(retained),
+                                CVPixelBufferGetHeight(retained)]];
+                        }
+                        CFRelease(format);
+                        CVPixelBufferRelease(retained);
+                        av_frame_unref(_ffFrame);
+                        return YES;
+                    }
+                    CFRelease(format);
+                }
+                CVPixelBufferRelease(retained);
+            }
+            av_frame_unref(_ffFrame);
+        }
+    }
 }
 
 - (BOOL)startFFmpegVideoReader:(NSError **)error {
@@ -631,6 +848,7 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
     _ffVideoStream = NULL;
     _ffVideoStreamIndex = -1;
     _ffmpegMode = NO;
+    _ffHwaccelMode = NO;
     _ffEndOfFile = NO;
     _ffFirstFrameLogged = NO;
 }
@@ -757,9 +975,12 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
         return NO;
     }
     [_hardwareDecoder flush];
+    if (_ffHwaccelMode && _ffCodecContext != NULL) {
+        avcodec_flush_buffers(_ffCodecContext);
+    }
     _ffEndOfFile = NO;
     [VCAMConfiguration appendProcessLog:@"local hardware eof loop"];
-    if (![self advanceFFmpegFrame]) return NO;
+    if (![self advanceVideoFrame]) return NO;
     _videoHostStart = hostTime;
     _videoMediaStartPTS = _currentVideoPTS;
     return YES;
