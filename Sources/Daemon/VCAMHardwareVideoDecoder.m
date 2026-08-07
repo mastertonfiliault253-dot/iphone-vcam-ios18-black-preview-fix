@@ -119,8 +119,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     } else {
         // ISO/IEC 14496-15 HEVCDecoderConfigurationRecord
         if (extraSize < 23) return nil;
-        int nalHeaderLength = (extra[20] & 0x03) + 1;
-        int offset = 21;
+        int nalHeaderLength = (extra[21] & 0x03) + 1;
+        int offset = 22;
         if (offset >= extraSize) return nil;
         int numArrays = extra[offset++];
         const uint8_t *vpsPointers[16] = {0};
