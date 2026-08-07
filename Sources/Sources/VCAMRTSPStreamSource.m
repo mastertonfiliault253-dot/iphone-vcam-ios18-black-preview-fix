@@ -589,15 +589,16 @@ cleanup:
                 av_packet_unref(packet);
                 continue;
             }
-            if (waitingForKeyPacket && (packet->flags & AV_PKT_FLAG_KEY) == 0) {
-                av_packet_unref(packet);
-                continue;
-            }
-            if (waitingForKeyPacket) {
-                avcodec_flush_buffers(codecContext);
+            // RTP H.264/HEVC streams carry SPS/PPS as separate small packets
+            // that are NOT flagged as keyframes. Skipping them starves the
+            // decoder of parameter sets and makes VideoToolbox fail every
+            // IDR with -12780. Feed every packet; gate only the OUTPUT until
+            // a clean decoded keyframe proves the reference state is intact.
+            if (waitingForKeyPacket && (packet->flags & AV_PKT_FLAG_KEY) != 0) {
                 waitingForKeyPacket = NO;
                 awaitingCleanKeyFrame = YES;
                 recoveryPackets = 0;
+                recoveryStartedAt = CACurrentMediaTime();
             }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
@@ -612,17 +613,6 @@ cleanup:
                 if (receiveResult >= 0) {
                     handleDecodedFrame(frame);
                     av_frame_unref(frame);
-                    if (waitingForKeyPacket) {
-                        avcodec_flush_buffers(codecContext);
-                        if ((packet->flags & AV_PKT_FLAG_KEY) != 0 &&
-                            (packet->flags & AV_PKT_FLAG_CORRUPT) == 0) {
-                            waitingForKeyPacket = NO;
-                            awaitingCleanKeyFrame = YES;
-                            recoveryPackets = 0;
-                            continue;
-                        }
-                        break;
-                    }
                     continue;
                 }
                 restartSession = YES;
@@ -634,7 +624,7 @@ cleanup:
                 }
                 break;
             }
-            if (sendResult >= 0 && !waitingForKeyPacket) {
+            if (sendResult >= 0) {
                 while (self.running) {
                     int receiveResult = avcodec_receive_frame(codecContext, frame);
                     if (receiveResult < 0) {
@@ -651,10 +641,6 @@ cleanup:
                     }
                     handleDecodedFrame(frame);
                     av_frame_unref(frame);
-                    if (waitingForKeyPacket) {
-                        avcodec_flush_buffers(codecContext);
-                        break;
-                    }
                 }
             } else if (sendResult != AVERROR(EAGAIN)) {
                 if (!loggedSendFailure) {
@@ -665,7 +651,7 @@ cleanup:
                 }
                 restartSession = YES;
             }
-            if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 60) {
+            if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 300) {
                 av_packet_unref(packet);
                 break;
             }
