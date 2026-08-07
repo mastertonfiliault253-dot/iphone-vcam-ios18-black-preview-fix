@@ -2,8 +2,10 @@
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import <QuartzCore/QuartzCore.h>
 #import <errno.h>
+#import <fcntl.h>
 #import <math.h>
 #import <stdlib.h>
+#import <unistd.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -389,6 +391,22 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         stream->codecpar->width, stream->codecpar->height]];
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
+            static volatile int vcamRtspDumpCount = 0;
+            int dumpIndex = __sync_add_and_fetch(&vcamRtspDumpCount, 1);
+            if (dumpIndex <= 3 && packet->size > 0) {
+                char dumpPath[96] = {0};
+                snprintf(dumpPath, sizeof(dumpPath),
+                         "/var/tmp/vcam-rtsp-pkt-%d.bin", dumpIndex);
+                int dumpFd = open(dumpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (dumpFd >= 0) {
+                    ssize_t writtenBytes = write(dumpFd, packet->data, (size_t)packet->size);
+                    close(dumpFd);
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"rtsp packet dump idx=%d path=%@ size=%d written=%ld",
+                        dumpIndex, [NSString stringWithUTF8String:dumpPath],
+                        packet->size, (long)writtenBytes]];
+                }
+            }
             CMTime pts = VCAMPacketTime(packet, stream);
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
