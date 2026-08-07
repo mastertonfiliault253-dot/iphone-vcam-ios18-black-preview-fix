@@ -29,6 +29,15 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
         self.assertIn("annexB conversion failed", decoder)
 
+    def test_annex_b_parameter_sets_are_accepted_for_h264_and_hevc(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMCollectH264AnnexBParameterSets", decoder)
+        self.assertIn("VCAMCollectHEVCAnnexBParameterSets", decoder)
+        self.assertIn("H264 annexB sps=%d pps=%d", decoder)
+        self.assertIn("HEVC annexB vps=%d sps=%d pps=%d", decoder)
+
 
 if __name__ == "__main__":
     unittest.main()

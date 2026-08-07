@@ -88,6 +88,85 @@ static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
     return output;
 }
 
+static BOOL VCAMCollectH264AnnexBParameterSets(
+    const uint8_t *extra, size_t extraSize,
+    const uint8_t *spsPointers[32], size_t spsSizes[32], int *spsCountOut,
+    const uint8_t *ppsPointers[32], size_t ppsSizes[32], int *ppsCountOut) {
+    int spsCount = 0;
+    int ppsCount = 0;
+    size_t scan = 0;
+    while (scan + 4 <= extraSize) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(extra, extraSize, scan, &startCodeLength)) {
+            scan += 1;
+            continue;
+        }
+        size_t payloadStart = scan + startCodeLength;
+        if (payloadStart >= extraSize) break;
+        int nalType = extra[payloadStart] & 0x1F;
+        size_t next = payloadStart + 1;
+        while (next < extraSize && !VCAMIsAnnexBStartCode(extra, extraSize, next, NULL)) {
+            next += 1;
+        }
+        if (nalType == 7 && spsCount < 32) {
+            spsPointers[spsCount] = extra + payloadStart;
+            spsSizes[spsCount] = next - payloadStart;
+            spsCount += 1;
+        } else if (nalType == 8 && ppsCount < 32) {
+            ppsPointers[ppsCount] = extra + payloadStart;
+            ppsSizes[ppsCount] = next - payloadStart;
+            ppsCount += 1;
+        }
+        scan = next;
+    }
+    if (spsCountOut != NULL) *spsCountOut = spsCount;
+    if (ppsCountOut != NULL) *ppsCountOut = ppsCount;
+    return spsCount > 0 && ppsCount > 0;
+}
+
+static BOOL VCAMCollectHEVCAnnexBParameterSets(
+    const uint8_t *extra, size_t extraSize,
+    const uint8_t *vpsPointers[16], size_t vpsSizes[16], int *vpsCountOut,
+    const uint8_t *spsPointers[32], size_t spsSizes[32], int *spsCountOut,
+    const uint8_t *ppsPointers[32], size_t ppsSizes[32], int *ppsCountOut) {
+    int vpsCount = 0;
+    int spsCount = 0;
+    int ppsCount = 0;
+    size_t scan = 0;
+    while (scan + 4 <= extraSize) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(extra, extraSize, scan, &startCodeLength)) {
+            scan += 1;
+            continue;
+        }
+        size_t payloadStart = scan + startCodeLength;
+        if (payloadStart >= extraSize) break;
+        int nalType = (extra[payloadStart] >> 1) & 0x3F;
+        size_t next = payloadStart + 1;
+        while (next < extraSize && !VCAMIsAnnexBStartCode(extra, extraSize, next, NULL)) {
+            next += 1;
+        }
+        if (nalType == 32 && vpsCount < 16) {
+            vpsPointers[vpsCount] = extra + payloadStart;
+            vpsSizes[vpsCount] = next - payloadStart;
+            vpsCount += 1;
+        } else if (nalType == 33 && spsCount < 32) {
+            spsPointers[spsCount] = extra + payloadStart;
+            spsSizes[spsCount] = next - payloadStart;
+            spsCount += 1;
+        } else if (nalType == 34 && ppsCount < 32) {
+            ppsPointers[ppsCount] = extra + payloadStart;
+            ppsSizes[ppsCount] = next - payloadStart;
+            ppsCount += 1;
+        }
+        scan = next;
+    }
+    if (vpsCountOut != NULL) *vpsCountOut = vpsCount;
+    if (spsCountOut != NULL) *spsCountOut = spsCount;
+    if (ppsCountOut != NULL) *ppsCountOut = ppsCount;
+    return spsCount > 0 && ppsCount > 0;
+}
+
 typedef struct {
     CVPixelBufferRef buffer;
     CMTime presentationTime;
@@ -173,6 +252,43 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     int extraSize = parameters->extradata_size;
     OSStatus status = noErr;
     if (parameters->codec_id == AV_CODEC_ID_H264) {
+        BOOL annexB = extraSize >= 4 &&
+            VCAMIsAnnexBStartCode(extra, (size_t)extraSize, 0, NULL);
+        if (annexB) {
+            // Some RTSP servers advertise SPS/PPS in the SDP as Annex B
+            // parameter sets (00 00 00 01 67...) instead of an avcC record.
+            const uint8_t *spsPointers[32] = {0};
+            size_t spsSizes[32] = {0};
+            const uint8_t *ppsPointers[32] = {0};
+            size_t ppsSizes[32] = {0};
+            int spsCount = 0;
+            int ppsCount = 0;
+            if (!VCAMCollectH264AnnexBParameterSets(
+                    extra, (size_t)extraSize,
+                    spsPointers, spsSizes, &spsCount,
+                    ppsPointers, ppsSizes, &ppsCount)) {
+                return nil;
+            }
+            const uint8_t *combined[64] = {0};
+            size_t combinedSizes[64] = {0};
+            for (int i = 0; i < spsCount; i++) {
+                combined[i] = spsPointers[i];
+                combinedSizes[i] = spsSizes[i];
+            }
+            for (int i = 0; i < ppsCount; i++) {
+                combined[spsCount + i] = ppsPointers[i];
+                combinedSizes[spsCount + i] = ppsSizes[i];
+            }
+            status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                kCFAllocatorDefault,
+                spsCount + ppsCount,
+                (const uint8_t *const *)combined,
+                combinedSizes,
+                4,
+                &_formatDescription);
+            NSLog(@"VCAMHardwareVideoDecoder H264 annexB sps=%d pps=%d status=%d",
+                  spsCount, ppsCount, (int)status);
+        } else {
         if (extraSize < 7) return nil;
         int nalHeaderLength = (extra[4] & 0x03) + 1;
         int offset = 6;
@@ -215,7 +331,55 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             combinedSizes,
             (size_t)nalHeaderLength,
             &_formatDescription);
+        }
     } else {
+        BOOL annexB = extraSize >= 4 &&
+            VCAMIsAnnexBStartCode(extra, (size_t)extraSize, 0, NULL);
+        if (annexB) {
+            // In-band/Annex B VPS+SPS+PPS parameter sets (e.g. from RTSP SDP).
+            const uint8_t *vpsPointers[16] = {0};
+            size_t vpsSizes[16] = {0};
+            const uint8_t *spsPointers[32] = {0};
+            size_t spsSizes[32] = {0};
+            const uint8_t *ppsPointers[32] = {0};
+            size_t ppsSizes[32] = {0};
+            int vpsCount = 0, spsCount = 0, ppsCount = 0;
+            if (!VCAMCollectHEVCAnnexBParameterSets(
+                    extra, (size_t)extraSize,
+                    vpsPointers, vpsSizes, &vpsCount,
+                    spsPointers, spsSizes, &spsCount,
+                    ppsPointers, ppsSizes, &ppsCount)) {
+                return nil;
+            }
+            const uint8_t *all[64] = {0};
+            size_t allSizes[64] = {0};
+            int total = 0;
+            for (int i = 0; i < vpsCount; i++) {
+                all[total] = vpsPointers[i];
+                allSizes[total] = vpsSizes[i];
+                total++;
+            }
+            for (int i = 0; i < spsCount; i++) {
+                all[total] = spsPointers[i];
+                allSizes[total] = spsSizes[i];
+                total++;
+            }
+            for (int i = 0; i < ppsCount; i++) {
+                all[total] = ppsPointers[i];
+                allSizes[total] = ppsSizes[i];
+                total++;
+            }
+            status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                kCFAllocatorDefault,
+                total,
+                (const uint8_t *const *)all,
+                allSizes,
+                4,
+                NULL,
+                &_formatDescription);
+            NSLog(@"VCAMHardwareVideoDecoder HEVC annexB vps=%d sps=%d pps=%d status=%d",
+                  vpsCount, spsCount, ppsCount, (int)status);
+        } else {
         // ISO/IEC 14496-15 HEVCDecoderConfigurationRecord
         if (extraSize < 23) return nil;
         int nalHeaderLength = (extra[21] & 0x03) + 1;
@@ -272,6 +436,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             &_formatDescription);
         NSLog(@"VCAMHardwareVideoDecoder HEVC nalu=%d vps=%d sps=%d pps=%d status=%d",
               nalHeaderLength, vpsCount, spsCount, ppsCount, (int)status);
+        }
     }
     if (status != noErr || _formatDescription == NULL) return nil;
     return self;
