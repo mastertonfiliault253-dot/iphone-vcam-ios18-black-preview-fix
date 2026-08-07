@@ -51,7 +51,8 @@ static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
     return format == kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange ||
         format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
         format == (OSType)0x5b387630 || // observed private compressed '[8v0'
-        format == (OSType)0x7d387630;   // observed private compressed '}8v0'
+        format == (OSType)0x7d387630 || // observed private compressed '}8v0'
+        format == (OSType)0x26386630;   // observed private bi-planar '&8f0'
 }
 
 static CVReturn VCAMCreateStagingPool(OSType format, size_t width, size_t height,
@@ -463,6 +464,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
 }
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget,
+                               BOOL aspectFit,
                                CVPixelBufferRef *replacementBufferOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
@@ -569,8 +571,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         // WebRTC, and recording). Aspect-fill here prevents target-specific
         // black bars, for example when a 16:9 canvas is written into a 4:3
         // still or browser buffer.
-        CGFloat scale = MAX((CGFloat)renderWidth / CGRectGetWidth(image.extent),
-                            (CGFloat)renderHeight / CGRectGetHeight(image.extent));
+        CGFloat scale = aspectFit
+            ? MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
+                  (CGFloat)renderHeight / CGRectGetHeight(image.extent))
+            : MAX((CGFloat)renderWidth / CGRectGetWidth(image.extent),
+                  (CGFloat)renderHeight / CGRectGetHeight(image.extent));
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
         CGFloat x = ((CGFloat)renderWidth - CGRectGetWidth(image.extent)) * 0.5 -
             CGRectGetMinX(image.extent);

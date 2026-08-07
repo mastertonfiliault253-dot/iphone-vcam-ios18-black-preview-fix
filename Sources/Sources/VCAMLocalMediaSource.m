@@ -2,6 +2,8 @@
 #import "../Core/VCAMConfiguration.h"
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
+#import <libavcodec/avcodec.h>
+#import <libavformat/avformat.h>
 #import <fcntl.h>
 #import <math.h>
 #import <stdarg.h>
@@ -43,6 +45,85 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
+static CVPixelBufferRef VCAMLocalCopyBGRAFromAVFrame(AVFrame *frame) {
+    if (frame == NULL || frame->width <= 0 || frame->height <= 0) return NULL;
+    BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
+        frame->format == AV_PIX_FMT_YUVJ420P;
+    BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
+    if (!planar420 && !nv12) return NULL;
+    if (frame->data[0] == NULL || frame->data[1] == NULL ||
+        (planar420 && frame->data[2] == NULL)) return NULL;
+
+    const int maximumDimension = 1920;
+    double scale = MIN(1.0, (double)maximumDimension /
+        (double)MAX(frame->width, frame->height));
+    int outputWidth = MAX(1, (int)lrint((double)frame->width * scale));
+    int outputHeight = MAX(1, (int)lrint((double)frame->height * scale));
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
+    };
+    CVPixelBufferRef pixelBuffer = NULL;
+    CVReturn createStatus = CVPixelBufferCreate(kCFAllocatorDefault, (size_t)outputWidth,
+                                                (size_t)outputHeight,
+                                                kCVPixelFormatType_32BGRA,
+                                                (__bridge CFDictionaryRef)attributes,
+                                                &pixelBuffer);
+    if (createStatus != kCVReturnSuccess) return NULL;
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+        CVPixelBufferRelease(pixelBuffer);
+        return NULL;
+    }
+    uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
+        frame->color_range == AVCOL_RANGE_JPEG;
+    for (int y = 0; y < outputHeight; y++) {
+        int sourceY = MIN(frame->height - 1,
+                          (int)((int64_t)y * frame->height / outputHeight));
+        const uint8_t *luma = frame->data[0] + sourceY * frame->linesize[0];
+        const uint8_t *chromaU = frame->data[1] + (sourceY / 2) * frame->linesize[1];
+        const uint8_t *chromaV = planar420
+            ? frame->data[2] + (sourceY / 2) * frame->linesize[2] : NULL;
+        uint8_t *row = destination + (size_t)y * destinationStride;
+        for (int x = 0; x < outputWidth; x++) {
+            int sourceX = MIN(frame->width - 1,
+                              (int)((int64_t)x * frame->width / outputWidth));
+            int sampleY = luma[sourceX];
+            int sampleU = planar420 ? chromaU[sourceX / 2] : chromaU[(sourceX / 2) * 2];
+            int sampleV = planar420 ? chromaV[sourceX / 2] : chromaU[(sourceX / 2) * 2 + 1];
+            int c = fullRange ? sampleY : MAX(0, sampleY - 16);
+            int d = sampleU - 128;
+            int e = sampleV - 128;
+            int red = fullRange ? c + ((359 * e + 128) >> 8)
+                                : (298 * c + 409 * e + 128) >> 8;
+            int green = fullRange ? c - ((88 * d + 183 * e + 128) >> 8)
+                                  : (298 * c - 100 * d - 208 * e + 128) >> 8;
+            int blue = fullRange ? c + ((454 * d + 128) >> 8)
+                                 : (298 * c + 516 * d + 128) >> 8;
+            row[x * 4 + 0] = (uint8_t)MAX(0, MIN(255, blue));
+            row[x * 4 + 1] = (uint8_t)MAX(0, MIN(255, green));
+            row[x * 4 + 2] = (uint8_t)MAX(0, MIN(255, red));
+            row[x * 4 + 3] = 255;
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    return pixelBuffer;
+}
+
+static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {
+    int64_t pts = frame == NULL ? AV_NOPTS_VALUE : frame->pts;
+    if (pts == AV_NOPTS_VALUE && frame != NULL) {
+        pts = frame->best_effort_timestamp;
+    }
+    if (pts == AV_NOPTS_VALUE) return kCMTimeZero;
+    AVRational timeBase = stream != NULL && stream->time_base.num > 0 &&
+        stream->time_base.den > 0 ? stream->time_base : (AVRational){1, 600};
+    double seconds = (double)pts * av_q2d(timeBase);
+    if (!isfinite(seconds) || seconds < 0) return kCMTimeZero;
+    return CMTimeMakeWithSeconds(seconds, 600);
+}
+
 @interface VCAMLocalMediaSource () {
     CGImageRef _stillImage;
     CMSampleBufferRef _currentVideoSample;
@@ -73,6 +154,15 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     BOOL _readerFirstFrameLogged;
     BOOL _readerFailureLogged;
     NSUInteger _readerLoopCount;
+    BOOL _ffmpegMode;
+    BOOL _ffEndOfFile;
+    BOOL _ffFirstFrameLogged;
+    AVFormatContext *_ffFormatContext;
+    AVCodecContext *_ffCodecContext;
+    AVFrame *_ffFrame;
+    AVPacket *_ffPacket;
+    int _ffVideoStreamIndex;
+    AVStream *_ffVideoStream;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -85,6 +175,11 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 @property(nonatomic) UInt32 audioChannelCount;
 @property(nonatomic) BOOL running;
 @property(nonatomic) CGAffineTransform videoTransform;
+- (BOOL)startFFmpegVideoReader:(NSError **)error;
+- (void)closeFFmpegReader;
+- (BOOL)advanceFFmpegFrame;
+- (BOOL)publishFFmpegFrame;
+- (BOOL)restartFFmpegAfterEndAtHostTime:(CFTimeInterval)hostTime;
 @end
 
 @implementation VCAMLocalMediaSource
@@ -158,6 +253,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 
 - (void)resetVideoReaderState {
     [self.videoReader cancelReading];
+    [self closeFFmpegReader];
     if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
     _currentVideoSample = NULL;
     _currentVideoPTS = kCMTimeInvalid;
@@ -239,18 +335,19 @@ static int VCAMCompareDouble(const void *left, const void *right) {
         transformAngle, (long)self.configuration.rotationDegrees,
         (long)self.configuration.preferredFramesPerSecond);
     if (![self rebuildVideoReader:error]) return NO;
-    if (![self advanceVideoFrame]) {
-        AVAssetReaderStatus status = self.videoReader.status;
-        NSError *firstFrameError = self.videoReader.error ?: [NSError
-            errorWithDomain:@"VCAMLocalMediaSource"
-                       code:5
-                   userInfo:@{NSLocalizedDescriptionKey:
-                       @"Unable to decode the first video frame"}];
-        if (error != NULL) *error = firstFrameError;
-        [self reportVideoReaderFailureWithStatus:status error:firstFrameError];
-        [self resetVideoReaderState];
-        return NO;
-    }
+    if ([self advanceVideoFrame]) return YES;
+
+    AVAssetReaderStatus status = self.videoReader.status;
+    NSError *firstFrameError = self.videoReader.error ?: [NSError
+        errorWithDomain:@"VCAMLocalMediaSource"
+                   code:5
+               userInfo:@{NSLocalizedDescriptionKey:
+                   @"Unable to decode the first video frame"}];
+    [self reportVideoReaderFailureWithStatus:status error:firstFrameError];
+    [self resetVideoReaderState];
+    [VCAMConfiguration appendProcessLog:
+        @"local reader failed; switching to FFmpeg software decode"];
+    if (![self startFFmpegVideoReader:error]) return NO;
     return YES;
 }
 
@@ -308,6 +405,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 - (BOOL)advanceVideoFrame {
+    if (_ffmpegMode) return [self advanceFFmpegFrame];
     CMSampleBufferRef sample = NULL;
     CVPixelBufferRef pixelBuffer = NULL;
     NSUInteger skippedNonPixelSamples = 0;
@@ -397,6 +495,196 @@ static int VCAMCompareDouble(const void *left, const void *right) {
     return YES;
 }
 
+- (BOOL)startFFmpegVideoReader:(NSError **)error {
+    NSString *path = self.configuration.mediaPath;
+    AVFormatContext *format = NULL;
+    if (avformat_open_input(&format, path.fileSystemRepresentation, NULL, NULL) != 0) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:6
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg could not open the local video"}];
+        }
+        return NO;
+    }
+    if (avformat_find_stream_info(format, NULL) < 0) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:7
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg could not read local stream info"}];
+        }
+        return NO;
+    }
+    int videoIndex = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (videoIndex < 0) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:8
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg found no local video stream"}];
+        }
+        return NO;
+    }
+    AVStream *stream = format->streams[videoIndex];
+    const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (codec == NULL) {
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:9
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg found no decoder for the local video"}];
+        }
+        return NO;
+    }
+    AVCodecContext *codecContext = avcodec_alloc_context3(codec);
+    if (codecContext == NULL ||
+        avcodec_parameters_to_context(codecContext, stream->codecpar) < 0 ||
+        avcodec_open2(codecContext, codec, NULL) < 0) {
+        if (codecContext != NULL) avcodec_free_context(&codecContext);
+        avformat_close_input(&format);
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:10
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"FFmpeg could not open the local video decoder"}];
+        }
+        return NO;
+    }
+    _ffFormatContext = format;
+    _ffCodecContext = codecContext;
+    _ffVideoStreamIndex = videoIndex;
+    _ffVideoStream = stream;
+    _ffFrame = av_frame_alloc();
+    _ffPacket = av_packet_alloc();
+    _ffmpegMode = YES;
+    _ffEndOfFile = NO;
+    _ffFirstFrameLogged = NO;
+    double fps = stream->avg_frame_rate.num > 0 && stream->avg_frame_rate.den > 0
+        ? av_q2d(stream->avg_frame_rate) : 0.0;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"local ffmpeg ready size=%dx%d fps=%.2f", codecContext->width,
+        codecContext->height, fps]];
+    if (![self advanceFFmpegFrame]) {
+        NSError *decodeError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:11
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"Unable to decode the first video frame (ffmpeg)"}];
+        if (error != NULL) *error = decodeError;
+        [self resetVideoReaderState];
+        return NO;
+    }
+    return YES;
+}
+
+- (void)closeFFmpegReader {
+    if (_ffFormatContext != NULL) {
+        avformat_close_input(&_ffFormatContext);
+        _ffFormatContext = NULL;
+    }
+    if (_ffCodecContext != NULL) {
+        avcodec_free_context(&_ffCodecContext);
+        _ffCodecContext = NULL;
+    }
+    if (_ffFrame != NULL) {
+        av_frame_free(&_ffFrame);
+        _ffFrame = NULL;
+    }
+    if (_ffPacket != NULL) {
+        av_packet_free(&_ffPacket);
+        _ffPacket = NULL;
+    }
+    _ffVideoStream = NULL;
+    _ffVideoStreamIndex = -1;
+    _ffmpegMode = NO;
+    _ffEndOfFile = NO;
+    _ffFirstFrameLogged = NO;
+}
+
+- (BOOL)advanceFFmpegFrame {
+    if (!_ffmpegMode || _ffCodecContext == NULL) return NO;
+    while (YES) {
+        int receiveResult = avcodec_receive_frame(_ffCodecContext, _ffFrame);
+        if (receiveResult == 0) return [self publishFFmpegFrame];
+        if (receiveResult == AVERROR_EOF) {
+            _ffEndOfFile = YES;
+            return NO;
+        }
+        if (receiveResult != AVERROR(EAGAIN)) {
+            _ffEndOfFile = YES;
+            return NO;
+        }
+        if (_ffEndOfFile) return NO;
+        int readResult = av_read_frame(_ffFormatContext, _ffPacket);
+        if (readResult < 0) {
+            if (readResult == AVERROR_EOF) {
+                avcodec_send_packet(_ffCodecContext, NULL);
+                _ffEndOfFile = YES;
+                continue;
+            }
+            return NO;
+        }
+        if (_ffPacket->stream_index == _ffVideoStreamIndex) {
+            int sendResult = avcodec_send_packet(_ffCodecContext, _ffPacket);
+            if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+                av_packet_unref(_ffPacket);
+                return NO;
+            }
+        }
+        av_packet_unref(_ffPacket);
+    }
+}
+
+- (BOOL)publishFFmpegFrame {
+    CVPixelBufferRef pixelBuffer = VCAMLocalCopyBGRAFromAVFrame(_ffFrame);
+    CMTime pts = VCAMLocalCMTimeFromAVFrame(_ffFrame, _ffVideoStream);
+    av_frame_unref(_ffFrame);
+    if (pixelBuffer == NULL) return NO;
+    CMVideoFormatDescriptionRef format = NULL;
+    if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault,
+                                                     pixelBuffer, &format) != noErr) {
+        CVPixelBufferRelease(pixelBuffer);
+        return NO;
+    }
+    CMSampleTimingInfo timing = {
+        .duration = CMTimeMake(1, (int32_t)MAX(1, self.configuration.preferredFramesPerSecond)),
+        .presentationTimeStamp = pts,
+        .decodeTimeStamp = kCMTimeInvalid,
+    };
+    CMSampleBufferRef sample = NULL;
+    OSStatus status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer,
+                                                         true, NULL, NULL, format,
+                                                         &timing, &sample);
+    CFRelease(format);
+    CVPixelBufferRelease(pixelBuffer);
+    if (status != noErr || sample == NULL) return NO;
+    if (_currentVideoSample != NULL) CFRelease(_currentVideoSample);
+    _currentVideoSample = sample;
+    _currentVideoPTS = pts;
+    _diagnosticNewFrames += 1;
+    [self recordDiagnosticSourceFrame];
+    if (!_ffFirstFrameLogged) {
+        _ffFirstFrameLogged = YES;
+        CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sample);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"local ffmpeg first-frame pts=%.6f size=%zux%zu format=BGRA",
+            CMTimeGetSeconds(pts), CVPixelBufferGetWidth(imageBuffer),
+            CVPixelBufferGetHeight(imageBuffer)]];
+    }
+    return YES;
+}
+
+- (BOOL)restartFFmpegAfterEndAtHostTime:(CFTimeInterval)hostTime {
+    if (!_ffmpegMode || !_ffEndOfFile || !self.configuration.loopMedia) return NO;
+    if (av_seek_frame(_ffFormatContext, _ffVideoStreamIndex, 0, AVSEEK_FLAG_BACKWARD) < 0) {
+        return NO;
+    }
+    avcodec_flush_buffers(_ffCodecContext);
+    _ffEndOfFile = NO;
+    [VCAMConfiguration appendProcessLog:@"local ffmpeg eof loop"];
+    if (![self advanceFFmpegFrame]) return NO;
+    _videoHostStart = hostTime;
+    _videoMediaStartPTS = _currentVideoPTS;
+    return YES;
+}
+
 - (CMTime)durationForCurrentVideoFrame {
     CMTime duration = _currentVideoSample == NULL ? kCMTimeInvalid
         : CMSampleBufferGetDuration(_currentVideoSample);
@@ -407,6 +695,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 - (BOOL)restartVideoReaderAfterEndAtHostTime:(CFTimeInterval)hostTime {
+    if (_ffmpegMode) return [self restartFFmpegAfterEndAtHostTime:hostTime];
     if (self.videoReader.status != AVAssetReaderStatusCompleted ||
         !self.configuration.loopMedia) return NO;
     _readerLoopCount += 1;

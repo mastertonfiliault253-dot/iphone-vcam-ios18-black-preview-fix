@@ -376,7 +376,6 @@ static CFStringRef const VCAMPropagationMarkerKey =
 
 static BOOL VCAMRouteUsesPropagationMarker(VCAMReplacementRoute route) {
     return route == VCAMReplacementRouteVideoConverter ||
-        route == VCAMReplacementRouteCameraPreview ||
         route == VCAMReplacementRouteVideoRecording;
 }
 
@@ -721,6 +720,7 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
             replacementSucceeded = drawReplacementOntoBuffer(
                 originalImageBuffer,
                 replacementRoute != VCAMReplacementRouteStillPhoto,
+                replacementRoute == VCAMReplacementRouteCameraPreview,
                 &replacementImageBuffer);
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(

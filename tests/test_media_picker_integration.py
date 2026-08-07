@@ -171,7 +171,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "- (BOOL)rebuildVideoReader:", 1
         )[0]
         self.assertIn("if (![self rebuildVideoReader:error]) return NO;", starter)
-        self.assertIn("if (![self advanceVideoFrame])", starter)
+        self.assertIn("if ([self advanceVideoFrame]) return YES;", starter)
+        self.assertIn("if (![self startFFmpegVideoReader:error]) return NO;", starter)
         self.assertIn("Unable to decode the first video frame", starter)
         self.assertLess(starter.index("rebuildVideoReader:error"), starter.index("advanceVideoFrame"))
 
