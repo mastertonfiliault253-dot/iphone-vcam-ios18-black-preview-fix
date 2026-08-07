@@ -1,5 +1,6 @@
 #import "VCAMMediaPickerController.h"
 #import "VCAMControlPanelViewController.h"
+#import "VCAMSharedFramePreviewView.h"
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
