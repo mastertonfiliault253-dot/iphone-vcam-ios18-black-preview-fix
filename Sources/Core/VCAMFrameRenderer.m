@@ -184,7 +184,13 @@
     CGContextRotateCTM(context, rotation);
     if (mirror) CGContextScaleCTM(context, -1, 1);
     CGContextTranslateCTM(context, -sourceWidth * 0.5, -sourceHeight * 0.5);
-    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    // Video frames are already antialiased by the decoder pipeline; high
+    // quality interpolation plus antialiasing is the dominant CPU cost here
+    // and produces no visible benefit at 1080x1920. Medium + no AA keeps the
+    // scale/rotate conversion on the CPU but several times cheaper.
+    CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
+    CGContextSetShouldAntialias(context, NO);
+    CGContextSetAllowsAntialiasing(context, NO);
     CGContextDrawImage(context, CGRectMake(0, 0, sourceWidth, sourceHeight), image);
     CGContextRelease(context);
     CVPixelBufferUnlockBaseAddress(output, 0);

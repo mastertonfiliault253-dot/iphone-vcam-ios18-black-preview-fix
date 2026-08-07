@@ -316,6 +316,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("UIPanGestureRecognizer", picker)
         self.assertIn("numberOfTouchesRequired = 3", picker)
         self.assertIn("UIAccessibilityIsVoiceOverRunning", picker)
+        self.assertIn("VCAMFloatingWindowIdentifier", picker)
+        self.assertIn("installGestureOnWindowIfNeeded", picker)
+        self.assertIn("UIWindowLevelStatusBar", picker)
+        self.assertIn("presentPanelWithRemainingRetries", picker)
         self.assertIn("accessibilityLabel", panel)
 
     def test_preview_displays_worker_oriented_pixels_without_a_second_transform(self) -> None:

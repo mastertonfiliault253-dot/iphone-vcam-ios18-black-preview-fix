@@ -10,6 +10,7 @@
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
 static const void *VCAMGestureTagKey = &VCAMGestureTagKey;
+static NSString *const VCAMFloatingWindowIdentifier = @"com.codex.vcam.floatingDot";
 static BOOL VCAMPickerUIStarted = NO;
 
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
@@ -71,6 +72,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic, strong, nullable) UIButton *button;
 @property(nonatomic, weak, nullable) VCAMControlPanelViewController *panel;
 @property(nonatomic, weak, nullable) UIWindow *gestureWindow;
+@property(nonatomic, strong, nullable) UIWindow *floatingWindow;
 @property(nonatomic) NSInteger remainingWindowRetries;
 @property(nonatomic) BOOL started;
 @end
@@ -174,6 +176,89 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     return nil;
 }
 
+- (NSArray<UIWindow *> *)allVisibleWindows {
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    SEL windowsSelector = NSSelectorFromString(@"windows");
+    NSArray *legacyWindows = [UIApplication.sharedApplication respondsToSelector:windowsSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(UIApplication.sharedApplication, windowsSelector) : @[];
+    for (UIWindow *window in legacyWindows) {
+        NSNumber *key = @((unsigned long)(__bridge void *)window);
+        if (window == nil || [seen containsObject:key]) continue;
+        [seen addObject:key];
+        [windows addObject:window];
+    }
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            NSNumber *key = @((unsigned long)(__bridge void *)window);
+            if (window == nil || [seen containsObject:key]) continue;
+            [seen addObject:key];
+            [windows addObject:window];
+        }
+    }
+    return windows;
+}
+
+- (nullable UIWindow *)floatingDotWindow {
+    if (self.floatingWindow != nil) return self.floatingWindow;
+    UIWindowScene *windowScene = [self cameraWindow].windowScene;
+    UIWindow *window = windowScene != nil
+        ? [[UIWindow alloc] initWithWindowScene:windowScene]
+        : [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 52.0, 52.0)];
+    window.frame = CGRectMake(0, 0, 52.0, 52.0);
+    window.accessibilityIdentifier = VCAMFloatingWindowIdentifier;
+    // Keep the dot above presented sheets/pickers so it can toggle the panel,
+    // but below system alerts, Control Center and the lock screen.
+    window.windowLevel = UIWindowLevelStatusBar + 1.0;
+    window.backgroundColor = UIColor.clearColor;
+    window.hidden = YES;
+    self.floatingWindow = window;
+    return window;
+}
+
+- (UITapGestureRecognizer *)makeThreeFingerToggleRecognizer {
+    UITapGestureRecognizer *toggle = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                            action:@selector(toggleFloatingButton:)];
+    objc_setAssociatedObject(toggle, VCAMGestureTagKey, @(VCAMFloatingDotTag),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    toggle.numberOfTouchesRequired = 3;
+    toggle.numberOfTapsRequired = 2;
+    toggle.cancelsTouchesInView = NO;
+    toggle.delegate = self;
+    return toggle;
+}
+
+- (void)installGestureOnWindowIfNeeded:(UIWindow *)window {
+    if (window == nil) return;
+    for (UIGestureRecognizer *recognizer in [window.gestureRecognizers copy]) {
+        NSNumber *gestureTag = objc_getAssociatedObject(recognizer, VCAMGestureTagKey);
+        if ([gestureTag integerValue] == VCAMFloatingDotTag) return;
+    }
+    UITapGestureRecognizer *toggle = [self makeThreeFingerToggleRecognizer];
+    [window addGestureRecognizer:toggle];
+    [VCAMConfiguration appendProcessLog:
+        [NSString stringWithFormat:@"springboard-client gesture installed on window=%@ bounds=%@",
+            window, NSStringFromCGRect(window.bounds)]];
+}
+
+- (void)removeLegacyFloatingDots {
+    // Defense in depth against a duplicate controller instance leaving a
+    // second dot behind (for example after a re-injection with a different
+    // dylib path). Only our own floating window may keep the button.
+    for (UIWindow *window in [self allVisibleWindows]) {
+        if (window == self.floatingWindow) continue;
+        if ([window.accessibilityIdentifier isEqualToString:VCAMFloatingWindowIdentifier]) {
+            window.hidden = YES;
+        }
+        for (UIView *view in [window.subviews copy]) {
+            if (view != self.button && view.tag == VCAMFloatingDotTag) {
+                [view removeFromSuperview];
+            }
+        }
+    }
+}
+
 - (NSString *)floatingPositionIdentifier {
     NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
     return bundle.length > 0 ? bundle : NSProcessInfo.processInfo.processName;
@@ -236,30 +321,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         return;
     }
 
-    if (self.gestureWindow != window) {
-        if (self.gestureWindow != nil) {
-            for (UIGestureRecognizer *recognizer in [self.gestureWindow.gestureRecognizers copy]) {
-                NSNumber *gestureTag = objc_getAssociatedObject(recognizer, VCAMGestureTagKey);
-                if ([gestureTag integerValue] == VCAMFloatingDotTag ||
-                    (recognizer.delegate == self &&
-                     [recognizer isKindOfClass:UITapGestureRecognizer.class])) {
-                    [self.gestureWindow removeGestureRecognizer:recognizer];
-                }
-            }
-        }
-        UITapGestureRecognizer *toggle = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                                action:@selector(toggleFloatingButton:)];
-        objc_setAssociatedObject(toggle, VCAMGestureTagKey, @(VCAMFloatingDotTag),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        toggle.numberOfTouchesRequired = 3;
-        toggle.numberOfTapsRequired = 2;
-        toggle.cancelsTouchesInView = NO;
-        toggle.delegate = self;
-        [window addGestureRecognizer:toggle];
-        self.gestureWindow = window;
-        [VCAMConfiguration appendProcessLog:
-            [NSString stringWithFormat:@"springboard-client gesture installed on window=%@ bounds=%@",
-                window, NSStringFromCGRect(window.bounds)]];
+    // Three-finger double-tap must work regardless of which window is on top.
+    // Install on every visible window and re-evaluate on the periodic refresh.
+    for (UIWindow *candidate in [self allVisibleWindows]) {
+        [self installGestureOnWindowIfNeeded:candidate];
     }
 
     if (self.button == nil) {
@@ -297,27 +362,33 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         self.button = button;
     }
 
-    if (self.button.superview != window) {
-        for (UIView *existing in window.subviews) {
-            if (existing.tag == VCAMFloatingDotTag) [existing removeFromSuperview];
-        }
+    UIWindow *floatingWindow = [self floatingDotWindow];
+    if (floatingWindow.windowScene == nil && window.windowScene != nil) {
+        floatingWindow.hidden = YES;
+        self.floatingWindow = nil;
+        floatingWindow = [self floatingDotWindow];
+    }
+    [self removeLegacyFloatingDots];
+
+    if (self.button.superview != floatingWindow) {
         [self.button removeFromSuperview];
-        self.button.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
+        self.button.frame = floatingWindow.bounds;
+        floatingWindow.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
-        if (savedCenter != nil) self.button.center = savedCenter.CGPointValue;
-        self.button.autoresizingMask = UIViewAutoresizingFlexibleRightMargin |
-                                       UIViewAutoresizingFlexibleTopMargin |
-                                       UIViewAutoresizingFlexibleBottomMargin;
-        [window addSubview:self.button];
+        if (savedCenter != nil) floatingWindow.center = savedCenter.CGPointValue;
+        [floatingWindow addSubview:self.button];
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
-    self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || locked;
-    [window bringSubviewToFront:self.button];
+    BOOL visible = [self isFloatingButtonVisibleForValues:values] && !locked;
+    floatingWindow.hidden = !visible;
+    self.button.hidden = NO;
+    [floatingWindow bringSubviewToFront:self.button];
     [VCAMConfiguration appendProcessLog:
-        [NSString stringWithFormat:@"springboard-client installButton host=%@ window=%@ hidden=%d frame=%@",
+        [NSString stringWithFormat:@"springboard-client installButton host=%@ hostWindow=%@ floatingWindow=%@ hidden=%d frame=%@",
             NSProcessInfo.processInfo.processName ?: @"(unknown)",
-            window, self.button.hidden ? 1 : 0, NSStringFromCGRect(self.button.frame)]];
+            window, floatingWindow, floatingWindow.hidden ? 1 : 0,
+            NSStringFromCGRect(floatingWindow.frame)]];
 }
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
@@ -341,17 +412,18 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 }
 
 - (void)dragButton:(UIPanGestureRecognizer *)recognizer {
-    UIView *button = recognizer.view;
+    UIWindow *floatingWindow = self.floatingWindow;
     UIWindow *window = [self cameraWindow];
-    if (button == nil || window == nil) return;
-    CGPoint translation = [recognizer translationInView:window];
-    CGPoint center = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
-    [recognizer setTranslation:CGPointZero inView:window];
+    if (floatingWindow == nil || window == nil) return;
+    CGPoint translation = [recognizer translationInView:floatingWindow];
+    CGPoint center = CGPointMake(floatingWindow.center.x + translation.x,
+                                 floatingWindow.center.y + translation.y);
+    [recognizer setTranslation:CGPointZero inView:floatingWindow];
     UIEdgeInsets safe = window.safeAreaInsets;
     CGFloat radius = 26.0;
     center.x = MAX(safe.left + radius + 4, MIN(CGRectGetWidth(window.bounds) - safe.right - radius - 4, center.x));
     center.y = MAX(safe.top + radius + 4, MIN(CGRectGetHeight(window.bounds) - safe.bottom - radius - 4, center.y));
-    button.center = center;
+    floatingWindow.center = center;
     if (recognizer.state == UIGestureRecognizerStateEnded ||
         recognizer.state == UIGestureRecognizerStateCancelled) {
         [self saveFloatingButtonPositionInWindow:window];
@@ -412,15 +484,33 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 }
 
 - (void)presentPanel {
+    [self presentPanelWithRemainingRetries:10];
+}
+
+- (void)presentPanelWithRemainingRetries:(NSInteger)remainingRetries {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.panel != nil) return;
         UIViewController *presenter = [self presentingViewController];
-        if (presenter == nil) return;
-    VCAMControlPanelViewController *panel = [[VCAMControlPanelViewController alloc]
-        initWithStatus:[self currentStatus]];
-    panel.delegate = self;
-    self.panel = panel;
-    [presenter presentViewController:panel animated:!UIAccessibilityIsReduceMotionEnabled() completion:nil];
+        if (presenter == nil || presenter.presentedViewController != nil) {
+            // The picker/document sheet may still be dismissing when the
+            // import completes; retry briefly so the panel reliably reopens
+            // instead of silently failing and forcing another dot tap.
+            if (remainingRetries > 0) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(0.25 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [self presentPanelWithRemainingRetries:remainingRetries - 1];
+                });
+            }
+            return;
+        }
+        VCAMControlPanelViewController *panel = [[VCAMControlPanelViewController alloc]
+            initWithStatus:[self currentStatus]];
+        panel.delegate = self;
+        self.panel = panel;
+        [presenter presentViewController:panel
+                                animated:!UIAccessibilityIsReduceMotionEnabled()
+                              completion:nil];
     });
 }
 

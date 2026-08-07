@@ -11,6 +11,83 @@
 
 enum { VCAMHardwareMaxFrames = 16 };
 
+static BOOL VCAMIsAnnexBStartCode(const uint8_t *bytes, size_t length,
+                                  size_t offset, size_t *startCodeLength) {
+    if (offset + 3 <= length && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
+        bytes[offset + 2] == 1) {
+        if (startCodeLength != NULL) *startCodeLength = 3;
+        return YES;
+    }
+    if (offset + 4 <= length && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
+        bytes[offset + 2] == 0 && bytes[offset + 3] == 1) {
+        if (startCodeLength != NULL) *startCodeLength = 4;
+        return YES;
+    }
+    return NO;
+}
+
+// FFmpeg normally hands MOV/MP4 samples to us already length-prefixed. Some
+// containers/remuxers instead deliver Annex B start codes, which VideoToolbox
+// rejects with kVTVideoDecoderReferenceMissingErr because it cannot frame the
+// NAL units. Convert defensively so both layouts decode on the hardware path.
+static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
+                                                  size_t length,
+                                                  size_t *outLength) {
+    if (outLength == NULL || length < 4 ||
+        !VCAMIsAnnexBStartCode(bytes, length, 0, NULL)) return NULL;
+    size_t payloadStarts[512] = {0};
+    size_t nalCount = 0;
+    size_t scan = 0;
+    size_t total = 0;
+    while (scan < length && nalCount < 512) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
+            if (bytes[scan] == 0) {
+                scan += 1;
+                continue;
+            }
+            break;
+        }
+        size_t payloadStart = scan + startCodeLength;
+        size_t next = payloadStart;
+        while (next < length && !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
+            next += 1;
+        }
+        payloadStarts[nalCount++] = payloadStart;
+        total += (next - payloadStart) + 4;
+        scan = next;
+    }
+    if (nalCount == 0 || total == 0) return NULL;
+    uint8_t *output = malloc(total);
+    if (output == NULL) return NULL;
+    size_t cursor = 0;
+    size_t index = 0;
+    scan = 0;
+    while (scan < length && index < nalCount) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
+            scan += 1;
+            continue;
+        }
+        size_t payloadStart = scan + startCodeLength;
+        size_t next = payloadStart;
+        while (next < length && !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
+            next += 1;
+        }
+        size_t payloadLength = next - payloadStart;
+        output[cursor] = (uint8_t)((payloadLength >> 24) & 0xff);
+        output[cursor + 1] = (uint8_t)((payloadLength >> 16) & 0xff);
+        output[cursor + 2] = (uint8_t)((payloadLength >> 8) & 0xff);
+        output[cursor + 3] = (uint8_t)(payloadLength & 0xff);
+        memcpy(output + cursor + 4, bytes + payloadStart, payloadLength);
+        cursor += payloadLength + 4;
+        index += 1;
+        scan = next;
+    }
+    *outLength = cursor;
+    return output;
+}
+
 typedef struct {
     CVPixelBufferRef buffer;
     CMTime presentationTime;
@@ -45,8 +122,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         if (status == kVTVideoDecoderReferenceMissingErr) {
             static volatile int referenceMissingCount = 0;
             int count = __sync_add_and_fetch(&referenceMissingCount, 1);
-            if (count <= 4) {
-                NSLog(@"VCAMHardwareVideoDecoder reference frame missing status=%d", (int)status);
+            if (count <= 40 || count % 1000 == 0) {
+                NSLog(@"[DEBUG-a4f2] reference frame missing count=%d status=%d", count, (int)status);
             }
             return;
         }
@@ -58,6 +135,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         return;
     }
     if (imageBuffer == NULL || decoder == nil) return;
+    static volatile int deliveredFrames = 0;
+    int delivered = __sync_add_and_fetch(&deliveredFrames, 1);
+    if (delivered <= 3) {
+        NSLog(@"[DEBUG-a4f2] delivered frame count=%d size=%zux%zu",
+              delivered, CVPixelBufferGetWidth(imageBuffer),
+              CVPixelBufferGetHeight(imageBuffer));
+    }
     CVPixelBufferRef retained = CVPixelBufferRetain(imageBuffer);
     @synchronized (decoder) {
         if (decoder->_frameCount < VCAMHardwareMaxFrames) {
@@ -195,6 +279,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (BOOL)start:(NSError **)error {
     if (_active) return YES;
+    NSDictionary *decoderSpecification = @{
+        (id)kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: @YES,
+    };
     NSDictionary *destinationAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferOpenGLCompatibilityKey: @YES,
@@ -206,7 +293,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     OSStatus status = VTDecompressionSessionCreate(
         kCFAllocatorDefault,
         _formatDescription,
-        NULL,
+        (__bridge CFDictionaryRef)decoderSpecification,
         (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);
@@ -218,6 +305,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
         return NO;
     }
+    VTSessionSetProperty(_session, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
     _active = YES;
     return YES;
 }
@@ -228,23 +316,51 @@ static void VCAMHardwareDecoderCallback(void *refcon,
              decodeTime:(CMTime)decodeTime
                duration:(CMTime)duration {
     if (!_active || _session == NULL || bytes == NULL || length == 0) return NO;
+    static volatile int decodePacketDiag = 0;
+    int diagIndex = __sync_add_and_fetch(&decodePacketDiag, 1);
+    if (diagIndex <= 6) {
+        BOOL annexB = length >= 4 && VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
+        NSLog(@"[DEBUG-a4f2] decodePacket idx=%d length=%zu annexB=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
+              diagIndex, length, annexB ? 1 : 0,
+              length > 0 ? bytes[0] : 0, length > 1 ? bytes[1] : 0,
+              length > 2 ? bytes[2] : 0, length > 3 ? bytes[3] : 0,
+              length > 4 ? bytes[4] : 0, length > 5 ? bytes[5] : 0,
+              length > 6 ? bytes[6] : 0, length > 7 ? bytes[7] : 0);
+    }
+    size_t feedLength = length;
+    const uint8_t *feedBytes = bytes;
+    uint8_t *converted = NULL;
+    if (VCAMIsAnnexBStartCode(bytes, length, 0, NULL)) {
+        converted = VCAMConvertAnnexBToLengthPrefixed(bytes, length, &feedLength);
+        if (converted != NULL) feedBytes = converted;
+    }
+    if (VCAMIsAnnexBStartCode(bytes, length, 0, NULL) && converted == NULL) {
+        static volatile int annexBFailures = 0;
+        int failureCount = __sync_add_and_fetch(&annexBFailures, 1);
+        if (failureCount <= 4) {
+            NSLog(@"[DEBUG-a4f2] annexB conversion failed length=%zu", length);
+        }
+        return NO;
+    }
     CMBlockBufferRef blockBuffer = NULL;
     OSStatus status = CMBlockBufferCreateWithMemoryBlock(
         kCFAllocatorDefault,
         NULL,
-        length,
+        feedLength,
         kCFAllocatorDefault,
         NULL,
         0,
-        length,
+        feedLength,
         0,
         &blockBuffer);
     if (status != kCMBlockBufferNoErr) {
+        free(converted);
         return NO;
     }
-    status = CMBlockBufferReplaceDataBytes(bytes, blockBuffer, 0, length);
+    status = CMBlockBufferReplaceDataBytes(feedBytes, blockBuffer, 0, feedLength);
     if (status != kCMBlockBufferNoErr) {
         CFRelease(blockBuffer);
+        free(converted);
         return NO;
     }
     CMSampleTimingInfo timing = {
@@ -252,7 +368,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         .presentationTimeStamp = presentationTime,
         .decodeTimeStamp = decodeTime,
     };
-    size_t sizeArray[1] = {length};
+    size_t sizeArray[1] = {feedLength};
     CMSampleBufferRef sampleBuffer = NULL;
     status = CMSampleBufferCreate(
         kCFAllocatorDefault,
@@ -269,9 +385,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         &sampleBuffer);
     CFRelease(blockBuffer);
     if (status != noErr || sampleBuffer == NULL) {
+        free(converted);
         return NO;
     }
     status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
+    if (diagIndex <= 6) {
+        NSLog(@"[DEBUG-a4f2] decodePacket idx=%d decodeStatus=%d", diagIndex, (int)status);
+    }
     if (status != noErr) {
         if (status != kVTVideoDecoderReferenceMissingErr) {
             static volatile int decodeFailures = 0;
@@ -282,6 +402,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
     }
     CFRelease(sampleBuffer);
+    free(converted);
     return status == noErr || status == kVTVideoDecoderReferenceMissingErr;
 }
 
