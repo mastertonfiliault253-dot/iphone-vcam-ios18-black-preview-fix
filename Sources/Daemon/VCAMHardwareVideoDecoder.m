@@ -495,10 +495,20 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
         return NO;
     }
+    // Copy the packet into memory that the block buffer owns. This is the
+    // canonical lifetime contract for asynchronous VideoToolbox decode: the
+    // session may retain the sample/block past this call, and packet memory
+    // from the demuxer is reused immediately.
+    uint8_t *ownedBytes = malloc(feedLength);
+    if (ownedBytes == NULL) {
+        free(converted);
+        return NO;
+    }
+    memcpy(ownedBytes, feedBytes, feedLength);
     CMBlockBufferRef blockBuffer = NULL;
     OSStatus status = CMBlockBufferCreateWithMemoryBlock(
         kCFAllocatorDefault,
-        NULL,
+        ownedBytes,
         feedLength,
         kCFAllocatorDefault,
         NULL,
@@ -507,12 +517,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         0,
         &blockBuffer);
     if (status != kCMBlockBufferNoErr) {
-        free(converted);
-        return NO;
-    }
-    status = CMBlockBufferReplaceDataBytes(feedBytes, blockBuffer, 0, feedLength);
-    if (status != kCMBlockBufferNoErr) {
-        CFRelease(blockBuffer);
+        free(ownedBytes);
         free(converted);
         return NO;
     }
