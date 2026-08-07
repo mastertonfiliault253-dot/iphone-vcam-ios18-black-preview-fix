@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 #import "../Core/VCAMFramePipeline.h"
 #import "../Core/VCAMConfiguration.h"
-#import "../Shared/VCAMSystemVersion.h"
 
 @interface VCAMPreviewDriver ()
 @property(nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;
@@ -32,7 +31,7 @@
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:@"preview driver installed bounds=%.0fx%.0f", previewLayer.bounds.size.width, previewLayer.bounds.size.height]];
         _frameQueue = dispatch_queue_create("com.codex.vcam.preview", DISPATCH_QUEUE_SERIAL);
         _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
-        if (VCAMSystemVersionAtLeast(15, 0)) {
+        if (@available(iOS 15.0, *)) {
             _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(15, 30, 30);
         } else {
             _displayLink.preferredFramesPerSecond = 30;
@@ -67,7 +66,7 @@
     NSInteger preferredFramesPerSecond = [pipeline preferredFramesPerSecond];
     if (preferredFramesPerSecond != self.configuredFramesPerSecond) {
         self.configuredFramesPerSecond = preferredFramesPerSecond;
-        if (VCAMSystemVersionAtLeast(15, 0)) {
+        if (@available(iOS 15.0, *)) {
             NSInteger minimum = MIN(15, preferredFramesPerSecond);
             displayLink.preferredFrameRateRange = CAFrameRateRangeMake(minimum,
                                                                        preferredFramesPerSecond,

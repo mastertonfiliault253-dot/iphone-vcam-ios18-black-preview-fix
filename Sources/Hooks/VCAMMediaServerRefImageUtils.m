@@ -6,7 +6,6 @@
 #import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
 #import "../Shared/VCAMSharedFrame.h"
-#import "../Shared/VCAMSystemVersion.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -278,7 +277,7 @@ void loadReplacementMedia(void) {
         OSStatus transferCreateResult = kCVReturnUnsupported;
         OSStatus scalingResult = transferCreateResult;
         OSStatus realtimeResult = transferCreateResult;
-        if (VCAMSystemVersionAtLeast(16, 0)) {
+        if (@available(iOS 16.0, *)) {
             VTPixelTransferSessionRef transferSession = NULL;
             transferCreateResult = VTPixelTransferSessionCreate(
                 kCFAllocatorDefault, &transferSession);
@@ -438,7 +437,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     VCAMCopyColorAttachments(originalTargetBuffer, stagingBuffer);
 
     OSStatus transferStatus = kCVReturnUnsupported;
-    if (VCAMSystemVersionAtLeast(16, 0)) {
+    if (@available(iOS 16.0, *)) {
         [VCAMPixelTransferLock lock];
         transferStatus = VTPixelTransferSessionTransferImage(
             (VTPixelTransferSessionRef)VCAMPixelTransferSession,
