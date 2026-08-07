@@ -31,7 +31,11 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertTrue(targets["VCAMSpringBoardClient"]["injected"])
         self.assertFalse(targets["vcamd"]["injected"])
         self.assertFalse(targets["vcaminjectd"]["injected"])
-        self.assertEqual(targets["vcaminjectd"]["allowedTargets"], ["SpringBoard", "mediaserverd"])
+        self.assertEqual(
+            targets["vcaminjectd"]["allowedTargets"],
+            ["SpringBoard", "mediaserverd", "Camera", "MobileSafari",
+             "Google Chrome", "Microsoft Edge", "Firefox"],
+        )
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
 
     def test_launchdaemon_runs_package_worker_from_rootless_prefix(self) -> None:

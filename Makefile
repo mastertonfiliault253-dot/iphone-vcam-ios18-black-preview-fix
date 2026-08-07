@@ -39,6 +39,7 @@ VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreMedia CoreVideo Foundation P
 # injected client.
 vcamd_FILES = \
 	Sources/Daemon/main.m \
+	Sources/Daemon/VCAMHardwareVideoDecoder.m \
 	Sources/Daemon/VCAMFrameProducer.m \
 	Sources/Core/VCAMConfiguration.m \
 	Sources/Core/VCAMFrameRenderer.m \

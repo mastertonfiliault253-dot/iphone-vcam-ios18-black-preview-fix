@@ -20,8 +20,11 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         )
         self.assertIn('"com.apple.springboard"', springboard_filter)
         self.assertIn('"SpringBoard"', springboard_filter)
-        self.assertNotIn("Camera", springboard_filter)
-        self.assertNotIn("Safari", springboard_filter)
+        self.assertIn('"com.apple.camera"', springboard_filter)
+        self.assertIn('"com.apple.mobilesafari"', springboard_filter)
+        self.assertIn('"com.google.chrome.ios"', springboard_filter)
+        self.assertIn('"com.microsoft.edge"', springboard_filter)
+        self.assertIn('"org.mozilla.ios.firefox"', springboard_filter)
         self.assertIn("mediaserverd", media_filter)
 
     def test_postinstall_recovers_exact_targets_with_exact_dylibs_only(self) -> None:

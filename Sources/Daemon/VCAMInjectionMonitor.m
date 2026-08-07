@@ -132,6 +132,41 @@ int main(int argc, char *argv[]) {
             .proofPath = "/var/tmp/vcam-ref-msd.log",
             .proofFormat = "[%d][",
         },
+        {
+            .name = "Camera",
+            .processPath = "/Applications/Camera.app/Camera",
+            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
+        },
+        {
+            .name = "MobileSafari",
+            .processPath = "/Applications/MobileSafari.app/MobileSafari",
+            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
+        },
+        {
+            .name = "Google Chrome",
+            .processPath = "/Applications/Google Chrome.app/Google Chrome",
+            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
+        },
+        {
+            .name = "Microsoft Edge",
+            .processPath = "/Applications/Microsoft Edge.app/Microsoft Edge",
+            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
+        },
+        {
+            .name = "Firefox",
+            .processPath = "/Applications/Firefox.app/Firefox",
+            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
+        },
     };
     fprintf(stderr, "vcaminjectd starting with %zu exact targets\n",
             sizeof(targets) / sizeof(targets[0]));

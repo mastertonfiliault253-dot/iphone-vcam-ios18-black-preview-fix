@@ -8,7 +8,6 @@
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
-static const CGFloat VCAMOverlayWindowLevel = 2001.0;
 static BOOL VCAMPickerUIStarted = NO;
 
 static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
@@ -70,7 +69,6 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic, strong, nullable) UIButton *button;
 @property(nonatomic, weak, nullable) VCAMControlPanelViewController *panel;
 @property(nonatomic, weak, nullable) UIWindow *gestureWindow;
-@property(nonatomic, strong, nullable) UIWindow *overlayWindow;
 @property(nonatomic) NSInteger remainingWindowRetries;
 @property(nonatomic) BOOL started;
 @end
@@ -155,19 +153,6 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     return nil;
 }
 
-- (nullable UIWindow *)floatingWindow {
-    if (self.overlayWindow == nil) {
-        UIWindow *window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-        window.windowLevel = VCAMOverlayWindowLevel;
-        window.backgroundColor = UIColor.clearColor;
-        window.userInteractionEnabled = YES;
-        window.rootViewController = [UIViewController new];
-        window.hidden = NO;
-        self.overlayWindow = window;
-    }
-    return self.overlayWindow;
-}
-
 - (NSString *)floatingPositionIdentifier {
     NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
     return bundle.length > 0 ? bundle : NSProcessInfo.processInfo.processName;
@@ -220,7 +205,14 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)installButtonWhenWindowIsReady {
     NSAssert(NSThread.isMainThread, @"VCAM picker UI must run on the main thread");
-    UIWindow *window = [self floatingWindow];
+    UIWindow *window = [self cameraWindow];
+    if (window == nil) {
+        if (self.remainingWindowRetries-- > 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
+        }
+        return;
+    }
 
     if (self.gestureWindow != window) {
         if (self.gestureWindow != nil) {

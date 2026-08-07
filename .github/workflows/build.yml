@@ -65,7 +65,7 @@ jobs:
           test "$obsolete_count" -eq 0
           grep -q '"/usr/sbin/mediaserverd"' Sources/Daemon/VCAMInjectionMonitor.m
           grep -q '"/System/Library/CoreServices/SpringBoard.app/SpringBoard"' Sources/Daemon/VCAMInjectionMonitor.m
-          test "$(grep -c '^            \.processPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 2
+          test "$(grep -c '^            \.processPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 7
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-rootless

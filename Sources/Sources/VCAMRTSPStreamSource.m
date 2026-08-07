@@ -1,4 +1,5 @@
 #import "VCAMRTSPStreamSource.h"
+#import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import <QuartzCore/QuartzCore.h>
 #import <errno.h>
 #import <math.h>
@@ -33,6 +34,16 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
     double a = *(const double *)left;
     double b = *(const double *)right;
     return (a > b) - (a < b);
+}
+
+static CMTime VCAMPacketTime(AVPacket *packet, AVStream *stream) {
+    if (packet == NULL) return kCMTimeInvalid;
+    int64_t pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+    if (pts == AV_NOPTS_VALUE) return kCMTimeInvalid;
+    AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 90000};
+    double seconds = (double)pts * av_q2d(timeBase);
+    if (!isfinite(seconds) || seconds < 0) seconds = 0;
+    return CMTimeMakeWithSeconds(seconds, 600);
 }
 
 static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
@@ -185,10 +196,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         }
         if (!self.running) break;
         if (usedHardware && !producedFrame) {
-            self.hardwareDecodeEnabled = NO;
             [VCAMConfiguration appendProcessLog:
-                @"rtsp VideoToolbox produced no frames; switching to FFmpeg software decode"];
-            continue;
+                @"rtsp hardware session produced no frames; reconnecting"];
         }
         if (producedFrame) {
             consecutiveFailures = 0;
@@ -339,7 +348,83 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     return pixelBuffer;
 }
 
+- (BOOL)decodeOneHardwareSession {
+    AVFormatContext *formatContext = NULL;
+    AVDictionary *options = NULL;
+    int videoStream = -1;
+    AVStream *stream = NULL;
+    BOOL producedFrame = NO;
+    NSString *urlString = self.configuration.rtspURL.absoluteString;
+    const char *url = urlString.UTF8String;
+    av_dict_set(&options, "rtsp_transport", "tcp", 0);
+    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
+    av_dict_set(&options, "timeout", "3000000", 0);
+    if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
+    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+    videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (videoStream < 0) goto cleanup;
+    stream = formatContext->streams[videoStream];
+    VCAMHardwareVideoDecoder *decoder = [[VCAMHardwareVideoDecoder alloc]
+        initWithCodecParameters:stream->codecpar];
+    NSError *decoderError = nil;
+    if (decoder == nil || ![decoder start:&decoderError]) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"rtsp hardware decoder unavailable error=%@",
+            decoderError.localizedDescription ?: @"(init failed)"]];
+        goto cleanup;
+    }
+    AVPacket *packet = av_packet_alloc();
+    if (packet == NULL) {
+        [decoder stop];
+        goto cleanup;
+    }
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"rtsp hardware session codec=%s source=%dx%d",
+        avcodec_get_name(stream->codecpar->codec_id),
+        stream->codecpar->width, stream->codecpar->height]];
+    while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStream) {
+            CMTime pts = VCAMPacketTime(packet, stream);
+            [decoder decodePacket:packet->data
+                           length:(size_t)packet->size
+                 presentationTime:pts
+                       decodeTime:kCMTimeInvalid
+                         duration:kCMTimeInvalid];
+            CVPixelBufferRef output = NULL;
+            CMTime outputPts = kCMTimeInvalid;
+            while ((output = [decoder copyNextOutputFrame:&outputPts])) {
+                [self acceptDecodedPixelBuffer:output hardware:YES];
+                CVPixelBufferRelease(output);
+                producedFrame = YES;
+            }
+        }
+        av_packet_unref(packet);
+    }
+    [decoder flush];
+    CVPixelBufferRef output = NULL;
+    CMTime outputPts = kCMTimeInvalid;
+    while ((output = [decoder copyNextOutputFrame:&outputPts])) {
+        [self acceptDecodedPixelBuffer:output hardware:YES];
+        CVPixelBufferRelease(output);
+        producedFrame = YES;
+    }
+    av_packet_free(&packet);
+    [decoder stop];
+cleanup:
+    av_dict_free(&options);
+    avformat_close_input(&formatContext);
+    return producedFrame;
+}
+
 - (BOOL)decodeOneSession {
+    if (!self.hardwareDecodeEnabled) {
+        [VCAMConfiguration appendProcessLog:@"rtsp software decode disabled; hardware only"];
+        return NO;
+    }
+    return [self decodeOneHardwareSession];
+}
+
+- (BOOL)decodeOneSessionSoftwareOnly {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
     AVBufferRef *hardwareDevice = NULL;

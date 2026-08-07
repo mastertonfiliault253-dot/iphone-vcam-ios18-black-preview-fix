@@ -7,24 +7,26 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class InjectionMonitorTests(unittest.TestCase):
-    def test_monitor_has_only_the_two_exact_allowed_process_paths(self) -> None:
+    def test_monitor_has_the_exact_allowed_process_paths(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(source.count(".processPath ="), 2)
+        self.assertEqual(source.count(".processPath ="), 7)
         self.assertIn(
             '.processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"',
             source,
         )
         self.assertIn('.processPath = "/usr/sbin/mediaserverd"', source)
-        self.assertEqual(source.count(".dylibPath ="), 2)
-        for forbidden in (
+        self.assertEqual(source.count(".dylibPath ="), 7)
+        for expected in (
             "/Applications/Camera.app",
             "MobileSafari",
-            "SafariViewService",
-            "WebKit",
             "Google Chrome",
+            "Microsoft Edge",
+            "Firefox",
         ):
+            self.assertIn(expected, source)
+        for forbidden in ("SafariViewService", "WebKit"):
             self.assertNotIn(forbidden, source)
 
     def test_monitor_retries_after_pid_change_and_requires_constructor_proof(self) -> None:
