@@ -279,8 +279,14 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (BOOL)start:(NSError **)error {
     if (_active) return YES;
+    // kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder is
+    // only declared iOS 17+, while the package targets iOS 15. The key's
+    // documented CFString value is stable; hardware decode is the default on
+    // iOS 16 anyway, so this is an explicit preference rather than a gate.
+    static NSString *const hardwareAcceleratedDecoderKey =
+        @"EnableHardwareAcceleratedVideoDecoder";
     NSDictionary *decoderSpecification = @{
-        (id)kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: @YES,
+        hardwareAcceleratedDecoderKey: @YES,
     };
     NSDictionary *destinationAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
