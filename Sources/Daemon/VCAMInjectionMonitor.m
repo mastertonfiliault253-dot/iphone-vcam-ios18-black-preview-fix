@@ -102,16 +102,47 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
     }
     if (pid <= 0 || target->injectedPID == pid) return;
 
+    // A proof line already in the shared log means the dylib is loaded in this
+    // exact pid (from postinst or a previous daemon run). Never re-inject:
+    // repeated PAC injection into an already-loaded process is what wedges the
+    // target and leaves spinning opainject children behind.
+    if (VCAMProofContainsPID(target, pid)) {
+        target->injectedPID = pid;
+        fprintf(stderr, "target=%s pid=%d already-loaded proof=1\n",
+                target->name, pid);
+        return;
+    }
+
     time_t now = time(NULL);
     if (now < target->nextAttempt) return;
-    target->nextAttempt = now + 5;
+    // Generous backoff: opainject PAC mode can take several seconds, and a
+    // failed attempt must not pile up another injector while the previous one
+    // is still settling.
+    target->nextAttempt = now + 30;
     int result = VCAMRunInjector(target, pid);
     sleep(1);
     pid_t observed = VCAMFindProcessAtPath(target->processPath);
-    BOOL proved = result == 0 && observed == pid && VCAMProofContainsPID(target, pid);
+    // The injector may return ETIMEDOUT even after a successful dlopen when
+    // opainject's PAC bootstrap thread never reports back. The constructor
+    // proof is the source of truth; require only that the pid survived and the
+    // proof appeared.
+    BOOL proved = observed == pid && VCAMProofContainsPID(target, pid);
     fprintf(stderr, "target=%s pid=%d injector=%d stable=%d proof=%d\n",
             target->name, pid, result, observed == pid, proved);
     if (proved) target->injectedPID = pid;
+    else {
+        // The injected ctor can flush its proof shortly after the injector
+        // returns or is killed. Give it a few more seconds before ever
+        // considering a retry, regardless of the injector exit status.
+        for (int extra = 0; extra < 5 && !VCAMProofContainsPID(target, pid); extra++) {
+            sleep(1);
+        }
+        observed = VCAMFindProcessAtPath(target->processPath);
+        if (observed == pid && VCAMProofContainsPID(target, pid)) {
+            target->injectedPID = pid;
+            fprintf(stderr, "target=%s pid=%d late-proof=1\n", target->name, pid);
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -122,8 +153,8 @@ int main(int argc, char *argv[]) {
             .name = "SpringBoard",
             .processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
-            .proofPath = "/var/mobile/Media/VCAM/broker-probe.log",
-            .proofFormat = "broker starting pid=%d ",
+            .proofPath = "/var/tmp/vcam-springboard-client.log",
+            .proofFormat = "pid=%d ",
         },
         {
             .name = "mediaserverd",

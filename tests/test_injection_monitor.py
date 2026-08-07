@@ -36,11 +36,18 @@ class InjectionMonitorTests(unittest.TestCase):
         self.assertIn("pid != target->observedPID", source)
         self.assertIn("target->injectedPID = 0", source)
         self.assertIn("VCAMProofContainsPID", source)
-        self.assertIn("result == 0 && observed == pid", source)
+        # The injector's exit status is not the source of truth: opainject PAC
+        # mode can time out after a successful dlopen, so only the on-disk
+        # constructor proof plus a stable pid count as success.
+        self.assertIn("BOOL proved = observed == pid && VCAMProofContainsPID", source)
         self.assertIn("observed == pid", source)
-        self.assertIn("target->nextAttempt = now + 5", source)
+        self.assertIn("target->nextAttempt = now + 30", source)
         self.assertIn("ETIMEDOUT", source)
-        self.assertNotIn("already loaded", source)
+        self.assertIn("late-proof", source)
+        # A pid that already has constructor proof must never be injected again,
+        # even across daemon restarts.
+        self.assertIn("already-loaded proof=1", source)
+        self.assertIn("if (VCAMProofContainsPID(target, pid)) {", source)
 
     def test_monitor_is_a_root_rootless_launchdaemon(self) -> None:
         launchd = plistlib.loads(

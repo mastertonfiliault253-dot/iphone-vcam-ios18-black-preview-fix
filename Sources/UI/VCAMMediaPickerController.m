@@ -88,6 +88,9 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         VCAMPickerUIStarted = YES;
         self.started = YES;
         self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
+        [VCAMConfiguration appendProcessLog:
+            [NSString stringWithFormat:@"springboard-client startControlUI host=%@ started=1",
+                NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
         NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
                               name:UIApplicationDidBecomeActiveNotification object:nil];
@@ -210,26 +213,41 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         if (self.remainingWindowRetries-- > 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
+        } else {
+            // Never give up: SpringBoard may not deliver a key-window
+            // notification after a late injection, so keep polling at a slow
+            // cadence until a window actually exists.
+            [VCAMConfiguration appendProcessLog:
+                @"springboard-client installButton window=nil retrying at 1s cadence"];
+            self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
         }
         return;
     }
 
     if (self.gestureWindow != window) {
         if (self.gestureWindow != nil) {
-            for (UIGestureRecognizer *recognizer in self.gestureWindow.gestureRecognizers.copy) {
-                if (recognizer.delegate == self && [recognizer isKindOfClass:UITapGestureRecognizer.class]) {
+            for (UIGestureRecognizer *recognizer in [self.gestureWindow.gestureRecognizers copy]) {
+                if (recognizer.tag == VCAMFloatingDotTag ||
+                    (recognizer.delegate == self &&
+                     [recognizer isKindOfClass:UITapGestureRecognizer.class])) {
                     [self.gestureWindow removeGestureRecognizer:recognizer];
                 }
             }
         }
         UITapGestureRecognizer *toggle = [[UITapGestureRecognizer alloc] initWithTarget:self
                                                                                 action:@selector(toggleFloatingButton:)];
+        toggle.tag = VCAMFloatingDotTag;
         toggle.numberOfTouchesRequired = 3;
         toggle.numberOfTapsRequired = 2;
         toggle.cancelsTouchesInView = NO;
         toggle.delegate = self;
         [window addGestureRecognizer:toggle];
         self.gestureWindow = window;
+        [VCAMConfiguration appendProcessLog:
+            [NSString stringWithFormat:@"springboard-client gesture installed on window=%@ bounds=%@",
+                window, NSStringFromCGRect(window.bounds)]];
     }
 
     if (self.button == nil) {
@@ -283,6 +301,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     NSDictionary *values = [VCAMConfiguration currentValues];
     self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
     [window bringSubviewToFront:self.button];
+    [VCAMConfiguration appendProcessLog:
+        [NSString stringWithFormat:@"springboard-client installButton host=%@ window=%@ hidden=%d frame=%@",
+            NSProcessInfo.processInfo.processName ?: @"(unknown)",
+            window, self.button.hidden ? 1 : 0, NSStringFromCGRect(self.button.frame)]];
 }
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
