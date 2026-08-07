@@ -34,7 +34,15 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     (void)sourceFrameRefCon;
     (void)presentationDuration;
     VCAMHardwareVideoDecoder *decoder = (__bridge VCAMHardwareVideoDecoder *)refcon;
-    if (status != noErr || imageBuffer == NULL || decoder == nil) return;
+    if (status != noErr) {
+        static volatile int callbackFailures = 0;
+        int failureCount = __sync_add_and_fetch(&callbackFailures, 1);
+        if (failureCount <= 4) {
+            NSLog(@"VCAMHardwareVideoDecoder callback failed status=%d", (int)status);
+        }
+        return;
+    }
+    if (imageBuffer == NULL || decoder == nil) return;
     CVPixelBufferRef retained = CVPixelBufferRetain(imageBuffer);
     @synchronized (decoder) {
         if (decoder->_frameCount < VCAMHardwareMaxFrames) {
@@ -203,22 +211,23 @@ static void VCAMHardwareDecoderCallback(void *refcon,
              decodeTime:(CMTime)decodeTime
                duration:(CMTime)duration {
     if (!_active || _session == NULL || bytes == NULL || length == 0) return NO;
-    uint8_t *copy = malloc(length);
-    if (copy == NULL) return NO;
-    memcpy(copy, bytes, length);
     CMBlockBufferRef blockBuffer = NULL;
     OSStatus status = CMBlockBufferCreateWithMemoryBlock(
         kCFAllocatorDefault,
-        copy,
+        NULL,
         length,
-        kCFAllocatorNull,
+        kCFAllocatorDefault,
         NULL,
         0,
         length,
         0,
         &blockBuffer);
     if (status != kCMBlockBufferNoErr) {
-        free(copy);
+        return NO;
+    }
+    status = CMBlockBufferReplaceDataBytes(bytes, blockBuffer, 0, length);
+    if (status != kCMBlockBufferNoErr) {
+        CFRelease(blockBuffer);
         return NO;
     }
     CMSampleTimingInfo timing = {
@@ -243,12 +252,17 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         &sampleBuffer);
     CFRelease(blockBuffer);
     if (status != noErr || sampleBuffer == NULL) {
-        free(copy);
         return NO;
     }
     status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
+    if (status != noErr) {
+        static volatile int decodeFailures = 0;
+        int failureCount = __sync_add_and_fetch(&decodeFailures, 1);
+        if (failureCount <= 4) {
+            NSLog(@"VCAMHardwareVideoDecoder decode failed status=%d", (int)status);
+        }
+    }
     CFRelease(sampleBuffer);
-    free(copy);
     return status == noErr;
 }
 
