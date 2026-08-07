@@ -24,12 +24,14 @@ typedef struct {
 @implementation VCAMHardwareVideoDecoder
 
 static void VCAMHardwareDecoderCallback(void *refcon,
+                                        void *sourceFrameRefCon,
                                         OSStatus status,
                                         VTDecodeInfoFlags infoFlags,
                                         CVImageBufferRef imageBuffer,
                                         CMTime presentationTimeStamp,
                                         CMTime presentationDuration) {
     (void)infoFlags;
+    (void)sourceFrameRefCon;
     (void)presentationDuration;
     VCAMHardwareVideoDecoder *decoder = (__bridge VCAMHardwareVideoDecoder *)refcon;
     if (status != noErr || imageBuffer == NULL || decoder == nil) return;
