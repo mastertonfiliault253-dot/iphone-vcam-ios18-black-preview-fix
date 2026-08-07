@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSystemVersion.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -277,7 +278,7 @@ void loadReplacementMedia(void) {
         OSStatus transferCreateResult = kCVReturnUnsupported;
         OSStatus scalingResult = transferCreateResult;
         OSStatus realtimeResult = transferCreateResult;
-        if (@available(iOS 16.0, *)) {
+        if (VCAMSystemVersionAtLeast(16, 0)) {
             VTPixelTransferSessionRef transferSession = NULL;
             transferCreateResult = VTPixelTransferSessionCreate(
                 kCFAllocatorDefault, &transferSession);
@@ -437,7 +438,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     VCAMCopyColorAttachments(originalTargetBuffer, stagingBuffer);
 
     OSStatus transferStatus = kCVReturnUnsupported;
-    if (@available(iOS 16.0, *)) {
+    if (VCAMSystemVersionAtLeast(16, 0)) {
         [VCAMPixelTransferLock lock];
         transferStatus = VTPixelTransferSessionTransferImage(
             (VTPixelTransferSessionRef)VCAMPixelTransferSession,
@@ -564,11 +565,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
         }
         // The producer has already applied the user's content mode to the
-        // canonical 720x1280 frame. This second stage only adapts that canvas
-        // to heterogeneous camera consumers (preview, still photo, WebRTC,
-        // and recording). Aspect-fill here prevents target-specific black
-        // bars, for example when a 16:9 canvas is written into a 4:3 still or
-        // browser buffer.
+        // canonical 1080x1920 frame. This second stage only adapts that
+        // canvas to heterogeneous camera consumers (preview, still photo,
+        // WebRTC, and recording). Aspect-fill here prevents target-specific
+        // black bars, for example when a 16:9 canvas is written into a 4:3
+        // still or browser buffer.
         CGFloat scale = MAX((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                             (CGFloat)renderHeight / CGRectGetHeight(image.extent));
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];

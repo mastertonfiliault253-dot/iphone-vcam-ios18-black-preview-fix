@@ -2,6 +2,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSystemVersion.h"
 
 @interface VCAMSharedFramePreviewView () {
     VCAMSharedFrameReader *_reader;
@@ -39,7 +40,7 @@
                                 (__bridge CFDictionaryRef)pixelAttributes,
                                 &_pixelBufferPool);
         _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
-        if (@available(iOS 15.0, *)) {
+        if (VCAMSystemVersionAtLeast(15, 0)) {
             _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(10, 15, 15);
         } else {
             _displayLink.preferredFramesPerSecond = 15;

@@ -296,7 +296,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("rtsp key-frame recovery timed out", rtsp)
         self.assertIn("clean-key recovery exceeded five seconds", rtsp)
         self.assertIn("receive_frame ended", rtsp)
-        self.assertIn("maximumDimension = 1280", rtsp)
+        self.assertIn("maximumDimension = 1920", rtsp)
         software_conversion = rtsp.split(
             "- (CVPixelBufferRef)copyBGRAFromSoftwareFrame:", 1
         )[1].split("- (BOOL)decodeOneSession", 1)[0]

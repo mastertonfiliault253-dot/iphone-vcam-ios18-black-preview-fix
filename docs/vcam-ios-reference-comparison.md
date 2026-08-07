@@ -29,7 +29,7 @@ replacement seam.
 The reference implementation proves that mediaserverd can consume a decoded
 pixel frame, but it does not make mediaserverd a safe place for file/network
 decoders. Here `vcamd` owns all blocking, reconnecting and decode state and
-publishes a fixed 720×1280 BGRA latest frame through a three-slot mmap. The two
+publishes a fixed 1080×1920 BGRA latest frame through a three-slot mmap. The two
 consumers—mediaserverd replacement and SpringBoard preview—only perform a
 bounded memory copy and reject stale or torn slots.
 

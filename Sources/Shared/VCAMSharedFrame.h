@@ -7,8 +7,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 enum {
-    VCAMSharedFrameWidth = 720,
-    VCAMSharedFrameHeight = 1280,
+    VCAMSharedFrameWidth = 1080,
+    VCAMSharedFrameHeight = 1920,
     VCAMSharedFrameSlotCount = 3,
 };
 

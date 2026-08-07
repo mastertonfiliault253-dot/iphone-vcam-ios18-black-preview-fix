@@ -176,6 +176,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 }
 
 - (void)decodeReconnectLoop {
+    NSUInteger consecutiveFailures = 0;
     while (self.running) {
         BOOL usedHardware = self.hardwareDecodeEnabled;
         BOOL producedFrame = NO;
@@ -189,7 +190,23 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 @"rtsp VideoToolbox produced no frames; switching to FFmpeg software decode"];
             continue;
         }
-        [NSThread sleepForTimeInterval:0.5];
+        if (producedFrame) {
+            consecutiveFailures = 0;
+            [NSThread sleepForTimeInterval:0.5];
+            continue;
+        }
+        // An unreachable or rejecting RTSP endpoint used to make vcamd
+        // reconnect as fast as FFmpeg failed (fixed 0.5s loop), exhausting
+        // backboardd wakeups and wedging the display on device. Back off
+        // exponentially with a hard cap so the pipeline stays quiet while
+        // the source is offline.
+        NSUInteger backoffSeconds = MIN(10U, 1U << MIN(consecutiveFailures, 4U));
+        consecutiveFailures = MIN(consecutiveFailures + 1, 16U);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"rtsp reconnect backing off %lu s", (unsigned long)backoffSeconds]];
+        for (NSUInteger step = 0; step < backoffSeconds && self.running; step++) {
+            [NSThread sleepForTimeInterval:1.0];
+        }
     }
 }
 
@@ -251,10 +268,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         (planar420 && frame->data[2] == NULL)) return NULL;
 
     // Decode every compressed frame so H.264 reference state remains intact,
-    // but do the expensive YUV conversion at the shared-frame resolution. The
-    // previous 1080x1920 BGRA intermediate was then scaled to 720x1280, which
-    // made software decode fall behind a real-time RTSP sender.
-    const int maximumDimension = 1280;
+    // but do the expensive YUV conversion at the shared-frame resolution.
+    const int maximumDimension = 1920;
     double scale = MIN(1.0, (double)maximumDimension /
         (double)MAX(frame->width, frame->height));
     int outputWidth = MAX(1, (int)lrint((double)frame->width * scale));

@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = VCAMMediaServerClient VCAMSpringBoardClient
 TOOL_NAME = vcamd vcaminjectd
 
-VCAM_SHARED_FILES = Sources/Shared/VCAMSharedFrame.m
+VCAM_SHARED_FILES = Sources/Shared/VCAMSharedFrame.m Sources/Shared/VCAMSystemVersion.m
 VCAM_MODULE_CACHE_FLAGS = -fmodules-cache-path=$(THEOS_PROJECT_DIR)/.theos/module-cache
 VCAM_UI_FILES = \
 	Sources/UI/VCAMControlPanelViewController.m \

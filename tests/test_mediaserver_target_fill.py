@@ -27,12 +27,12 @@ class MediaServerTargetFillTests(unittest.TestCase):
 
     def test_fill_covers_photo_preview_and_browser_targets(self) -> None:
         # Landscape targets receive the canonical portrait frame rotated to
-        # 1280x720 before scaling. Every scaled axis must cover its consumer;
+        # 1920x1080 before scaling. Every scaled axis must cover its consumer;
         # otherwise the black safety background becomes visible as bars.
         cases = (
-            ((1280, 720), (4224, 3024)),  # Camera still-photo sensor buffer
-            ((720, 1280), (750, 1334)),  # Camera portrait preview
-            ((1280, 720), (640, 480)),  # common browser/WebRTC 4:3 buffer
+            ((1920, 1080), (4224, 3024)),  # Camera still-photo sensor buffer
+            ((1080, 1920), (750, 1334)),  # Camera portrait preview
+            ((1920, 1080), (640, 480)),  # common browser/WebRTC 4:3 buffer
         )
         for (source_width, source_height), (target_width, target_height) in cases:
             with self.subTest(target=(target_width, target_height)):

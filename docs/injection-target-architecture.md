@@ -18,7 +18,7 @@ is not replaced.
 
 `local / OBS / RTSP → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
 
-The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 720×1280 BGRA.
+The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 1080×1920 BGRA.
 Publication uses atomic slot and sequence metadata. Consumers copy without
 waiting. SpringBoard is the sole writer of the requested enable/restore state;
 `vcamd` publishes pixels only and cannot overwrite that state after a delayed

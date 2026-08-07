@@ -9,7 +9,7 @@ authentication decisions.
 
 Only two Apple processes are injected:
 
-- `mediaserverd`: reads the latest 720×1280 BGRA frame from a three-slot shared
+- `mediaserverd`: reads the latest 1080×1920 BGRA frame from a three-slot shared
   mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
   observed BGRA and bi-planar YUV formats. Device-private compressed recording
