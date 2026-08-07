@@ -530,6 +530,10 @@ static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *con
 }
 
 - (BOOL)startFFmpegVideoReader:(NSError **)error {
+    return [self startFFmpegVideoReader:error allowHardware:YES];
+}
+
+- (BOOL)startFFmpegVideoReader:(NSError **)error allowHardware:(BOOL)allowHardware {
     NSString *path = self.configuration.mediaPath;
     AVFormatContext *format = NULL;
     int openResult = avformat_open_input(&format, path.fileSystemRepresentation, NULL, NULL);
@@ -586,34 +590,31 @@ static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *con
         return NO;
     }
     codecContext->err_recognition = AV_EF_CAREFUL;
-    codecContext->thread_count = 4;
+    codecContext->thread_count = allowHardware ? 1 : 4;
     BOOL useHardware = NO;
     AVBufferRef *hardwareDevice = NULL;
-    codecContext->get_format = VCAMLocalSelectHardwarePixelFormat;
-    if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                               NULL, NULL, 0) == 0 && hardwareDevice != NULL) {
-        codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
-        if (codecContext->hw_device_ctx != NULL &&
-            avcodec_open2(codecContext, codec, NULL) == 0) {
-            useHardware = YES;
-        } else {
-            if (codecContext->hw_device_ctx != NULL) av_buffer_unref(&codecContext->hw_device_ctx);
-            codecContext->get_format = NULL;
-            if (avcodec_open2(codecContext, codec, NULL) < 0) {
-                avcodec_free_context(&codecContext);
-                avformat_close_input(&format);
-                if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
-                if (error != NULL) {
-                    *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:10
-                                             userInfo:@{NSLocalizedDescriptionKey:
-                                                 @"FFmpeg could not open the local video decoder"}];
-                }
-                return NO;
+    if (allowHardware) {
+        codecContext->get_format = VCAMLocalSelectHardwarePixelFormat;
+        if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                   NULL, NULL, 0) == 0 && hardwareDevice != NULL) {
+            codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
+            if (codecContext->hw_device_ctx != NULL &&
+                avcodec_open2(codecContext, codec, NULL) == 0) {
+                useHardware = YES;
+            } else {
+                if (codecContext->hw_device_ctx != NULL) av_buffer_unref(&codecContext->hw_device_ctx);
+                codecContext->hw_device_ctx = NULL;
+                codecContext->get_format = NULL;
             }
+        } else {
+            codecContext->get_format = NULL;
         }
-    } else {
-        codecContext->get_format = NULL;
-        if (avcodec_open2(codecContext, codec, NULL) < 0) {
+    }
+    if (!useHardware) {
+        AVCodecContext *softwareContext = avcodec_alloc_context3(codec);
+        if (softwareContext == NULL ||
+            avcodec_parameters_to_context(softwareContext, stream->codecpar) < 0) {
+            if (softwareContext != NULL) avcodec_free_context(&softwareContext);
             avcodec_free_context(&codecContext);
             avformat_close_input(&format);
             if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
@@ -624,6 +625,22 @@ static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *con
             }
             return NO;
         }
+        softwareContext->err_recognition = AV_EF_CAREFUL;
+        softwareContext->thread_count = 4;
+        if (avcodec_open2(softwareContext, codec, NULL) < 0) {
+            avcodec_free_context(&softwareContext);
+            avcodec_free_context(&codecContext);
+            avformat_close_input(&format);
+            if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
+            if (error != NULL) {
+                *error = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:10
+                                         userInfo:@{NSLocalizedDescriptionKey:
+                                             @"FFmpeg could not open the local video decoder"}];
+            }
+            return NO;
+        }
+        avcodec_free_context(&codecContext);
+        codecContext = softwareContext;
     }
     if (hardwareDevice != NULL) av_buffer_unref(&hardwareDevice);
     _ffFormatContext = format;
@@ -643,14 +660,19 @@ static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(AVCodecContext *con
         codecContext->height, fps, codec->name, useHardware ? 1 : 0]];
     if (![self advanceFFmpegFrame]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"local ffmpeg first-frame failed codec=%s pix_fmt=%d width=%d height=%d eof=%d",
+            @"local ffmpeg first-frame failed codec=%s pix_fmt=%d width=%d height=%d eof=%d hardware=%d",
             codec->name, codecContext->pix_fmt, codecContext->width,
-            codecContext->height, _ffEndOfFile ? 1 : 0]];
+            codecContext->height, _ffEndOfFile ? 1 : 0, useHardware ? 1 : 0]];
         NSError *decodeError = [NSError errorWithDomain:@"VCAMLocalMediaSource" code:11
                                                userInfo:@{NSLocalizedDescriptionKey:
                                                    @"Unable to decode the first video frame (ffmpeg)"}];
         if (error != NULL) *error = decodeError;
         [self resetVideoReaderState];
+        if (useHardware) {
+            [VCAMConfiguration appendProcessLog:
+                @"local ffmpeg hardware produced no frames; switching to software decode"];
+            return [self startFFmpegVideoReader:error allowHardware:NO];
+        }
         return NO;
     }
     return YES;
