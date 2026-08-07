@@ -354,6 +354,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     int videoStream = -1;
     AVStream *stream = NULL;
     BOOL producedFrame = NO;
+    BOOL firstFrameProduced = NO;
+    CFAbsoluteTime sessionStart = CFAbsoluteTimeGetCurrent();
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
@@ -399,6 +401,17 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 [self acceptDecodedPixelBuffer:output hardware:YES];
                 CVPixelBufferRelease(output);
                 producedFrame = YES;
+                firstFrameProduced = YES;
+            }
+            // A direct-VT session that opens but cannot produce a frame must
+            // not block the pipeline forever (e.g. in-band-only parameter
+            // sets). Give it a bounded first-frame window, then let the
+            // FFmpeg hwaccel fallback take over.
+            if (!firstFrameProduced &&
+                CFAbsoluteTimeGetCurrent() - sessionStart > 3.0) {
+                [VCAMConfiguration appendProcessLog:
+                    @"rtsp direct-VT first frame timed out; falling back to FFmpeg hwaccel"];
+                break;
             }
         }
         av_packet_unref(packet);
@@ -424,12 +437,14 @@ cleanup:
         [VCAMConfiguration appendProcessLog:@"rtsp software decode disabled; hardware only"];
         return NO;
     }
-    // Prefer FFmpeg's VideoToolbox hwaccel (AV_HWDEVICE_TYPE_VIDEOTOOLBOX)
-    // over feeding the demuxer's raw packets to a hand-rolled VT session.
-    // Many RTSP servers do not advertise SPS/PPS parameter sets in the SDP,
-    // so the direct-VT session has no extradata to build a format description
-    // from ("init failed"); FFmpeg assembles the parameter sets from the
-    // stream and still decodes on the hardware decoder.
+    // Try the direct VideoToolbox session first when the server advertises
+    // SPS/PPS in the SDP (this was the working path on device). If the
+    // parameter sets are in-band only, the direct session cannot even build a
+    // format description, so fall back to FFmpeg's VideoToolbox hwaccel,
+    // which assembles them from the stream. Both paths use the hardware
+    // decoder; neither is software decoding.
+    BOOL produced = [self decodeOneHardwareSession];
+    if (produced || !self.running) return produced;
     return [self decodeOneSessionSoftwareOnly];
 }
 
