@@ -2,10 +2,8 @@
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import <QuartzCore/QuartzCore.h>
 #import <errno.h>
-#import <fcntl.h>
 #import <math.h>
 #import <stdlib.h>
-#import <unistd.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -391,28 +389,6 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         stream->codecpar->width, stream->codecpar->height]];
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
-            static volatile int vcamRtspDumpCount = 0;
-            static volatile int vcamRtspKeyDumpCount = 0;
-            int dumpIndex = __sync_add_and_fetch(&vcamRtspDumpCount, 1);
-            BOOL isKeyPacket = (packet->flags & AV_PKT_FLAG_KEY) != 0;
-            int keyDumpIndex = isKeyPacket
-                ? __sync_add_and_fetch(&vcamRtspKeyDumpCount, 1) : 0;
-            if ((dumpIndex <= 3 || keyDumpIndex == 1) && packet->size > 0) {
-                char dumpPath[96] = {0};
-                snprintf(dumpPath, sizeof(dumpPath),
-                         "/var/mobile/Media/VCAM/vcam-rtsp-pkt-%d.bin",
-                         keyDumpIndex == 1 ? 100 + dumpIndex : dumpIndex);
-                int dumpFd = open(dumpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if (dumpFd >= 0) {
-                    ssize_t writtenBytes = write(dumpFd, packet->data, (size_t)packet->size);
-                    close(dumpFd);
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp packet dump idx=%d key=%d path=%@ size=%d written=%ld",
-                        dumpIndex, isKeyPacket ? 1 : 0,
-                        [NSString stringWithUTF8String:dumpPath],
-                        packet->size, (long)writtenBytes]];
-                }
-            }
             CMTime pts = VCAMPacketTime(packet, stream);
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
@@ -483,14 +459,6 @@ cleanup:
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
     BOOL useHardware = self.hardwareDecodeEnabled;
-    // DIAGNOSTIC ONLY: when /var/mobile/Media/VCAM/.vcam-diagnostic-software
-    // exists, run one FFmpeg software session to determine whether a stream is
-    // decodable at all (vs. VideoToolbox-specific rejection). Production
-    // always uses the hardware path; this file is never created by the package.
-    if ([[NSFileManager defaultManager]
-            fileExistsAtPath:@"/var/mobile/Media/VCAM/.vcam-diagnostic-software"]) {
-        useHardware = NO;
-    }
     __block BOOL producedFrame = NO;
     __block BOOL loggedSoftwareFrame = NO;
     BOOL loggedReceiveFailure = NO;
@@ -617,33 +585,6 @@ cleanup:
             break;
         }
         if (packet->stream_index == videoStream) {
-            static volatile int rtspPacketDiag = 0;
-            int diagIndex = __sync_add_and_fetch(&rtspPacketDiag, 1);
-            if (diagIndex <= 3 && packet->size >= 4) {
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"rtsp packet diag idx=%d size=%d flags=%d key=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
-                    diagIndex, packet->size, packet->flags,
-                    (packet->flags & AV_PKT_FLAG_KEY) != 0 ? 1 : 0,
-                    packet->data[0], packet->data[1], packet->data[2], packet->data[3],
-                    packet->size > 4 ? packet->data[4] : 0,
-                    packet->size > 5 ? packet->data[5] : 0,
-                    packet->size > 6 ? packet->data[6] : 0,
-                    packet->size > 7 ? packet->data[7] : 0]];
-            }
-            static volatile int rtspKeyPacketDiag = 0;
-            if ((packet->flags & AV_PKT_FLAG_KEY) != 0 && packet->size >= 4) {
-                int keyDiag = __sync_add_and_fetch(&rtspKeyPacketDiag, 1);
-                if (keyDiag <= 3) {
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp key packet diag idx=%d size=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
-                        keyDiag, packet->size,
-                        packet->data[0], packet->data[1], packet->data[2], packet->data[3],
-                        packet->size > 4 ? packet->data[4] : 0,
-                        packet->size > 5 ? packet->data[5] : 0,
-                        packet->size > 6 ? packet->data[6] : 0,
-                        packet->size > 7 ? packet->data[7] : 0]];
-                }
-            }
             videoPacketsWithoutFrame += 1;
             if (waitingForKeyPacket || awaitingCleanKeyFrame) {
                 recoveryPackets += 1;

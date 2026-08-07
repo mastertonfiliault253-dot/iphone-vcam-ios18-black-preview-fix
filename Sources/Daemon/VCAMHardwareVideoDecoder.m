@@ -201,8 +201,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         if (status == kVTVideoDecoderReferenceMissingErr) {
             static volatile int referenceMissingCount = 0;
             int count = __sync_add_and_fetch(&referenceMissingCount, 1);
-            if (count <= 40 || count % 1000 == 0) {
-                NSLog(@"[DEBUG-a4f2] reference frame missing count=%d status=%d", count, (int)status);
+            if (count <= 4) {
+                NSLog(@"VCAMHardwareVideoDecoder reference frame missing count=%d status=%d", count, (int)status);
             }
             return;
         }
@@ -214,13 +214,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         return;
     }
     if (imageBuffer == NULL || decoder == nil) return;
-    static volatile int deliveredFrames = 0;
-    int delivered = __sync_add_and_fetch(&deliveredFrames, 1);
-    if (delivered <= 3) {
-        NSLog(@"[DEBUG-a4f2] delivered frame count=%d size=%zux%zu",
-              delivered, CVPixelBufferGetWidth(imageBuffer),
-              CVPixelBufferGetHeight(imageBuffer));
-    }
     CVPixelBufferRef retained = CVPixelBufferRetain(imageBuffer);
     @synchronized (decoder) {
         if (decoder->_frameCount < VCAMHardwareMaxFrames) {
@@ -487,17 +480,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
              decodeTime:(CMTime)decodeTime
                duration:(CMTime)duration {
     if (!_active || _session == NULL || bytes == NULL || length == 0) return NO;
-    static volatile int decodePacketDiag = 0;
-    int diagIndex = __sync_add_and_fetch(&decodePacketDiag, 1);
-    if (diagIndex <= 6) {
-        BOOL annexB = length >= 4 && VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
-        NSLog(@"[DEBUG-a4f2] decodePacket idx=%d length=%zu annexB=%d head=%02x%02x%02x%02x%02x%02x%02x%02x",
-              diagIndex, length, annexB ? 1 : 0,
-              length > 0 ? bytes[0] : 0, length > 1 ? bytes[1] : 0,
-              length > 2 ? bytes[2] : 0, length > 3 ? bytes[3] : 0,
-              length > 4 ? bytes[4] : 0, length > 5 ? bytes[5] : 0,
-              length > 6 ? bytes[6] : 0, length > 7 ? bytes[7] : 0);
-    }
     size_t feedLength = length;
     const uint8_t *feedBytes = bytes;
     uint8_t *converted = NULL;
@@ -509,7 +491,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         static volatile int annexBFailures = 0;
         int failureCount = __sync_add_and_fetch(&annexBFailures, 1);
         if (failureCount <= 4) {
-            NSLog(@"[DEBUG-a4f2] annexB conversion failed length=%zu", length);
+            NSLog(@"VCAMHardwareVideoDecoder annexB conversion failed length=%zu", length);
         }
         return NO;
     }
@@ -560,9 +542,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         return NO;
     }
     status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
-    if (diagIndex <= 6) {
-        NSLog(@"[DEBUG-a4f2] decodePacket idx=%d decodeStatus=%d", diagIndex, (int)status);
-    }
     if (status != noErr) {
         if (status != kVTVideoDecoderReferenceMissingErr) {
             static volatile int decodeFailures = 0;
