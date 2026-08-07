@@ -354,6 +354,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     int videoStream = -1;
     AVStream *stream = NULL;
     BOOL producedFrame = NO;
+    VCAMHardwareVideoDecoder *decoder = nil;
+    NSError *decoderError = nil;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
     const char *url = urlString.UTF8String;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
@@ -364,9 +366,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (videoStream < 0) goto cleanup;
     stream = formatContext->streams[videoStream];
-    VCAMHardwareVideoDecoder *decoder = [[VCAMHardwareVideoDecoder alloc]
+    decoder = [[VCAMHardwareVideoDecoder alloc]
         initWithCodecParameters:stream->codecpar];
-    NSError *decoderError = nil;
     if (decoder == nil || ![decoder start:&decoderError]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"rtsp hardware decoder unavailable error=%@",
