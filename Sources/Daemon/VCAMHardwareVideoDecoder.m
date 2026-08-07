@@ -5,6 +5,10 @@
 #include <libavcodec/avcodec.h>
 #include <string.h>
 
+#ifndef kVTVideoDecoderReferenceMissingErr
+#define kVTVideoDecoderReferenceMissingErr -12780
+#endif
+
 enum { VCAMHardwareMaxFrames = 16 };
 
 typedef struct {
@@ -35,6 +39,17 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     (void)presentationDuration;
     VCAMHardwareVideoDecoder *decoder = (__bridge VCAMHardwareVideoDecoder *)refcon;
     if (status != noErr) {
+        // A missing reference frame is recoverable: the decoder will produce
+        // output again once the next keyframe arrives. Treat it as noise
+        // instead of a session failure (mirrors FFmpeg's videotoolbox path).
+        if (status == kVTVideoDecoderReferenceMissingErr) {
+            static volatile int referenceMissingCount = 0;
+            int count = __sync_add_and_fetch(&referenceMissingCount, 1);
+            if (count <= 4) {
+                NSLog(@"VCAMHardwareVideoDecoder reference frame missing status=%d", (int)status);
+            }
+            return;
+        }
         static volatile int callbackFailures = 0;
         int failureCount = __sync_add_and_fetch(&callbackFailures, 1);
         if (failureCount <= 4) {
@@ -258,14 +273,16 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     }
     status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
     if (status != noErr) {
-        static volatile int decodeFailures = 0;
-        int failureCount = __sync_add_and_fetch(&decodeFailures, 1);
-        if (failureCount <= 4) {
-            NSLog(@"VCAMHardwareVideoDecoder decode failed status=%d", (int)status);
+        if (status != kVTVideoDecoderReferenceMissingErr) {
+            static volatile int decodeFailures = 0;
+            int failureCount = __sync_add_and_fetch(&decodeFailures, 1);
+            if (failureCount <= 4) {
+                NSLog(@"VCAMHardwareVideoDecoder decode failed status=%d", (int)status);
+            }
         }
     }
     CFRelease(sampleBuffer);
-    return status == noErr;
+    return status == noErr || status == kVTVideoDecoderReferenceMissingErr;
 }
 
 - (nullable CVPixelBufferRef)copyNextOutputFrame:(CMTime *)presentationTimeOut {

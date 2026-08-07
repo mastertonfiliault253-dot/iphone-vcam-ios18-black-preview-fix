@@ -106,6 +106,22 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                                         CFSTR("com.codex.vcam/preferences.changed"), NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         [self installButtonWhenWindowIsReady];
+        if ([self isSpringBoardHost]) [self startPeriodicRefresh];
+    });
+}
+
+- (void)startPeriodicRefresh {
+    static const NSTimeInterval refreshInterval = 1.0;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(refreshInterval * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!VCAMPickerUIStarted || !self.started) return;
+        // SpringBoard may not post active/key-window notifications when the
+        // lock screen is dismissed, so re-evaluate the floating button on a
+        // slow cadence. This keeps the dot from staying hidden forever after
+        // an unlock and re-homes the gesture if the key window changes.
+        [self installButtonWhenWindowIsReady];
+        [self startPeriodicRefresh];
     });
 }
 
@@ -215,16 +231,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         if (self.remainingWindowRetries-- > 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
-        } else {
-            // Never give up: SpringBoard may not deliver a key-window
-            // notification after a late injection, so keep polling at a slow
-            // cadence until a window actually exists.
-            [VCAMConfiguration appendProcessLog:
-                @"springboard-client installButton window=nil retrying at 1s cadence"];
-            self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ [self installButtonWhenWindowIsReady]; });
         }
+        // The periodic SpringBoard refresh keeps polling if retries run out.
         return;
     }
 
@@ -303,7 +311,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         [window addSubview:self.button];
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
-    self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || ![self isSpringBoardUnlocked];
+    BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
+    self.button.hidden = ![self isFloatingButtonVisibleForValues:values] || locked;
     [window bringSubviewToFront:self.button];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"springboard-client installButton host=%@ window=%@ hidden=%d frame=%@",
