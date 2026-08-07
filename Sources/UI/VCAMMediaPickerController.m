@@ -10,6 +10,7 @@
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
 static const void *VCAMGestureTagKey = &VCAMGestureTagKey;
+static const void *VCAMFloatingButtonKey = &VCAMFloatingButtonKey;
 static NSString *const VCAMFloatingWindowIdentifier = @"com.codex.vcam.floatingDot";
 static BOOL VCAMPickerUIStarted = NO;
 
@@ -202,6 +203,15 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (nullable UIWindow *)floatingDotWindow {
     if (self.floatingWindow != nil) return self.floatingWindow;
+    // Adopt an existing floating window (created by an earlier controller
+    // instance in this process, e.g. after a duplicate dylib load) instead of
+    // stacking a second dot. All controller instances then share one window.
+    for (UIWindow *candidate in [self allVisibleWindows]) {
+        if ([candidate.accessibilityIdentifier isEqualToString:VCAMFloatingWindowIdentifier]) {
+            self.floatingWindow = candidate;
+            return candidate;
+        }
+    }
     UIWindowScene *windowScene = [self cameraWindow].windowScene;
     UIWindow *window = windowScene != nil
         ? [[UIWindow alloc] initWithWindowScene:windowScene]
@@ -215,6 +225,52 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     window.hidden = YES;
     self.floatingWindow = window;
     return window;
+}
+
+- (UIButton *)makeFloatingButton {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.tag = VCAMFloatingDotTag;
+    button.accessibilityLabel = @"打开 VCAM 控制面板";
+    button.backgroundColor = UIColor.clearColor;
+    UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
+    dot.userInteractionEnabled = NO;
+    dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.88];
+    dot.layer.cornerRadius = 22.0;
+    dot.layer.borderWidth = 1.0;
+    dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
+    dot.layer.shadowColor = UIColor.blackColor.CGColor;
+    dot.layer.shadowOpacity = 0.35;
+    dot.layer.shadowRadius = 4.0;
+    dot.layer.shadowOffset = CGSizeMake(0, 1);
+    [button addSubview:dot];
+    button.layer.shadowColor = UIColor.blackColor.CGColor;
+    UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                               action:@selector(showSourceMenu:)];
+    singleTap.numberOfTapsRequired = 1;
+    singleTap.numberOfTouchesRequired = 1;
+    [button addGestureRecognizer:singleTap];
+    UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                               action:@selector(toggleFloatingButton:)];
+    doubleTap.numberOfTapsRequired = 2;
+    doubleTap.numberOfTouchesRequired = 1;
+    [button addGestureRecognizer:doubleTap];
+    [singleTap requireGestureRecognizerToFail:doubleTap];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                          action:@selector(dragButton:)];
+    pan.maximumNumberOfTouches = 1;
+    [button addGestureRecognizer:pan];
+    return button;
+}
+
+- (UIButton *)floatingButton {
+    if (self.floatingWindow == nil) return nil;
+    UIButton *button = objc_getAssociatedObject(self.floatingWindow,
+                                                VCAMFloatingButtonKey);
+    if (button != nil) return button;
+    button = [self makeFloatingButton];
+    objc_setAssociatedObject(self.floatingWindow, VCAMFloatingButtonKey, button,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return button;
 }
 
 - (UITapGestureRecognizer *)makeThreeFingerToggleRecognizer {
@@ -252,7 +308,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
             window.hidden = YES;
         }
         for (UIView *view in [window.subviews copy]) {
-            if (view != self.button && view.tag == VCAMFloatingDotTag) {
+            if (view != [self floatingButton] && view.tag == VCAMFloatingDotTag) {
                 [view removeFromSuperview];
             }
         }
@@ -327,41 +383,6 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         [self installGestureOnWindowIfNeeded:candidate];
     }
 
-    if (self.button == nil) {
-        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-        button.tag = VCAMFloatingDotTag;
-        button.accessibilityLabel = @"打开 VCAM 控制面板";
-        button.backgroundColor = UIColor.clearColor;
-        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
-        dot.userInteractionEnabled = NO;
-        dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.88];
-        dot.layer.cornerRadius = 22.0;
-        dot.layer.borderWidth = 1.0;
-        dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
-        dot.layer.shadowColor = UIColor.blackColor.CGColor;
-        dot.layer.shadowOpacity = 0.35;
-        dot.layer.shadowRadius = 4.0;
-        dot.layer.shadowOffset = CGSizeMake(0, 1);
-        [button addSubview:dot];
-        button.layer.shadowColor = UIColor.blackColor.CGColor;
-        UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                                   action:@selector(showSourceMenu:)];
-        singleTap.numberOfTapsRequired = 1;
-        singleTap.numberOfTouchesRequired = 1;
-        [button addGestureRecognizer:singleTap];
-        UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                                   action:@selector(toggleFloatingButton:)];
-        doubleTap.numberOfTapsRequired = 2;
-        doubleTap.numberOfTouchesRequired = 1;
-        [button addGestureRecognizer:doubleTap];
-        [singleTap requireGestureRecognizerToFail:doubleTap];
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                             action:@selector(dragButton:)];
-        pan.maximumNumberOfTouches = 1;
-        [button addGestureRecognizer:pan];
-        self.button = button;
-    }
-
     UIWindow *floatingWindow = [self floatingDotWindow];
     if (floatingWindow.windowScene == nil && window.windowScene != nil) {
         floatingWindow.hidden = YES;
@@ -370,20 +391,24 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     }
     [self removeLegacyFloatingDots];
 
-    if (self.button.superview != floatingWindow) {
-        [self.button removeFromSuperview];
-        self.button.frame = floatingWindow.bounds;
+    UIButton *button = [self floatingButton];
+    self.button = button;
+    if (button == nil) return;
+
+    if (button.superview != floatingWindow) {
+        [button removeFromSuperview];
+        button.frame = floatingWindow.bounds;
         floatingWindow.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
         if (savedCenter != nil) floatingWindow.center = savedCenter.CGPointValue;
-        [floatingWindow addSubview:self.button];
+        [floatingWindow addSubview:button];
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
     BOOL visible = [self isFloatingButtonVisibleForValues:values] && !locked;
     floatingWindow.hidden = !visible;
-    self.button.hidden = NO;
-    [floatingWindow bringSubviewToFront:self.button];
+    button.hidden = NO;
+    [floatingWindow bringSubviewToFront:button];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"springboard-client installButton host=%@ hostWindow=%@ floatingWindow=%@ hidden=%d frame=%@",
             NSProcessInfo.processInfo.processName ?: @"(unknown)",
@@ -464,13 +489,21 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
               values[@"preferredFramesPerSecond"] ?: @30];
-    detail = [detail stringByAppendingString:@"\n仅注入 mediaserverd 与 SpringBoard；麦克风保持真实输入"];
+    NSDictionary *streamStatus = [VCAMSharedFramePreviewView streamingStatus];
+    NSString *streamText = nil;
+    if ([streamStatus[@"receiving"] boolValue]) {
+        streamText = [NSString stringWithFormat:@"已收到推流（%.0f ms 前）",
+            [streamStatus[@"ageMs"] doubleValue]];
+    } else {
+        streamText = @"未收到推流";
+    }
     return @{
         @"source": sourceTitle,
         @"detail": detail,
         @"mirror": [values[@"mirrorHorizontally"] boolValue] ? @"开启" : @"关闭",
         @"loop": values[@"loopMedia"] == nil || [values[@"loopMedia"] boolValue] ? @"开启" : @"关闭",
         @"contentMode": modeNames[mode] ?: @"裁切填满",
+        @"stream": streamText,
     };
 }
 
@@ -582,6 +615,13 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self dismissPanelThen:^{ [self restoreRealCamera]; }];
+}
+
+- (void)controlPanelDidRequestStatusRefresh:(VCAMControlPanelViewController *)panel {
+    (void)panel;
+    if (self.panel != nil) {
+        [self.panel updateStatus:[self currentStatus]];
+    }
 }
 
 - (void)presentMediaPicker {

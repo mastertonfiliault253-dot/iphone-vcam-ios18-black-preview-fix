@@ -370,7 +370,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         initWithCodecParameters:stream->codecpar];
     if (decoder == nil || ![decoder start:&decoderError]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"rtsp hardware decoder unavailable error=%@",
+            @"rtsp direct-VT unavailable codec=%s extradata=%d error=%@",
+            avcodec_get_name(stream->codecpar->codec_id),
+            stream->codecpar->extradata_size,
             decoderError.localizedDescription ?: @"(init failed)"]];
         goto cleanup;
     }
@@ -422,7 +424,13 @@ cleanup:
         [VCAMConfiguration appendProcessLog:@"rtsp software decode disabled; hardware only"];
         return NO;
     }
-    return [self decodeOneHardwareSession];
+    // Prefer FFmpeg's VideoToolbox hwaccel (AV_HWDEVICE_TYPE_VIDEOTOOLBOX)
+    // over feeding the demuxer's raw packets to a hand-rolled VT session.
+    // Many RTSP servers do not advertise SPS/PPS parameter sets in the SDP,
+    // so the direct-VT session has no extradata to build a format description
+    // from ("init failed"); FFmpeg assembles the parameter sets from the
+    // stream and still decodes on the hardware decoder.
+    return [self decodeOneSessionSoftwareOnly];
 }
 
 - (BOOL)decodeOneSessionSoftwareOnly {

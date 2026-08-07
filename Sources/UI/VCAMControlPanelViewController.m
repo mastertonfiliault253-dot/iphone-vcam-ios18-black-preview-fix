@@ -5,6 +5,7 @@
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *status;
 @property(nonatomic, strong, nullable) UILabel *sourceLabel;
 @property(nonatomic, strong, nullable) UILabel *detailLabel;
+@property(nonatomic, strong, nullable) UILabel *streamLabel;
 @property(nonatomic, strong, nullable) UIButton *mirrorButton;
 @property(nonatomic, strong, nullable) UIButton *contentModeButton;
 @property(nonatomic, strong, nullable) UIButton *loopButton;
@@ -25,6 +26,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.52];
+    [self startStatusRefresh];
 
     UIControl *scrim = [UIControl new];
     scrim.translatesAutoresizingMaskIntoConstraints = NO;
@@ -188,6 +190,11 @@
     detail.numberOfLines = 0;
     [stack addArrangedSubview:detail];
     self.detailLabel = detail;
+    UILabel *stream = [self labelWithText:@"推流状态：查询中"
+                                     size:13 weight:UIFontWeightSemibold
+                                    color:UIColor.systemGrayColor];
+    [stack addArrangedSubview:stream];
+    self.streamLabel = stream;
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
         [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
@@ -201,9 +208,27 @@
     _status = [status copy];
     self.sourceLabel.text = status[@"source"] ?: @"真实相机";
     self.detailLabel.text = status[@"detail"] ?: @"未启用替换";
+    NSString *stream = status[@"stream"];
+    if (stream.length > 0) {
+        self.streamLabel.text = [NSString stringWithFormat:@"推流状态：%@", stream];
+        self.streamLabel.textColor = [stream hasPrefix:@"已收到"]
+            ? [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1]
+            : [UIColor colorWithRed:0.95 green:0.32 blue:0.30 alpha:1];
+    }
     [self updateButton:self.mirrorButton label:@"镜像" value:status[@"mirror"] ?: @"关闭"];
     [self updateButton:self.contentModeButton label:@"填充方式" value:status[@"contentMode"] ?: @"裁切填满"];
     [self updateButton:self.loopButton label:@"视频循环" value:status[@"loop"] ?: @"开启"];
+}
+
+- (void)startStatusRefresh {
+    static const NSTimeInterval refreshInterval = 1.0;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(refreshInterval * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!self.isViewLoaded || self.view.window == nil) return;
+        [self.delegate controlPanelDidRequestStatusRefresh:self];
+        [self startStatusRefresh];
+    });
 }
 
 - (void)updateButton:(UIButton *)button label:(NSString *)label value:(NSString *)value {

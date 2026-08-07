@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)controlPanelDidRequestLoopToggle:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestEnableVirtualCamera:(VCAMControlPanelViewController *)panel;
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel;
+- (void)controlPanelDidRequestStatusRefresh:(VCAMControlPanelViewController *)panel;
 @end
 
 @interface VCAMControlPanelViewController : UIViewController

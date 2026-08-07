@@ -12,7 +12,32 @@
 @property(nonatomic) uint64_t lastSequence;
 @end
 
+static BOOL VCAMPreviewSeenFrame;
+static CFTimeInterval VCAMPreviewLastFrameHostTime;
+static NSUInteger VCAMPreviewWindowFrames;
+static CFTimeInterval VCAMPreviewWindowStart;
+
 @implementation VCAMSharedFramePreviewView
+
++ (NSDictionary<NSString *, id> *)streamingStatus {
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL receiving = VCAMPreviewSeenFrame &&
+        (now - VCAMPreviewLastFrameHostTime) <= 2.0;
+    double ageMilliseconds = receiving
+        ? (now - VCAMPreviewLastFrameHostTime) * 1000.0 : 0;
+    double fps = 0;
+    if (VCAMPreviewWindowStart > 0) {
+        CFTimeInterval elapsed = now - VCAMPreviewWindowStart;
+        if (elapsed >= 0.9) {
+            fps = (double)VCAMPreviewWindowFrames / elapsed;
+        }
+    }
+    return @{
+        @"receiving": @(receiving),
+        @"ageMs": @(ageMilliseconds),
+        @"fps": @(fps),
+    };
+}
 
 + (Class)layerClass {
     return AVSampleBufferDisplayLayer.class;
@@ -68,6 +93,15 @@
     if (!copied || metadata.sequence == self.lastSequence) {
         CVPixelBufferRelease(pixelBuffer);
         return;
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    VCAMPreviewSeenFrame = YES;
+    VCAMPreviewLastFrameHostTime = now;
+    VCAMPreviewWindowFrames += 1;
+    if (VCAMPreviewWindowStart == 0) VCAMPreviewWindowStart = now;
+    if (now - VCAMPreviewWindowStart >= 1.0) {
+        VCAMPreviewWindowStart = now;
+        VCAMPreviewWindowFrames = 0;
     }
     self.lastSequence = metadata.sequence;
     if (_formatDescription == NULL) {

@@ -120,7 +120,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("three-consecutive-renders-over-50ms", implementation)
         self.assertIn("high-resolution replacement render", implementation)
         self.assertIn("VCAMLastVirtualFrame", implementation)
-        self.assertIn("virtual mode pending: rendering black", implementation)
+        self.assertIn("virtual frame stale; rendering black instead of frozen frame", implementation)
         self.assertIn("VCAMVirtualModeIsEnabled", implementation)
         self.assertIn("VCAMConfiguredMode = -1", implementation)
         self.assertIn("[enabledValue isKindOfClass:NSNumber.class]", implementation)

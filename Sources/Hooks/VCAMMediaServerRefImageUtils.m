@@ -29,6 +29,7 @@ static CFDictionaryRef VCAMCompressedTargetCreationAttributes;
 static CVPixelBufferRef VCAMLastCompressedVirtualFrame;
 static CFDictionaryRef VCAMLastCompressedVirtualFrameCreationAttributes;
 static CVPixelBufferRef VCAMLastVirtualFrame;
+static CFAbsoluteTime VCAMLastVirtualFrameHostTime;
 static CIContext *VCAMContext;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
@@ -510,12 +511,24 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         if (copied) {
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
             VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
-        } else if (VCAMLastVirtualFrame != NULL) {
+            VCAMLastVirtualFrameHostTime = CFAbsoluteTimeGetCurrent();
+        } else if (VCAMLastVirtualFrame != NULL &&
+                   CFAbsoluteTimeGetCurrent() - VCAMLastVirtualFrameHostTime <= 2.5) {
+            // Short stalls reuse the last good frame so the picture does not
+            // blink on every producer hiccup.
             CVPixelBufferRelease(scratch);
             scratch = CVPixelBufferRetain(VCAMLastVirtualFrame);
         } else if (VCAMFillBlackSharedFrame(scratch)) {
+            // The stream has been gone long enough that a frozen frame would
+            // be mistaken for the live picture. Fail closed to black instead.
+            if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
             VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
-            VCAMRefLog("virtual mode pending: rendering black instead of real camera");
+            VCAMLastVirtualFrameHostTime = CFAbsoluteTimeGetCurrent();
+            static volatile int staleBlackFrames = 0;
+            int staleCount = __sync_add_and_fetch(&staleBlackFrames, 1);
+            if (staleCount <= 4 || staleCount % 300 == 0) {
+                VCAMRefLog("virtual frame stale; rendering black instead of frozen frame");
+            }
         } else {
             if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
                     targetBuffer, replacementBufferOut)) return YES;

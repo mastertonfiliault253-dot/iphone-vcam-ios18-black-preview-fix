@@ -322,6 +322,33 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("presentPanelWithRemainingRetries", picker)
         self.assertIn("accessibilityLabel", panel)
 
+    def test_panel_shows_stream_health_and_hides_injection_targets(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        panel = (ROOT / "Sources" / "UI" / "VCAMControlPanelViewController.m").read_text(
+            encoding="utf-8"
+        )
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("streamingStatus", picker)
+        self.assertIn("已收到推流", picker)
+        self.assertIn("未收到推流", picker)
+        self.assertIn("推流状态", panel)
+        self.assertIn("controlPanelDidRequestStatusRefresh", panel)
+        self.assertNotIn("仅注入 mediaserverd 与 SpringBoard", picker)
+        self.assertNotIn("麦克风保持真实输入", picker)
+        self.assertIn("VCAMPreviewLastFrameHostTime", preview)
+
+    def test_stale_virtual_frames_render_black_after_timeout(self) -> None:
+        image_utils = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMLastVirtualFrameHostTime", image_utils)
+        self.assertIn("<= 2.5", image_utils)
+        self.assertIn("virtual frame stale; rendering black instead of frozen frame", image_utils)
+
     def test_preview_displays_worker_oriented_pixels_without_a_second_transform(self) -> None:
         preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
             encoding="utf-8"
