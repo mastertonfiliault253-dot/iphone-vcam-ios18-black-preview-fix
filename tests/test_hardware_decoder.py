@@ -6,20 +6,18 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
-    def test_video_toolbox_session_uses_verified_default_hardware_decoder(self) -> None:
+    def test_video_toolbox_session_uses_ios_default_decoder(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        # iOS 16.5 regressed when the decoder specification forced the
-        # Enable/Require keys. Let VideoToolbox select its default, then verify
-        # the selected decoder is hardware before accepting the session.
+        # iPhoneOS 16.5 excludes the macOS-only Enable/Require/UsingHardware
+        # keys behind !TARGET_OS_IPHONE. Let iOS select its native decoder.
         create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
             "&_session);", 1
         )[0]
         self.assertIn("NULL,", create)
         self.assertNotIn("_decoderSpecification", create)
-        self.assertIn("kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder", decoder)
-        self.assertIn("VideoToolbox selected a non-hardware decoder", decoder)
+        self.assertNotIn("UsingHardwareAcceleratedVideoDecoder", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
     def test_reference_missing_error_is_recoverable(self) -> None:
