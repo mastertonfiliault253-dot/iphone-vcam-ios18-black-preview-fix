@@ -324,6 +324,20 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         if (packet->stream_index == videoStream) {
             CMTime pts = VCAMPacketTime(packet, stream);
             BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            if (!receivedKeyPacket && !isKeyFrame) {
+                // A session can join in the middle of a GOP. Feeding those
+                // dependent pictures poisons VideoToolbox with missing-reference
+                // errors before the first IDR arrives. The format description
+                // already owns the SDP parameter sets, so wait for the IDR.
+                if (CFAbsoluteTimeGetCurrent() - sessionStart > 10.0) {
+                    [VCAMConfiguration appendProcessLog:
+                        @"rtsp direct-VT key frame timed out; falling back to FFmpeg hwaccel"];
+                    av_packet_unref(packet);
+                    break;
+                }
+                av_packet_unref(packet);
+                continue;
+            }
             if (isKeyFrame && !receivedKeyPacket) {
                 receivedKeyPacket = YES;
                 keyPacketAt = CFAbsoluteTimeGetCurrent();
@@ -348,8 +362,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             // FFmpeg hwaccel fallback take over.
             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
             BOOL keyFrameDecodeTimedOut = receivedKeyPacket && now - keyPacketAt > 2.0;
-            BOOL keyFrameWaitTimedOut = !receivedKeyPacket && now - sessionStart > 10.0;
-            if (!firstFrameProduced && (keyFrameDecodeTimedOut || keyFrameWaitTimedOut)) {
+            if (!firstFrameProduced && keyFrameDecodeTimedOut) {
                 [VCAMConfiguration appendProcessLog:
                     @"rtsp direct-VT first frame timed out; falling back to FFmpeg hwaccel"];
                 break;

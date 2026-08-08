@@ -69,6 +69,19 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("system/com.codex.vcaminjectd", postinst)
         self.assertIn("system/com.codex.vcaminjectd", prerm)
 
+    def test_upgrade_respawns_injection_hosts_before_loading_clients(self) -> None:
+        postinst = (
+            ROOT / "layout" / "DEBIAN" / "postinst"
+        ).read_text(encoding="utf-8")
+        restart = "killall -9 SpringBoard mediaserverd"
+        self.assertIn(restart, postinst)
+        self.assertLess(
+            postinst.index(restart),
+            postinst.index("vcam_best_effort_inject SpringBoard"),
+        )
+        self.assertIn('grep -Fq "$proof_pattern" "$proof_path"', postinst)
+        self.assertIn('already-loaded target=$target_name pid=$target_pid proof=1', postinst)
+
     def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:
         launchd_path = (
             ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcamd.plist"

@@ -76,6 +76,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue", decoder)
         self.assertIn("BOOL receivedKeyPacket = NO", rtsp)
         self.assertIn("packet->flags & AV_PKT_FLAG_KEY", rtsp)
+        self.assertIn("if (!receivedKeyPacket && !isKeyFrame)", rtsp)
         self.assertIn("if (isKeyFrame && !receivedKeyPacket)", rtsp)
         self.assertIn("isKeyFrame:isKeyFrame", rtsp)
         loop = rtsp.split("while (self.running && av_read_frame", 1)[1].split(
@@ -87,6 +88,17 @@ class HardwareDecoderTests(unittest.TestCase):
             rtsp.index("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp.index("rtsp hardware session codec=")),
         )
         self.assertIn("receivedKeyPacket &&", loop)
+        self.assertLess(
+            loop.index("if (!receivedKeyPacket && !isKeyFrame)"),
+            loop.index("[decoder decodePacket:"),
+        )
+
+    def test_hls_falls_back_to_player_item_time_for_headless_playback(self) -> None:
+        hls = (ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("itemTimeForHostTime:CACurrentMediaTime()", hls)
+        self.assertIn("itemTime = self.playerItem.currentTime", hls)
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(

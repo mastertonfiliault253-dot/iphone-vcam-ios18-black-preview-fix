@@ -115,6 +115,7 @@
 
 - (CVPixelBufferRef)copyLatestPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer {
     CMTime itemTime = [self.videoOutput itemTimeForHostTime:CACurrentMediaTime()];
+    if (!CMTIME_IS_NUMERIC(itemTime)) itemTime = self.playerItem.currentTime;
     if (!CMTIME_IS_NUMERIC(itemTime) ||
         ![self.videoOutput hasNewPixelBufferForItemTime:itemTime]) {
         return NULL;
