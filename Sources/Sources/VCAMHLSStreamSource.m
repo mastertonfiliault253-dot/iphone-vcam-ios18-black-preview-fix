@@ -22,6 +22,7 @@
 @property(nonatomic, strong, nullable) dispatch_source_t pullTimer;
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL playbackReady;
+- (void)startPlayerWithURL:(NSURL *)url;
 - (CVPixelBufferRef)copyLatestPixelBuffer CF_RETURNS_RETAINED;
 @end
 
@@ -51,6 +52,19 @@
         }
         return NO;
     }
+    self.running = YES;
+    self.playbackReady = NO;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.running) return;
+        [strongSelf startPlayerWithURL:url];
+    });
+    return YES;
+}
+
+- (void)startPlayerWithURL:(NSURL *)url {
+    NSAssert(NSThread.isMainThread, @"HLS AVPlayer setup must run on the main thread");
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url
                                             options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
     AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
@@ -83,8 +97,6 @@
     self.player = player;
     self.playerItem = item;
     self.videoOutput = output;
-    self.running = YES;
-    self.playbackReady = NO;
     dispatch_source_t pullTimer = dispatch_source_create(
         DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     uint64_t interval = NSEC_PER_SEC /
@@ -137,23 +149,32 @@
             (long)strongSelf.playerItem.status,
             strongSelf.playerItem.error.localizedDescription ?: @"(none)"]];
     });
-    return YES;
 }
 
 - (void)stop {
     self.running = NO;
-    if (self.pullTimer != nil) {
-        dispatch_source_cancel(self.pullTimer);
-        self.pullTimer = nil;
-    }
-    if (self.endTimeObserver != nil) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self.endTimeObserver];
-        self.endTimeObserver = nil;
-    }
-    [self.player pause];
+    dispatch_source_t pullTimer = self.pullTimer;
+    id endTimeObserver = self.endTimeObserver;
+    AVPlayer *player = self.player;
+    AVPlayerItem *playerItem = self.playerItem;
+    AVPlayerItemVideoOutput *videoOutput = self.videoOutput;
+    self.pullTimer = nil;
+    self.endTimeObserver = nil;
     self.player = nil;
     self.playerItem = nil;
     self.videoOutput = nil;
+    void (^cleanup)(void) = ^{
+        if (pullTimer != nil) dispatch_source_cancel(pullTimer);
+        if (endTimeObserver != nil) {
+            [[NSNotificationCenter defaultCenter] removeObserver:endTimeObserver];
+        }
+        [player pause];
+        if (playerItem != nil && videoOutput != nil) {
+            [playerItem removeOutput:videoOutput];
+        }
+    };
+    if (NSThread.isMainThread) cleanup();
+    else dispatch_async(dispatch_get_main_queue(), cleanup);
     @synchronized (self) {
         if (_latestPixelBuffer != NULL) {
             CVPixelBufferRelease(_latestPixelBuffer);
