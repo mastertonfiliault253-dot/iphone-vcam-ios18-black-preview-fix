@@ -46,13 +46,19 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("H264 annexB sps=%d pps=%d", decoder)
         self.assertIn("HEVC annexB vps=%d sps=%d pps=%d", decoder)
 
-    def test_packet_memory_is_owned_by_the_block_buffer(self) -> None:
+    def test_packet_memory_uses_verified_block_buffer_pattern(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("uint8_t *ownedBytes = malloc(feedLength)", decoder)
-        self.assertIn("memcpy(ownedBytes, feedBytes, feedLength)", decoder)
-        self.assertNotIn("CMBlockBufferReplaceDataBytes", decoder)
+        # 0.8.10's block-buffer construction (NULL memory block + explicit
+        # ReplaceDataBytes) is the pattern that produced decoded frames on the
+        # iOS 16.5 device; keep it byte-for-byte.
+        self.assertIn("CMBlockBufferReplaceDataBytes(feedBytes, blockBuffer, 0, feedLength)", decoder)
+        create = decoder.split("CMBlockBufferCreateWithMemoryBlock(", 1)[1].split(
+            "&blockBuffer);", 1
+        )[0]
+        self.assertIn("NULL,", create)
+        self.assertNotIn("ownedBytes", decoder)
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
