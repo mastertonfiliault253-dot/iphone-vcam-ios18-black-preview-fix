@@ -6,19 +6,19 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
-    def test_video_toolbox_session_uses_default_decoder_spec(self) -> None:
+    def test_video_toolbox_session_uses_hardware_decoder_specification(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        # The session is created with a NULL decoder specification so the
-        # platform default (hardware acceleration on iOS 16) applies. Adding
-        # iOS-17-only spec keys or forcing the realtime property regressed
-        # decode on the iOS 16.5 test device.
+        # The direct VideoToolbox session explicitly requests the hardware
+        # decoder (Require for H.264, Enable for HEVC). The realtime property
+        # is deliberately not forced because it regressed decode on device.
         create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
             "&_session);", 1
         )[0]
-        self.assertNotIn("decoderSpecification", create)
-        self.assertNotIn("EnableHardwareAcceleratedVideoDecoder", decoder)
+        self.assertIn("_decoderSpecification", create)
+        self.assertIn("RequireHardwareAcceleratedVideoDecoder", decoder)
+        self.assertIn("EnableHardwareAcceleratedVideoDecoder", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
     def test_reference_missing_error_is_recoverable(self) -> None:
@@ -33,9 +33,10 @@ class HardwareDecoderTests(unittest.TestCase):
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("VCAMConvertAnnexBToLengthPrefixed", decoder)
+        self.assertIn("VCAMFilterParameterSetNALs", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
         self.assertIn("annexB conversion failed", decoder)
+        self.assertIn("VCAMIsParameterSetNAL", decoder)
 
     def test_annex_b_parameter_sets_are_accepted_for_h264_and_hevc(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
@@ -43,8 +44,8 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         self.assertIn("VCAMCollectH264AnnexBParameterSets", decoder)
         self.assertIn("VCAMCollectHEVCAnnexBParameterSets", decoder)
-        self.assertIn("H264 annexB sps=%d pps=%d", decoder)
-        self.assertIn("HEVC annexB vps=%d sps=%d pps=%d", decoder)
+        self.assertIn("H264 annexB psets sps=%d pps=%d status=%d", decoder)
+        self.assertIn("HEVC annexB psets vps=%d sps=%d pps=%d status=%d", decoder)
 
     def test_packet_memory_uses_verified_block_buffer_pattern(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(

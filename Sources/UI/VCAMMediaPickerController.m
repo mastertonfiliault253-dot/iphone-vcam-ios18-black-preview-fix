@@ -12,6 +12,7 @@ static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
 static const void *VCAMGestureTagKey = &VCAMGestureTagKey;
 static const void *VCAMFloatingButtonKey = &VCAMFloatingButtonKey;
+static const void *VCAMStatusIndicatorKey = &VCAMStatusIndicatorKey;
 static NSString *const VCAMFloatingWindowIdentifier = @"com.codex.vcam.floatingDot";
 static BOOL VCAMPickerUIStarted = NO;
 
@@ -77,6 +78,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic, strong, nullable) UIWindow *floatingWindow;
 @property(nonatomic) NSInteger remainingWindowRetries;
 @property(nonatomic) BOOL started;
+@property(nonatomic) BOOL lastKnownLockedState;
 @end
 
 @implementation VCAMMediaPickerController
@@ -110,22 +112,28 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                                         CFSTR("com.codex.vcam/preferences.changed"), NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         [self installButtonWhenWindowIsReady];
-        if ([self isSpringBoardHost]) [self startPeriodicRefresh];
+        if ([self isSpringBoardHost]) [self startStatusRefresh];
     });
 }
 
-- (void)startPeriodicRefresh {
-    static const NSTimeInterval refreshInterval = 1.0;
+- (void)startStatusRefresh {
+    static const NSTimeInterval refreshInterval = 2.0;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(refreshInterval * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (!VCAMPickerUIStarted || !self.started) return;
-        // SpringBoard may not post active/key-window notifications when the
-        // lock screen is dismissed, so re-evaluate the floating button on a
-        // slow cadence. This keeps the dot from staying hidden forever after
-        // an unlock and re-homes the gesture if the key window changes.
-        [self installButtonWhenWindowIsReady];
-        [self startPeriodicRefresh];
+        // Refresh only the tiny stream indicator. The dot itself is installed
+        // on notifications/config changes; re-installing it every second
+        // caused duplicate dots and gesture/panel races.
+        [self updateFloatingStatusIndicator];
+        if ([self isSpringBoardHost]) {
+            BOOL locked = ![self isSpringBoardUnlocked];
+            if (locked != self.lastKnownLockedState) {
+                self.lastKnownLockedState = locked;
+                [self installButtonWhenWindowIsReady];
+            }
+        }
+        [self startStatusRefresh];
     });
 }
 
@@ -244,6 +252,16 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     dot.layer.shadowRadius = 4.0;
     dot.layer.shadowOffset = CGSizeMake(0, 1);
     [button addSubview:dot];
+    UIView *statusIndicator = [[UIView alloc] initWithFrame:CGRectMake(34.0, 4.0, 10.0, 10.0)];
+    statusIndicator.layer.cornerRadius = 5.0;
+    statusIndicator.layer.borderWidth = 1.0;
+    statusIndicator.layer.borderColor = UIColor.whiteColor.CGColor;
+    statusIndicator.backgroundColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    statusIndicator.userInteractionEnabled = NO;
+    statusIndicator.accessibilityIdentifier = @"com.codex.vcam.streamIndicator";
+    [button addSubview:statusIndicator];
+    objc_setAssociatedObject(button, VCAMStatusIndicatorKey, statusIndicator,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     button.layer.shadowColor = UIColor.blackColor.CGColor;
     UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
                                                                                action:@selector(showSourceMenu:)];
@@ -378,18 +396,15 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         return;
     }
 
-    // Three-finger double-tap must work regardless of which window is on top.
-    // Install on every visible window and re-evaluate on the periodic refresh.
-    for (UIWindow *candidate in [self allVisibleWindows]) {
-        [self installGestureOnWindowIfNeeded:candidate];
-    }
-
     UIWindow *floatingWindow = [self floatingDotWindow];
     if (floatingWindow.windowScene == nil && window.windowScene != nil) {
-        floatingWindow.hidden = YES;
-        self.floatingWindow = nil;
-        floatingWindow = [self floatingDotWindow];
+        floatingWindow.windowScene = window.windowScene;
     }
+    // Three-finger double-tap must work regardless of which window is on top.
+    // Install on the host window and the floating window only; installing on
+    // every visible window each second caused gesture conflicts.
+    [self installGestureOnWindowIfNeeded:window];
+    [self installGestureOnWindowIfNeeded:floatingWindow];
     [self removeLegacyFloatingDots];
 
     UIButton *button = [self floatingButton];
@@ -417,6 +432,18 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
             NSStringFromCGRect(floatingWindow.frame)]];
 }
 
+- (void)updateFloatingStatusIndicator {
+    UIButton *button = [self floatingButton];
+    UIView *indicator = button == nil ? nil
+        : objc_getAssociatedObject(button, VCAMStatusIndicatorKey);
+    if (indicator == nil || indicator.superview == nil) return;
+    NSDictionary *stream = [VCAMSharedFramePreviewView streamingStatus];
+    BOOL receiving = [stream[@"receiving"] boolValue];
+    indicator.backgroundColor = receiving
+        ? [UIColor colorWithRed:0.20 green:0.85 blue:0.35 alpha:1.0]
+        : [UIColor colorWithRed:0.95 green:0.33 blue:0.30 alpha:1.0];
+}
+
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateRecognized || UIAccessibilityIsVoiceOverRunning()) return;
     NSDictionary *values = [VCAMConfiguration currentValues];
@@ -434,7 +461,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     (void)gestureRecognizer; (void)otherGestureRecognizer;
-    return YES;
+    return NO;
 }
 
 - (void)dragButton:(UIPanGestureRecognizer *)recognizer {
@@ -514,6 +541,16 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         [self dismissPanelThen:nil];
         return;
     }
+    UIViewController *presenter = [self presentingViewController];
+    UIViewController *presented = presenter.presentedViewController;
+    if ([presented isKindOfClass:VCAMControlPanelViewController.class]) {
+        // The panel can outlive the weak reference if it was presented from
+        // another controller instance; adopt and dismiss it so a second dot
+        // tap always closes the panel.
+        self.panel = (VCAMControlPanelViewController *)presented;
+        [self dismissPanelThen:nil];
+        return;
+    }
     [self presentPanel];
 }
 
@@ -565,22 +602,22 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)controlPanelDidRequestPhotoLibrary:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self presentMediaPicker]; }];
+    [self presentMediaPicker];
 }
 
 - (void)controlPanelDidRequestDocument:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self presentDocumentPicker]; }];
+    [self presentDocumentPicker];
 }
 
 - (void)controlPanelDidRequestOnlineVideo:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self promptForOnlineVideo]; }];
+    [self promptForOnlineVideo];
 }
 
 - (void)controlPanelDidRequestLiveStream:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self promptForLiveStream]; }];
+    [self promptForLiveStream];
 }
 
 - (void)controlPanelDidRequestClockwiseRotation:(VCAMControlPanelViewController *)panel {
@@ -610,12 +647,14 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)controlPanelDidRequestEnableVirtualCamera:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self enableVirtualCamera]; }];
+    [self enableVirtualCamera];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)controlPanelDidRequestRestoreCamera:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self dismissPanelThen:^{ [self restoreRealCamera]; }];
+    [self restoreRealCamera];
+    [self.panel updateStatus:[self currentStatus]];
 }
 
 - (void)controlPanelDidRequestStatusRefresh:(VCAMControlPanelViewController *)panel {

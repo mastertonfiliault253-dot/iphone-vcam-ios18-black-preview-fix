@@ -80,6 +80,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 @property(nonatomic, strong) dispatch_queue_t conversionQueue;
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
+@property(nonatomic) BOOL softwareFallbackActive;
+@property(nonatomic) CFTimeInterval hardwareRetryDeadline;
 @end
 
 @implementation VCAMRTSPStreamSource
@@ -93,6 +95,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _decodeQueue = dispatch_queue_create("com.codex.vcam.rtsp.decode", DISPATCH_QUEUE_SERIAL);
         _conversionQueue = dispatch_queue_create("com.codex.vcam.rtsp.convert", DISPATCH_QUEUE_SERIAL);
         _hardwareDecodeEnabled = YES;
+        _softwareFallbackActive = NO;
+        _hardwareRetryDeadline = 0;
     }
     return self;
 }
@@ -359,11 +363,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
-    const char *url = urlString.UTF8String;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
     av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
     av_dict_set(&options, "timeout", "3000000", 0);
-    if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
+    if (avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options) < 0) goto cleanup;
     if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (videoStream < 0) goto cleanup;
@@ -434,17 +437,33 @@ cleanup:
 
 - (BOOL)decodeOneSession {
     if (!self.hardwareDecodeEnabled) {
-        [VCAMConfiguration appendProcessLog:@"rtsp software decode disabled; hardware only"];
-        return NO;
+        [VCAMConfiguration appendProcessLog:@"rtsp hardware decode disabled; using software decode"];
+        self.softwareFallbackActive = YES;
+        return [self decodeOneSessionSoftwareOnly];
     }
-    // Try the direct VideoToolbox session first when the server advertises
-    // SPS/PPS in the SDP (this was the working path on device). If the
-    // parameter sets are in-band only, the direct session cannot even build a
-    // format description, so fall back to FFmpeg's VideoToolbox hwaccel,
-    // which assembles them from the stream. Both paths use the hardware
-    // decoder; neither is software decoding.
+    // Hardware-first with a bounded software fallback. On healthy devices the
+    // direct VideoToolbox session (or FFmpeg's VideoToolbox hwaccel) decodes
+    // every frame. If both hardware paths produce nothing, fall back to the
+    // FFmpeg software decoder so the camera keeps receiving frames, and retry
+    // hardware every 30 seconds in case it recovers.
+    if (self.softwareFallbackActive &&
+        CACurrentMediaTime() < self.hardwareRetryDeadline) {
+        return [self decodeOneSessionSoftwareOnly];
+    }
     BOOL produced = [self decodeOneHardwareSession];
-    if (produced || !self.running) return produced;
+    if (produced || !self.running) {
+        self.softwareFallbackActive = NO;
+        return produced;
+    }
+    produced = [self decodeOneSessionSoftwareOnly];
+    if (produced || !self.running) {
+        self.softwareFallbackActive = NO;
+        return produced;
+    }
+    [VCAMConfiguration appendProcessLog:
+        @"rtsp hardware decode produced no frames; software fallback active"];
+    self.softwareFallbackActive = YES;
+    self.hardwareRetryDeadline = CACurrentMediaTime() + 30.0;
     return [self decodeOneSessionSoftwareOnly];
 }
 
@@ -458,7 +477,8 @@ cleanup:
     int videoStream = -1;
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
-    BOOL useHardware = self.hardwareDecodeEnabled;
+    BOOL useHardware = self.hardwareDecodeEnabled &&
+        !self.softwareFallbackActive;
     __block BOOL producedFrame = NO;
     __block BOOL loggedSoftwareFrame = NO;
     BOOL loggedReceiveFailure = NO;
