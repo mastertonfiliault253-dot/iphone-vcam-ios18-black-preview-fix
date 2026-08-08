@@ -4,5 +4,7 @@
 <dict>
 	<key>com.apple.private.memorystatus</key>
 	<true/>
+	<key>com.apple.videotoolbox.hardwarevideodecoder</key>
+	<true/>
 </dict>
 </plist>

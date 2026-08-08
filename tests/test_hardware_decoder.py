@@ -6,6 +6,10 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
+    def test_vcamd_has_hardware_decoder_entitlement(self) -> None:
+        entitlements = (ROOT / "vcamd.entitlements").read_text(encoding="utf-8")
+        self.assertIn("com.apple.videotoolbox.hardwarevideodecoder", entitlements)
+
     def test_video_toolbox_session_uses_ios_default_decoder(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"

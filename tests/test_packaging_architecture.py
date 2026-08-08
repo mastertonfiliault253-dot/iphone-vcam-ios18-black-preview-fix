@@ -96,7 +96,13 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("JetsamProperties", launchd)
 
         entitlements = plistlib.loads((ROOT / "vcamd.entitlements").read_bytes())
-        self.assertEqual(entitlements, {"com.apple.private.memorystatus": True})
+        self.assertEqual(
+            entitlements,
+            {
+                "com.apple.private.memorystatus": True,
+                "com.apple.videotoolbox.hardwarevideodecoder": True,
+            },
+        )
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn(
             "vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements",
