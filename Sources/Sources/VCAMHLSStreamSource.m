@@ -86,14 +86,21 @@
     [player playImmediatelyAtRate:1.0];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"hls start output=%@", output]];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.running || strongSelf.playbackReady) return;
+        [strongSelf.player playImmediatelyAtRate:1.0];
+    });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC),
                    dispatch_get_main_queue(), ^{
         __strong typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil || !strongSelf.running || strongSelf.playbackReady) return;
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"hls first-frame timeout player=%ld control=%ld reason=%@ item=%ld error=%@",
+            @"hls first-frame timeout player=%ld control=%ld rate=%.2f reason=%@ item=%ld error=%@",
             (long)strongSelf.player.status,
             (long)strongSelf.player.timeControlStatus,
+            strongSelf.player.rate,
             strongSelf.player.reasonForWaitingToPlay ?: @"(none)",
             (long)strongSelf.playerItem.status,
             strongSelf.playerItem.error.localizedDescription ?: @"(none)"]];
