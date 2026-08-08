@@ -141,6 +141,14 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("vcam-diagnostic-software", rtsp)
         self.assertNotIn("rtsp packet dump", rtsp)
 
+    def test_videotoolbox_packet_probe_is_bounded_and_device_visible(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[DEBUG-vtpack]", decoder)
+        self.assertIn("packetDiagnostic <= 4", decoder)
+        self.assertIn("VCAMConfiguration appendProcessLog", decoder)
+
 
 if __name__ == "__main__":
     unittest.main()

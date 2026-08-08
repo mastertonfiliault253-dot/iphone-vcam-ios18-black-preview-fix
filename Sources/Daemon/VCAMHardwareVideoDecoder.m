@@ -1,4 +1,5 @@
 #import "VCAMHardwareVideoDecoder.h"
+#import "../Core/VCAMConfiguration.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 
@@ -456,7 +457,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                                         CVImageBufferRef imageBuffer,
                                         CMTime presentationTimeStamp,
                                         CMTime presentationDuration) {
-    (void)infoFlags;
     (void)sourceFrameRefCon;
     (void)presentationDuration;
     VCAMHardwareVideoDecoder *decoder = (__bridge VCAMHardwareVideoDecoder *)refcon;
@@ -468,14 +468,18 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             static volatile int referenceMissingCount = 0;
             int count = __sync_add_and_fetch(&referenceMissingCount, 1);
             if (count <= 4) {
-                NSLog(@"VCAMHardwareVideoDecoder reference frame missing count=%d status=%d", count, (int)status);
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"[DEBUG-vtpack] reference frame missing count=%d status=%d flags=%u",
+                    count, (int)status, (unsigned)infoFlags]];
             }
             return;
         }
         static volatile int callbackFailures = 0;
         int failureCount = __sync_add_and_fetch(&callbackFailures, 1);
         if (failureCount <= 4) {
-            NSLog(@"VCAMHardwareVideoDecoder callback failed status=%d", (int)status);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"[DEBUG-vtpack] callback failed status=%d flags=%u image=%d",
+                (int)status, (unsigned)infoFlags, imageBuffer != NULL]];
         }
         return;
     }
@@ -483,9 +487,10 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     static volatile int outputFrames = 0;
     int outputCount = __sync_add_and_fetch(&outputFrames, 1);
     if (outputCount <= 5) {
-        NSLog(@"VCAMHardwareVideoDecoder output frame count=%d size=%zux%zu",
-              outputCount, (size_t)CVPixelBufferGetWidth(imageBuffer),
-              (size_t)CVPixelBufferGetHeight(imageBuffer));
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] output frame count=%d size=%zux%zu flags=%u",
+            outputCount, (size_t)CVPixelBufferGetWidth(imageBuffer),
+            (size_t)CVPixelBufferGetHeight(imageBuffer), (unsigned)infoFlags]];
     }
     CVPixelBufferRef retained = CVPixelBufferRetain(imageBuffer);
     @synchronized (decoder) {
@@ -545,8 +550,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                 NULL, NULL, 0,
                 4, _width, _height,
                 &_decoderSpecification, &_formatDescription);
-            NSLog(@"VCAMHardwareVideoDecoder H264 annexB psets sps=%d pps=%d status=%d",
-                  spsCount, ppsCount, (int)status);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"[DEBUG-vtpack] H264 annexB psets sps=%d pps=%d status=%d nal=4",
+                spsCount, ppsCount, (int)status]];
         } else {
         if (extraSize < 7) return nil;
         int nalHeaderLength = (extra[4] & 0x03) + 1;
@@ -586,8 +592,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             NULL, NULL, 0,
             nalHeaderLength, _width, _height,
             &_decoderSpecification, &_formatDescription);
-        NSLog(@"VCAMHardwareVideoDecoder H264 avcC psets sps=%d pps=%d status=%d",
-              spsCount, ppsCount, (int)status);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] H264 avcC psets sps=%d pps=%d status=%d nal=%d",
+            spsCount, ppsCount, (int)status, nalHeaderLength]];
         }
     } else {
         BOOL annexB = extraSize >= 4 &&
@@ -615,8 +622,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                 vpsPointers, vpsSizes, vpsCount,
                 4, _width, _height,
                 &_decoderSpecification, &_formatDescription);
-            NSLog(@"VCAMHardwareVideoDecoder HEVC annexB psets vps=%d sps=%d pps=%d status=%d",
-                  vpsCount, spsCount, ppsCount, (int)status);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"[DEBUG-vtpack] HEVC annexB psets vps=%d sps=%d pps=%d status=%d nal=4",
+                vpsCount, spsCount, ppsCount, (int)status]];
         } else {
         // ISO/IEC 14496-15 HEVCDecoderConfigurationRecord
         if (extraSize < 23) return nil;
@@ -665,8 +673,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             vpsPointers, vpsSizes, vpsCount,
             nalHeaderLength, _width, _height,
             &_decoderSpecification, &_formatDescription);
-        NSLog(@"VCAMHardwareVideoDecoder HEVC hvcC psets vps=%d sps=%d pps=%d status=%d",
-              vpsCount, spsCount, ppsCount, (int)status);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] HEVC hvcC psets vps=%d sps=%d pps=%d status=%d nal=%d",
+            vpsCount, spsCount, ppsCount, (int)status, nalHeaderLength]];
         }
     }
     if (status != noErr || _formatDescription == NULL) return nil;
@@ -733,8 +742,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         static volatile int strippedCount = 0;
         int count = __sync_add_and_fetch(&strippedCount, 1);
         if (count <= 4) {
-            NSLog(@"VCAMHardwareVideoDecoder stripped parameter set NALs len=%zu out=%zu",
-                  length, feedLength);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"[DEBUG-vtpack] stripped parameter sets input=%zu output=%zu",
+                length, feedLength]];
         }
     }
     // Let the block buffer allocate and own the memory (the 0.8.10 pattern
@@ -793,7 +803,25 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync,
                              isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
     }
-    status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
+    static volatile int packetDiagnostics = 0;
+    int packetDiagnostic = __sync_add_and_fetch(&packetDiagnostics, 1);
+    int firstNAL = feedLength >= 5 ? (_isHEVC ? ((feedBytes[4] >> 1) & 0x3f)
+                                             : (feedBytes[4] & 0x1f)) : -1;
+    if (packetDiagnostic <= 4) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu firstNAL=%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
+            packetDiagnostic, isKeyFrame, annexB, stripped, length, feedLength,
+            firstNAL, (int)status, presentationTime.value, presentationTime.timescale,
+            decodeTime.value, decodeTime.timescale]];
+    }
+    VTDecodeInfoFlags decodeFlags = 0;
+    status = VTDecompressionSessionDecodeFrame(
+        _session, sampleBuffer, 0, NULL, &decodeFlags);
+    if (packetDiagnostic <= 4 || status != noErr) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] decode count=%d status=%d flags=%u",
+            packetDiagnostic, (int)status, (unsigned)decodeFlags]];
+    }
     if (status != noErr) {
         if (status != kVTVideoDecoderReferenceMissingErr) {
             static volatile int decodeFailures = 0;
