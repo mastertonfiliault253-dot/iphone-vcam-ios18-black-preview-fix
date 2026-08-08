@@ -38,8 +38,8 @@ class InjectionMonitorTests(unittest.TestCase):
             "com.apple.camera",
             "com.apple.mobilesafari",
             "com.google.chrome.ios",
-            "com.microsoft.edge",
-            "org.mozilla.ios.firefox",
+            "com.microsoft.msedge",
+            "org.mozilla.ios.Firefox",
         ):
             self.assertIn(expected, plist)
 
