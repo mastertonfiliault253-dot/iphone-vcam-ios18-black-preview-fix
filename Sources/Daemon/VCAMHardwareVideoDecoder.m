@@ -816,6 +816,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             attachments, 0);
         CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync,
                              isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
+        CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DependsOnOthers,
+                             isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
     }
     static volatile int packetDiagnostics = 0;
     int packetDiagnostic = __sync_add_and_fetch(&packetDiagnostics, 1);

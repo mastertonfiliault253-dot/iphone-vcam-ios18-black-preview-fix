@@ -81,6 +81,7 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         self.assertIn("isKeyFrame:(BOOL)isKeyFrame", header)
         self.assertIn("kCMSampleAttachmentKey_NotSync", decoder)
+        self.assertIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
         self.assertIn("isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue", decoder)
         self.assertIn("BOOL receivedKeyPacket = NO", rtsp)
         self.assertIn("packet->flags & AV_PKT_FLAG_KEY", rtsp)
