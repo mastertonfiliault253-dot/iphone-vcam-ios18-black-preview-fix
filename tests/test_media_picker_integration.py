@@ -275,7 +275,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(encoding="utf-8")
         converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(encoding="utf-8")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertIn('av_dict_set(&options, "rtsp_transport", "tcp"', rtsp)
+        self.assertIn('av_dict_set(options, "rtsp_transport", "tcp"', rtsp)
         self.assertNotIn('"nobuffer"', rtsp)
         self.assertNotIn('"low_delay"', rtsp)
         self.assertNotIn('"reorder_queue_size"', rtsp)

@@ -4,12 +4,11 @@ The external seam is `VCAMFramePipeline`. Capture hooks know only how to ask for
 a replacement video sample, audio sample, or photo auxiliary data. They do not
 know whether bytes came from a local asset or OBS.
 
-`VCAMMediaSource` is an internal seam with four current adapters:
+`VCAMMediaSource` is an internal seam with three current adapters for four modes:
 
 - `VCAMLocalMediaSource` owns AVAssetReader lifecycle and looping.
 - `VCAMOBSStreamSource` owns WebSocket reconnection and the latest network frame.
-- `VCAMRTSPStreamSource` owns FFmpeg demux and VideoToolbox decoding.
-- `VCAMHLSStreamSource` uses AVPlayer's native hardware-backed HLS pipeline.
+- `VCAMRTSPStreamSource` owns FFmpeg RTSP/HLS demux and VideoToolbox decoding.
 
 `VCAMFrameRenderer` is the format-normalization module. It hides pixel-buffer
 allocation, orientation, content mode, mirroring, timing and target size.

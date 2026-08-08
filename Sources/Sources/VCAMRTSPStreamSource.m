@@ -77,9 +77,12 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
+@property(nonatomic, strong, nullable) NSURL *streamURL;
+@property(nonatomic, copy) NSString *streamName;
 @property(nonatomic, strong) dispatch_queue_t decodeQueue;
 @property(nonatomic, strong) dispatch_queue_t conversionQueue;
 @property(nonatomic) BOOL running;
+@property(nonatomic) BOOL usesRTSPTransport;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
 @property(nonatomic) BOOL softwareFallbackActive;
 @property(nonatomic) CFTimeInterval hardwareRetryDeadline;
@@ -93,8 +96,12 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     if (self) {
         _configuration = configuration;
         _renderer = renderer;
-        _decodeQueue = dispatch_queue_create("com.codex.vcam.rtsp.decode", DISPATCH_QUEUE_SERIAL);
-        _conversionQueue = dispatch_queue_create("com.codex.vcam.rtsp.convert", DISPATCH_QUEUE_SERIAL);
+        BOOL isHLS = configuration.sourceKind == VCAMSourceKindHLS;
+        _streamURL = isHLS ? configuration.hlsURL : configuration.rtspURL;
+        _streamName = isHLS ? @"hls" : @"rtsp";
+        _usesRTSPTransport = !isHLS;
+        _decodeQueue = dispatch_queue_create("com.codex.vcam.stream.decode", DISPATCH_QUEUE_SERIAL);
+        _conversionQueue = dispatch_queue_create("com.codex.vcam.stream.convert", DISPATCH_QUEUE_SERIAL);
         _hardwareDecodeEnabled = YES;
         _softwareFallbackActive = NO;
         _hardwareRetryDeadline = 0;
@@ -103,11 +110,16 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
 }
 
 - (BOOL)start:(NSError **)error {
-    NSURL *url = self.configuration.rtspURL;
-    if (url == nil || ![url.scheme.lowercaseString isEqualToString:@"rtsp"]) {
+    NSString *scheme = self.streamURL.scheme.lowercaseString;
+    BOOL validScheme = self.usesRTSPTransport
+        ? [scheme isEqualToString:@"rtsp"]
+        : ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]);
+    if (self.streamURL == nil || !validScheme) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"VCAMRTSPStreamSource" code:1
-                                     userInfo:@{NSLocalizedDescriptionKey: @"RTSP URL is missing or invalid"}];
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         [NSString stringWithFormat:@"%@ URL is missing or invalid",
+                                          self.streamName.uppercaseString]}];
         }
         return NO;
     }
@@ -117,6 +129,16 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.decodeQueue, ^{ [weakSelf decodeReconnectLoop]; });
     return YES;
+}
+
+- (void)configureOpenOptions:(AVDictionary **)options {
+    if (self.usesRTSPTransport) {
+        av_dict_set(options, "rtsp_transport", "tcp", 0);
+        av_dict_set(options, "rtsp_flags", "prefer_tcp", 0);
+        av_dict_set(options, "timeout", "3000000", 0);
+    } else {
+        av_dict_set(options, "rw_timeout", "3000000", 0);
+    }
 }
 
 - (void)stop {
@@ -255,6 +277,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 p95Milliseconds = _diagnosticFrameIntervals[p95Index];
             }
             snapshot = @{
+                @"source": self.streamName,
                 @"sourceFPS": @((double)_diagnosticFrames / elapsed),
                 @"sourceFrameP95Ms": @(p95Milliseconds),
                 @"sourceWidth": @(CVPixelBufferGetWidth(pixelBuffer)),
@@ -288,12 +311,22 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     BOOL receivedKeyPacket = NO;
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
-    NSString *urlString = self.configuration.rtspURL.absoluteString;
-    av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
-    av_dict_set(&options, "timeout", "3000000", 0);
-    if (avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options) < 0) goto cleanup;
-    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+    NSString *urlString = self.streamURL.absoluteString;
+    [self configureOpenOptions:&options];
+    int openResult = avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options);
+    if (openResult < 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ direct-VT input open failed error=%@", self.streamName,
+            VCAMFFmpegErrorDescription(openResult)]];
+        goto cleanup;
+    }
+    int streamInfoResult = avformat_find_stream_info(formatContext, NULL);
+    if (streamInfoResult < 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ direct-VT stream probe failed error=%@", self.streamName,
+            VCAMFFmpegErrorDescription(streamInfoResult)]];
+        goto cleanup;
+    }
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (videoStream < 0) goto cleanup;
     stream = formatContext->streams[videoStream];
@@ -301,7 +334,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         initWithCodecParameters:stream->codecpar];
     if (decoder == nil || ![decoder start:&decoderError]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"rtsp direct-VT unavailable codec=%s extradata=%d error=%@",
+            @"%@ direct-VT unavailable codec=%s extradata=%d error=%@", self.streamName,
             avcodec_get_name(stream->codecpar->codec_id),
             stream->codecpar->extradata_size,
             decoderError.localizedDescription ?: @"(init failed)"]];
@@ -313,7 +346,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         goto cleanup;
     }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"rtsp hardware session codec=%s source=%dx%d",
+        @"%@ hardware session codec=%s source=%dx%d", self.streamName,
         avcodec_get_name(stream->codecpar->codec_id),
         stream->codecpar->width, stream->codecpar->height]];
     // Opening the RTSP input and probing stream info can take several seconds.
@@ -447,7 +480,7 @@ cleanup:
     const CFTimeInterval recoveryTimeLimit = 5.0;
     __block NSUInteger videoPacketsWithoutFrame = 0;
     void (^handleDecodedFrame)(AVFrame *) = nil;
-    NSString *urlString = self.configuration.rtspURL.absoluteString;
+    NSString *urlString = self.streamURL.absoluteString;
     const char *url = urlString.UTF8String;
 
     // Under ARC, every cleanup jump must stay outside the lifetime entry of a
@@ -501,15 +534,24 @@ cleanup:
         }
     };
 
-    av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
+    [self configureOpenOptions:&options];
     // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
     // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
     // could display error-concealed inter frames after a delayed packet.
-    av_dict_set(&options, "timeout", "3000000", 0);
-
-    if (avformat_open_input(&formatContext, url, NULL, &options) < 0) goto cleanup;
-    if (avformat_find_stream_info(formatContext, NULL) < 0) goto cleanup;
+    int openResult = avformat_open_input(&formatContext, url, NULL, &options);
+    if (openResult < 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ FFmpeg input open failed hardware=%d error=%@", self.streamName,
+            useHardware, VCAMFFmpegErrorDescription(openResult)]];
+        goto cleanup;
+    }
+    int streamInfoResult = avformat_find_stream_info(formatContext, NULL);
+    if (streamInfoResult < 0) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ FFmpeg stream probe failed hardware=%d error=%@", self.streamName,
+            useHardware, VCAMFFmpegErrorDescription(streamInfoResult)]];
+        goto cleanup;
+    }
 
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (videoStream < 0) goto cleanup;
@@ -522,8 +564,8 @@ cleanup:
         snprintf(extraHex + index * 2, 3, "%02x", stream->codecpar->extradata[index]);
     }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"rtsp session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
-        useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
+        @"%@ session hardware=%d decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
+        self.streamName, useHardware, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
         stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
         stream->codecpar->extradata_size,
         [NSString stringWithUTF8String:extraHex]]];

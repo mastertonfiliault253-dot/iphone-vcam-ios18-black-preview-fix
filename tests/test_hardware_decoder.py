@@ -84,8 +84,8 @@ class HardwareDecoderTests(unittest.TestCase):
         )[0]
         self.assertIn("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp)
         self.assertLess(
-            rtsp.index("rtsp hardware session codec="),
-            rtsp.index("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp.index("rtsp hardware session codec=")),
+            rtsp.index("hardware session codec="),
+            rtsp.index("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp.index("hardware session codec=")),
         )
         self.assertIn("receivedKeyPacket &&", loop)
         self.assertLess(
@@ -93,20 +93,31 @@ class HardwareDecoderTests(unittest.TestCase):
             loop.index("[decoder decodePacket:"),
         )
 
-    def test_hls_falls_back_to_player_item_time_for_headless_playback(self) -> None:
-        hls = (ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").read_text(
+    def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("itemTimeForHostTime:CACurrentMediaTime()", hls)
-        self.assertIn("![self.videoOutput hasNewPixelBufferForItemTime:itemTime]", hls)
-        self.assertIn("itemTime = self.playerItem.currentTime", hls)
-        self.assertIn("automaticallyWaitsToMinimizeStalling = NO", hls)
-        self.assertIn("playImmediatelyAtRate:1.0", hls)
-        self.assertIn("dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)", hls)
-        self.assertIn("dispatch_get_main_queue()", hls)
-        self.assertIn("[strongSelf startPlayerWithURL:url]", hls)
-        self.assertIn("HLS AVPlayer setup must run on the main thread", hls)
-        self.assertIn("copyLatestPixelBuffer", hls)
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        pipeline = (ROOT / "Sources" / "Core" / "VCAMFramePipeline.m").read_text(
+            encoding="utf-8"
+        )
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("configuration.sourceKind == VCAMSourceKindHLS", stream)
+        self.assertIn("configuration.hlsURL", stream)
+        self.assertIn('@"http"', stream)
+        self.assertIn('@"https"', stream)
+        self.assertIn('av_dict_set(options, "rw_timeout", "3000000", 0)', stream)
+        self.assertIn("if (self.usesRTSPTransport)", stream)
+        self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
+        self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)
+        self.assertNotIn("VCAMHLSStreamSource", producer)
+        self.assertNotIn("VCAMHLSStreamSource", pipeline)
+        self.assertNotIn("VCAMHLSStreamSource.m", makefile)
+        self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.h").exists())
+        self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(

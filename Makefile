@@ -34,8 +34,8 @@ VCAMSpringBoardClient_FILES = \
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreMedia CoreVideo Foundation PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
-# vcamd is package-owned and is not injected. All local media, OBS and direct
-# RTSP work lives here so a decoder/network failure cannot directly crash an
+# vcamd is package-owned and is not injected. All local media, OBS, RTSP and
+# HLS work lives here so a decoder/network failure cannot directly crash an
 # injected client.
 vcamd_FILES = \
 	Sources/Daemon/main.m \
@@ -47,7 +47,6 @@ vcamd_FILES = \
 	Sources/Sources/VCAMLocalMediaSource.m \
 	Sources/Sources/VCAMOBSStreamSource.m \
 	Sources/Sources/VCAMRTSPStreamSource.m \
-	Sources/Sources/VCAMHLSStreamSource.m \
 	$(VCAM_SHARED_FILES)
 vcamd_ARCHS = arm64
 vcamd_INSTALL_PATH = /usr/libexec

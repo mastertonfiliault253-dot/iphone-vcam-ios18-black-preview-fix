@@ -16,7 +16,7 @@ is not replaced.
 
 ## Frame path
 
-`local / OBS / RTSP → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
+`local / OBS / RTSP / HLS → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
 
 The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 1080×1920 BGRA.
 Publication uses atomic slot and sequence metadata. Consumers copy without
@@ -79,10 +79,11 @@ the original sample, and either construction path remains fail-closed.
   remaining bounded when an output never produces pixels.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
-- RTSP uses FFmpeg only inside `vcamd`, with TCP, normal RTP/H.264 reorder and
-  reference buffering, and VideoToolbox where available. Software conversion
-  runs on a latest-only queue, while every compressed packet is still consumed
-  in order; corruption enters a bounded clean-key-frame recovery state.
+- RTSP and HLS use FFmpeg only inside `vcamd`, with VideoToolbox where available.
+  RTSP additionally forces TCP and keeps normal RTP/H.264 reorder and reference
+  buffering. Software conversion runs on a latest-only queue, while every
+  compressed packet is still consumed in order; corruption enters a bounded
+  clean-key-frame recovery state.
 
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,
 reads imported media directly from `/var/mobile/Media/VCAM`; mediaserverd never

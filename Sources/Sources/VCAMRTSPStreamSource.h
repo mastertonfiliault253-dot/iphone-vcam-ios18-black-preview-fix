@@ -6,7 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void);
 
-/// Direct RTSP receiver. FFmpeg owns RTSP/RTP demuxing and VideoToolbox returns
+/// Direct RTSP/HLS receiver. FFmpeg owns network demuxing and VideoToolbox returns
 /// native CVPixelBuffer frames; only the newest frame is retained for low latency.
 @interface VCAMRTSPStreamSource : NSObject <VCAMMediaSource>
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration

@@ -8,7 +8,6 @@
 #import "../Sources/VCAMLocalMediaSource.h"
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
-#import "../Sources/VCAMHLSStreamSource.h"
 
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _previewTemplateSample;
@@ -73,8 +72,8 @@
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindHLS:
-                self.source = [[VCAMHLSStreamSource alloc] initWithConfiguration:self.configuration
-                                                                        renderer:self.renderer];
+                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
+                                                                          renderer:self.renderer];
                 break;
             case VCAMSourceKindCamera:
                 return;
@@ -265,7 +264,8 @@
 - (BOOL)shouldEncodeRecording {
     if (!self.configuration.enabled) return NO;
     if (self.configuration.sourceKind == VCAMSourceKindOBSWebSocket ||
-        self.configuration.sourceKind == VCAMSourceKindRTSP) return YES;
+        self.configuration.sourceKind == VCAMSourceKindRTSP ||
+        self.configuration.sourceKind == VCAMSourceKindHLS) return YES;
     VCAMLocalMediaSource *localSource =
         [self.source isKindOfClass:VCAMLocalMediaSource.class] ? (VCAMLocalMediaSource *)self.source : nil;
     return localSource != nil && ![localSource hasVideoAsset];
