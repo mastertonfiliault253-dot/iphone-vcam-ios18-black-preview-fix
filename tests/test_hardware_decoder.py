@@ -6,12 +6,20 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
-    def test_video_toolbox_session_prefers_hardware_and_realtime(self) -> None:
+    def test_video_toolbox_session_uses_default_decoder_spec(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder", decoder)
-        self.assertIn("kVTDecompressionPropertyKey_RealTime", decoder)
+        # The session is created with a NULL decoder specification so the
+        # platform default (hardware acceleration on iOS 16) applies. Adding
+        # iOS-17-only spec keys or forcing the realtime property regressed
+        # decode on the iOS 16.5 test device.
+        create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
+            "&_session);", 1
+        )[0]
+        self.assertNotIn("decoderSpecification", create)
+        self.assertNotIn("EnableHardwareAcceleratedVideoDecoder", decoder)
+        self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
     def test_reference_missing_error_is_recoverable(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
