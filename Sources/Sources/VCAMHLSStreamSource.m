@@ -115,7 +115,13 @@
 
 - (CVPixelBufferRef)copyLatestPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer {
     CMTime itemTime = [self.videoOutput itemTimeForHostTime:CACurrentMediaTime()];
-    if (!CMTIME_IS_NUMERIC(itemTime)) itemTime = self.playerItem.currentTime;
+    if (!CMTIME_IS_NUMERIC(itemTime) ||
+        ![self.videoOutput hasNewPixelBufferForItemTime:itemTime]) {
+        // Live HLS can report a valid host-time mapping just ahead of the
+        // newest decoded frame. Retry at the player's actual item time before
+        // treating the tick as empty.
+        itemTime = self.playerItem.currentTime;
+    }
     if (!CMTIME_IS_NUMERIC(itemTime) ||
         ![self.videoOutput hasNewPixelBufferForItemTime:itemTime]) {
         return NULL;

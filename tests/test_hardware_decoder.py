@@ -98,6 +98,7 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("itemTimeForHostTime:CACurrentMediaTime()", hls)
+        self.assertIn("![self.videoOutput hasNewPixelBufferForItemTime:itemTime]", hls)
         self.assertIn("itemTime = self.playerItem.currentTime", hls)
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
