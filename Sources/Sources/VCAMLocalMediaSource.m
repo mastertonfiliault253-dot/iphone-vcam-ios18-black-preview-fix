@@ -1,6 +1,7 @@
 #import "VCAMLocalMediaSource.h"
 #import "../Core/VCAMConfiguration.h"
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
+#import "../Daemon/VCAMPixelConverter.h"
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
 #import <libavcodec/avcodec.h>
@@ -50,91 +51,7 @@ static int VCAMCompareDouble(const void *left, const void *right) {
 }
 
 static CVPixelBufferRef VCAMLocalCopyBGRAFromAVFrame(AVFrame *frame) {
-    if (frame == NULL || frame->width <= 0 || frame->height <= 0) return NULL;
-    BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
-        frame->format == AV_PIX_FMT_YUVJ420P;
-    BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
-    BOOL planar420p10 = frame->format == AV_PIX_FMT_YUV420P10LE;
-    BOOL p010 = frame->format == AV_PIX_FMT_P010LE;
-    if (!planar420 && !nv12 && !planar420p10 && !p010) return NULL;
-    if (frame->data[0] == NULL || frame->data[1] == NULL ||
-        ((planar420 || planar420p10) && frame->data[2] == NULL)) return NULL;
-
-    const int maximumDimension = 1920;
-    double scale = MIN(1.0, (double)maximumDimension /
-        (double)MAX(frame->width, frame->height));
-    int outputWidth = MAX(1, (int)lrint((double)frame->width * scale));
-    int outputHeight = MAX(1, (int)lrint((double)frame->height * scale));
-    NSDictionary *attributes = @{
-        (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
-        (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
-    };
-    CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn createStatus = CVPixelBufferCreate(kCFAllocatorDefault, (size_t)outputWidth,
-                                                (size_t)outputHeight,
-                                                kCVPixelFormatType_32BGRA,
-                                                (__bridge CFDictionaryRef)attributes,
-                                                &pixelBuffer);
-    if (createStatus != kCVReturnSuccess) return NULL;
-    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
-        CVPixelBufferRelease(pixelBuffer);
-        return NULL;
-    }
-    uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
-    size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    int shift = (planar420p10 || p010) ? 2 : 0;
-    BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
-        frame->color_range == AVCOL_RANGE_JPEG;
-    for (int y = 0; y < outputHeight; y++) {
-        int sourceY = MIN(frame->height - 1,
-                          (int)((int64_t)y * frame->height / outputHeight));
-        const uint8_t *luma = frame->data[0] + sourceY * frame->linesize[0];
-        const uint8_t *chromaU = frame->data[1] + (sourceY / 2) * frame->linesize[1];
-        const uint8_t *chromaV = (planar420 || planar420p10)
-            ? frame->data[2] + (sourceY / 2) * frame->linesize[2] : NULL;
-        uint8_t *row = destination + (size_t)y * destinationStride;
-        for (int x = 0; x < outputWidth; x++) {
-            int sourceX = MIN(frame->width - 1,
-                              (int)((int64_t)x * frame->width / outputWidth));
-            int sampleY;
-            int sampleU;
-            int sampleV;
-            if (planar420 || nv12) {
-                sampleY = luma[sourceX];
-                if (planar420) {
-                    sampleU = chromaU[sourceX / 2];
-                    sampleV = chromaV[sourceX / 2];
-                } else {
-                    sampleU = chromaU[(sourceX / 2) * 2];
-                    sampleV = chromaU[(sourceX / 2) * 2 + 1];
-                }
-            } else {
-                sampleY = AV_RL16(luma + sourceX * 2) >> shift;
-                if (planar420p10) {
-                    sampleU = AV_RL16(chromaU + (sourceX / 2) * 2) >> shift;
-                    sampleV = AV_RL16(chromaV + (sourceX / 2) * 2) >> shift;
-                } else {
-                    sampleU = AV_RL16(chromaU + ((sourceX / 2) * 2) * 2) >> shift;
-                    sampleV = AV_RL16(chromaU + (((sourceX / 2) * 2) * 2) + 2) >> shift;
-                }
-            }
-            int c = fullRange ? sampleY : MAX(0, sampleY - 16);
-            int d = sampleU - 128;
-            int e = sampleV - 128;
-            int red = fullRange ? c + ((359 * e + 128) >> 8)
-                                : (298 * c + 409 * e + 128) >> 8;
-            int green = fullRange ? c - ((88 * d + 183 * e + 128) >> 8)
-                                  : (298 * c - 100 * d - 208 * e + 128) >> 8;
-            int blue = fullRange ? c + ((454 * d + 128) >> 8)
-                                 : (298 * c + 516 * d + 128) >> 8;
-            row[x * 4 + 0] = (uint8_t)MAX(0, MIN(255, blue));
-            row[x * 4 + 1] = (uint8_t)MAX(0, MIN(255, green));
-            row[x * 4 + 2] = (uint8_t)MAX(0, MIN(255, red));
-            row[x * 4 + 3] = 255;
-        }
-    }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-    return pixelBuffer;
+    return VCAMCopyBGRAFromAVFrame(frame);
 }
 
 static CMTime VCAMLocalCMTimeFromAVFrame(AVFrame *frame, AVStream *stream) {

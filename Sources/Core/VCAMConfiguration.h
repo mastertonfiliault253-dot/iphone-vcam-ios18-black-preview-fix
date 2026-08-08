@@ -7,6 +7,7 @@ typedef NS_ENUM(NSInteger, VCAMSourceKind) {
     VCAMSourceKindLocalMedia = 1,
     VCAMSourceKindOBSWebSocket = 2,
     VCAMSourceKindRTSP = 3,
+    VCAMSourceKindHLS = 4,
 };
 
 typedef NS_ENUM(NSInteger, VCAMContentMode) {
@@ -38,6 +39,7 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 @property(nonatomic, copy, readonly) NSDictionary<NSString *, id> *photoMetadata;
 @property(nonatomic, copy, readonly, nullable) NSURL *obsWebSocketURL;
 @property(nonatomic, copy, readonly, nullable) NSURL *rtspURL;
+@property(nonatomic, copy, readonly, nullable) NSURL *hlsURL;
 @property(nonatomic, readonly) NSInteger preferredFramesPerSecond;
 @property(nonatomic, readonly) VCAMLocalDecoderMode localDecoderMode;
 

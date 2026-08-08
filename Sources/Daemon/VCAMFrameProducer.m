@@ -6,6 +6,7 @@
 #import "../Sources/VCAMLocalMediaSource.h"
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
+#import "../Sources/VCAMHLSStreamSource.h"
 
 static BOOL VCAMObjectsEqual(id left, id right) {
     return left == right || (left != nil && [left isEqual:right]);
@@ -25,7 +26,8 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         left.localDecoderMode == right.localDecoderMode &&
         VCAMObjectsEqual(left.mediaPath, right.mediaPath) &&
         VCAMObjectsEqual(left.obsWebSocketURL, right.obsWebSocketURL) &&
-        VCAMObjectsEqual(left.rtspURL, right.rtspURL);
+        VCAMObjectsEqual(left.rtspURL, right.rtspURL) &&
+        VCAMObjectsEqual(left.hlsURL, right.hlsURL);
 }
 
 @interface VCAMFrameProducer () {
@@ -86,6 +88,10 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
             case VCAMSourceKindRTSP:
                 self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
                                                                           renderer:self.renderer];
+                break;
+            case VCAMSourceKindHLS:
+                self.source = [[VCAMHLSStreamSource alloc] initWithConfiguration:self.configuration
+                                                                        renderer:self.renderer];
                 break;
             case VCAMSourceKindCamera:
                 break;

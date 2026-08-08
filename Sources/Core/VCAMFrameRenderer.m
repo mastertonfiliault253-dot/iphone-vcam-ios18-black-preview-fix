@@ -2,6 +2,7 @@
 
 #import <CoreVideo/CoreVideo.h>
 #import <VideoToolbox/VideoToolbox.h>
+#import "../Daemon/VCAMPixelConverter.h"
 #import <math.h>
 #import <string.h>
 
@@ -113,6 +114,32 @@
         CVPixelBufferGetHeight(pixelBuffer) == CVPixelBufferGetHeight(target) &&
         CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA) {
         return [self copySampleWrappingPixelBuffer:pixelBuffer template:templateBuffer];
+    }
+    // Hardware decoder output (NV12) that does not need rotation/mirroring is
+    // converted with vImage instead of VTCreateCGImageFromCVPixelBuffer plus
+    // a CPU CGContext draw, which was the dominant local-preview bottleneck.
+    if (identity &&
+        CVPixelBufferGetPixelFormatType(pixelBuffer) ==
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+        CVPixelBufferGetWidth(pixelBuffer) == CVPixelBufferGetWidth(target) &&
+        CVPixelBufferGetHeight(pixelBuffer) == CVPixelBufferGetHeight(target) &&
+        CVPixelBufferGetPixelFormatType(target) == kCVPixelFormatType_32BGRA &&
+        [self preparePoolForWidth:CVPixelBufferGetWidth(target)
+                           height:CVPixelBufferGetHeight(target)]) {
+        CVPixelBufferRef output = NULL;
+        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
+                                               _pixelBufferPool,
+                                               &output) == kCVReturnSuccess) {
+            BOOL converted = VCAMCopyNV12PixelBufferToBGRA(pixelBuffer, output);
+            if (converted) {
+                CMSampleBufferRef sample =
+                    [self copySampleWrappingPixelBuffer:output
+                                               template:templateBuffer];
+                CVPixelBufferRelease(output);
+                return sample;
+            }
+            CVPixelBufferRelease(output);
+        }
     }
 
     CGImageRef image = NULL;

@@ -102,6 +102,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
                               name:UIApplicationDidBecomeActiveNotification object:nil];
+        [notifications addObserver:self selector:@selector(applicationWillResignActive:)
+                              name:UIApplicationWillResignActiveNotification object:nil];
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
                               name:UIWindowDidBecomeKeyNotification object:nil];
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
@@ -112,7 +114,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                                         CFSTR("com.codex.vcam/preferences.changed"), NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         [self installButtonWhenWindowIsReady];
-        if ([self isSpringBoardHost]) [self startStatusRefresh];
+        [self startStatusRefresh];
     });
 }
 
@@ -146,6 +148,27 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     (void)notification;
     self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
     [self installButtonWhenWindowIsReady];
+}
+
+- (void)applicationWillResignActive:(NSNotification *)notification {
+    (void)notification;
+    // When an injected app (Camera, browser) comes to the foreground,
+    // SpringBoard must hide its own floating dot so the device never shows
+    // two dots. The app's own controller shows the dot for its process.
+    if ([self isSpringBoardHost]) {
+        [self installButtonWhenWindowIsReady];
+    }
+}
+
+- (nullable UIWindow *)keySceneWindow {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow && !window.hidden) return window;
+        }
+    }
+    return nil;
 }
 
 - (nullable UIWindow *)springBoardHomeWindow {
@@ -405,6 +428,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     // every visible window each second caused gesture conflicts.
     [self installGestureOnWindowIfNeeded:window];
     [self installGestureOnWindowIfNeeded:floatingWindow];
+    UIWindow *keyWindow = [self keySceneWindow];
+    if (keyWindow != nil && keyWindow != window && keyWindow != floatingWindow) {
+        [self installGestureOnWindowIfNeeded:keyWindow];
+    }
     [self removeLegacyFloatingDots];
 
     UIButton *button = [self floatingButton];
@@ -421,7 +448,14 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
-    BOOL visible = [self isFloatingButtonVisibleForValues:values] && !locked;
+    BOOL panelOpen = self.panel != nil || [self panelIsPresented];
+    // SpringBoard must not render its dot above a foreground injected app
+    // (duplicate dots), and the dot must not hover over the open panel and
+    // eat control taps.
+    BOOL hostInactive = [self isSpringBoardHost] &&
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    BOOL visible = [self isFloatingButtonVisibleForValues:values] &&
+        !locked && !panelOpen && !hostInactive;
     floatingWindow.hidden = !visible;
     button.hidden = NO;
     [floatingWindow bringSubviewToFront:button];
@@ -446,6 +480,19 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateRecognized || UIAccessibilityIsVoiceOverRunning()) return;
+    static CFTimeInterval lastToggleHostTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastToggleHostTime < 0.6) {
+        [VCAMConfiguration appendProcessLog:
+            @"[DEBUG-3F] toggle ignored as duplicate"];
+        return;
+    }
+    lastToggleHostTime = now;
+    [VCAMConfiguration appendProcessLog:
+        [NSString stringWithFormat:@"[DEBUG-3F] toggle fired host=%@ touches=%lu taps=%lu",
+            NSProcessInfo.processInfo.processName ?: @"(unknown)",
+            (unsigned long)recognizer.numberOfTouches,
+            (unsigned long)recognizer.numberOfTapsRequired]];
     NSDictionary *values = [VCAMConfiguration currentValues];
     NSMutableDictionary *visibility = [values[@"floatingButtonVisibility"] mutableCopy]
         ?: [NSMutableDictionary dictionary];
@@ -508,6 +555,9 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"OBS WebSocket 已启用";
         detail = values[@"obsWebSocketURL"] ?: @"未设置地址";
+    } else if (enabled && [source isEqualToString:@"hls"]) {
+        sourceTitle = @"HLS 硬件解码流已启用";
+        detail = values[@"hlsURL"] ?: @"未配置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";
         detail = values[@"rtspURL"] ?: @"未设置地址";
@@ -554,6 +604,17 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     [self presentPanel];
 }
 
+- (BOOL)panelIsPresented {
+    UIViewController *presenter = [self cameraWindow].rootViewController;
+    while (presenter.presentedViewController != nil) {
+        presenter = presenter.presentedViewController;
+        if ([presenter isKindOfClass:VCAMControlPanelViewController.class]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 - (void)presentPanel {
     [self presentPanelWithRemainingRetries:10];
 }
@@ -582,6 +643,12 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         [presenter presentViewController:panel
                                 animated:!UIAccessibilityIsReduceMotionEnabled()
                               completion:nil];
+        if (presenter.presentedViewController == panel) {
+            // Keep the panel unobstructed: park (hide) the floating dot while
+            // the panel is open. The panel closes via its X button, scrim tap,
+            // or a dot tap once the panel is dismissed.
+            self.floatingWindow.hidden = YES;
+        }
     });
 }
 
@@ -589,9 +656,16 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     VCAMControlPanelViewController *panel = self.panel;
     self.panel = nil;
     if (panel.presentingViewController != nil) {
-        [panel dismissViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled() completion:completion];
+        [panel dismissViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()
+                                  completion:^{
+            [self installButtonWhenWindowIsReady];
+            if (completion != nil) completion();
+        }];
     } else if (completion != nil) {
+        [self installButtonWhenWindowIsReady];
         completion();
+    } else {
+        [self installButtonWhenWindowIsReady];
     }
 }
 
@@ -763,10 +837,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (void)promptForLiveStream {
     NSDictionary *values = [VCAMConfiguration currentValues];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"输入直播流"
-                                                                   message:@"输入 ws:// 电脑桥接地址，或 rtsp:// 手机直连地址"
+                                                                   message:@"输入 ws:// 电脑桥接、rtsp:// 手机直连，或 http(s):// HLS 地址"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = values[@"rtspURL"] ?: values[@"obsWebSocketURL"] ?: @"rtsp://192.168.2.1:8554/live";
+        field.text = values[@"rtspURL"] ?: values[@"hlsURL"] ?: values[@"obsWebSocketURL"] ?: @"rtsp://192.168.2.1:8554/live";
         field.keyboardType = UIKeyboardTypeURL;
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
@@ -776,13 +850,19 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         NSString *scheme = url.scheme.lowercaseString;
         BOOL isWebSocket = [@[@"ws", @"wss"] containsObject:scheme];
         BOOL isRTSP = [scheme isEqualToString:@"rtsp"];
-        if (!isWebSocket && !isRTSP) {
-            [self showMessage:@"直播流地址必须以 ws://、wss:// 或 rtsp:// 开头" error:YES];
+        BOOL isHLS = [@[@"http", @"https"] containsObject:scheme];
+        if (!isWebSocket && !isRTSP && !isHLS) {
+            [self showMessage:@"直播流地址必须以 ws://、wss://、rtsp:// 或 http(s):// 开头" error:YES];
             return;
         }
-        NSDictionary *updates = isRTSP ?
-            @{@"source": @"rtsp", @"enabled": @YES, @"rtspURL": url.absoluteString} :
-            @{@"source": @"obs", @"enabled": @YES, @"obsWebSocketURL": url.absoluteString};
+        NSDictionary *updates = nil;
+        if (isRTSP) {
+            updates = @{@"source": @"rtsp", @"enabled": @YES, @"rtspURL": url.absoluteString};
+        } else if (isHLS) {
+            updates = @{@"source": @"hls", @"enabled": @YES, @"hlsURL": url.absoluteString};
+        } else {
+            updates = @{@"source": @"obs", @"enabled": @YES, @"obsWebSocketURL": url.absoluteString};
+        }
         if (![self updatePreferences:updates]) {
             [self showMessage:@"直播流配置写入失败" error:YES];
             return;
@@ -865,20 +945,27 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     NSString *rtspURL = [values[@"rtspURL"] isKindOfClass:NSString.class] ? values[@"rtspURL"] : nil;
     NSString *obsURL = [values[@"obsWebSocketURL"] isKindOfClass:NSString.class]
         ? values[@"obsWebSocketURL"] : nil;
+    NSString *hlsURL = [values[@"hlsURL"] isKindOfClass:NSString.class] ? values[@"hlsURL"] : nil;
     NSString *mediaPath = [values[@"mediaPath"] isKindOfClass:NSString.class] ? values[@"mediaPath"] : nil;
     BOOL hasRTSP = [rtspURL.lowercaseString hasPrefix:@"rtsp://"];
     BOOL hasOBS = [obsURL.lowercaseString hasPrefix:@"ws://"] ||
         [obsURL.lowercaseString hasPrefix:@"wss://"];
+    BOOL hasHLS = [hlsURL.lowercaseString hasPrefix:@"http://"] ||
+        [hlsURL.lowercaseString hasPrefix:@"https://"];
     BOOL hasLocalMedia = mediaPath.length > 0;
     NSString *source = nil;
-    if ([configuredSource isEqualToString:@"rtsp"] && hasRTSP) {
+    if ([configuredSource isEqualToString:@"hls"] && hasHLS) {
+        source = @"hls";
+    } else if ([configuredSource isEqualToString:@"rtsp"] && hasRTSP) {
         source = @"rtsp";
     } else if ([configuredSource isEqualToString:@"obs"] && hasOBS) {
         source = @"obs";
     } else if ([configuredSource isEqualToString:@"local"] && hasLocalMedia) {
         source = @"local";
     } else {
-        if ([rtspURL.lowercaseString hasPrefix:@"rtsp://"]) {
+        if (hasHLS) {
+            source = @"hls";
+        } else if ([rtspURL.lowercaseString hasPrefix:@"rtsp://"]) {
             source = @"rtsp";
         } else if ([obsURL.lowercaseString hasPrefix:@"ws://"] ||
                    [obsURL.lowercaseString hasPrefix:@"wss://"]) {

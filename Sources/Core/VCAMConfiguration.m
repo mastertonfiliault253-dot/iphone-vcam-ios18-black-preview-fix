@@ -74,7 +74,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.26+stable";
+    return "com.codex.vcam/0.8.27+stable";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -146,6 +146,7 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
 @property(nonatomic, copy, readwrite) NSDictionary<NSString *, id> *photoMetadata;
 @property(nonatomic, copy, readwrite, nullable) NSURL *obsWebSocketURL;
 @property(nonatomic, copy, readwrite, nullable) NSURL *rtspURL;
+@property(nonatomic, copy, readwrite, nullable) NSURL *hlsURL;
 @property(nonatomic, readwrite) NSInteger preferredFramesPerSecond;
 @property(nonatomic, readwrite) VCAMLocalDecoderMode localDecoderMode;
 @end
@@ -897,6 +898,8 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
         configuration.sourceKind = VCAMSourceKindOBSWebSocket;
     } else if ([source isEqualToString:@"rtsp"]) {
         configuration.sourceKind = VCAMSourceKindRTSP;
+    } else if ([source isEqualToString:@"hls"]) {
+        configuration.sourceKind = VCAMSourceKindHLS;
     } else {
         configuration.sourceKind = VCAMSourceKindCamera;
     }
@@ -943,6 +946,11 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     NSURL *rtspURL = [rtspURLString isKindOfClass:NSString.class] ? [NSURL URLWithString:rtspURLString] : nil;
     if ([rtspURL.scheme.lowercaseString isEqualToString:@"rtsp"]) {
         configuration.rtspURL = rtspURL;
+    }
+    NSString *hlsURLString = values[@"hlsURL"];
+    NSURL *hlsURL = [hlsURLString isKindOfClass:NSString.class] ? [NSURL URLWithString:hlsURLString] : nil;
+    if ([@[@"http", @"https"] containsObject:hlsURL.scheme.lowercaseString]) {
+        configuration.hlsURL = hlsURL;
     }
     [self appendProcessLog:[NSString stringWithFormat:@"loadCurrent final enabled=%d source=%ld mode=%ld path=%@", configuration.enabled, (long)configuration.sourceKind, (long)configuration.localDecoderMode, configuration.mediaPath ?: @"(none)"]];
     return configuration;

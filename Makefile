@@ -40,18 +40,20 @@ VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreMedia CoreVideo Foundation P
 vcamd_FILES = \
 	Sources/Daemon/main.m \
 	Sources/Daemon/VCAMHardwareVideoDecoder.m \
+	Sources/Daemon/VCAMPixelConverter.m \
 	Sources/Daemon/VCAMFrameProducer.m \
 	Sources/Core/VCAMConfiguration.m \
 	Sources/Core/VCAMFrameRenderer.m \
 	Sources/Sources/VCAMLocalMediaSource.m \
 	Sources/Sources/VCAMOBSStreamSource.m \
 	Sources/Sources/VCAMRTSPStreamSource.m \
+	Sources/Sources/VCAMHLSStreamSource.m \
 	$(VCAM_SHARED_FILES)
 vcamd_ARCHS = arm64
 vcamd_INSTALL_PATH = /usr/libexec
 vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements
 vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
-vcamd_FRAMEWORKS = AVFoundation AudioToolbox CoreMedia CoreVideo Foundation ImageIO QuartzCore VideoToolbox
+vcamd_FRAMEWORKS = Accelerate AVFoundation AudioToolbox CoreMedia CoreVideo Foundation ImageIO QuartzCore VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 vcamd_LIBRARIES = avformat avcodec avutil
 

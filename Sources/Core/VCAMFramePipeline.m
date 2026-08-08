@@ -8,6 +8,7 @@
 #import "../Sources/VCAMLocalMediaSource.h"
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
+#import "../Sources/VCAMHLSStreamSource.h"
 
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _previewTemplateSample;
@@ -70,6 +71,10 @@
             case VCAMSourceKindRTSP:
                 self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
                                                                           renderer:self.renderer];
+                break;
+            case VCAMSourceKindHLS:
+                self.source = [[VCAMHLSStreamSource alloc] initWithConfiguration:self.configuration
+                                                                        renderer:self.renderer];
                 break;
             case VCAMSourceKindCamera:
                 return;

@@ -273,14 +273,13 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
     def test_rtsp_consumes_tcp_continuously_and_converts_latest_clean_frame(self) -> None:
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(encoding="utf-8")
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(encoding="utf-8")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn('av_dict_set(&options, "rtsp_transport", "tcp"', rtsp)
         self.assertNotIn('"nobuffer"', rtsp)
         self.assertNotIn('"low_delay"', rtsp)
         self.assertNotIn('"reorder_queue_size"', rtsp)
         self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
-        self.assertIn("AV_PIX_FMT_YUV420P", rtsp)
-        self.assertIn("AV_PIX_FMT_NV12", rtsp)
         self.assertIn("hardware session produced no frames; reconnecting", rtsp)
         self.assertIn("decodeOneHardwareSession", rtsp)
         self.assertIn("av_frame_clone", rtsp)
@@ -299,15 +298,20 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("rtsp key-frame recovery timed out", rtsp)
         self.assertIn("clean-key recovery exceeded five seconds", rtsp)
         self.assertIn("receive_frame ended", rtsp)
-        self.assertIn("maximumDimension = 1920", rtsp)
-        software_conversion = rtsp.split(
-            "- (CVPixelBufferRef)copyBGRAFromSoftwareFrame:", 1
-        )[1].split("- (BOOL)decodeOneSession", 1)[0]
-        self.assertIn("kCVPixelBufferCGImageCompatibilityKey", software_conversion)
-        self.assertIn("kCVPixelBufferCGBitmapContextCompatibilityKey", software_conversion)
-        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", software_conversion)
         self.assertIn("_latestPixelBuffer", rtsp)
         self.assertIn("< 3.5", rtsp)
+        self.assertIn("VCAMCopyBGRAFromAVFrame", rtsp)
+        self.assertIn("AV_PIX_FMT_YUV420P", converter)
+        self.assertIn("AV_PIX_FMT_NV12", converter)
+        self.assertIn("AV_PIX_FMT_YUV420P10LE", converter)
+        self.assertIn("AV_PIX_FMT_P010LE", converter)
+        self.assertIn("maximumDimension = 1920", converter)
+        self.assertIn("kCVPixelBufferCGImageCompatibilityKey", converter)
+        self.assertIn("kCVPixelBufferCGBitmapContextCompatibilityKey", converter)
+        self.assertIn("vImageConvert_420Yp8_CbCr8ToARGB8888", converter)
+        self.assertIn("vImageConvert_420Yp8_Cb8_Cr8ToARGB8888", converter)
+        self.assertIn("vImageScale_ARGB8888", converter)
+        self.assertIn("VCAMPixelConverter.m", makefile)
         self.assertIn("Sources/Sources/VCAMRTSPStreamSource.m", makefile)
 
     def test_floating_dot_is_springboard_owned_and_accessible(self) -> None:
