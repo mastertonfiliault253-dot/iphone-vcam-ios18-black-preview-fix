@@ -19,8 +19,10 @@
 @property(nonatomic, strong, nullable) AVPlayerItem *playerItem;
 @property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *videoOutput;
 @property(nonatomic, strong, nullable) id endTimeObserver;
+@property(nonatomic, strong, nullable) dispatch_source_t pullTimer;
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL playbackReady;
+- (CVPixelBufferRef)copyLatestPixelBuffer CF_RETURNS_RETAINED;
 @end
 
 @implementation VCAMHLSStreamSource
@@ -83,6 +85,36 @@
     self.videoOutput = output;
     self.running = YES;
     self.playbackReady = NO;
+    dispatch_source_t pullTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    uint64_t interval = NSEC_PER_SEC /
+        (uint64_t)MAX(1, MIN(60, self.configuration.preferredFramesPerSecond));
+    dispatch_source_set_timer(pullTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              interval, interval / 10);
+    dispatch_source_set_event_handler(pullTimer, ^{
+        __strong typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.running) return;
+        CVPixelBufferRef fresh = [strongSelf copyLatestPixelBuffer];
+        if (fresh == NULL) return;
+        @synchronized (strongSelf) {
+            strongSelf->_latestSequence += 1;
+            if (strongSelf->_latestPixelBuffer != NULL) {
+                CVPixelBufferRelease(strongSelf->_latestPixelBuffer);
+            }
+            strongSelf->_latestPixelBuffer = fresh;
+            strongSelf->_latestFrameHostTime = CACurrentMediaTime();
+            if (!strongSelf.playbackReady) {
+                strongSelf.playbackReady = YES;
+                [VCAMConfiguration appendProcessLog:
+                    [NSString stringWithFormat:@"hls first frame sequence=%llu size=%zux%zu",
+                        (unsigned long long)strongSelf->_latestSequence,
+                        CVPixelBufferGetWidth(strongSelf->_latestPixelBuffer),
+                        CVPixelBufferGetHeight(strongSelf->_latestPixelBuffer)]];
+            }
+        }
+    });
+    self.pullTimer = pullTimer;
+    dispatch_resume(pullTimer);
     [player playImmediatelyAtRate:1.0];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"hls start output=%@", output]];
@@ -110,6 +142,10 @@
 
 - (void)stop {
     self.running = NO;
+    if (self.pullTimer != nil) {
+        dispatch_source_cancel(self.pullTimer);
+        self.pullTimer = nil;
+    }
     if (self.endTimeObserver != nil) {
         [[NSNotificationCenter defaultCenter] removeObserver:self.endTimeObserver];
         self.endTimeObserver = nil;
@@ -133,7 +169,7 @@
     }
 }
 
-- (CVPixelBufferRef)copyLatestPixelBufferForTemplate:(CMSampleBufferRef)templateBuffer {
+- (CVPixelBufferRef)copyLatestPixelBuffer {
     CMTime itemTime = [self.videoOutput itemTimeForHostTime:CACurrentMediaTime()];
     if (!CMTIME_IS_NUMERIC(itemTime) ||
         ![self.videoOutput hasNewPixelBufferForItemTime:itemTime]) {
@@ -150,32 +186,13 @@
     CVPixelBufferRef pixelBuffer = [self.videoOutput
         copyPixelBufferForItemTime:itemTime itemTimeForDisplay:&displayTime];
     if (pixelBuffer == NULL) return NULL;
-    (void)templateBuffer;
     return pixelBuffer;
 }
 
 - (CMSampleBufferRef)copyVideoSampleForTemplate:(CMSampleBufferRef)templateBuffer {
     if (!self.running || self.videoOutput == nil) return NULL;
     @synchronized (self) {
-        // Pull a fresh decoded frame on every consumer tick so live HLS stays
-        // live. Fall back to the cached frame when the player has no new
-        // output yet (e.g. between segments or before the first keyframe).
-        CVPixelBufferRef fresh = [self copyLatestPixelBufferForTemplate:templateBuffer];
-        if (fresh != NULL) {
-            _latestSequence += 1;
-            if (_latestPixelBuffer != NULL) CVPixelBufferRelease(_latestPixelBuffer);
-            _latestPixelBuffer = fresh;
-            _latestFrameHostTime = CACurrentMediaTime();
-        }
         if (_latestPixelBuffer == NULL) return NULL;
-        if (!self.playbackReady) {
-            self.playbackReady = YES;
-            [VCAMConfiguration appendProcessLog:
-                [NSString stringWithFormat:@"hls first frame sequence=%llu size=%zux%zu",
-                    (unsigned long long)_latestSequence,
-                    CVPixelBufferGetWidth(_latestPixelBuffer),
-                    CVPixelBufferGetHeight(_latestPixelBuffer)]];
-        }
     }
     CVPixelBufferRef pixelBuffer = NULL;
     uint64_t sequence = 0;

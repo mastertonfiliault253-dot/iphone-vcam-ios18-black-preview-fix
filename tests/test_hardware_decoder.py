@@ -103,6 +103,8 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("automaticallyWaitsToMinimizeStalling = NO", hls)
         self.assertIn("playImmediatelyAtRate:1.0", hls)
         self.assertIn("dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)", hls)
+        self.assertIn("dispatch_get_main_queue()", hls)
+        self.assertIn("copyLatestPixelBuffer", hls)
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
