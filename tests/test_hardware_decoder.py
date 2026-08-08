@@ -6,19 +6,20 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
-    def test_video_toolbox_session_uses_hardware_decoder_specification(self) -> None:
+    def test_video_toolbox_session_uses_verified_default_hardware_decoder(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        # The direct VideoToolbox session explicitly requests the hardware
-        # decoder (Require for H.264, Enable for HEVC). The realtime property
-        # is deliberately not forced because it regressed decode on device.
+        # iOS 16.5 regressed when the decoder specification forced the
+        # Enable/Require keys. Let VideoToolbox select its default, then verify
+        # the selected decoder is hardware before accepting the session.
         create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
             "&_session);", 1
         )[0]
-        self.assertIn("_decoderSpecification", create)
-        self.assertIn("RequireHardwareAcceleratedVideoDecoder", decoder)
-        self.assertIn("EnableHardwareAcceleratedVideoDecoder", decoder)
+        self.assertIn("NULL,", create)
+        self.assertNotIn("_decoderSpecification", create)
+        self.assertIn("kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder", decoder)
+        self.assertIn("VideoToolbox selected a non-hardware decoder", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
     def test_reference_missing_error_is_recoverable(self) -> None:

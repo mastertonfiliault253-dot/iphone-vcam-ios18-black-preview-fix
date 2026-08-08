@@ -17,6 +17,10 @@
 #define kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder \
     CFSTR("RequireHardwareAcceleratedVideoDecoder")
 #endif
+#ifndef kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder
+#define kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder \
+    CFSTR("UsingHardwareAcceleratedVideoDecoder")
+#endif
 
 enum { VCAMHardwareMaxFrames = 16 };
 
@@ -710,7 +714,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     OSStatus status = VTDecompressionSessionCreate(
         kCFAllocatorDefault,
         _formatDescription,
-        _decoderSpecification,
+        NULL,
         (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);
@@ -719,6 +723,31 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             *error = [NSError errorWithDomain:@"VCAMHardwareVideoDecoder" code:1
                                      userInfo:@{NSLocalizedDescriptionKey:
                                          [NSString stringWithFormat:@"VTDecompressionSessionCreate failed %d", (int)status]}];
+        }
+        return NO;
+    }
+    CFTypeRef usingHardwareValue = NULL;
+    OSStatus propertyStatus = VTSessionCopyProperty(
+        _session,
+        kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+        kCFAllocatorDefault,
+        &usingHardwareValue);
+    BOOL usingHardware = propertyStatus == noErr &&
+        usingHardwareValue != NULL &&
+        CFGetTypeID(usingHardwareValue) == CFBooleanGetTypeID() &&
+        CFBooleanGetValue((CFBooleanRef)usingHardwareValue);
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"rtsp direct-VT decoder hardware=%d propertyStatus=%d",
+        usingHardware, (int)propertyStatus]];
+    if (usingHardwareValue != NULL) CFRelease(usingHardwareValue);
+    if (!usingHardware) {
+        VTDecompressionSessionInvalidate(_session);
+        CFRelease(_session);
+        _session = NULL;
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"VCAMHardwareVideoDecoder" code:2
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                         @"VideoToolbox selected a non-hardware decoder"}];
         }
         return NO;
     }
