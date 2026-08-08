@@ -79,6 +79,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic) NSInteger remainingWindowRetries;
 @property(nonatomic) BOOL started;
 @property(nonatomic) BOOL lastKnownLockedState;
+@property(nonatomic) BOOL hostResignedActive;
 @end
 
 @implementation VCAMMediaPickerController
@@ -108,6 +109,8 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                               name:UIWindowDidBecomeKeyNotification object:nil];
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
                               name:UISceneDidActivateNotification object:nil];
+        [notifications addObserver:self selector:@selector(applicationWillResignActive:)
+                              name:UISceneWillDeactivateNotification object:nil];
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         (__bridge const void *)self,
                                         VCAMPickerConfigurationChanged,
@@ -146,18 +149,24 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
+    self.hostResignedActive = NO;
+    [VCAMConfiguration appendProcessLog:
+        [NSString stringWithFormat:@"[DEBUG-APPACTIVE] became-active host=%@",
+            NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
     self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
     [self installButtonWhenWindowIsReady];
 }
 
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
+    self.hostResignedActive = YES;
+    [VCAMConfiguration appendProcessLog:
+        [NSString stringWithFormat:@"[DEBUG-APPACTIVE] resign-active host=%@",
+            NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
     // When an injected app (Camera, browser) comes to the foreground,
     // SpringBoard must hide its own floating dot so the device never shows
     // two dots. The app's own controller shows the dot for its process.
-    if ([self isSpringBoardHost]) {
-        [self installButtonWhenWindowIsReady];
-    }
+    [self installButtonWhenWindowIsReady];
 }
 
 - (nullable UIWindow *)keySceneWindow {
@@ -452,8 +461,11 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     // SpringBoard must not render its dot above a foreground injected app
     // (duplicate dots), and the dot must not hover over the open panel and
     // eat control taps.
-    BOOL hostInactive = [self isSpringBoardHost] &&
-        UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    // SpringBoard can report Active even while an injected app is in the
+    // foreground, so the resign-active notifications drive the visibility.
+    BOOL hostInactive = self.hostResignedActive ||
+        ([self isSpringBoardHost] &&
+         UIApplication.sharedApplication.applicationState != UIApplicationStateActive);
     BOOL visible = [self isFloatingButtonVisibleForValues:values] &&
         !locked && !panelOpen && !hostInactive;
     floatingWindow.hidden = !visible;
