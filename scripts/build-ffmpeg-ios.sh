@@ -59,8 +59,9 @@ build_slice() {
     --enable-avcodec \
     --enable-avutil \
     --enable-network \
-    --enable-protocol=file,tcp,udp \
-    --enable-demuxer=mov,rtsp,rtp,sdp \
+    --enable-securetransport \
+    --enable-protocol=file,tcp,udp,http,https,tls,crypto \
+    --enable-demuxer=mov,rtsp,rtp,sdp,hls,mpegts \
     --enable-decoder=h264,hevc \
     --enable-parser=h264,hevc \
     --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \

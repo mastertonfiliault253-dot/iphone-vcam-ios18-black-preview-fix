@@ -377,6 +377,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "- (BOOL)gestureRecognizer:", 1
         )[0]
         self.assertIn('visibility[@"global"]', visibility)
+        self.assertIn("return saved == nil ? YES : saved.boolValue", visibility)
         self.assertIn('visibility[@"global"] = @(!currentlyVisible)', toggle)
 
     def test_panel_shows_stream_health_and_hides_injection_targets(self) -> None:

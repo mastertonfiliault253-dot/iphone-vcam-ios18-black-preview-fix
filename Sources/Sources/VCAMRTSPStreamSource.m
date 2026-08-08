@@ -70,6 +70,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     CFTimeInterval _diagnosticLastFrameTime;
     NSUInteger _diagnosticFrames;
     NSUInteger _diagnosticHardwareFrames;
+    BOOL _loggedFirstHardwareFrame;
     double _diagnosticFrameIntervals[256];
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
@@ -250,6 +251,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     CVPixelBufferRetain(pixelBuffer);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
+    BOOL logFirstHardwareFrame = NO;
+    uint64_t firstHardwareSequence = 0;
     @synchronized (self) {
         if (!self.running) {
             CVPixelBufferRelease(pixelBuffer);
@@ -260,7 +263,14 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         _latestFrameHostTime = now;
         _latestFrameSequence += 1;
         _diagnosticFrames += 1;
-        if (hardware) _diagnosticHardwareFrames += 1;
+        if (hardware) {
+            _diagnosticHardwareFrames += 1;
+            if (!_loggedFirstHardwareFrame) {
+                _loggedFirstHardwareFrame = YES;
+                logFirstHardwareFrame = YES;
+                firstHardwareSequence = _latestFrameSequence;
+            }
+        }
         if (_diagnosticLastFrameTime > 0 && _diagnosticFrameIntervalCount < 256) {
             _diagnosticFrameIntervals[_diagnosticFrameIntervalCount++] =
                 (now - _diagnosticLastFrameTime) * 1000.0;
@@ -291,6 +301,14 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             _diagnosticHardwareFrames = 0;
             _diagnosticFrameIntervalCount = 0;
         }
+    }
+    if (logFirstHardwareFrame) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ hardware first-frame size=%zux%zu format=%08x sequence=%llu",
+            self.streamName, CVPixelBufferGetWidth(pixelBuffer),
+            CVPixelBufferGetHeight(pixelBuffer),
+            (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
+            (unsigned long long)firstHardwareSequence]];
     }
     if (snapshot != nil) VCAMPublishRTSPPerformance(snapshot);
 }

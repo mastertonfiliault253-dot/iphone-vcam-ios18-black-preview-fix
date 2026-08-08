@@ -678,9 +678,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     NSDictionary *destinationAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferWidthKey: @(_width),
-        (id)kCVPixelBufferHeightKey: @(_height),
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = VCAMHardwareDecoderCallback,

@@ -111,6 +111,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('@"https"', stream)
         self.assertIn('av_dict_set(options, "rw_timeout", "3000000", 0)', stream)
         self.assertIn("if (self.usesRTSPTransport)", stream)
+        self.assertIn('@"%@ hardware first-frame size=', stream)
         self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertNotIn("VCAMHLSStreamSource", producer)
@@ -118,6 +119,15 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("VCAMHLSStreamSource.m", makefile)
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.h").exists())
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
+
+    def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
+        build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("--enable-securetransport", build)
+        self.assertIn("--enable-protocol=file,tcp,udp,http,https,tls,crypto", build)
+        self.assertIn("--enable-demuxer=mov,rtsp,rtp,sdp,hls,mpegts", build)
+        self.assertIn("Security", makefile)
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
