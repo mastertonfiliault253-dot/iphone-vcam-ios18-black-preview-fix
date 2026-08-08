@@ -84,8 +84,7 @@
     self.playbackReady = NO;
     [player play];
     [VCAMConfiguration appendProcessLog:
-        [NSString stringWithFormat:@"hls start url=%@ output=%@",
-            url.absoluteString, output]];
+        [NSString stringWithFormat:@"hls start output=%@", output]];
     return YES;
 }
 

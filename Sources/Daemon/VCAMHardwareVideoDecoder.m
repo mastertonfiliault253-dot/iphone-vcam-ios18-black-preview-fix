@@ -709,7 +709,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                length:(size_t)length
        presentationTime:(CMTime)presentationTime
              decodeTime:(CMTime)decodeTime
-               duration:(CMTime)duration {
+               duration:(CMTime)duration
+             isKeyFrame:(BOOL)isKeyFrame {
     if (!_active || _session == NULL || bytes == NULL || length == 0) return NO;
     size_t feedLength = length;
     const uint8_t *feedBytes = bytes;
@@ -787,6 +788,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     if (status != noErr || sampleBuffer == NULL) {
         free(filtered);
         return NO;
+    }
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+    if (attachments != NULL && CFArrayGetCount(attachments) > 0) {
+        CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(
+            attachments, 0);
+        CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync,
+                             isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
     }
     status = VTDecompressionSessionDecodeFrame(_session, sampleBuffer, 0, NULL, NULL);
     if (status != noErr) {

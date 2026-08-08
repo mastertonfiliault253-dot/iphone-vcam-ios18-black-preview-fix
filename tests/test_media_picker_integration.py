@@ -327,6 +327,58 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("presentPanelWithRemainingRetries", picker)
         self.assertIn("accessibilityLabel", panel)
 
+    def test_three_finger_toggle_can_coexist_with_host_gestures(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        simultaneous = picker.split(
+            "shouldRecognizeSimultaneouslyWithGestureRecognizer:", 1
+        )[1].split("- (void)dragButton:", 1)[0]
+        self.assertIn("VCAMGestureTagKey", simultaneous)
+        self.assertIn("VCAMFloatingDotTag", simultaneous)
+        self.assertIn("return", simultaneous)
+        self.assertNotIn("return NO;", simultaneous)
+
+    def test_hls_configuration_is_accepted_by_broker_and_cli(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        writer = (ROOT / "scripts" / "write-config.py").read_text(encoding="utf-8")
+        allowed_keys = configuration.split("allowedPreferenceKeys", 1)[1].split(
+            "+ (BOOL)validateChanges", 1
+        )[0]
+        self.assertIn('@"hlsURL"', allowed_keys)
+        self.assertIn('"hls"', writer)
+        self.assertIn('parser.add_argument("--hls-url")', writer)
+        self.assertIn('values["hlsURL"] = args.hls_url', writer)
+
+    def test_foreground_app_exclusively_owns_the_floating_dot(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMAppForegroundStateNotification", picker)
+        self.assertIn("notify_set_state", picker)
+        self.assertIn("notify_get_state", picker)
+        self.assertIn("currentState == (uint64_t)getpid()", picker)
+        self.assertIn("kill((pid_t)foregroundPID, 0)", picker)
+        self.assertIn("VCAMForegroundAppIsAlive()", picker)
+        self.assertIn("VCAMPickerPostAppActive(YES)", picker)
+        self.assertIn("VCAMPickerPostAppActive(NO)", picker)
+        self.assertIn("controller.hostResignedActive = foregroundAppActive", picker)
+
+    def test_three_finger_visibility_is_global_across_ui_hosts(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        visibility = picker.split("- (BOOL)isFloatingButtonVisibleForValues:", 1)[1].split(
+            "- (nullable NSValue *)savedFloatingButtonCenterForWindow:", 1
+        )[0]
+        toggle = picker.split("- (void)toggleFloatingButton:", 1)[1].split(
+            "- (BOOL)gestureRecognizer:", 1
+        )[0]
+        self.assertIn('visibility[@"global"]', visibility)
+        self.assertIn('visibility[@"global"] = @(!currentlyVisible)', toggle)
+
     def test_panel_shows_stream_health_and_hides_injection_targets(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"

@@ -74,7 +74,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.28+stable";
+    return "com.codex.vcam/0.8.29+stable";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -291,7 +291,7 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
         keys = [NSSet setWithArray:@[
             @"enabled", @"source", @"mediaPath", @"loopMedia", @"localDecoderMode",
             @"preferredFramesPerSecond", @"rotationDegrees", @"mirrorHorizontally",
-            @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL",
+            @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL", @"hlsURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"floatingButtonPositions", @"floatingButtonVisibility",
         ]];

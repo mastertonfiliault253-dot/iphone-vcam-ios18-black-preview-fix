@@ -283,7 +283,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     AVStream *stream = NULL;
     BOOL producedFrame = NO;
     BOOL firstFrameProduced = NO;
-    CFAbsoluteTime sessionStart = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime sessionStart = 0;
+    CFAbsoluteTime keyPacketAt = 0;
+    BOOL receivedKeyPacket = NO;
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
     NSString *urlString = self.configuration.rtspURL.absoluteString;
@@ -314,14 +316,24 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         @"rtsp hardware session codec=%s source=%dx%d",
         avcodec_get_name(stream->codecpar->codec_id),
         stream->codecpar->width, stream->codecpar->height]];
+    // Opening the RTSP input and probing stream info can take several seconds.
+    // Start the first-frame budget only after VideoToolbox is ready, otherwise
+    // a mid-GOP P frame can consume the entire budget before the next IDR.
+    sessionStart = CFAbsoluteTimeGetCurrent();
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
             CMTime pts = VCAMPacketTime(packet, stream);
+            BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            if (isKeyFrame && !receivedKeyPacket) {
+                receivedKeyPacket = YES;
+                keyPacketAt = CFAbsoluteTimeGetCurrent();
+            }
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
                  presentationTime:pts
                        decodeTime:kCMTimeInvalid
-                         duration:kCMTimeInvalid];
+                         duration:kCMTimeInvalid
+                       isKeyFrame:isKeyFrame];
             CVPixelBufferRef output = NULL;
             CMTime outputPts = kCMTimeInvalid;
             while ((output = [decoder copyNextOutputFrame:&outputPts])) {
@@ -334,8 +346,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             // not block the pipeline forever (e.g. in-band-only parameter
             // sets). Give it a bounded first-frame window, then let the
             // FFmpeg hwaccel fallback take over.
-            if (!firstFrameProduced &&
-                CFAbsoluteTimeGetCurrent() - sessionStart > 3.0) {
+            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+            BOOL keyFrameDecodeTimedOut = receivedKeyPacket && now - keyPacketAt > 2.0;
+            BOOL keyFrameWaitTimedOut = !receivedKeyPacket && now - sessionStart > 10.0;
+            if (!firstFrameProduced && (keyFrameDecodeTimedOut || keyFrameWaitTimedOut)) {
                 [VCAMConfiguration appendProcessLog:
                     @"rtsp direct-VT first frame timed out; falling back to FFmpeg hwaccel"];
                 break;

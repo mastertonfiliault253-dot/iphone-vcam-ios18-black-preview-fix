@@ -1006,7 +1006,8 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
                                     length:(size_t)_ffPacket->size
                           presentationTime:pts
                                 decodeTime:kCMTimeInvalid
-                                  duration:kCMTimeInvalid];
+                                  duration:kCMTimeInvalid
+                                isKeyFrame:(_ffPacket->flags & AV_PKT_FLAG_KEY) != 0];
         }
         av_packet_unref(_ffPacket);
     }

@@ -1,4 +1,4 @@
-# VCAM Media Bridge (iOS 15–16 research build)
+# VCAM Media Bridge (iOS 16–16.5 research build)
 
 VCAM replaces camera video at `BWNodeOutput -emitSampleBuffer:` while keeping
 networking and decoding outside injected processes. It is for software you own
@@ -7,7 +7,7 @@ authentication decisions.
 
 ## Architecture
 
-Only two Apple processes are injected:
+The media hook and UI overlay have separate injection scopes:
 
 - `mediaserverd`: reads the latest 1080×1920 BGRA frame from a three-slot shared
   mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
@@ -19,8 +19,11 @@ Only two Apple processes are injected:
   exposes a real camera frame: the last virtual frame is retained when possible,
   otherwise a black frame is emitted or that consumer sample is suppressed.
   It has no FFmpeg, AVAssetReader, UIKit or network client.
-- `SpringBoard`: hosts the draggable white dot, configuration broker, unified
-  image/video picker and the latest-frame preview.
+- `SpringBoard`: hosts the configuration broker and its draggable white dot.
+- Camera, MobileSafari, Chrome, Edge and Firefox main processes receive the UI
+  dylib only: one foreground-owned white dot and the same control panel. They
+  contain no camera hook, decoder or network source; replacement remains in
+  `mediaserverd`.
 
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns local
 image/video playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode,
@@ -31,9 +34,9 @@ reload cannot overwrite a newer user choice. Audio is not replaced; the real
 microphone continues through the normal pipeline.
 
 `vcaminjectd` is a second package-owned LaunchDaemon, also not an injected
-dylib. It runs as root and repairs only the two allowed mappings after
-`mediaserverd` or SpringBoard changes PID. It never targets Camera, Safari,
-WebKit or third-party application processes.
+dylib. It runs as root and repairs only the `mediaserverd` and SpringBoard
+mappings after either process changes PID. Application UI injection is handled
+by the normal tweak filter, never by this watchdog.
 
 This keeps the useful `BWNodeOutput` seam from EthanArbuckle/vcam-ios while
 avoiding its hard-coded path, 60-frame preload and callback-index timing.
@@ -49,6 +52,8 @@ when enabled, without pre-decoding the entire asset into memory.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
   it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
   where available, and a latest-only bounded software-conversion fallback.
+- HLS: enter an HTTP/HTTPS `.m3u8` URL. `vcamd` uses AVPlayer's native
+  hardware-backed decode path and publishes only the latest frame.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries
@@ -56,7 +61,7 @@ no audio.
 
 ## Build
 
-With current Theos and an iOS 15+ SDK, build the standard rootless package:
+With current Theos and an iOS 16+ SDK, build the standard rootless package:
 
 ```bash
 export THEOS=/path/to/theos

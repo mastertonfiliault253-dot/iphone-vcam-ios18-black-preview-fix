@@ -4,8 +4,12 @@
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <errno.h>
+#import <limits.h>
+#import <notify.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <unistd.h>
 #import "../Core/VCAMConfiguration.h"
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
@@ -21,6 +25,44 @@ static void VCAMPickerConfigurationChanged(CFNotificationCenterRef center, void 
     (void)center; (void)name; (void)object; (void)userInfo;
     VCAMMediaPickerController *controller = (__bridge VCAMMediaPickerController *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{ [controller performSelector:@selector(configurationDidChange)]; });
+}
+
+static const char *const VCAMAppForegroundStateNotification =
+    "com.codex.vcam/app.foreground-state";
+static int VCAMAppForegroundStateToken = NOTIFY_TOKEN_INVALID;
+
+static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
+                                           CFStringRef name, const void *object,
+                                           CFDictionaryRef userInfo);
+
+static BOOL VCAMEnsureAppForegroundStateToken(void) {
+    if (VCAMAppForegroundStateToken != NOTIFY_TOKEN_INVALID) return YES;
+    return notify_register_check(VCAMAppForegroundStateNotification,
+                                 &VCAMAppForegroundStateToken) == NOTIFY_STATUS_OK;
+}
+
+static BOOL VCAMForegroundAppIsAlive(void) {
+    if (!VCAMEnsureAppForegroundStateToken()) return NO;
+    uint64_t foregroundPID = 0;
+    if (notify_get_state(VCAMAppForegroundStateToken, &foregroundPID) != NOTIFY_STATUS_OK ||
+        foregroundPID == 0) return NO;
+    errno = 0;
+    if (foregroundPID <= INT_MAX &&
+        (kill((pid_t)foregroundPID, 0) == 0 || errno == EPERM)) return YES;
+    notify_set_state(VCAMAppForegroundStateToken, 0);
+    return NO;
+}
+
+static void VCAMPickerPostAppActive(BOOL foreground) {
+    if (!VCAMEnsureAppForegroundStateToken()) return;
+    uint64_t currentState = 0;
+    if (notify_get_state(VCAMAppForegroundStateToken, &currentState) != NOTIFY_STATUS_OK) return;
+    uint64_t nextState = foreground ? (uint64_t)getpid()
+        : (currentState == (uint64_t)getpid() ? 0 : currentState);
+    if (nextState == currentState) return;
+    if (notify_set_state(VCAMAppForegroundStateToken, nextState) == NOTIFY_STATUS_OK) {
+        notify_post(VCAMAppForegroundStateNotification);
+    }
 }
 
 static BOOL VCAMIsSupportedMediaExtension(NSString *extension) {
@@ -80,7 +122,21 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic) BOOL started;
 @property(nonatomic) BOOL lastKnownLockedState;
 @property(nonatomic) BOOL hostResignedActive;
+- (void)installButtonWhenWindowIsReady;
 @end
+
+static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
+                                           CFStringRef name, const void *object,
+                                           CFDictionaryRef userInfo) {
+    (void)center; (void)object; (void)userInfo;
+    VCAMMediaPickerController *controller = (__bridge VCAMMediaPickerController *)observer;
+    (void)name;
+    BOOL foregroundAppActive = VCAMForegroundAppIsAlive();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        controller.hostResignedActive = foregroundAppActive;
+        [controller installButtonWhenWindowIsReady];
+    });
+}
 
 @implementation VCAMMediaPickerController
 
@@ -105,7 +161,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                               name:UIApplicationDidBecomeActiveNotification object:nil];
         [notifications addObserver:self selector:@selector(applicationWillResignActive:)
                               name:UIApplicationWillResignActiveNotification object:nil];
-        [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
+        [notifications addObserver:self selector:@selector(keyWindowDidChange:)
                               name:UIWindowDidBecomeKeyNotification object:nil];
         [notifications addObserver:self selector:@selector(applicationDidBecomeActive:)
                               name:UISceneDidActivateNotification object:nil];
@@ -116,8 +172,21 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
                                         VCAMPickerConfigurationChanged,
                                         CFSTR("com.codex.vcam/preferences.changed"), NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
+        if ([self isSpringBoardHost]) {
+            VCAMEnsureAppForegroundStateToken();
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                            (__bridge const void *)self,
+                                            VCAMPickerAppForegroundChanged,
+                                            CFSTR("com.codex.vcam/app.foreground-state"),
+                                            NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+            VCAMPickerAppForegroundChanged(NULL, (__bridge void *)self, NULL, NULL, NULL);
+        }
         [self installButtonWhenWindowIsReady];
         [self startStatusRefresh];
+        if (![self isSpringBoardHost] &&
+            UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+            VCAMPickerPostAppActive(YES);
+        }
     });
 }
 
@@ -132,6 +201,11 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
         // caused duplicate dots and gesture/panel races.
         [self updateFloatingStatusIndicator];
         if ([self isSpringBoardHost]) {
+            BOOL foregroundAppActive = VCAMForegroundAppIsAlive();
+            if (foregroundAppActive != self.hostResignedActive) {
+                self.hostResignedActive = foregroundAppActive;
+                [self installButtonWhenWindowIsReady];
+            }
             BOOL locked = ![self isSpringBoardUnlocked];
             if (locked != self.lastKnownLockedState) {
                 self.lastKnownLockedState = locked;
@@ -150,9 +224,18 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
     self.hostResignedActive = NO;
+    if (![self isSpringBoardHost]) VCAMPickerPostAppActive(YES);
     [VCAMConfiguration appendProcessLog:
-        [NSString stringWithFormat:@"[DEBUG-APPACTIVE] became-active host=%@",
+        [NSString stringWithFormat:@"ui became-active host=%@",
             NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
+    self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
+    [self installButtonWhenWindowIsReady];
+}
+
+- (void)keyWindowDidChange:(NSNotification *)notification {
+    (void)notification;
+    // A window becoming key (system alert, text input, etc.) must not clear
+    // the background flag; only real application/scene activation does.
     self.remainingWindowRetries = VCAMWindowDiscoveryRetryCount;
     [self installButtonWhenWindowIsReady];
 }
@@ -160,8 +243,9 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (void)applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
     self.hostResignedActive = YES;
+    if (![self isSpringBoardHost]) VCAMPickerPostAppActive(NO);
     [VCAMConfiguration appendProcessLog:
-        [NSString stringWithFormat:@"[DEBUG-APPACTIVE] resign-active host=%@",
+        [NSString stringWithFormat:@"ui resign-active host=%@",
             NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
     // When an injected app (Camera, browser) comes to the foreground,
     // SpringBoard must hide its own floating dot so the device never shows
@@ -389,7 +473,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (BOOL)isFloatingButtonVisibleForValues:(NSDictionary<NSString *, id> *)values {
     NSDictionary *visibility = values[@"floatingButtonVisibility"];
     NSNumber *saved = [visibility isKindOfClass:NSDictionary.class]
-        ? visibility[[self floatingPositionIdentifier]] : nil;
+        ? visibility[@"global"] : nil;
+    if (saved == nil && [visibility isKindOfClass:NSDictionary.class]) {
+        saved = visibility[[self floatingPositionIdentifier]];
+    }
     return saved == nil ? YES : saved.boolValue;
 }
 
@@ -496,12 +583,12 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     CFTimeInterval now = CACurrentMediaTime();
     if (now - lastToggleHostTime < 0.6) {
         [VCAMConfiguration appendProcessLog:
-            @"[DEBUG-3F] toggle ignored as duplicate"];
+            @"ui three-finger toggle ignored as duplicate"];
         return;
     }
     lastToggleHostTime = now;
     [VCAMConfiguration appendProcessLog:
-        [NSString stringWithFormat:@"[DEBUG-3F] toggle fired host=%@ touches=%lu taps=%lu",
+        [NSString stringWithFormat:@"ui three-finger toggle fired host=%@ touches=%lu taps=%lu",
             NSProcessInfo.processInfo.processName ?: @"(unknown)",
             (unsigned long)recognizer.numberOfTouches,
             (unsigned long)recognizer.numberOfTapsRequired]];
@@ -509,7 +596,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
     NSMutableDictionary *visibility = [values[@"floatingButtonVisibility"] mutableCopy]
         ?: [NSMutableDictionary dictionary];
     BOOL currentlyVisible = [self isFloatingButtonVisibleForValues:values];
-    visibility[[self floatingPositionIdentifier]] = @(!currentlyVisible);
+    visibility[@"global"] = @(!currentlyVisible);
     if (![self updatePreferences:@{@"floatingButtonVisibility": visibility}]) {
         [self showMessage:@"主屏配置服务不可用" error:YES];
         return;
@@ -519,8 +606,10 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    (void)gestureRecognizer; (void)otherGestureRecognizer;
-    return NO;
+    NSNumber *gestureTag = objc_getAssociatedObject(gestureRecognizer, VCAMGestureTagKey);
+    NSNumber *otherTag = objc_getAssociatedObject(otherGestureRecognizer, VCAMGestureTagKey);
+    return gestureTag.integerValue == VCAMFloatingDotTag ||
+        otherTag.integerValue == VCAMFloatingDotTag;
 }
 
 - (void)dragButton:(UIPanGestureRecognizer *)recognizer {

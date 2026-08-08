@@ -16,7 +16,8 @@ typedef struct AVCodecParameters AVCodecParameters;
                length:(size_t)length
        presentationTime:(CMTime)presentationTime
              decodeTime:(CMTime)decodeTime
-               duration:(CMTime)duration;
+               duration:(CMTime)duration
+             isKeyFrame:(BOOL)isKeyFrame;
 /// Pops the oldest decoded frame (retained). Returns NULL when none is ready.
 - (nullable CVPixelBufferRef)copyNextOutputFrame:(CMTime *)presentationTimeOut;
 - (void)flush;

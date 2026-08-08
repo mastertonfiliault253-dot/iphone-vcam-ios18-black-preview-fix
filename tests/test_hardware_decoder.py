@@ -61,6 +61,33 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
+    def test_rtsp_direct_decoder_waits_for_an_idr_and_marks_sync_samples(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.h").read_text(
+            encoding="utf-8"
+        )
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("isKeyFrame:(BOOL)isKeyFrame", header)
+        self.assertIn("kCMSampleAttachmentKey_NotSync", decoder)
+        self.assertIn("isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue", decoder)
+        self.assertIn("BOOL receivedKeyPacket = NO", rtsp)
+        self.assertIn("packet->flags & AV_PKT_FLAG_KEY", rtsp)
+        self.assertIn("if (isKeyFrame && !receivedKeyPacket)", rtsp)
+        self.assertIn("isKeyFrame:isKeyFrame", rtsp)
+        loop = rtsp.split("while (self.running && av_read_frame", 1)[1].split(
+            "[decoder flush]", 1
+        )[0]
+        self.assertIn("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp)
+        self.assertLess(
+            rtsp.index("rtsp hardware session codec="),
+            rtsp.index("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp.index("rtsp hardware session codec=")),
+        )
+        self.assertIn("receivedKeyPacket &&", loop)
+
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"

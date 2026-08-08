@@ -8,6 +8,13 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class PackagingArchitectureTests(unittest.TestCase):
+    def test_package_targets_only_ios_16_through_16_5(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        control = (ROOT / "control").read_text(encoding="utf-8")
+        self.assertIn("TARGET = iphone:clang:latest:16.0", makefile)
+        self.assertIn("firmware (>= 16.0)", control)
+        self.assertIn("firmware (<< 16.6)", control)
+
     def test_package_version_matches_runtime_build_tag(self) -> None:
         control = (ROOT / "control").read_text(encoding="utf-8")
         version = next(
