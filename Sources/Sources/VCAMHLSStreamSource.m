@@ -63,6 +63,7 @@
     AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
     player.volume = 0.0;
     player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    player.automaticallyWaitsToMinimizeStalling = NO;
     __weak typeof(self) weakSelf = self;
     self.endTimeObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:AVPlayerItemDidPlayToEndTimeNotification
@@ -82,9 +83,21 @@
     self.videoOutput = output;
     self.running = YES;
     self.playbackReady = NO;
-    [player play];
+    [player playImmediatelyAtRate:1.0];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"hls start output=%@", output]];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.running || strongSelf.playbackReady) return;
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"hls first-frame timeout player=%ld control=%ld reason=%@ item=%ld error=%@",
+            (long)strongSelf.player.status,
+            (long)strongSelf.player.timeControlStatus,
+            strongSelf.player.reasonForWaitingToPlay ?: @"(none)",
+            (long)strongSelf.playerItem.status,
+            strongSelf.playerItem.error.localizedDescription ?: @"(none)"]];
+    });
     return YES;
 }
 
