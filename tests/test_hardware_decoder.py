@@ -38,6 +38,15 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("annexB conversion failed", decoder)
         self.assertIn("VCAMIsParameterSetNAL", decoder)
 
+    def test_annex_b_parser_excludes_trailing_zero_bytes_from_nals(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        # Real x264 SPS boundary: ...50 00 | 00 00 00 01 68...
+        # The first zero is trailing_zero_8bits, not SPS payload.
+        self.assertIn("VCAMTrimAnnexBTrailingZeroBytes", decoder)
+        self.assertGreaterEqual(decoder.count("VCAMTrimAnnexBTrailingZeroBytes("), 4)
+
     def test_annex_b_parameter_sets_are_accepted_for_h264_and_hevc(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"

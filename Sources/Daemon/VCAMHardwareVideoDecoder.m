@@ -35,6 +35,15 @@ static BOOL VCAMIsAnnexBStartCode(const uint8_t *bytes, size_t length,
     return NO;
 }
 
+static size_t VCAMTrimAnnexBTrailingZeroBytes(const uint8_t *bytes,
+                                              size_t payloadStart,
+                                              size_t payloadEnd) {
+    while (payloadEnd > payloadStart && bytes[payloadEnd - 1] == 0) {
+        payloadEnd -= 1;
+    }
+    return payloadEnd;
+}
+
 // VideoToolbox on iOS rejects samples that carry SPS/PPS NALs with
 // kVTVideoDecoderBadDataErr (-12909), even though macOS tolerates them.
 // Parameter sets must live only in the CMVideoFormatDescription (avcC/hvcC
@@ -79,7 +88,9 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
                    !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
                 next += 1;
             }
-            size_t payloadLength = next - payloadStart;
+            size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+                bytes, payloadStart, next);
+            size_t payloadLength = payloadEnd - payloadStart;
             if (VCAMIsParameterSetNAL(bytes + payloadStart, payloadLength, hevc)) {
                 sawParameterSet = YES;
             } else {
@@ -371,13 +382,15 @@ static BOOL VCAMCollectH264AnnexBParameterSets(
         while (next < extraSize && !VCAMIsAnnexBStartCode(extra, extraSize, next, NULL)) {
             next += 1;
         }
+        size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+            extra, payloadStart, next);
         if (nalType == 7 && spsCount < 32) {
             spsPointers[spsCount] = extra + payloadStart;
-            spsSizes[spsCount] = next - payloadStart;
+            spsSizes[spsCount] = payloadEnd - payloadStart;
             spsCount += 1;
         } else if (nalType == 8 && ppsCount < 32) {
             ppsPointers[ppsCount] = extra + payloadStart;
-            ppsSizes[ppsCount] = next - payloadStart;
+            ppsSizes[ppsCount] = payloadEnd - payloadStart;
             ppsCount += 1;
         }
         scan = next;
@@ -409,17 +422,19 @@ static BOOL VCAMCollectHEVCAnnexBParameterSets(
         while (next < extraSize && !VCAMIsAnnexBStartCode(extra, extraSize, next, NULL)) {
             next += 1;
         }
+        size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+            extra, payloadStart, next);
         if (nalType == 32 && vpsCount < 16) {
             vpsPointers[vpsCount] = extra + payloadStart;
-            vpsSizes[vpsCount] = next - payloadStart;
+            vpsSizes[vpsCount] = payloadEnd - payloadStart;
             vpsCount += 1;
         } else if (nalType == 33 && spsCount < 32) {
             spsPointers[spsCount] = extra + payloadStart;
-            spsSizes[spsCount] = next - payloadStart;
+            spsSizes[spsCount] = payloadEnd - payloadStart;
             spsCount += 1;
         } else if (nalType == 34 && ppsCount < 32) {
             ppsPointers[ppsCount] = extra + payloadStart;
-            ppsSizes[ppsCount] = next - payloadStart;
+            ppsSizes[ppsCount] = payloadEnd - payloadStart;
             ppsCount += 1;
         }
         scan = next;
@@ -551,8 +566,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                 4, _width, _height,
                 &_decoderSpecification, &_formatDescription);
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"[DEBUG-vtpack] H264 annexB psets sps=%d pps=%d status=%d nal=4",
-                spsCount, ppsCount, (int)status]];
+                @"[DEBUG-vtpack] H264 annexB psets sps=%d pps=%d status=%d nal=4 sizes=%zu,%zu",
+                spsCount, ppsCount, (int)status, spsSizes[0], ppsSizes[0]]];
         } else {
         if (extraSize < 7) return nil;
         int nalHeaderLength = (extra[4] & 0x03) + 1;
