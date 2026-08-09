@@ -1,7 +1,7 @@
 # iOS 16 VideoToolbox 硬件解码实现案例与 vcamd 实验建议
 
-调查日期：2026-08-09  
-部署范围：iOS 16.0–16.5，arm64/arm64e 设备  
+调查日期：2026-08-09
+部署范围：iOS 16.0–16.5，arm64/arm64e 设备
 调查范围：Apple 公共 SDK/官方文档、FFmpeg/WebRTC/VLC/ijkplayer/GStreamer 项目官方源码。没有使用博客或论坛结论。
 
 ## 结论先行
@@ -144,7 +144,7 @@ VLC 官方变更明确把 `kVTVideoDecoderReferenceMissingErr = -17694` 作为�
 
 GStreamer 官方 `vtdec.c` 同时实现可软/硬选择的 `vtdec` 和 HW-only `vtdec_hw`，明确要求 H.264 AVC AU/H.265 hvc1/hev1 AU 输入，并用输出任务、重排队列、drain/flush 管理异步帧。来源：[GStreamer applemedia/vtdec.c](https://github.com/GStreamer/gstreamer/blob/main/subprojects/gst-plugins-bad/sys/applemedia/vtdec.c)、[vtdec_hw 官方文档](https://gstreamer.freedesktop.org/documentation/applemedia/vtdec_hw.html)。
 
-**直接可复用：** 错误分类、AU contract、重排/drain 思路。  
+**直接可复用：** 错误分类、AU contract、重排/drain 思路。
 **不适用：** 将 VLC/GStreamer 整体加入 vcamd 会引入新的 demux、线程、对象生命周期和体积问题，没有证据表明它能单独消除当前错误。
 
 ## AVFoundation 系统路径
@@ -155,7 +155,7 @@ GStreamer 官方 `vtdec.c` 同时实现可软/硬选择的 `vtdec` 和 HW-only `
 
 来源：[AVAssetReaderTrackOutput](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)、[outputSettings](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput/outputsettings)、[AVAssetReaderOutput](https://developer.apple.com/documentation/avfoundation/avassetreaderoutput)。
 
-**适用：** 本地文件、已完整缓存且 AVFoundation 可识别的有限资产，或作为 direct-VT 的独立诊断。  
+**适用：** 本地文件、已完整缓存且 AVFoundation 可识别的有限资产，或作为 direct-VT 的独立诊断。
 **不适用：** RTSP transport/demux；无限 live stream；需要明确控制 SPS/PPS/IDR 恢复的统一 RTSP/HLS pipeline。
 
 ### AVPlayer + AVPlayerItemVideoOutput
