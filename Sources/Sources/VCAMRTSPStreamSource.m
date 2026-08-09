@@ -43,8 +43,16 @@ static CMTime VCAMPacketTime(AVPacket *packet, AVStream *stream) {
     if (pts == AV_NOPTS_VALUE) return kCMTimeInvalid;
     AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 90000};
     double seconds = (double)pts * av_q2d(timeBase);
-    if (!isfinite(seconds) || seconds < 0) seconds = 0;
+    if (!isfinite(seconds)) return kCMTimeInvalid;
     return CMTimeMakeWithSeconds(seconds, 600);
+}
+
+static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
+    if (packet == NULL || packet->duration <= 0) return kCMTimeInvalid;
+    AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 90000};
+    double seconds = (double)packet->duration * av_q2d(timeBase);
+    return isfinite(seconds) && seconds > 0
+        ? CMTimeMakeWithSeconds(seconds, 600) : kCMTimeInvalid;
 }
 
 static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
@@ -328,6 +336,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     CFAbsoluteTime sessionStart = 0;
     CFAbsoluteTime keyPacketAt = 0;
     BOOL receivedKeyPacket = NO;
+    CMTime timelineOrigin = kCMTimeInvalid;
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
     NSString *urlString = self.streamURL.absoluteString;
@@ -394,12 +403,16 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             if (isKeyFrame && !receivedKeyPacket) {
                 receivedKeyPacket = YES;
                 keyPacketAt = CFAbsoluteTimeGetCurrent();
+                timelineOrigin = pts;
+            }
+            if (CMTIME_IS_NUMERIC(pts) && CMTIME_IS_NUMERIC(timelineOrigin)) {
+                pts = CMTimeSubtract(pts, timelineOrigin);
             }
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
                  presentationTime:pts
                        decodeTime:kCMTimeInvalid
-                         duration:kCMTimeInvalid
+                         duration:VCAMPacketDuration(packet, stream)
                        isKeyFrame:isKeyFrame];
             CVPixelBufferRef output = NULL;
             CMTime outputPts = kCMTimeInvalid;

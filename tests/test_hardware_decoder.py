@@ -106,6 +106,16 @@ class HardwareDecoderTests(unittest.TestCase):
             loop.index("[decoder decodePacket:"),
         )
 
+    def test_rtsp_direct_decoder_preserves_packet_timing_after_the_first_idr(self) -> None:
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("seconds < 0", rtsp)
+        self.assertIn("CMTime timelineOrigin = kCMTimeInvalid", rtsp)
+        self.assertIn("timelineOrigin = pts", rtsp)
+        self.assertIn("pts = CMTimeSubtract(pts, timelineOrigin)", rtsp)
+        self.assertIn("duration:VCAMPacketDuration(packet, stream)", rtsp)
+
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
