@@ -844,7 +844,10 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     configuration.filter = [PHPickerFilter anyFilterMatchingSubfilters:
         @[PHPickerFilter.imagesFilter, PHPickerFilter.videosFilter]];
     configuration.selectionLimit = 1;
-    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCurrent;
+    // Ask Photos for a broadly decodable representation instead of forcing
+    // the original HEVC asset into the root daemon's software fallback.
+    configuration.preferredAssetRepresentationMode =
+        PHPickerConfigurationAssetRepresentationModeCompatible;
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
     picker.delegate = self;
     [[self presentingViewController] presentViewController:picker animated:YES completion:nil];

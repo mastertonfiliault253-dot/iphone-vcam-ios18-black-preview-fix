@@ -14,3 +14,21 @@ CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame);
 // is not NV12, dimensions do not match, or vImage is unavailable.
 BOOL VCAMCopyNV12PixelBufferToBGRA(CVPixelBufferRef source,
                                    CVPixelBufferRef destination);
+
+// Converts, orients, mirrors, and scales an NV12 buffer into a BGRA camera
+// buffer without creating a CGImage. rotationDegrees must be a multiple of 90.
+// contentMode uses the VCAMContentMode numeric values (fit=0, fill=1,
+// stretch=2) without coupling this low-level converter to configuration code.
+BOOL VCAMRenderNV12PixelBufferToBGRA(CVPixelBufferRef source,
+                                     CVPixelBufferRef destination,
+                                     int rotationDegrees,
+                                     BOOL mirrorHorizontally,
+                                     int contentMode);
+
+// Orients, mirrors, and scales an existing BGRA buffer into a BGRA camera
+// buffer without the expensive CVPixelBuffer -> CGImage -> CGContext path.
+BOOL VCAMRenderBGRAPixelBufferToBGRA(CVPixelBufferRef source,
+                                     CVPixelBufferRef destination,
+                                     int rotationDegrees,
+                                     BOOL mirrorHorizontally,
+                                     int contentMode);

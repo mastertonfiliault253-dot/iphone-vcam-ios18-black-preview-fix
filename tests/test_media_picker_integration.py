@@ -156,7 +156,15 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         )[0]
         self.assertEqual(reader_playback.count("copyNextSampleBuffer"), 1)
         retained_frame_state = source.split("@interface VCAMLocalMediaSource () {", 1)[1].split("}", 1)[0]
-        self.assertEqual(retained_frame_state.count("CMSampleBufferRef"), 2)
+        self.assertEqual(retained_frame_state.count("CMSampleBufferRef"), 3)
+        self.assertIn("_lastRenderedStillSample", retained_frame_state)
+        still_branch = source.split("if (_stillImage != NULL) {", 2)[2].split(
+            "CMTime sourcePTS", 1
+        )[0]
+        self.assertIn("CMSampleBufferCreateCopyWithNewTiming", still_branch)
+        self.assertIn("CMSampleBufferCreateCopy", still_branch)
+        self.assertIn("cacheHit:YES", still_branch)
+        self.assertIn("CACurrentMediaTime() - renderStart", still_branch)
         self.assertNotIn("AVPlayerItemVideoOutput", source)
         self.assertNotIn("tripleBGRAOutput", source)
         self.assertNotIn("tripleVideoRangeOutput", source)
@@ -173,9 +181,21 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("if (![self rebuildVideoReader:error]) return NO;", starter)
         self.assertIn("if ([self advanceVideoFrame]) return YES;", starter)
         self.assertIn("if ([self startFFmpegVideoReader:error]) return YES;", starter)
-        self.assertIn("if (![self startFFmpegHwaccelReader:error]) return NO;", starter)
+        self.assertIn("if ([self startFFmpegSoftwareReader:error]) return YES;", starter)
+        self.assertIn("return [self startFFmpegHwaccelReader:error];", starter)
+        self.assertLess(
+            starter.index("startFFmpegSoftwareReader:error"),
+            starter.index("startFFmpegHwaccelReader:error"),
+        )
         self.assertIn("Unable to decode the first video frame", starter)
         self.assertLess(starter.index("rebuildVideoReader:error"), starter.index("advanceVideoFrame"))
+
+        hwaccel = source.split("- (BOOL)advanceHwaccelFrame", 1)[1].split(
+            "- (BOOL)startFFmpegVideoReader", 1
+        )[0]
+        self.assertIn("self.configuration.loopMedia &&", hwaccel)
+        self.assertIn("_ffFirstFrameLogged", hwaccel)
+        self.assertIn("av_err2str(sendResult)", hwaccel)
 
     def test_video_reader_uses_one_native_track_output_and_logs_first_sample_shape(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
@@ -229,7 +249,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         playback = source.split("- (CVPixelBufferRef)copyCurrentVideoPixelBufferForTemplate:", 1)[1].split(
             "- (BOOL)hasVideoAsset", 1
         )[0]
-        self.assertIn("static const NSUInteger VCAMVideoCatchUpLimit = 2;", source)
+        self.assertIn("static const NSUInteger VCAMVideoCatchUpLimit = 1;", source)
         self.assertIn("while (catchUpCount < VCAMVideoCatchUpLimit)", playback)
         self.assertIn("if (catchUpCount == VCAMVideoCatchUpLimit)", playback)
         rebase = playback.split("if (catchUpCount == VCAMVideoCatchUpLimit)", 1)[1]
@@ -252,6 +272,12 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "restoreRealCamera",
         ):
             self.assertIn(action, picker)
+        self.assertIn(
+            "PHPickerConfigurationAssetRepresentationModeCompatible", picker
+        )
+        self.assertNotIn(
+            "PHPickerConfigurationAssetRepresentationModeCurrent", picker
+        )
         for title in (
             "从相册选择",
             "从文件选择",
@@ -314,6 +340,35 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("vImageScale_ARGB8888", converter)
         self.assertIn("VCAMPixelConverter.m", makefile)
         self.assertIn("Sources/Sources/VCAMRTSPStreamSource.m", makefile)
+
+    def test_portrait_decoded_video_uses_vimage_transform_instead_of_cgimage(self) -> None:
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
+            encoding="utf-8"
+        )
+        renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMRenderNV12PixelBufferToBGRA", converter)
+        self.assertIn("VCAMRenderBGRAPixelBufferToBGRA", converter)
+        self.assertIn("static BOOL VCAMRenderBGRABuffer", converter)
+        self.assertIn("vImageRotate90_ARGB8888", converter)
+        self.assertIn("vImageHorizontalReflect_ARGB8888", converter)
+        self.assertIn("vImageVerticalReflect_ARGB8888", converter)
+        self.assertIn("vImageScale_ARGB8888", converter)
+        transformed = converter.split("static BOOL VCAMRenderBGRABuffer", 1)[1].split(
+            "BOOL VCAMRenderBGRAPixelBufferToBGRA", 1
+        )[0]
+        self.assertIn("input.width == output.width", transformed)
+        self.assertIn("memcpy", transformed)
+        self.assertIn("kvImageNoFlags", transformed)
+        self.assertNotIn("kvImageHighQualityResampling", transformed)
+        self.assertIn("VCAMRenderNV12PixelBufferToBGRA", renderer)
+        self.assertIn("VCAMRenderBGRAPixelBufferToBGRA", renderer)
+        self.assertIn("sourceFormat == kCVPixelFormatType_32BGRA", renderer)
+        self.assertLess(
+            renderer.index("VCAMRenderBGRAPixelBufferToBGRA"),
+            renderer.index("VTCreateCGImageFromCVPixelBuffer"),
+        )
 
     def test_floating_dot_is_springboard_owned_and_accessible(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")

@@ -1,0 +1,21 @@
+logLevel: info
+logDestinations: [stdout]
+
+rtsp: true
+rtspAddress: :18554
+rtspTransports: [tcp]
+
+rtmp: false
+
+hls: true
+hlsAddress: :18888
+hlsAlwaysRemux: true
+hlsVariant: mpegts
+
+webrtc: false
+srt: false
+moq: false
+
+paths:
+  vcam-test:
+    source: publisher

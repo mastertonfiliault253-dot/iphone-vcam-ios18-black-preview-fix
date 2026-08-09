@@ -16,7 +16,11 @@
 #import <unistd.h>
 
 static NSString * const VCAMDiagnosticPath = @"/var/mobile/Library/Preferences/com.codex.vcam.diagnostics.log";
-static const NSUInteger VCAMVideoCatchUpLimit = 2;
+// AVAssetReader is pulled synchronously from the camera callback. Decoding two
+// catch-up frames after one slow callback compounds the delay and can collapse
+// a stable 30 fps session into a permanent 10 fps loop. Advance at most once;
+// the existing clock reset below rebases playback if it is still behind.
+static const NSUInteger VCAMVideoCatchUpLimit = 1;
 static const NSUInteger VCAMVideoNonPixelSampleSkipLimit = 32;
 static NSDictionary<NSString *, id> *VCAMLocalPerformanceSnapshot;
 
@@ -79,6 +83,10 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
 
 @interface VCAMLocalMediaSource () {
     CGImageRef _stillImage;
+    CMSampleBufferRef _lastRenderedStillSample;
+    size_t _lastRenderedStillWidth;
+    size_t _lastRenderedStillHeight;
+    OSType _lastRenderedStillPixelFormat;
     CMSampleBufferRef _currentVideoSample;
     CMTime _currentVideoPTS;
     CMTime _videoMediaStartPTS;
@@ -140,6 +148,7 @@ static CMTime VCAMLocalPacketTime(AVPacket *packet, AVStream *stream) {
 - (BOOL)advanceSoftwareFrame;
 - (BOOL)publishFFmpegFrame;
 - (BOOL)restartFFmpegAfterEndAtHostTime:(CFTimeInterval)hostTime;
+- (void)resetStillRenderCache;
 @end
 
 static enum AVPixelFormat VCAMLocalSelectHardwarePixelFormat(
@@ -271,6 +280,7 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     }
 
     NSURL *url = [NSURL fileURLWithPath:path];
+    [self resetStillRenderCache];
     [[NSFileManager defaultManager] removeItemAtPath:VCAMDiagnosticPath error:nil];
     CGImageSourceRef imageSource = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
     if (imageSource != NULL) {
@@ -295,6 +305,7 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
         [self.audioReader cancelReading];
         self.audioReader = nil;
         self.audioOutput = nil;
+        [self resetStillRenderCache];
         if (_stillImage != NULL) {
             CGImageRelease(_stillImage);
             _stillImage = NULL;
@@ -306,8 +317,19 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
 }
 
 - (void)dealloc {
+    [self resetStillRenderCache];
     if (_stillImage != NULL) CGImageRelease(_stillImage);
     [self resetVideoPlaybackState];
+}
+
+- (void)resetStillRenderCache {
+    if (_lastRenderedStillSample != NULL) {
+        CFRelease(_lastRenderedStillSample);
+        _lastRenderedStillSample = NULL;
+    }
+    _lastRenderedStillWidth = 0;
+    _lastRenderedStillHeight = 0;
+    _lastRenderedStillPixelFormat = 0;
 }
 
 - (void)resetVideoReaderState {
@@ -407,21 +429,12 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     [VCAMConfiguration appendProcessLog:
         @"local reader failed; switching to FFmpeg hardware paths"];
     if ([self startFFmpegVideoReader:error]) return YES;
-    // The hand-rolled VideoToolbox session needs a valid avcC/hvcC in the
-    // container. Software decode is the reliable fallback on devices where
-    // VideoToolbox is unavailable; FFmpeg's hwaccel is attempted last because
-    // its hardware-device setup can block when the decoder is broken.
     [VCAMConfiguration appendProcessLog:
         @"local direct-VT failed; trying FFmpeg software decode"];
-    // On devices where VideoToolbox is unavailable, the FFmpeg hwaccel path
-    // can block inside the hardware-device setup. Software decode is the
-    // reliable fallback, so try it before the hwaccel path and only fall
-    // through to hwaccel when the software decoder cannot open the file.
     if ([self startFFmpegSoftwareReader:error]) return YES;
     [VCAMConfiguration appendProcessLog:
         @"local software decode unavailable; trying FFmpeg videotoolbox hwaccel"];
-    if (![self startFFmpegHwaccelReader:error]) return NO;
-    return YES;
+    return [self startFFmpegHwaccelReader:error];
 }
 
 - (BOOL)rebuildVideoReader:(NSError **)error {
@@ -695,7 +708,10 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     while (YES) {
         int readResult = av_read_frame(_ffFormatContext, _ffPacket);
         if (readResult < 0) {
-            if (readResult == AVERROR_EOF && self.configuration.loopMedia) {
+            // Do not seek forever while validating the first hardware frame.
+            // Looping is safe only after this decoder has produced output.
+            if (readResult == AVERROR_EOF && self.configuration.loopMedia &&
+                _ffFirstFrameLogged) {
                 if (av_seek_frame(_ffFormatContext, _ffVideoStreamIndex, 0,
                                   AVSEEK_FLAG_BACKWARD) < 0) return NO;
                 avcodec_flush_buffers(_ffCodecContext);
@@ -716,7 +732,8 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
             int failureCount = __sync_add_and_fetch(&localHwaccelSendFailures, 1);
             if (failureCount <= 4) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"local hwaccel send_packet failed error=%d", sendResult]];
+                    @"local hwaccel send_packet failed error=%d message=%s",
+                    sendResult, av_err2str(sendResult)]];
             }
             continue;
         }
@@ -1364,10 +1381,55 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
         }
         if (!self.running) return NULL;
         if (_stillImage != NULL) {
-            return [self.renderer copySampleFromCGImage:_stillImage
-                                        sourceTransform:CGAffineTransformIdentity
-                                               template:templateBuffer
-                                          configuration:self.configuration];
+            CVImageBufferRef templateImage =
+                CMSampleBufferGetImageBuffer(templateBuffer);
+            size_t width = templateImage == NULL ? 0 :
+                CVPixelBufferGetWidth(templateImage);
+            size_t height = templateImage == NULL ? 0 :
+                CVPixelBufferGetHeight(templateImage);
+            OSType pixelFormat = templateImage == NULL ? 0 :
+                CVPixelBufferGetPixelFormatType(templateImage);
+            if (_lastRenderedStillSample != NULL &&
+                width == _lastRenderedStillWidth &&
+                height == _lastRenderedStillHeight &&
+                pixelFormat == _lastRenderedStillPixelFormat) {
+                CMSampleTimingInfo timing = {
+                    .duration = CMSampleBufferGetDuration(templateBuffer),
+                    .presentationTimeStamp =
+                        CMSampleBufferGetPresentationTimeStamp(templateBuffer),
+                    .decodeTimeStamp =
+                        CMSampleBufferGetDecodeTimeStamp(templateBuffer),
+                };
+                CMSampleBufferRef retimed = NULL;
+                CMSampleBufferCreateCopyWithNewTiming(
+                    kCFAllocatorDefault, _lastRenderedStillSample, 1,
+                    &timing, &retimed);
+                [self emitDiagnosticsForTemplate:templateBuffer
+                                      sourceTime:kCMTimeInvalid
+                                  renderDuration:0
+                                        hadFrame:(retimed != NULL)
+                                        cacheHit:YES];
+                return retimed;
+            }
+            CFTimeInterval renderStart = CACurrentMediaTime();
+            CMSampleBufferRef rendered =
+                [self.renderer copySampleFromCGImage:_stillImage
+                                      sourceTransform:CGAffineTransformIdentity
+                                             template:templateBuffer
+                                        configuration:self.configuration];
+            if (rendered != NULL) {
+                CMSampleBufferCreateCopy(kCFAllocatorDefault, rendered,
+                                         &_lastRenderedStillSample);
+                _lastRenderedStillWidth = width;
+                _lastRenderedStillHeight = height;
+                _lastRenderedStillPixelFormat = pixelFormat;
+            }
+            [self emitDiagnosticsForTemplate:templateBuffer
+                                  sourceTime:kCMTimeInvalid
+                              renderDuration:(CACurrentMediaTime() - renderStart)
+                                    hadFrame:(rendered != NULL)
+                                    cacheHit:NO];
+            return rendered;
         }
 
         CMTime sourcePTS = kCMTimeInvalid;

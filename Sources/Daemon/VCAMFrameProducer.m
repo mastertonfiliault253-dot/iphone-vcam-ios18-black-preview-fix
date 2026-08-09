@@ -7,6 +7,11 @@
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
 
+#include <unistd.h>
+
+static const char *const VCAMLegacyHLSDaemonMarker =
+    "/var/tmp/vcam-hls-legacy-vcamd.enable";
+
 static BOOL VCAMObjectsEqual(id left, id right) {
     return left == right || (left != nil && [left isEqual:right]);
 }
@@ -89,8 +94,12 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindHLS:
-                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                          renderer:self.renderer];
+                // SpringBoard owns the production AVPlayer HLS path. Retain
+                // the previous daemon decoder as an explicit rollback only.
+                if (access(VCAMLegacyHLSDaemonMarker, F_OK) == 0) {
+                    self.source = [[VCAMRTSPStreamSource alloc]
+                        initWithConfiguration:self.configuration renderer:self.renderer];
+                }
                 break;
             case VCAMSourceKindCamera:
                 break;

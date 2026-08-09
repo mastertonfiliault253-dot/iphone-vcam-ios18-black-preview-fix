@@ -28,11 +28,12 @@ VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation Imag
 VCAMSpringBoardClient_FILES = \
 	Sources/Hooks/VCAMSpringBoardEntry.xm \
 	Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m \
+	Sources/SpringBoard/VCAMSpringBoardMediaBridge.m \
 	Sources/Core/VCAMConfiguration.m \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreMedia CoreVideo Foundation PhotosUI QuartzCore UIKit UniformTypeIdentifiers
+VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 # vcamd is package-owned and is not injected. All local media, OBS, RTSP and
 # HLS work lives here so a decoder/network failure cannot directly crash an

@@ -52,9 +52,12 @@ when enabled, without pre-decoding the entire asset into memory.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
   it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
   where available, and a latest-only bounded software-conversion fallback.
-- HLS: enter an HTTP/HTTPS `.m3u8` URL. `vcamd` uses the same bounded FFmpeg +
-  VideoToolbox path as RTSP, without RTSP transport options, and publishes only
-  the latest frame.
+- HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
+  pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
+  rotation, mirroring, fit/fill, scale and NV12-to-BGRA conversion in one
+  Metal-backed Core Image render. The current compatibility transport remains
+  the three-slot shared BGRA mmap; the retained daemon decoder can be selected
+  for rollback by creating `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries
@@ -82,6 +85,29 @@ Host checks:
 python -m unittest discover -s tests -v
 python -m py_compile desktop\*.py scripts\*.py
 ```
+
+### Deterministic RTSP/HLS test source
+
+To separate decoder failures from capture/UI publisher failures, run the
+fixed test-pattern publisher on Windows:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\start-deterministic-stream.ps1
+```
+
+It launches its own MediaMTX instance on dedicated ports and publishes one
+Constrained-Baseline H.264 stream: 1280×720, 30 fps, yuv420p, closed one-second
+GOP, no B-frames and no scene-cut keyframes. The device URLs are:
+
+- `rtsp://192.168.2.181:18554/vcam-test`
+- `http://192.168.2.181:18888/vcam-test/index.m3u8`
+
+The script auto-discovers the workspace's bundled MediaMTX and the installed
+FFmpeg. Use `-MediaMTXPath` or `-FFmpegPath` when they live elsewhere. It owns
+only the two child processes it starts and stops both on Ctrl+C. Before a
+decoder experiment, require both URLs to report the same 1280×720@30 stream
+and decode locally without errors; an open TCP port alone is not acceptance.
 
 ## Authorized device experiments
 

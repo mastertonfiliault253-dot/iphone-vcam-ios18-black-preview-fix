@@ -115,14 +115,22 @@
         CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA) {
         return [self copySampleWrappingPixelBuffer:pixelBuffer template:templateBuffer];
     }
-    // Hardware decoder output (NV12) that does not need rotation/mirroring is
-    // converted with vImage instead of VTCreateCGImageFromCVPixelBuffer plus
-    // a CPU CGContext draw, which was the dominant local-preview bottleneck.
-    if (identity &&
-        CVPixelBufferGetPixelFormatType(pixelBuffer) ==
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
-        CVPixelBufferGetWidth(pixelBuffer) == CVPixelBufferGetWidth(target) &&
-        CVPixelBufferGetHeight(pixelBuffer) == CVPixelBufferGetHeight(target) &&
+    // Orient, mirror, crop, and scale decoded NV12 or BGRA frames with vImage
+    // so local videos never take the VTCreateCGImage + CGContext path on every
+    // camera callback.
+    OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    CGFloat sourceDegrees = atan2(sourceTransform.b, sourceTransform.a) *
+        180.0 / M_PI;
+    CGFloat combinedDegrees = sourceDegrees + configuration.rotationDegrees;
+    NSInteger quarterTurns = (NSInteger)llround(combinedDegrees / 90.0);
+    BOOL rightAngleTransform = fabs(combinedDegrees - quarterTurns * 90.0) < 0.01;
+    BOOL sourceMirrored = sourceTransform.a * sourceTransform.d -
+        sourceTransform.b * sourceTransform.c < 0;
+    BOOL mirror = sourceMirrored != configuration.mirrorHorizontally;
+    if ((sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+         sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+         sourceFormat == kCVPixelFormatType_32BGRA) &&
+        rightAngleTransform &&
         CVPixelBufferGetPixelFormatType(target) == kCVPixelFormatType_32BGRA &&
         [self preparePoolForWidth:CVPixelBufferGetWidth(target)
                            height:CVPixelBufferGetHeight(target)]) {
@@ -130,7 +138,13 @@
         if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
                                                _pixelBufferPool,
                                                &output) == kCVReturnSuccess) {
-            BOOL converted = VCAMCopyNV12PixelBufferToBGRA(pixelBuffer, output);
+            BOOL converted = sourceFormat == kCVPixelFormatType_32BGRA
+                ? VCAMRenderBGRAPixelBufferToBGRA(
+                    pixelBuffer, output, (int)(quarterTurns * 90), mirror,
+                    (int)configuration.contentMode)
+                : VCAMRenderNV12PixelBufferToBGRA(
+                    pixelBuffer, output, (int)(quarterTurns * 90), mirror,
+                    (int)configuration.contentMode);
             if (converted) {
                 CMSampleBufferRef sample =
                     [self copySampleWrappingPixelBuffer:output

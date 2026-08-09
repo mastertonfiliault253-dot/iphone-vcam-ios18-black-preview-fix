@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FFMPEG_VERSION="7.1.1"
+FFMPEG_VERSION="${VCAM_FFMPEG_VERSION:-7.1.1}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_ROOT="$PROJECT_ROOT/vendor/ffmpeg"
+OUTPUT_ROOT="${VCAM_FFMPEG_OUTPUT_ROOT:-$PROJECT_ROOT/vendor/ffmpeg}"
 WORK_ROOT="${RUNNER_TEMP:-/tmp}/vcam-ffmpeg-linux-$FFMPEG_VERSION"
 THEOS_ROOT="${THEOS:-/opt/theos}"
 SDK_PATH="${VCAM_IOS_SDK:-$THEOS_ROOT/sdks/iPhoneOS16.5.sdk}"
@@ -14,7 +14,7 @@ if [[ -f "$OUTPUT_ROOT/lib/libavformat.a" && -f "$OUTPUT_ROOT/include/libavforma
   exit 0
 fi
 
-for required in clang clang++ ar ranlib lipo; do
+for required in clang clang++ llvm-ar llvm-ranlib lipo; do
   if [[ ! -x "$TOOLCHAIN_BIN/$required" ]]; then
     echo "Missing iOS toolchain executable: $TOOLCHAIN_BIN/$required" >&2
     exit 1
@@ -55,8 +55,8 @@ build_slice() {
     --enable-cross-compile \
     --cc="$TOOLCHAIN_BIN/clang" \
     --cxx="$TOOLCHAIN_BIN/clang++" \
-    --ar="$TOOLCHAIN_BIN/ar" \
-    --ranlib="$TOOLCHAIN_BIN/ranlib" \
+    --ar="$TOOLCHAIN_BIN/llvm-ar" \
+    --ranlib="$TOOLCHAIN_BIN/llvm-ranlib" \
     --nm="$TOOLCHAIN_BIN/nm" \
     --strip="$TOOLCHAIN_BIN/strip" \
     --sysroot="$SDK_PATH" \
@@ -70,7 +70,6 @@ build_slice() {
     --disable-debug \
     --disable-avdevice \
     --disable-avfilter \
-    --disable-postproc \
     --disable-swresample \
     --disable-swscale \
     --disable-everything \
@@ -78,8 +77,9 @@ build_slice() {
     --enable-avcodec \
     --enable-avutil \
     --enable-network \
-    --enable-protocol=file,tcp,udp \
-    --enable-demuxer=mov,rtsp,rtp,sdp \
+    --enable-securetransport \
+    --enable-protocol=file,tcp,udp,http,https,tls,crypto \
+    --enable-demuxer=mov,rtsp,rtp,sdp,hls,mpegts \
     --enable-decoder=h264,hevc \
     --enable-parser=h264,hevc \
     --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \

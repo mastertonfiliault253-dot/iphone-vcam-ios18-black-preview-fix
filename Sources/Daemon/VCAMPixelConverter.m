@@ -23,6 +23,8 @@ static const vImage_YpCbCrToARGBMatrix VCAMITU601Matrix = {
 static __thread uint8_t *VCAMThreadScratch;
 static __thread size_t VCAMThreadScratchWidth;
 static __thread size_t VCAMThreadScratchHeight;
+static __thread uint8_t *VCAMThreadTransformScratch;
+static __thread size_t VCAMThreadTransformScratchSize;
 
 static uint8_t *VCAMConverterScratchBuffer(size_t width, size_t height) {
     size_t required = width * height * 4;
@@ -42,6 +44,18 @@ static uint8_t *VCAMConverterScratchBuffer(size_t width, size_t height) {
         }
     }
     return VCAMThreadScratch;
+}
+
+static uint8_t *VCAMTransformScratchBuffer(size_t required) {
+    if (required == 0 || required > 512ULL * 1024 * 1024) return NULL;
+    if (VCAMThreadTransformScratch == NULL ||
+        VCAMThreadTransformScratchSize < required) {
+        free(VCAMThreadTransformScratch);
+        VCAMThreadTransformScratch = malloc(required);
+        VCAMThreadTransformScratchSize =
+            VCAMThreadTransformScratch == NULL ? 0 : required;
+    }
+    return VCAMThreadTransformScratch;
 }
 
 static BOOL VCAMRowBytesAligned(size_t rowBytes) {
@@ -473,4 +487,247 @@ BOOL VCAMCopyNV12PixelBufferToBGRA(CVPixelBufferRef source,
     CVPixelBufferUnlockBaseAddress(destination, 0);
     CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
     return converted;
+}
+
+static BOOL VCAMRenderBGRABuffer(vImage_Buffer initial,
+                                 CVPixelBufferRef destination,
+                                 int turns,
+                                 BOOL mirrorHorizontally,
+                                 int contentMode,
+                                 uint8_t *scratchOne,
+                                 uint8_t *scratchTwo) {
+    size_t destinationWidth = CVPixelBufferGetWidth(destination);
+    size_t destinationHeight = CVPixelBufferGetHeight(destination);
+    size_t orientedWidth = (turns & 1) ? initial.height : initial.width;
+    size_t orientedHeight = (turns & 1) ? initial.width : initial.height;
+
+    // The common portrait-video case is exactly one right-angle rotation.
+    // Write it straight into the camera buffer: no scratch, scale, or copy.
+    if (!mirrorHorizontally && orientedWidth == destinationWidth &&
+        orientedHeight == destinationHeight) {
+        if (CVPixelBufferLockBaseAddress(destination, 0) != kCVReturnSuccess) {
+            return NO;
+        }
+        vImage_Buffer output = {
+            .data = CVPixelBufferGetBaseAddress(destination),
+            .height = destinationHeight,
+            .width = destinationWidth,
+            .rowBytes = CVPixelBufferGetBytesPerRow(destination),
+        };
+        vImage_Error error = kvImageNoError;
+        if (turns == 0) {
+            size_t copyBytes = initial.width * 4;
+            for (size_t row = 0; row < initial.height; row++) {
+                memcpy((uint8_t *)output.data + row * output.rowBytes,
+                       (const uint8_t *)initial.data + row * initial.rowBytes,
+                       copyBytes);
+            }
+        } else {
+            uint8_t background[4] = {0, 0, 0, 255};
+            error = vImageRotate90_ARGB8888(&initial, &output,
+                                            (uint8_t)turns, background,
+                                            kvImageNoFlags);
+        }
+        CVPixelBufferUnlockBaseAddress(destination, 0);
+        return error == kvImageNoError;
+    }
+
+    vImage_Buffer oriented = initial;
+    if (turns != 0) {
+        uint8_t *rotationBytes = initial.data == scratchOne
+            ? scratchTwo : scratchOne;
+        if (rotationBytes == NULL) return NO;
+        vImage_Buffer rotated = {
+            .data = rotationBytes,
+            .height = orientedHeight,
+            .width = orientedWidth,
+            .rowBytes = orientedWidth * 4,
+        };
+        uint8_t background[4] = {0, 0, 0, 255};
+        if (vImageRotate90_ARGB8888(&initial, &rotated, (uint8_t)turns,
+                                    background, kvImageNoFlags) !=
+            kvImageNoError) {
+            return NO;
+        }
+        oriented = rotated;
+    }
+    if (mirrorHorizontally) {
+        uint8_t *reflectionBytes = oriented.data == scratchOne
+            ? scratchTwo : scratchOne;
+        if (reflectionBytes == NULL) return NO;
+        vImage_Buffer reflected = {
+            .data = reflectionBytes,
+            .height = orientedHeight,
+            .width = orientedWidth,
+            .rowBytes = orientedWidth * 4,
+        };
+        vImage_Error reflectionError = (turns & 1)
+            ? vImageVerticalReflect_ARGB8888(&oriented, &reflected,
+                                             kvImageNoFlags)
+            : vImageHorizontalReflect_ARGB8888(&oriented, &reflected,
+                                               kvImageNoFlags);
+        if (reflectionError != kvImageNoError) return NO;
+        oriented = reflected;
+    }
+
+    if (CVPixelBufferLockBaseAddress(destination, 0) != kCVReturnSuccess) {
+        return NO;
+    }
+    uint8_t *destinationBytes =
+        (uint8_t *)CVPixelBufferGetBaseAddress(destination);
+    size_t destinationStride = CVPixelBufferGetBytesPerRow(destination);
+    vImage_Buffer output = {
+        .data = destinationBytes,
+        .height = destinationHeight,
+        .width = destinationWidth,
+        .rowBytes = destinationStride,
+    };
+    vImage_Buffer input = oriented;
+    if (contentMode == 1) {
+        double sourceAspect = (double)orientedWidth / (double)orientedHeight;
+        double destinationAspect =
+            (double)destinationWidth / (double)destinationHeight;
+        if (sourceAspect > destinationAspect) {
+            size_t cropWidth = MAX((size_t)1,
+                (size_t)llround((double)orientedHeight * destinationAspect));
+            cropWidth = MIN(cropWidth, orientedWidth);
+            input.data = (uint8_t *)input.data +
+                ((orientedWidth - cropWidth) / 2) * 4;
+            input.width = cropWidth;
+        } else if (sourceAspect < destinationAspect) {
+            size_t cropHeight = MAX((size_t)1,
+                (size_t)llround((double)orientedWidth / destinationAspect));
+            cropHeight = MIN(cropHeight, orientedHeight);
+            input.data = (uint8_t *)input.data +
+                ((orientedHeight - cropHeight) / 2) * input.rowBytes;
+            input.height = cropHeight;
+        }
+    } else if (contentMode == 0) {
+        memset(destinationBytes, 0, destinationStride * destinationHeight);
+        double scale = MIN((double)destinationWidth / (double)orientedWidth,
+                           (double)destinationHeight / (double)orientedHeight);
+        size_t fittedWidth = MAX((size_t)1,
+            MIN(destinationWidth, (size_t)llround(orientedWidth * scale)));
+        size_t fittedHeight = MAX((size_t)1,
+            MIN(destinationHeight, (size_t)llround(orientedHeight * scale)));
+        output.data = destinationBytes +
+            ((destinationHeight - fittedHeight) / 2) * destinationStride +
+            ((destinationWidth - fittedWidth) / 2) * 4;
+        output.width = fittedWidth;
+        output.height = fittedHeight;
+    }
+    vImage_Error scaleError = kvImageNoError;
+    if (input.width == output.width && input.height == output.height) {
+        size_t copyBytes = input.width * 4;
+        for (size_t row = 0; row < input.height; row++) {
+            memcpy((uint8_t *)output.data + row * output.rowBytes,
+                   (const uint8_t *)input.data + row * input.rowBytes,
+                   copyBytes);
+        }
+    } else {
+        scaleError = vImageScale_ARGB8888(&input, &output, NULL,
+                                          kvImageNoFlags);
+    }
+    CVPixelBufferUnlockBaseAddress(destination, 0);
+    return scaleError == kvImageNoError;
+}
+
+BOOL VCAMRenderBGRAPixelBufferToBGRA(CVPixelBufferRef source,
+                                     CVPixelBufferRef destination,
+                                     int rotationDegrees,
+                                     BOOL mirrorHorizontally,
+                                     int contentMode) {
+    if (source == NULL || destination == NULL || source == destination ||
+        CVPixelBufferGetPixelFormatType(source) != kCVPixelFormatType_32BGRA ||
+        CVPixelBufferGetPixelFormatType(destination) !=
+            kCVPixelFormatType_32BGRA ||
+        rotationDegrees % 90 != 0 || contentMode < 0 || contentMode > 2) {
+        return NO;
+    }
+    size_t sourceWidth = CVPixelBufferGetWidth(source);
+    size_t sourceHeight = CVPixelBufferGetHeight(source);
+    if (sourceWidth == 0 || sourceHeight == 0) return NO;
+    size_t byteCount = sourceWidth * sourceHeight * 4;
+    uint8_t *scratchOne = VCAMConverterScratchBuffer(sourceWidth, sourceHeight);
+    uint8_t *scratchTwo = VCAMTransformScratchBuffer(byteCount);
+    if (scratchOne == NULL || scratchTwo == NULL) return NO;
+    if (CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly) !=
+        kCVReturnSuccess) {
+        return NO;
+    }
+    vImage_Buffer initial = {
+        .data = CVPixelBufferGetBaseAddress(source),
+        .height = sourceHeight,
+        .width = sourceWidth,
+        .rowBytes = CVPixelBufferGetBytesPerRow(source),
+    };
+    int turns = ((rotationDegrees / 90) % 4 + 4) % 4;
+    BOOL rendered = VCAMRenderBGRABuffer(initial, destination, turns,
+                                         mirrorHorizontally, contentMode,
+                                         scratchOne, scratchTwo);
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    return rendered;
+}
+
+BOOL VCAMRenderNV12PixelBufferToBGRA(CVPixelBufferRef source,
+                                     CVPixelBufferRef destination,
+                                     int rotationDegrees,
+                                     BOOL mirrorHorizontally,
+                                     int contentMode) {
+    if (source == NULL || destination == NULL ||
+        (CVPixelBufferGetPixelFormatType(source) !=
+             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+         CVPixelBufferGetPixelFormatType(source) !=
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) ||
+        CVPixelBufferGetPixelFormatType(destination) !=
+             kCVPixelFormatType_32BGRA ||
+        !CVPixelBufferIsPlanar(source) ||
+        CVPixelBufferGetPlaneCount(source) != 2) {
+        return NO;
+    }
+    int turns = ((rotationDegrees / 90) % 4 + 4) % 4;
+    if (rotationDegrees % 90 != 0 || contentMode < 0 || contentMode > 2) {
+        return NO;
+    }
+    size_t sourceWidth = CVPixelBufferGetWidth(source);
+    size_t sourceHeight = CVPixelBufferGetHeight(source);
+    size_t destinationWidth = CVPixelBufferGetWidth(destination);
+    size_t destinationHeight = CVPixelBufferGetHeight(destination);
+    if (sourceWidth == 0 || sourceHeight == 0 || destinationWidth == 0 ||
+        destinationHeight == 0 || (sourceWidth & 1) != 0 ||
+        (sourceHeight & 1) != 0) {
+        return NO;
+    }
+    size_t byteCount = sourceWidth * sourceHeight * 4;
+    uint8_t *convertedBytes = VCAMConverterScratchBuffer(sourceWidth,
+                                                          sourceHeight);
+    uint8_t *transformedBytes = VCAMTransformScratchBuffer(byteCount);
+    if (convertedBytes == NULL || transformedBytes == NULL) return NO;
+
+    if (CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly) !=
+            kCVReturnSuccess) {
+        return NO;
+    }
+    BOOL fullRange = CVPixelBufferGetPixelFormatType(source) ==
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+    BOOL converted = VCAMConvertYUVToBGRA(
+        YES, fullRange,
+        (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0),
+        CVPixelBufferGetBytesPerRowOfPlane(source, 0),
+        (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1),
+        CVPixelBufferGetBytesPerRowOfPlane(source, 1),
+        NULL, 0, sourceWidth, sourceHeight,
+        convertedBytes, sourceWidth * 4);
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    if (!converted) return NO;
+
+    vImage_Buffer initial = {
+        .data = convertedBytes,
+        .height = sourceHeight,
+        .width = sourceWidth,
+        .rowBytes = sourceWidth * 4,
+    };
+    return VCAMRenderBGRABuffer(initial, destination, turns,
+                                mirrorHorizontally, contentMode,
+                                convertedBytes, transformedBytes);
 }

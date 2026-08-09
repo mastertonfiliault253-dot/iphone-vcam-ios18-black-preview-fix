@@ -1,4 +1,5 @@
 #import "../Core/VCAMConfiguration.h"
+#import "../SpringBoard/VCAMSpringBoardMediaBridge.h"
 #import "../UI/VCAMMediaPickerController.h"
 
 #include <fcntl.h>
@@ -21,6 +22,7 @@ static void VCAMWriteClientProof(void) {
         [VCAMConfiguration startWriteBroker];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            [[VCAMSpringBoardMediaBridge sharedBridge] start];
             [[VCAMMediaPickerController sharedController] startControlUI];
         });
     }

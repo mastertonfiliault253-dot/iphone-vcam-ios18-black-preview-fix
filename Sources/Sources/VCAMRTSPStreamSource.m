@@ -12,6 +12,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/mem.h>
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int VCAMCaptureFFmpegHardwareLogs;
@@ -85,6 +86,27 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
     }
     return AV_PIX_FMT_NONE;
+}
+
+static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
+    const AVCodecParameters *source, const AVPacket *packet) {
+    if (source == NULL || packet == NULL || packet->data == NULL ||
+        packet->size <= 0) return NULL;
+    AVCodecParameters *copy = avcodec_parameters_alloc();
+    if (copy == NULL) return NULL;
+    if (avcodec_parameters_copy(copy, source) < 0) {
+        avcodec_parameters_free(&copy);
+        return NULL;
+    }
+    av_freep(&copy->extradata);
+    copy->extradata = av_mallocz((size_t)packet->size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (copy->extradata == NULL) {
+        avcodec_parameters_free(&copy);
+        return NULL;
+    }
+    memcpy(copy->extradata, packet->data, (size_t)packet->size);
+    copy->extradata_size = packet->size;
+    return copy;
 }
 
 @interface VCAMRTSPStreamSource () {
@@ -365,6 +387,7 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     CMTime timelineOrigin = kCMTimeInvalid;
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
+    AVPacket *packet = NULL;
     NSString *urlString = self.streamURL.absoluteString;
     [self configureOpenOptions:&options];
     int openResult = avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options);
@@ -384,25 +407,33 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
     videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (videoStream < 0) goto cleanup;
     stream = formatContext->streams[videoStream];
-    decoder = [[VCAMHardwareVideoDecoder alloc]
-        initWithCodecParameters:stream->codecpar];
-    if (decoder == nil || ![decoder start:&decoderError]) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ direct-VT unavailable codec=%s extradata=%d error=%@", self.streamName,
-            avcodec_get_name(stream->codecpar->codec_id),
-            stream->codecpar->extradata_size,
-            decoderError.localizedDescription ?: @"(init failed)"]];
-        goto cleanup;
+    if (stream->codecpar->extradata_size > 0) {
+        decoder = [[VCAMHardwareVideoDecoder alloc]
+            initWithCodecParameters:stream->codecpar];
+        if (decoder == nil || ![decoder start:&decoderError]) {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ direct-VT unavailable codec=%s extradata=%d error=%@", self.streamName,
+                avcodec_get_name(stream->codecpar->codec_id),
+                stream->codecpar->extradata_size,
+                decoderError.localizedDescription ?: @"(init failed)"]];
+            goto cleanup;
+        }
     }
-    AVPacket *packet = av_packet_alloc();
+    packet = av_packet_alloc();
     if (packet == NULL) {
         [decoder stop];
         goto cleanup;
     }
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"%@ hardware session codec=%s source=%dx%d", self.streamName,
-        avcodec_get_name(stream->codecpar->codec_id),
-        stream->codecpar->width, stream->codecpar->height]];
+    if (decoder != nil) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ hardware session codec=%s source=%dx%d", self.streamName,
+            avcodec_get_name(stream->codecpar->codec_id),
+            stream->codecpar->width, stream->codecpar->height]];
+    } else {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ direct-VT waiting for in-band parameter sets codec=%s", self.streamName,
+            avcodec_get_name(stream->codecpar->codec_id)]];
+    }
     // Opening the RTSP input and probing stream info can take several seconds.
     // Start the first-frame budget only after VideoToolbox is ready, otherwise
     // a mid-GOP P frame can consume the entire budget before the next IDR.
@@ -427,6 +458,29 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 continue;
             }
             if (isKeyFrame && !receivedKeyPacket) {
+                if (decoder == nil) {
+                    AVCodecParameters *inBandParameters =
+                        VCAMCopyCodecParametersWithPacketExtradata(stream->codecpar, packet);
+                    decoder = [[VCAMHardwareVideoDecoder alloc]
+                        initWithCodecParameters:inBandParameters];
+                    avcodec_parameters_free(&inBandParameters);
+                    if (decoder == nil || ![decoder start:&decoderError]) {
+                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                            @"%@ direct-VT in-band parameter setup failed codec=%s packet=%d error=%@",
+                            self.streamName, avcodec_get_name(stream->codecpar->codec_id),
+                            packet->size,
+                            decoderError.localizedDescription ?: @"(init failed)"]];
+                        av_packet_unref(packet);
+                        break;
+                    }
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ direct-VT using in-band parameter sets packet=%d", self.streamName,
+                        packet->size]];
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ hardware session codec=%s source=%dx%d", self.streamName,
+                        avcodec_get_name(stream->codecpar->codec_id),
+                        stream->codecpar->width, stream->codecpar->height]];
+                }
                 receivedKeyPacket = YES;
                 keyPacketAt = CFAbsoluteTimeGetCurrent();
                 timelineOrigin = pts;
@@ -471,10 +525,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         CVPixelBufferRelease(output);
         producedFrame = YES;
     }
-    av_packet_free(&packet);
     [decoder stop];
 cleanup:
     av_dict_free(&options);
+    av_packet_free(&packet);
     avformat_close_input(&formatContext);
     return producedFrame;
 }

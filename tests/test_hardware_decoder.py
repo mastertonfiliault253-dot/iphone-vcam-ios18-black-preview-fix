@@ -44,6 +44,17 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("annexB conversion failed", decoder)
         self.assertIn("VCAMIsParameterSetNAL", decoder)
 
+    def test_length_prefixed_slice_without_parameter_sets_keeps_original_length(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+
+        passthrough = decoder.split("if (!sawParameterSet && !annexB)", 1)[1].split(
+            "if (nalCount == 0", 1
+        )[0]
+        self.assertIn("*outLength = length;", passthrough)
+        self.assertIn("return NULL;", passthrough)
+
     def test_annex_b_parser_excludes_trailing_zero_bytes_from_nals(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
@@ -76,7 +87,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
-    def test_rtsp_direct_decoder_waits_for_an_idr_and_marks_sync_samples(self) -> None:
+    def test_rtsp_direct_decoder_waits_for_an_idr_without_custom_sample_attachments(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
@@ -87,9 +98,8 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("isKeyFrame:(BOOL)isKeyFrame", header)
-        self.assertIn("kCMSampleAttachmentKey_NotSync", decoder)
-        self.assertIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
-        self.assertIn("isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue", decoder)
+        self.assertNotIn("kCMSampleAttachmentKey_NotSync", decoder)
+        self.assertNotIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
         self.assertIn("BOOL receivedKeyPacket = NO", rtsp)
         self.assertIn("packet->flags & AV_PKT_FLAG_KEY", rtsp)
         self.assertIn("if (!receivedKeyPacket && !isKeyFrame)", rtsp)
@@ -164,14 +174,49 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.h").exists())
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
+    def test_hls_direct_vt_bootstraps_in_band_parameter_sets(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VCAMCopyCodecParametersWithPacketExtradata", stream)
+        self.assertIn("stream->codecpar->extradata_size > 0", stream)
+        self.assertIn("AV_INPUT_BUFFER_PADDING_SIZE", stream)
+        self.assertIn("direct-VT using in-band parameter sets", stream)
+
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
+        linux_build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(
+            encoding="utf-8"
+        )
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
         self.assertIn("--enable-securetransport", build)
         self.assertIn("--enable-protocol=file,tcp,udp,http,https,tls,crypto", build)
-        self.assertIn("--enable-demuxer=mov,rtsp,rtp,sdp,hls,mpegts", build)
+        for script in (build, linux_build):
+            self.assertIn("--enable-protocol=file,tcp,udp,http", script)
+            self.assertIn("--enable-demuxer=mov,rtsp,rtp,sdp,hls,mpegts", script)
         self.assertIn("Security", makefile)
+
+    def test_ffmpeg_linux_build_uses_self_contained_llvm_archive_tools(self) -> None:
+        build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("llvm-ar llvm-ranlib", build)
+        self.assertIn('--ar="$TOOLCHAIN_BIN/llvm-ar"', build)
+        self.assertIn('--ranlib="$TOOLCHAIN_BIN/llvm-ranlib"', build)
+
+    def test_ffmpeg_linux_build_allows_isolated_version_probes(self) -> None:
+        build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('FFMPEG_VERSION="${VCAM_FFMPEG_VERSION:-7.1.1}"', build)
+        self.assertIn(
+            'OUTPUT_ROOT="${VCAM_FFMPEG_OUTPUT_ROOT:-$PROJECT_ROOT/vendor/ffmpeg}"',
+            build,
+        )
 
     def test_transient_debug_diagnostics_are_not_shipped(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(

@@ -117,7 +117,10 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
         }
     }
     if (strippedAny != NULL) *strippedAny = sawParameterSet;
-    if (!sawParameterSet && !annexB) return NULL;
+    if (!sawParameterSet && !annexB) {
+        *outLength = length;
+        return NULL;
+    }
     if (nalCount == 0 || total == 0) return NULL;
     uint8_t *output = malloc(total);
     if (output == NULL) return NULL;
@@ -806,15 +809,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     if (status != noErr || sampleBuffer == NULL) {
         free(filtered);
         return NO;
-    }
-    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
-    if (attachments != NULL && CFArrayGetCount(attachments) > 0) {
-        CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(
-            attachments, 0);
-        CFDictionarySetValue(attachment, kCMSampleAttachmentKey_NotSync,
-                             isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
-        CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DependsOnOthers,
-                             isKeyFrame ? kCFBooleanFalse : kCFBooleanTrue);
     }
     static volatile int packetDiagnostics = 0;
     int packetDiagnostic = __sync_add_and_fetch(&packetDiagnostics, 1);
