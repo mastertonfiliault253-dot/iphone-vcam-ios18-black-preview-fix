@@ -61,14 +61,29 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
         self.assertIn("VCAMSharedFrameSlotCount", shared)
-        self.assertIn('kCVPixelBufferIOSurfacePropertiesKey', shared)
+        self.assertIn("IOSurfaceCreate", shared)
+        self.assertIn("CVPixelBufferCreateWithIOSurface", shared)
         self.assertIn('@"IOSurfaceIsGlobal"', shared)
         self.assertIn("consumerUseCount", shared)
+        self.assertIn("consumerReady", shared)
         self.assertIn("atomic_fetch_add_explicit(useCounter", shared)
         self.assertIn("IOSurfaceIncrementUseCount", shared)
         self.assertIn("IOSurfaceDecrementUseCount", shared)
         self.assertIn("VCAMSharedSurfaceReaderCopyLatest", consumer)
         self.assertIn("VCAMSharedFrameReaderCopyLatest", consumer)
+
+    def test_iosurface_bootstrap_keeps_mmap_live_until_consumer_ready(self) -> None:
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMSharedSurfaceWriterHasConsumer", bridge)
+        self.assertIn("VCAMSharedFrameWriterPublish(self.writer, destination)", bridge)
+        self.assertIn("iosurface+bootstrap-mmap", bridge)
+        self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, true)", shared)
+        self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
 
 
 if __name__ == "__main__":

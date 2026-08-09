@@ -55,9 +55,11 @@ when enabled, without pre-decoding the entire asset into memory.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
   rotation, mirroring, fit/fill, scale and NV12-to-BGRA conversion in one
-  Metal-backed Core Image render. The current compatibility transport remains
-  the three-slot shared BGRA mmap; the retained daemon decoder can be selected
-  for rollback by creating `/var/tmp/vcam-hls-legacy-vcamd.enable`.
+  Metal-backed Core Image render directly into a three-slot IOSurface ring.
+  Until mediaserverd confirms cross-process IOSurface lookup, SpringBoard also
+  publishes the live three-slot BGRA mmap fallback. The retained daemon decoder
+  can be selected for rollback by creating
+  `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries

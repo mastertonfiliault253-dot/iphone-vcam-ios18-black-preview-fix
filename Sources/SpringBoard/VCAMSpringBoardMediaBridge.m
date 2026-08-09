@@ -267,6 +267,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.decodedFrames += 1;
     BOOL surfaceTransport = self.surfaceWriter != NULL;
+    BOOL surfaceConsumerReady = surfaceTransport &&
+        VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
     CVPixelBufferRef destination = surfaceTransport
         ? VCAMSharedSurfaceWriterCopyNextPixelBuffer(self.surfaceWriter)
         : NULL;
@@ -282,9 +284,16 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
             [self.context render:image toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
-            published = surfaceTransport
-                ? VCAMSharedSurfaceWriterPublish(self.surfaceWriter, destination)
-                : VCAMSharedFrameWriterPublish(self.writer, destination);
+            if (surfaceTransport) {
+                BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
+                    self.surfaceWriter, destination);
+                // Keep the compatibility path live until mediaserverd proves
+                // that this OS/process pair can look up the global surface.
+                published = surfacePublished && (surfaceConsumerReady ||
+                    VCAMSharedFrameWriterPublish(self.writer, destination));
+            } else {
+                published = VCAMSharedFrameWriterPublish(self.writer, destination);
+            }
         }
         CVPixelBufferRelease(destination);
     }
@@ -300,7 +309,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f",
             (unsigned long)self.decodedFrames, (unsigned long)self.publishedFrames,
             (unsigned long)self.emptyCopies, (unsigned long)self.publishFailures,
-            surfaceTransport ? @"iosurface" : @"mmap",
+            surfaceTransport
+                ? (surfaceConsumerReady ? @"iosurface" : @"iosurface+bootstrap-mmap")
+                : @"mmap",
             (long)self.player.currentItem.status, self.player.rate]];
     }
 }
@@ -315,7 +326,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         @"lastFrameTimestampNanoseconds": @(self.lastFrameTimestampNanoseconds),
         @"playerStatus": @(self.player.currentItem.status),
         @"playerRate": @(self.player.rate),
-        @"transport": self.surfaceWriter != NULL ? @"iosurface" : @"mmap",
+        @"transport": self.surfaceWriter != NULL
+            ? (VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter)
+                ? @"iosurface" : @"iosurface+bootstrap-mmap")
+            : @"mmap",
         @"error": self.lastError ?: self.player.currentItem.error.localizedDescription ?: @"",
     };
 }

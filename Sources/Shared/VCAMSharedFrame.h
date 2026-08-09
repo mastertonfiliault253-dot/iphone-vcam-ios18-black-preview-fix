@@ -17,6 +17,16 @@ typedef struct VCAMSharedFrameReader VCAMSharedFrameReader;
 typedef struct VCAMSharedSurfaceWriter VCAMSharedSurfaceWriter;
 typedef struct VCAMSharedSurfaceReader VCAMSharedSurfaceReader;
 
+typedef NS_ENUM(int32_t, VCAMSharedSurfaceReaderFailure) {
+    VCAMSharedSurfaceReaderFailureNone = 0,
+    VCAMSharedSurfaceReaderFailureOpen = 1,
+    VCAMSharedSurfaceReaderFailureHeader = 2,
+    VCAMSharedSurfaceReaderFailureStale = 3,
+    VCAMSharedSurfaceReaderFailureLookup = 4,
+    VCAMSharedSurfaceReaderFailurePixelBuffer = 5,
+    VCAMSharedSurfaceReaderFailureChanged = 6,
+};
+
 typedef struct {
     uint64_t sequence;
     uint64_t monotonicTimestampNanoseconds;
@@ -66,6 +76,7 @@ CVPixelBufferRef _Nullable VCAMSharedSurfaceWriterCopyNextPixelBuffer(
     VCAMSharedSurfaceWriter *writer) CF_RETURNS_RETAINED;
 bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
                                     CVPixelBufferRef pixelBuffer);
+bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer);
 
 /// Zero-copy IOSurface consumer. Failure is expected when the platform blocks
 /// global IOSurface lookup; callers must retain the legacy mmap fallback.
@@ -74,6 +85,8 @@ void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *_Nullable reader);
 bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
                                        uint64_t maximumAgeNanoseconds,
                                        VCAMSharedSurfaceFrame *frame);
+VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure(
+    VCAMSharedSurfaceReader *reader);
 void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame);
 
 const char *VCAMSharedFrameFileSystemPath(void);

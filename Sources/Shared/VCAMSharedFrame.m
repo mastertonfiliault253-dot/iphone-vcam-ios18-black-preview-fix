@@ -15,6 +15,9 @@
 // CoreVideo but does not ship IOSurface framework headers. Keep the narrow
 // cross-process ABI local instead of copying the private framework header.
 extern uint32_t IOSurfaceGetID(IOSurfaceRef surface);
+extern IOSurfaceRef _Nullable IOSurfaceCreate(CFDictionaryRef properties)
+    CF_RETURNS_RETAINED;
+extern size_t IOSurfaceAlignProperty(CFStringRef property, size_t value);
 extern IOSurfaceRef _Nullable IOSurfaceLookup(uint32_t surfaceID)
     CF_RETURNS_RETAINED;
 extern void IOSurfaceIncrementUseCount(IOSurfaceRef surface);
@@ -24,7 +27,7 @@ static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
 static const uint32_t VCAMSharedFrameVersion = 2;
 static const char *const VCAMSharedFramePath = "/var/tmp/com.codex.vcam.frames";
 static const uint32_t VCAMSharedSurfaceMagic = 0x56435346;
-static const uint32_t VCAMSharedSurfaceVersion = 2;
+static const uint32_t VCAMSharedSurfaceVersion = 3;
 static const char *const VCAMSharedSurfacePath = "/var/tmp/com.codex.vcam.surfaces";
 static const size_t VCAMSharedFrameBytesPerRow = VCAMSharedFrameWidth * 4;
 static const size_t VCAMSharedFrameSlotBytes = VCAMSharedFrameBytesPerRow * VCAMSharedFrameHeight;
@@ -77,6 +80,7 @@ typedef struct {
     _Atomic(uint64_t) publishedTimestampNanoseconds;
     _Atomic(uint64_t) slotSequence[VCAMSharedFrameSlotCount];
     _Atomic(uint32_t) consumerUseCount[VCAMSharedFrameSlotCount];
+    _Atomic(uint32_t) consumerReady;
 } VCAMSharedSurfaceHeader;
 
 struct VCAMSharedSurfaceWriter {
@@ -93,6 +97,7 @@ struct VCAMSharedSurfaceReader {
     int descriptor;
     void *mapping;
     const VCAMSharedSurfaceHeader *header;
+    VCAMSharedSurfaceReaderFailure lastFailure;
 };
 
 static size_t VCAMSharedFrameMappedBytes(void) {
@@ -421,20 +426,30 @@ static bool VCAMSharedSurfaceHeaderIsValid(const VCAMSharedSurfaceHeader *header
 }
 
 static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(void) {
+    size_t bytesPerRow = IOSurfaceAlignProperty(
+        CFSTR("IOSurfaceBytesPerRow"), VCAMSharedFrameWidth * 4);
+    size_t allocationSize = IOSurfaceAlignProperty(
+        CFSTR("IOSurfaceAllocSize"), bytesPerRow * VCAMSharedFrameHeight);
+    NSDictionary *surfaceProperties = @{
+        @"IOSurfaceWidth": @(VCAMSharedFrameWidth),
+        @"IOSurfaceHeight": @(VCAMSharedFrameHeight),
+        @"IOSurfaceBytesPerElement": @4,
+        @"IOSurfaceBytesPerRow": @(bytesPerRow),
+        @"IOSurfaceAllocSize": @(allocationSize),
+        @"IOSurfacePixelFormat": @(kCVPixelFormatType_32BGRA),
+        @"IOSurfaceIsGlobal": @YES,
+    };
+    IOSurfaceRef surface = IOSurfaceCreate(
+        (__bridge CFDictionaryRef)surfaceProperties);
+    if (surface == NULL) return NULL;
     CVPixelBufferRef pixelBuffer = NULL;
     NSDictionary *attributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
-        (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
         (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{
-            @"IOSurfaceIsGlobal": @YES,
-        },
     };
-    CVReturn status = CVPixelBufferCreate(
-        kCFAllocatorDefault, VCAMSharedFrameWidth, VCAMSharedFrameHeight,
-        kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)attributes,
+    CVReturn status = CVPixelBufferCreateWithIOSurface(
+        kCFAllocatorDefault, surface, (__bridge CFDictionaryRef)attributes,
         &pixelBuffer);
+    CFRelease(surface);
     return status == kCVReturnSuccess ? pixelBuffer : NULL;
 }
 
@@ -563,6 +578,13 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
     return true;
 }
 
+bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer) {
+    return writer != NULL && writer->header != NULL &&
+        VCAMSharedSurfaceHeaderIsValid(writer->header) &&
+        atomic_load_explicit(&writer->header->consumerReady,
+                             memory_order_acquire) != 0;
+}
+
 VCAMSharedSurfaceReader *VCAMSharedSurfaceReaderCreate(void) {
     VCAMSharedSurfaceReader *reader = calloc(1, sizeof(*reader));
     if (reader != NULL) reader->descriptor = -1;
@@ -586,11 +608,15 @@ static bool VCAMSharedSurfaceReaderEnsureMapped(VCAMSharedSurfaceReader *reader)
     }
     VCAMSharedSurfaceReaderUnmap(reader);
     reader->descriptor = open(VCAMSharedSurfacePath, O_RDWR);
-    if (reader->descriptor < 0) return false;
+    if (reader->descriptor < 0) {
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureOpen;
+        return false;
+    }
     struct stat metadata = {0};
     if (fstat(reader->descriptor, &metadata) != 0 ||
         metadata.st_size < (off_t)sizeof(VCAMSharedSurfaceHeader)) {
         VCAMSharedSurfaceReaderUnmap(reader);
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureHeader;
         return false;
     }
     reader->mapping = mmap(NULL, sizeof(VCAMSharedSurfaceHeader),
@@ -599,14 +625,24 @@ static bool VCAMSharedSurfaceReaderEnsureMapped(VCAMSharedSurfaceReader *reader)
     if (reader->mapping == MAP_FAILED) {
         reader->mapping = NULL;
         VCAMSharedSurfaceReaderUnmap(reader);
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureHeader;
         return false;
     }
     reader->header = reader->mapping;
     if (!VCAMSharedSurfaceHeaderIsValid(reader->header)) {
         VCAMSharedSurfaceReaderUnmap(reader);
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureHeader;
         return false;
     }
     return true;
+}
+
+static void VCAMSharedSurfaceReaderSetReady(VCAMSharedSurfaceReader *reader,
+                                             bool ready) {
+    if (reader == NULL || reader->header == NULL) return;
+    _Atomic(uint32_t) *consumerReady =
+        (_Atomic(uint32_t) *)&reader->header->consumerReady;
+    atomic_store_explicit(consumerReady, ready ? 1 : 0, memory_order_release);
 }
 
 void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *reader) {
@@ -632,13 +668,18 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
         (maximumAgeNanoseconds > 0 &&
          (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
         atomic_load_explicit(&reader->header->slotSequence[slot],
-                             memory_order_acquire) != sequence) return false;
+                             memory_order_acquire) != sequence) {
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureStale;
+        return false;
+    }
     _Atomic(uint32_t) *useCounter =
         (_Atomic(uint32_t) *)&reader->header->consumerUseCount[slot];
     atomic_fetch_add_explicit(useCounter, 1, memory_order_acq_rel);
     IOSurfaceRef surface = IOSurfaceLookup(reader->header->surfaceIDs[slot]);
     if (surface == NULL) {
         atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
+        VCAMSharedSurfaceReaderSetReady(reader, false);
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureLookup;
         return false;
     }
     IOSurfaceIncrementUseCount(surface);
@@ -659,8 +700,14 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
         IOSurfaceDecrementUseCount(surface);
         CFRelease(surface);
         atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
+        VCAMSharedSurfaceReaderSetReady(reader, false);
+        reader->lastFailure = status == kCVReturnSuccess
+            ? VCAMSharedSurfaceReaderFailureChanged
+            : VCAMSharedSurfaceReaderFailurePixelBuffer;
         return false;
     }
+    VCAMSharedSurfaceReaderSetReady(reader, true);
+    reader->lastFailure = VCAMSharedSurfaceReaderFailureNone;
     frame->pixelBuffer = pixelBuffer;
     frame->surface = surface;
     frame->useCounter = useCounter;
@@ -670,6 +717,12 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
     frame->metadata.height = VCAMSharedFrameHeight;
     frame->metadata.pixelFormat = kCVPixelFormatType_32BGRA;
     return true;
+}
+
+VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure(
+    VCAMSharedSurfaceReader *reader) {
+    return reader == NULL ? VCAMSharedSurfaceReaderFailureOpen
+                          : reader->lastFailure;
 }
 
 void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame) {

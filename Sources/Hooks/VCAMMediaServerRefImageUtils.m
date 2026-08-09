@@ -519,6 +519,21 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
                 VCAMRefLog(message);
             }
         } else {
+            static VCAMSharedSurfaceReaderFailure lastSurfaceFailure =
+                VCAMSharedSurfaceReaderFailureNone;
+            static int surfaceFailureLogs = 0;
+            VCAMSharedSurfaceReaderFailure failure =
+                VCAMSharedSurfaceReaderLastFailure(VCAMSurfaceReader);
+            if (failure != VCAMSharedSurfaceReaderFailureOpen &&
+                failure != VCAMSharedSurfaceReaderFailureStale &&
+                (failure != lastSurfaceFailure || surfaceFailureLogs < 3)) {
+                char message[128] = {0};
+                snprintf(message, sizeof(message),
+                         "shared IOSurface unavailable failure=%d", failure);
+                VCAMRefLog(message);
+                lastSurfaceFailure = failure;
+                surfaceFailureLogs += 1;
+            }
             if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
                                                    &scratch) != kCVReturnSuccess) {
                 if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(

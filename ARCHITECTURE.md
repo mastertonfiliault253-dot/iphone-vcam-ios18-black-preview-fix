@@ -24,7 +24,8 @@ size before publication. Audio is never replaced.
 The HLS bridge renders directly into a three-slot IOSurface ring. mediaserverd
 retains the selected surface while rendering so SpringBoard never overwrites an
 in-use slot. The previous three-slot BGRA mmap remains the automatic fallback
-when global IOSurface creation or cross-process lookup is unavailable. Creating
+when global IOSurface creation or cross-process lookup is unavailable; it stays
+live until mediaserverd completes the first successful lookup. Creating
 `/var/tmp/vcam-hls-legacy-vcamd.enable` disables the SpringBoard HLS bridge and
 restores the retained daemon HLS decoder for rollback.
 
