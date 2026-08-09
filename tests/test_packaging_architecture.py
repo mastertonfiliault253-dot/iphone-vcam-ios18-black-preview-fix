@@ -15,6 +15,14 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("firmware (>= 16.0)", control)
         self.assertIn("firmware (<< 16.6)", control)
 
+    def test_ci_rejects_arm64e_ui_without_objective_c_stub_sections(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('lipo "$springboard_client" -thin arm64e', workflow)
+        self.assertIn("sectname __objc_stubs", workflow)
+        self.assertIn("sectname __objc_intobj", workflow)
+
     def test_package_version_matches_runtime_build_tag(self) -> None:
         control = (ROOT / "control").read_text(encoding="utf-8")
         version = next(
@@ -26,6 +34,17 @@ class PackagingArchitectureTests(unittest.TestCase):
             ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
         ).read_text(encoding="utf-8")
         self.assertIn(f'com.codex.vcam/{version}', configuration)
+
+    def test_architecture_documents_ui_only_apps_and_fail_closed_capture(self) -> None:
+        architecture = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        injection = (ROOT / "docs" / "injection-target-architecture.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("hosts receive UI only", architecture)
+        self.assertIn("capture is fail-closed", architecture)
+        self.assertNotIn("fails open", architecture)
+        self.assertIn("Camera and the listed browser main processes", injection)
+        self.assertNotIn("There is no Camera, browser", injection)
 
     def test_manifest_describes_two_injections_and_two_isolated_daemons(self) -> None:
         manifest = json.loads((ROOT / "packaging" / "targets.json").read_text(encoding="utf-8"))
@@ -40,9 +59,20 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertFalse(targets["vcaminjectd"]["injected"])
         self.assertEqual(
             targets["vcaminjectd"]["allowedTargets"],
-            ["SpringBoard", "mediaserverd", "Camera", "MobileSafari",
-             "Google Chrome", "Microsoft Edge", "Firefox"],
+            ["SpringBoard", "mediaserverd"],
         )
+        self.assertEqual(
+            targets["VCAMSpringBoardClient"]["bundleIds"],
+            [
+                "com.apple.springboard",
+                "com.apple.camera",
+                "com.apple.mobilesafari",
+                "com.google.chrome.ios",
+                "com.microsoft.msedge",
+                "org.mozilla.ios.Firefox",
+            ],
+        )
+        self.assertIn("hls-ffmpeg-videotoolbox", targets["vcamd"]["sources"])
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
 
     def test_launchdaemon_runs_package_worker_from_rootless_prefix(self) -> None:

@@ -125,6 +125,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('av_dict_set(options, "rw_timeout", "3000000", 0)', stream)
         self.assertIn("if (self.usesRTSPTransport)", stream)
         self.assertIn('@"%@ hardware first-frame size=', stream)
+        self.assertNotIn('@"rtsp ', stream)
         self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertNotIn("VCAMHLSStreamSource", producer)

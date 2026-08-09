@@ -1,24 +1,23 @@
 # Architecture
 
-The external seam is `VCAMFramePipeline`. Capture hooks know only how to ask for
-a replacement video sample, audio sample, or photo auxiliary data. They do not
-know whether bytes came from a local asset or OBS.
+VCAM separates media production, camera replacement and control UI:
 
-`VCAMMediaSource` is an internal seam with three current adapters for four modes:
+- `vcamd` owns local image/video, OBS, RTSP and HLS decoding. It publishes the
+  latest 1080x1920 BGRA frame through a three-slot shared mmap.
+- `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
+  validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
+  client.
+- `VCAMSpringBoardClient` gives SpringBoard, Camera and the supported browser
+  main processes one foreground-owned white dot, control panel and preview. App
+  hosts receive UI only; they never hook or replace camera frames.
+- `vcaminjectd` repairs only the SpringBoard and `mediaserverd` mappings after
+  those exact processes restart. Normal tweak filtering loads application UI
+  clients.
 
-- `VCAMLocalMediaSource` owns AVAssetReader lifecycle and looping.
-- `VCAMOBSStreamSource` owns WebSocket reconnection and the latest network frame.
-- `VCAMRTSPStreamSource` owns FFmpeg RTSP/HLS demux and VideoToolbox decoding.
+`VCAMFrameRenderer` normalizes orientation, content mode, mirroring and target
+size before publication. Audio is never replaced.
 
-`VCAMFrameRenderer` is the format-normalization module. It hides pixel-buffer
-allocation, orientation, content mode, mirroring, timing and target size.
-
-`VCAMPhotoAuxiliaryData` owns depth, photo metadata and pre-paired Live Photo
-resources. This keeps optional photo behavior out of the real-time frame path.
-
-The desktop bridge captures OBS Virtual Camera and emits versioned packets. Its
-protocol codec is independent of OpenCV and covered by host tests.
-
-The implementation intentionally fails open. A source error returns `NULL` at
-the pipeline seam, and the hook forwards the original camera or microphone
-sample. This invariant is more important than keeping replacement active.
+Once virtual mode is enabled, capture is fail-closed: a missing, stale or
+unrenderable source may retain the last virtual frame, emit black or suppress a
+consumer sample, but it must never expose a real camera frame. Only an explicit
+restore request returns to the real camera.

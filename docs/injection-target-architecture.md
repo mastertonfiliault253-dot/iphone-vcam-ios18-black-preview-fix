@@ -7,12 +7,14 @@ The standard rootless package installs under `/var/jb` and contains exactly:
 | Target | Filter | Responsibility |
 | --- | --- | --- |
 | `VCAMMediaServerClient` | executable `mediaserverd` | Nonblocking read of a fresh shared frame and `BWNodeOutput` replacement |
-| `VCAMSpringBoardClient` | `com.apple.springboard` / `SpringBoard` | White dot, picker, configuration broker and preview |
-| `vcamd` | no injection; LaunchDaemon | Local image/video, OBS and RTSP decoding and latest-frame publication |
+| `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker; every filtered host gets only the white dot, panel and preview |
+| `vcamd` | no injection; LaunchDaemon | Local image/video, OBS, RTSP and HLS decoding and latest-frame publication |
 | `vcaminjectd` | no injection; root LaunchDaemon | Reinject only the two allowed clients after their exact process PID changes |
 
-There is no Camera, browser, WebKit or third-party App injection target. Audio
-is not replaced.
+Camera and the listed browser main processes receive the UI dylib only. That
+dylib contains no camera hook, decoder or network source; video replacement
+remains exclusively in `mediaserverd`. WebKit content processes are not
+targeted. Audio is not replaced.
 
 ## Frame path
 

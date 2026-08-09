@@ -52,8 +52,9 @@ when enabled, without pre-decoding the entire asset into memory.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
   it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
   where available, and a latest-only bounded software-conversion fallback.
-- HLS: enter an HTTP/HTTPS `.m3u8` URL. `vcamd` uses AVPlayer's native
-  hardware-backed decode path and publishes only the latest frame.
+- HLS: enter an HTTP/HTTPS `.m3u8` URL. `vcamd` uses the same bounded FFmpeg +
+  VideoToolbox path as RTSP, without RTSP transport options, and publishes only
+  the latest frame.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries
@@ -71,7 +72,9 @@ export THEOS=/path/to/theos
 On this Windows workspace, `scripts/build-rootless-wsl.sh` uses `/opt/theos` and
 stages an `iphoneos-arm64` package under `dist/wsl-rootless`. This local build is
 only a compile check; the installable artifact is produced by the private macOS
-CI workflow.
+CI workflow. The Linux clang does not emit Apple selector-specific Objective-C
+calls, so its arm64e UI slice lacks `__objc_stubs`/`__objc_intobj`; CI extracts
+that slice and rejects the package unless both sections are present.
 
 Host checks:
 

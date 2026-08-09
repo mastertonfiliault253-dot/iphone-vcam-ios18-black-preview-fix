@@ -178,8 +178,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 static dispatch_once_t conversionFailureToken;
                 dispatch_once(&conversionFailureToken, ^{
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp software conversion failed format=%d size=%dx%d",
-                        frame->format, frame->width, frame->height]];
+                        @"%@ software conversion failed format=%d size=%dx%d",
+                        self.streamName, frame->format, frame->width, frame->height]];
                 });
             }
         }
@@ -224,15 +224,15 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         }
         if (!self.running) break;
         if (usedHardware && !producedFrame) {
-            [VCAMConfiguration appendProcessLog:
-                @"rtsp hardware session produced no frames; reconnecting"];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ hardware session produced no frames; reconnecting", self.streamName]];
         }
         if (producedFrame) {
             consecutiveFailures = 0;
             [NSThread sleepForTimeInterval:0.5];
             continue;
         }
-        // An unreachable or rejecting RTSP endpoint used to make vcamd
+        // An unreachable or rejecting stream endpoint used to make vcamd
         // reconnect as fast as FFmpeg failed (fixed 0.5s loop), exhausting
         // backboardd wakeups and wedging the display on device. Back off
         // exponentially with a hard cap so the pipeline stays quiet while
@@ -240,7 +240,8 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         NSUInteger backoffSeconds = MIN(10U, 1U << MIN(consecutiveFailures, 4U));
         consecutiveFailures = MIN(consecutiveFailures + 1, 16U);
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"rtsp reconnect backing off %lu s", (unsigned long)backoffSeconds]];
+            @"%@ reconnect backing off %lu s", self.streamName,
+            (unsigned long)backoffSeconds]];
         for (NSUInteger step = 0; step < backoffSeconds && self.running; step++) {
             [NSThread sleepForTimeInterval:1.0];
         }
@@ -381,8 +382,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                 // errors before the first IDR arrives. The format description
                 // already owns the SDP parameter sets, so wait for the IDR.
                 if (CFAbsoluteTimeGetCurrent() - sessionStart > 10.0) {
-                    [VCAMConfiguration appendProcessLog:
-                        @"rtsp direct-VT key frame timed out; falling back to FFmpeg hwaccel"];
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ direct-VT key frame timed out; falling back to FFmpeg hwaccel",
+                        self.streamName]];
                     av_packet_unref(packet);
                     break;
                 }
@@ -414,8 +416,9 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
             BOOL keyFrameDecodeTimedOut = receivedKeyPacket && now - keyPacketAt > 2.0;
             if (!firstFrameProduced && keyFrameDecodeTimedOut) {
-                [VCAMConfiguration appendProcessLog:
-                    @"rtsp direct-VT first frame timed out; falling back to FFmpeg hwaccel"];
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ direct-VT first frame timed out; falling back to FFmpeg hwaccel",
+                    self.streamName]];
                 break;
             }
         }
@@ -439,7 +442,8 @@ cleanup:
 
 - (BOOL)decodeOneSession {
     if (!self.hardwareDecodeEnabled) {
-        [VCAMConfiguration appendProcessLog:@"rtsp hardware decode disabled; using software decode"];
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ hardware decode disabled; using software decode", self.streamName]];
         self.softwareFallbackActive = YES;
         return [self decodeOneSessionSoftwareOnly];
     }
@@ -462,8 +466,9 @@ cleanup:
         self.softwareFallbackActive = NO;
         return produced;
     }
-    [VCAMConfiguration appendProcessLog:
-        @"rtsp hardware decode produced no frames; software fallback active"];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"%@ hardware decode produced no frames; software fallback active",
+        self.streamName]];
     self.softwareFallbackActive = YES;
     self.hardwareRetryDeadline = CACurrentMediaTime() + 30.0;
     return [self decodeOneSessionSoftwareOnly];
@@ -517,8 +522,8 @@ cleanup:
             if (!loggedCorruptInput) {
                 loggedCorruptInput = YES;
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"rtsp corrupt frame dropped flags=%d decodeErrors=%d; waiting for keyframe",
-                    decodedFrame->flags, decodedFrame->decode_error_flags]];
+                    @"%@ corrupt frame dropped flags=%d decodeErrors=%d; waiting for keyframe",
+                    self.streamName, decodedFrame->flags, decodedFrame->decode_error_flags]];
             }
             return;
         }
@@ -527,7 +532,8 @@ cleanup:
             awaitingCleanKeyFrame = NO;
             recoveryPackets = 0;
             recoveryStartedAt = 0;
-            [VCAMConfiguration appendProcessLog:@"rtsp recovered on clean decoded key frame"];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ recovered on clean decoded key frame", self.streamName]];
         }
         if (decodedFrame->format == AV_PIX_FMT_VIDEOTOOLBOX && decodedFrame->data[3] != NULL) {
             CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)decodedFrame->data[3];
@@ -540,8 +546,8 @@ cleanup:
             if (!loggedSoftwareFrame) {
                 loggedSoftwareFrame = YES;
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"rtsp software frame format=%d size=%dx%d lines=%d,%d,%d",
-                    decodedFrame->format, decodedFrame->width, decodedFrame->height,
+                    @"%@ software frame format=%d size=%dx%d lines=%d,%d,%d",
+                    self.streamName, decodedFrame->format, decodedFrame->width, decodedFrame->height,
                     decodedFrame->linesize[0], decodedFrame->linesize[1],
                     decodedFrame->linesize[2]]];
             }
@@ -610,8 +616,9 @@ cleanup:
         if ((waitingForKeyPacket || awaitingCleanKeyFrame) &&
             recoveryStartedAt > 0 &&
             CACurrentMediaTime() - recoveryStartedAt > recoveryTimeLimit) {
-            [VCAMConfiguration appendProcessLog:
-                @"rtsp clean-key recovery exceeded five seconds; reconnecting"];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ clean-key recovery exceeded five seconds; reconnecting",
+                self.streamName]];
             av_packet_unref(packet);
             break;
         }
@@ -620,8 +627,8 @@ cleanup:
             if (waitingForKeyPacket || awaitingCleanKeyFrame) {
                 recoveryPackets += 1;
                 if (recoveryPackets > recoveryPacketLimit) {
-                    [VCAMConfiguration appendProcessLog:
-                        @"rtsp key-frame recovery timed out; reconnecting"];
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ key-frame recovery timed out; reconnecting", self.streamName]];
                     av_packet_unref(packet);
                     break;
                 }
@@ -637,7 +644,8 @@ cleanup:
                 avcodec_flush_buffers(codecContext);
                 if (!loggedCorruptInput) {
                     loggedCorruptInput = YES;
-                    [VCAMConfiguration appendProcessLog:@"rtsp corrupt packet dropped; waiting for keyframe"];
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ corrupt packet dropped; waiting for keyframe", self.streamName]];
                 }
                 av_packet_unref(packet);
                 continue;
@@ -652,8 +660,9 @@ cleanup:
                 awaitingCleanKeyFrame = YES;
                 recoveryPackets = 0;
                 recoveryStartedAt = CACurrentMediaTime();
-                [VCAMConfiguration appendProcessLog:
-                    @"rtsp recovery: fed key packet; waiting for clean decoded keyframe"];
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ recovery: fed key packet; waiting for clean decoded keyframe",
+                    self.streamName]];
             }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
@@ -675,8 +684,8 @@ cleanup:
                 if (!loggedReceiveFailure) {
                     loggedReceiveFailure = YES;
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp decoder made no progress while retrying packet error=%@",
-                        VCAMFFmpegErrorDescription(receiveResult)]];
+                        @"%@ decoder made no progress while retrying packet error=%@",
+                        self.streamName, VCAMFFmpegErrorDescription(receiveResult)]];
                 }
                 break;
             }
@@ -690,8 +699,9 @@ cleanup:
                             if (!loggedReceiveFailure) {
                                 loggedReceiveFailure = YES;
                                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                    @"rtsp receive_frame ended hardware=%d error=%@; reconnecting",
-                                    useHardware, VCAMFFmpegErrorDescription(receiveResult)]];
+                                    @"%@ receive_frame ended hardware=%d error=%@; reconnecting",
+                                    self.streamName, useHardware,
+                                    VCAMFFmpegErrorDescription(receiveResult)]];
                             }
                         }
                         break;
@@ -703,8 +713,8 @@ cleanup:
                 if (!loggedSendFailure) {
                     loggedSendFailure = YES;
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"rtsp send_packet failed hardware=%d error=%@", useHardware,
-                        VCAMFFmpegErrorDescription(sendResult)]];
+                        @"%@ send_packet failed hardware=%d error=%@", self.streamName,
+                        useHardware, VCAMFFmpegErrorDescription(sendResult)]];
                 }
                 // A single bad packet (mid-GOP join, delayed RTP, transient
                 // parameter mismatch) must not tear down a healthy session.

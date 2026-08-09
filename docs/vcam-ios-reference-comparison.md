@@ -20,26 +20,28 @@ replacement seam.
 | Memory | Frame array remains resident; README notes leaks | Only source state, renderer pools and latest shared frames stay resident |
 | OBS | None | WebSocket/JPEG latest-frame source in `vcamd` |
 | RTSP | None | FFmpeg demux + VideoToolbox in `vcamd` |
-| Preview/control | None | SpringBoard white dot, unified picker and shared-frame preview |
-| mediaserverd dependencies | UIKit and in-process decoding | CoreImage/CoreMedia/CoreVideo/Foundation only |
-| Failure behavior | Process restart suggested about every 30 seconds | Stale/missing shared frame fails open to real camera |
+| HLS | None | FFmpeg demux + VideoToolbox in `vcamd` |
+| Preview/control | None | One foreground-owned white dot, unified picker and shared-frame preview in SpringBoard plus UI-only Camera/browser hosts |
+| mediaserverd dependencies | UIKit and in-process decoding | Rendering frameworks only; no UIKit, source decoder or network client |
+| Failure behavior | Process restart suggested about every 30 seconds | Stale/missing shared frame retains virtual output, emits black or suppresses the sample; it never exposes the real camera while enabled |
 
 ## Why the worker exists
 
 The reference implementation proves that mediaserverd can consume a decoded
 pixel frame, but it does not make mediaserverd a safe place for file/network
 decoders. Here `vcamd` owns all blocking, reconnecting and decode state and
-publishes a fixed 1080×1920 BGRA latest frame through a three-slot mmap. The two
-consumers—mediaserverd replacement and SpringBoard preview—only perform a
+publishes a fixed 1080×1920 BGRA latest frame through a three-slot mmap. The
+consumer roles—mediaserverd replacement and UI preview clients—only perform a
 bounded memory copy and reject stale or torn slots.
 
 This design also answers the memory question directly: the selected video is
 not pre-decoded into RAM. Images remain static; video timing follows the asset;
-OBS/RTSP retain only their most recent received/decoded frame.
+OBS/RTSP/HLS retain only their most recent received/decoded frame.
 
 ## Packaging
 
-The output is a standard rootless `/var/jb` package (`iphoneos-arm64`). Only
-`mediaserverd` and SpringBoard filters are shipped. `vcamd` is a package-owned
+The output is a standard rootless `/var/jb` package (`iphoneos-arm64`). The
+media client targets only `mediaserverd`; the UI client targets SpringBoard and
+the supported Camera/browser main processes. `vcamd` is a package-owned
 LaunchDaemon and is not injected into any App. Audio replacement is disabled,
 so the real microphone path is unchanged.

@@ -25,8 +25,8 @@
         "com.apple.camera",
         "com.apple.mobilesafari",
         "com.google.chrome.ios",
-        "com.microsoft.edge",
-        "org.mozilla.ios.firefox"
+        "com.microsoft.msedge",
+        "org.mozilla.ios.Firefox"
       ],
       "executables": ["SpringBoard", "Camera", "MobileSafari", "Google Chrome", "Microsoft Edge", "Firefox"],
       "injected": true,
@@ -39,7 +39,7 @@
       "bundleIds": [],
       "executables": ["vcamd"],
       "injected": false,
-      "sources": ["local-image", "local-video", "obs-websocket", "rtsp-ffmpeg-videotoolbox"]
+      "sources": ["local-image", "local-video", "obs-websocket", "rtsp-ffmpeg-videotoolbox", "hls-ffmpeg-videotoolbox"]
     },
     {
       "name": "vcaminjectd",
@@ -48,15 +48,7 @@
       "bundleIds": [],
       "executables": ["vcaminjectd"],
       "injected": false,
-      "allowedTargets": [
-        "SpringBoard",
-        "mediaserverd",
-        "Camera",
-        "MobileSafari",
-        "Google Chrome",
-        "Microsoft Edge",
-        "Firefox"
-      ]
+      "allowedTargets": ["SpringBoard", "mediaserverd"]
     }
   ]
 }
