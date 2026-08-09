@@ -17,6 +17,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedFrameWriterPublish", source)
         self.assertIn("VCAMSharedSurfaceWriterCopyNextPixelBuffer", source)
         self.assertIn("VCAMSharedSurfaceWriterPublish", source)
+        self.assertIn("springboard HLS health", source)
         self.assertNotIn("VTDecompressionSession", source)
         self.assertNotIn("avcodec_", source)
 
@@ -34,6 +35,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("com.codex.vcam/preferences.changed", source)
         self.assertIn("- (void)reload", source)
         self.assertIn("- (void)stop", source)
+        self.assertNotIn("removeOutput:self.output", source)
         self.assertIn("VCAMSpringBoardMediaBridge sharedBridge", entry)
         self.assertIn("Sources/SpringBoard/VCAMSpringBoardMediaBridge.m", makefile)
         self.assertIn("CoreImage", makefile)

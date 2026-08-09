@@ -38,6 +38,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) VCAMSharedSurfaceWriter *surfaceWriter;
 @property(nonatomic) BOOL started;
 @property(nonatomic) NSUInteger decodedFrames;
+@property(nonatomic) NSUInteger displayTicks;
 @property(nonatomic) NSUInteger emptyCopies;
 @property(nonatomic) NSUInteger publishedFrames;
 @property(nonatomic) NSUInteger publishFailures;
@@ -101,9 +102,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [self.player pause];
     [self.playerLayer removeFromSuperlayer];
     self.playerLayer = nil;
-    if (self.output != nil && [self.player.currentItem.outputs containsObject:self.output]) {
-        [self.player.currentItem removeOutput:self.output];
-    }
+    // Releasing the player item releases its outputs. removeOutput: can wait
+    // on an HLS item's media queue and must not block SpringBoard's main thread.
     self.output = nil;
     self.player = nil;
     self.configuration = nil;
@@ -203,6 +203,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [[self hostWindow].layer addSublayer:self.playerLayer];
 
     self.decodedFrames = 0;
+    self.displayTicks = 0;
     self.emptyCopies = 0;
     self.publishedFrames = 0;
     self.publishFailures = 0;
@@ -257,7 +258,21 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     (void)displayLink;
     if (self.output == nil || self.player.currentItem == nil) return;
     CMTime itemTime = [self.output itemTimeForHostTime:CACurrentMediaTime()];
-    if (![self.output hasNewPixelBufferForItemTime:itemTime]) return;
+    BOOL hasNewFrame = [self.output hasNewPixelBufferForItemTime:itemTime];
+    self.displayTicks += 1;
+    if (self.displayTicks % 300 == 0) {
+        AVPlayerItem *item = self.player.currentItem;
+        CGSize presentationSize = item.presentationSize;
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@",
+            (unsigned long)self.displayTicks, hasNewFrame, (long)item.status,
+            (long)self.player.timeControlStatus,
+            self.player.reasonForWaitingToPlay ?: @"none",
+            CMTimeGetSeconds(item.currentTime), presentationSize.width,
+            presentationSize.height,
+            item.error.localizedDescription ?: @"none"]];
+    }
+    if (!hasNewFrame) return;
     CMTime displayTime = kCMTimeInvalid;
     CVPixelBufferRef source = [self.output copyPixelBufferForItemTime:itemTime
                                                    itemTimeForDisplay:&displayTime];
