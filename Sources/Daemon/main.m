@@ -8,6 +8,7 @@
 #import "VCAMFrameProducer.h"
 #import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSurfaceBroker.h"
 
 static VCAMFrameProducer *VCAMProducer;
 static VCAMSharedFrameWriter *VCAMWriter;
@@ -103,6 +104,7 @@ int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
     VCAMRaiseJetsamMemoryLimit();
     @autoreleasepool {
+        VCAMSurfaceBrokerStartServer();
         VCAMWriter = VCAMSharedFrameWriterCreate();
         if (VCAMWriter == NULL) return 2;
         VCAMProducer = [VCAMFrameProducer new];

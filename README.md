@@ -56,9 +56,10 @@ when enabled, without pre-decoding the entire asset into memory.
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
   rotation, mirroring, fit/fill, scale and NV12-to-BGRA conversion in one
   Metal-backed Core Image render directly into a three-slot IOSurface ring.
-  Until mediaserverd confirms cross-process IOSurface lookup, SpringBoard also
-  publishes the live three-slot BGRA mmap fallback. The retained daemon decoder
-  can be selected for rollback by creating
+  A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
+  to mediaserverd; until that handshake succeeds, SpringBoard also publishes
+  the live three-slot BGRA mmap fallback. The retained daemon decoder can be
+  selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.

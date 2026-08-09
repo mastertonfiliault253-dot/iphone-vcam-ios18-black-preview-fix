@@ -16,6 +16,11 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>MachServices</key>
+    <dict>
+        <key>com.codex.vcam.surface</key>
+        <true/>
+    </dict>
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>ProcessType</key>

@@ -7,7 +7,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = VCAMMediaServerClient VCAMSpringBoardClient
 TOOL_NAME = vcamd vcaminjectd
 
-VCAM_SHARED_FILES = Sources/Shared/VCAMSharedFrame.m
+VCAM_SHARED_FILES = \
+	Sources/Shared/VCAMSharedFrame.m \
+	Sources/Shared/VCAMSurfaceBroker.m
 VCAM_MODULE_CACHE_FLAGS = -fmodules-cache-path=$(THEOS_PROJECT_DIR)/.theos/module-cache
 VCAM_UI_FILES = \
 	Sources/UI/VCAMControlPanelViewController.m \
@@ -35,11 +37,11 @@ VCAMSpringBoardClient_FILES = \
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
-# vcamd is package-owned and is not injected. All local media, OBS, RTSP and
-# HLS work lives here so a decoder/network failure cannot directly crash an
-# injected client.
+# vcamd is package-owned and is not injected. Local media, OBS and RTSP decode
+# live here; it also relays IOSurface XPC rights without touching frame bytes.
 vcamd_FILES = \
 	Sources/Daemon/main.m \
+	Sources/Daemon/VCAMSurfaceBrokerServer.m \
 	Sources/Daemon/VCAMHardwareVideoDecoder.m \
 	Sources/Daemon/VCAMPixelConverter.m \
 	Sources/Daemon/VCAMFrameProducer.m \
@@ -55,7 +57,7 @@ vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements
 vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
 vcamd_FRAMEWORKS = Accelerate AVFoundation AudioToolbox CoreMedia CoreVideo Foundation IOSurface ImageIO QuartzCore Security VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
-vcamd_LIBRARIES = avformat avcodec avutil
+vcamd_LIBRARIES = avformat avcodec avutil proc
 
 # A tiny root watchdog repairs only the two allowed dylib mappings after a
 # SpringBoard/mediaserverd restart. It never decodes media and never targets an

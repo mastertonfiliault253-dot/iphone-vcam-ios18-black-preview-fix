@@ -76,6 +76,22 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("IOSurfaceDecrementUseCount", shared)
         self.assertIn("VCAMSharedSurfaceReaderCopyLatest", consumer)
         self.assertIn("VCAMSharedFrameReaderCopyLatest", consumer)
+        self.assertIn("VCAMSurfaceBrokerCopySurface", shared)
+
+        broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        server = (
+            ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m"
+        ).read_text(encoding="utf-8")
+        launchd = (
+            ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcamd.plist"
+        ).read_text(encoding="utf-8")
+        self.assertIn("IOSurfaceCreateXPCObject", broker)
+        self.assertIn("IOSurfaceLookupFromXPCObject", broker)
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', server)
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', server)
+        self.assertIn("com.codex.vcam.surface", launchd)
 
     def test_iosurface_bootstrap_keeps_mmap_live_until_consumer_ready(self) -> None:
         bridge = (

@@ -21,11 +21,13 @@ VCAM separates media production, camera replacement and control UI:
 `VCAMFrameRenderer` normalizes orientation, content mode, mirroring and target
 size before publication. Audio is never replaced.
 
-The HLS bridge renders directly into a three-slot IOSurface ring. mediaserverd
-retains the selected surface while rendering so SpringBoard never overwrites an
-in-use slot. The previous three-slot BGRA mmap remains the automatic fallback
-when global IOSurface creation or cross-process lookup is unavailable; it stays
-live until mediaserverd completes the first successful lookup. Creating
+The HLS bridge renders directly into a three-slot IOSurface ring. The vcamd
+launchd Mach service relays only the three IOSurface XPC rights from SpringBoard
+to mediaserverd and verifies both peer process names; frame bytes never pass
+through the daemon. mediaserverd retains the selected surface while rendering
+so SpringBoard never overwrites an in-use slot. The previous three-slot BGRA
+mmap remains the automatic fallback until the XPC surface handshake succeeds.
+Creating
 `/var/tmp/vcam-hls-legacy-vcamd.enable` disables the SpringBoard HLS bridge and
 restores the retained daemon HLS decoder for rollback.
 

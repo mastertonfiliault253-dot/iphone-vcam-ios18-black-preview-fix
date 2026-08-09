@@ -1,4 +1,5 @@
 #import "VCAMSharedFrame.h"
+#import "VCAMSurfaceBroker.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -91,6 +92,7 @@ struct VCAMSharedSurfaceWriter {
     CVPixelBufferRef pixelBuffers[VCAMSharedFrameSlotCount];
     uint32_t pendingSlot;
     uint64_t pendingSequence;
+    uint64_t lastBrokerPublishNanoseconds;
 };
 
 struct VCAMSharedSurfaceReader {
@@ -506,6 +508,8 @@ VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreate(void) {
     atomic_thread_fence(memory_order_release);
     writer->header->magic = VCAMSharedSurfaceMagic;
     VCAMSharedFrameUnlock(writer->descriptor);
+    VCAMSurfaceBrokerPublish(writer->surfaces, VCAMSharedFrameSlotCount);
+    writer->lastBrokerPublishNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
     return writer;
 }
 
@@ -579,15 +583,25 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
 }
 
 bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer) {
-    return writer != NULL && writer->header != NULL &&
+    bool ready = writer != NULL && writer->header != NULL &&
         VCAMSharedSurfaceHeaderIsValid(writer->header) &&
         atomic_load_explicit(&writer->header->consumerReady,
                              memory_order_acquire) != 0;
+    if (!ready && writer != NULL) {
+        uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+        if (writer->lastBrokerPublishNanoseconds == 0 || now == 0 ||
+            now - writer->lastBrokerPublishNanoseconds >= 1000000000ULL) {
+            VCAMSurfaceBrokerPublish(writer->surfaces, VCAMSharedFrameSlotCount);
+            writer->lastBrokerPublishNanoseconds = now;
+        }
+    }
+    return ready;
 }
 
 VCAMSharedSurfaceReader *VCAMSharedSurfaceReaderCreate(void) {
     VCAMSharedSurfaceReader *reader = calloc(1, sizeof(*reader));
     if (reader != NULL) reader->descriptor = -1;
+    VCAMSurfaceBrokerRequestRegistry();
     return reader;
 }
 
@@ -675,7 +689,11 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
     _Atomic(uint32_t) *useCounter =
         (_Atomic(uint32_t) *)&reader->header->consumerUseCount[slot];
     atomic_fetch_add_explicit(useCounter, 1, memory_order_acq_rel);
-    IOSurfaceRef surface = IOSurfaceLookup(reader->header->surfaceIDs[slot]);
+    IOSurfaceRef surface = VCAMSurfaceBrokerCopySurface(
+        reader->header->surfaceIDs[slot]);
+    if (surface == NULL) {
+        surface = IOSurfaceLookup(reader->header->surfaceIDs[slot]);
+    }
     if (surface == NULL) {
         atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
         VCAMSharedSurfaceReaderSetReady(reader, false);

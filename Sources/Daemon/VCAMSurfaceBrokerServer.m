@@ -1,0 +1,135 @@
+#import "../Shared/VCAMSurfaceBroker.h"
+
+#import <Foundation/Foundation.h>
+
+#include <dispatch/dispatch.h>
+#include <stdio.h>
+#include <string.h>
+
+// Narrow stable XPC/libproc ABI; the Linux iPhoneOS 16.5 SDK omits headers.
+typedef void *xpc_object_t;
+typedef xpc_object_t xpc_connection_t;
+typedef const void *xpc_type_t;
+
+extern xpc_connection_t xpc_connection_create_mach_service(
+    const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
+extern void xpc_connection_set_event_handler(
+    xpc_connection_t connection, void (^handler)(xpc_object_t event));
+extern void xpc_connection_resume(xpc_connection_t connection);
+extern void xpc_connection_send_message(xpc_connection_t connection,
+                                        xpc_object_t message);
+extern pid_t xpc_connection_get_pid(xpc_connection_t connection);
+extern xpc_type_t xpc_get_type(xpc_object_t object);
+extern xpc_object_t xpc_dictionary_create(
+    const char *const _Nullable *keys,
+    const xpc_object_t _Nullable *values, size_t count);
+extern xpc_object_t _Nullable xpc_dictionary_create_reply(xpc_object_t original);
+extern const char *_Nullable xpc_dictionary_get_string(xpc_object_t dictionary,
+                                                        const char *key);
+extern uint64_t xpc_dictionary_get_uint64(xpc_object_t dictionary,
+                                          const char *key);
+extern xpc_object_t _Nullable xpc_dictionary_get_value(xpc_object_t dictionary,
+                                                        const char *key);
+extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
+                                      const char *value);
+extern void xpc_dictionary_set_uint64(xpc_object_t dictionary, const char *key,
+                                      uint64_t value);
+extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
+                                     xpc_object_t value);
+extern void xpc_release(xpc_object_t object);
+extern const struct _xpc_type_s _xpc_type_connection;
+extern const struct _xpc_type_s _xpc_type_dictionary;
+extern int proc_name(int pid, void *buffer, uint32_t bufferSize);
+
+static const char *const VCAMSurfaceBrokerService = "com.codex.vcam.surface";
+static const uint64_t VCAMXPCMachServiceListener = 1ULL << 0;
+enum { VCAMSurfaceBrokerSlotCount = 3 };
+static const char *const VCAMSurfaceKeys[] = {
+    "surface0", "surface1", "surface2",
+};
+
+static xpc_type_t VCAMXPCTypeConnection(void) {
+    return (xpc_type_t)&_xpc_type_connection;
+}
+
+static xpc_type_t VCAMXPCTypeDictionary(void) {
+    return (xpc_type_t)&_xpc_type_dictionary;
+}
+
+static bool VCAMSurfaceBrokerPeerIs(xpc_connection_t peer,
+                                    const char *expectedName) {
+    pid_t pid = xpc_connection_get_pid(peer);
+    char name[64] = {0};
+    return pid > 0 && proc_name(pid, name, sizeof(name)) > 0 &&
+        strcmp(name, expectedName) == 0;
+}
+
+static xpc_object_t VCAMBrokerRegistry;
+
+static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
+                                            xpc_object_t message) {
+    if (xpc_get_type(message) != VCAMXPCTypeDictionary()) return;
+    const char *command = xpc_dictionary_get_string(message, "command");
+    if (command == NULL) return;
+    if (strcmp(command, "publish") == 0) {
+        if (!VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")) return;
+        xpc_object_t registry = xpc_dictionary_create(NULL, NULL, 0);
+        xpc_dictionary_set_uint64(
+            registry, "generation",
+            xpc_dictionary_get_uint64(message, "generation"));
+        for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+            xpc_object_t surface = xpc_dictionary_get_value(
+                message, VCAMSurfaceKeys[slot]);
+            if (surface != NULL) {
+                xpc_dictionary_set_value(registry, VCAMSurfaceKeys[slot], surface);
+            }
+        }
+        if (VCAMBrokerRegistry != NULL) xpc_release(VCAMBrokerRegistry);
+        VCAMBrokerRegistry = registry;
+        fprintf(stderr, "vcamd IOSurface registry published pid=%d\n",
+                xpc_connection_get_pid(peer));
+        fflush(stderr);
+        return;
+    }
+    if (strcmp(command, "get") != 0 ||
+        !VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")) return;
+    xpc_object_t reply = xpc_dictionary_create_reply(message);
+    if (reply == NULL) return;
+    xpc_dictionary_set_string(reply, "command", "registry");
+    if (VCAMBrokerRegistry != NULL) {
+        xpc_dictionary_set_uint64(
+            reply, "generation",
+            xpc_dictionary_get_uint64(VCAMBrokerRegistry, "generation"));
+        for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+            xpc_object_t surface = xpc_dictionary_get_value(
+                VCAMBrokerRegistry, VCAMSurfaceKeys[slot]);
+            if (surface != NULL) {
+                xpc_dictionary_set_value(reply, VCAMSurfaceKeys[slot], surface);
+            }
+        }
+    }
+    xpc_connection_send_message(peer, reply);
+    xpc_release(reply);
+}
+
+void VCAMSurfaceBrokerStartServer(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_queue_t queue = dispatch_queue_create(
+            "com.codex.vcam.surface.server", DISPATCH_QUEUE_SERIAL);
+        xpc_connection_t listener = xpc_connection_create_mach_service(
+            VCAMSurfaceBrokerService, queue, VCAMXPCMachServiceListener);
+        if (listener == NULL) return;
+        xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
+            if (xpc_get_type(event) != VCAMXPCTypeConnection()) return;
+            xpc_connection_t peer = (xpc_connection_t)event;
+            xpc_connection_set_event_handler(peer, ^(xpc_object_t message) {
+                VCAMSurfaceBrokerHandleMessage(peer, message);
+            });
+            xpc_connection_resume(peer);
+        });
+        xpc_connection_resume(listener);
+        fprintf(stderr, "vcamd IOSurface broker started\n");
+        fflush(stderr);
+    });
+}
