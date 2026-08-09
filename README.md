@@ -95,9 +95,10 @@ inconclusive experiment must be reverted before another variable is introduced.
 For Mach-O entitlement experiments, restore by reinstalling the verified,
 signed CI package. A normal file copy is not a reliable code-signature backup.
 Never commit device credentials, authorization tokens, or private device logs.
-The `platform-application` and `com.apple.videotoolbox.leghorn` VideoToolbox
-experiments were each explicitly authorized, tested as separate single
-variables, found ineffective, and therefore are not shipped.
+The `platform-application`, `com.apple.videotoolbox.leghorn`, and NULL
+VideoToolbox output-attribute experiments were each explicitly authorized,
+tested as separate single variables, found ineffective, and therefore are not
+shipped.
 
 ## Device acceptance
 

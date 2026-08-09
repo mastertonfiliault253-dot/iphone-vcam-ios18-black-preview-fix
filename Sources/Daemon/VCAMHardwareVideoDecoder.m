@@ -695,6 +695,10 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (BOOL)start:(NSError **)error {
     if (_active) return YES;
+    NSDictionary *destinationAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = VCAMHardwareDecoderCallback,
         .decompressionOutputRefCon = (__bridge void *)self,
@@ -703,7 +707,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         kCFAllocatorDefault,
         _formatDescription,
         NULL,
-        NULL,
+        (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);
     if (status != noErr) {
