@@ -15,6 +15,8 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", source)
         self.assertIn("contextWithMTLDevice", source)
         self.assertIn("VCAMSharedFrameWriterPublish", source)
+        self.assertIn("VCAMSharedSurfaceWriterCopyNextPixelBuffer", source)
+        self.assertIn("VCAMSharedSurfaceWriterPublish", source)
         self.assertNotIn("VTDecompressionSession", source)
         self.assertNotIn("avcodec_", source)
 
@@ -36,6 +38,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("Sources/SpringBoard/VCAMSpringBoardMediaBridge.m", makefile)
         self.assertIn("CoreImage", makefile)
         self.assertIn("Metal", makefile)
+        self.assertIn("IOSurface", makefile)
         self.assertIn("/var/tmp/vcam-hls-legacy-vcamd.enable", source)
         self.assertIn("/var/tmp/vcam-hls-legacy-vcamd.enable", producer)
 
@@ -49,6 +52,22 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("render:image toCVPixelBuffer:destination", source)
         self.assertNotIn("CGContextDrawImage", source)
         self.assertNotIn("memcpy(", source)
+
+    def test_iosurface_transport_has_bounded_ring_and_mmap_fallback(self) -> None:
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        consumer = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMSharedFrameSlotCount", shared)
+        self.assertIn('kCVPixelBufferIOSurfacePropertiesKey', shared)
+        self.assertIn('@"IOSurfaceIsGlobal"', shared)
+        self.assertIn("IOSurfaceIsInUse", shared)
+        self.assertIn("IOSurfaceIncrementUseCount", shared)
+        self.assertIn("IOSurfaceDecrementUseCount", shared)
+        self.assertIn("VCAMSharedSurfaceReaderCopyLatest", consumer)
+        self.assertIn("VCAMSharedFrameReaderCopyLatest", consumer)
 
 
 if __name__ == "__main__":

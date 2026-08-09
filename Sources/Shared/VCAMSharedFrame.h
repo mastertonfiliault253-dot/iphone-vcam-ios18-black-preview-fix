@@ -14,6 +14,8 @@ enum {
 
 typedef struct VCAMSharedFrameWriter VCAMSharedFrameWriter;
 typedef struct VCAMSharedFrameReader VCAMSharedFrameReader;
+typedef struct VCAMSharedSurfaceWriter VCAMSharedSurfaceWriter;
+typedef struct VCAMSharedSurfaceReader VCAMSharedSurfaceReader;
 
 typedef struct {
     uint64_t sequence;
@@ -22,6 +24,14 @@ typedef struct {
     uint32_t height;
     OSType pixelFormat;
 } VCAMSharedFrameMetadata;
+
+/// A retained, cross-process IOSurface frame. Release it with
+/// VCAMSharedSurfaceFrameRelease so the producer can safely reuse its slot.
+typedef struct {
+    CVPixelBufferRef _Nullable pixelBuffer;
+    void *_Nullable surface;
+    VCAMSharedFrameMetadata metadata;
+} VCAMSharedSurfaceFrame;
 
 /// Producer interface. The implementation owns file creation, mmap layout,
 /// slot selection, publication ordering and permissions.
@@ -47,7 +57,26 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      uint64_t maximumAgeNanoseconds,
                                      VCAMSharedFrameMetadata *_Nullable metadata);
 
+/// Zero-copy IOSurface producer. The writable buffers form a bounded
+/// three-slot ring; a slot held by a consumer is never selected for rendering.
+VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreate(void);
+void VCAMSharedSurfaceWriterDestroy(VCAMSharedSurfaceWriter *_Nullable writer);
+CVPixelBufferRef _Nullable VCAMSharedSurfaceWriterCopyNextPixelBuffer(
+    VCAMSharedSurfaceWriter *writer) CF_RETURNS_RETAINED;
+bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
+                                    CVPixelBufferRef pixelBuffer);
+
+/// Zero-copy IOSurface consumer. Failure is expected when the platform blocks
+/// global IOSurface lookup; callers must retain the legacy mmap fallback.
+VCAMSharedSurfaceReader *_Nullable VCAMSharedSurfaceReaderCreate(void);
+void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *_Nullable reader);
+bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
+                                       uint64_t maximumAgeNanoseconds,
+                                       VCAMSharedSurfaceFrame *frame);
+void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame);
+
 const char *VCAMSharedFrameFileSystemPath(void);
+const char *VCAMSharedSurfaceFileSystemPath(void);
 uint64_t VCAMSharedFrameMonotonicNanoseconds(void);
 
 NS_ASSUME_NONNULL_END

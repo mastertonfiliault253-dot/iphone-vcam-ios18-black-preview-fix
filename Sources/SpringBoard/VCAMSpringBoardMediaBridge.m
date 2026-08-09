@@ -35,6 +35,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) CVPixelBufferPoolRef outputPool;
 @property(nonatomic) CGColorSpaceRef colorSpace;
 @property(nonatomic) VCAMSharedFrameWriter *writer;
+@property(nonatomic) VCAMSharedSurfaceWriter *surfaceWriter;
 @property(nonatomic) BOOL started;
 @property(nonatomic) NSUInteger decodedFrames;
 @property(nonatomic) NSUInteger emptyCopies;
@@ -58,6 +59,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     if (_outputPool != NULL) CVPixelBufferPoolRelease(_outputPool);
     if (_colorSpace != NULL) CGColorSpaceRelease(_colorSpace);
     if (_writer != NULL) VCAMSharedFrameWriterDestroy(_writer);
+    if (_surfaceWriter != NULL) VCAMSharedSurfaceWriterDestroy(_surfaceWriter);
 }
 
 - (void)start {
@@ -80,14 +82,16 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     self.writer = VCAMSharedFrameWriterCreate();
+    self.surfaceWriter = VCAMSharedSurfaceWriterCreate();
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge const void *)self, VCAMSpringBoardMediaPreferencesChanged,
         CFSTR("com.codex.vcam/preferences.changed"), NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"springboard media bridge started metal=%d writer=%d",
-        self.metalDevice != nil, self.writer != NULL]];
+        @"springboard media bridge started metal=%d writer=%d surface=%d",
+        self.metalDevice != nil, self.writer != NULL,
+        self.surfaceWriter != NULL]];
     [self reload];
 }
 
@@ -172,7 +176,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     if (self.player != nil && [self configurationMatches:next]) return;
     [self stopPlayback];
     self.configuration = next;
-    if (self.writer == NULL || self.context == nil || ![self prepareOutputPool]) {
+    BOOL transportReady = self.surfaceWriter != NULL ||
+        (self.writer != NULL && [self prepareOutputPool]);
+    if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
         return;
     }
@@ -260,16 +266,25 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         return;
     }
     self.decodedFrames += 1;
-    CVPixelBufferRef destination = NULL;
+    BOOL surfaceTransport = self.surfaceWriter != NULL;
+    CVPixelBufferRef destination = surfaceTransport
+        ? VCAMSharedSurfaceWriterCopyNextPixelBuffer(self.surfaceWriter)
+        : NULL;
     BOOL published = NO;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, self.outputPool,
-                                           &destination) == kCVReturnSuccess) {
+    CVReturn destinationStatus = destination != NULL ? kCVReturnSuccess
+        : (surfaceTransport ? kCVReturnWouldExceedAllocationThreshold
+                            : CVPixelBufferPoolCreatePixelBuffer(
+                                  kCFAllocatorDefault, self.outputPool,
+                                  &destination));
+    if (destinationStatus == kCVReturnSuccess && destination != NULL) {
         CIImage *image = [self imageByTransformingPixelBuffer:source];
         if (image != nil) {
             CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
             [self.context render:image toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
-            published = VCAMSharedFrameWriterPublish(self.writer, destination);
+            published = surfaceTransport
+                ? VCAMSharedSurfaceWriterPublish(self.surfaceWriter, destination)
+                : VCAMSharedFrameWriterPublish(self.writer, destination);
         }
         CVPixelBufferRelease(destination);
     }
@@ -282,9 +297,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     if (self.decodedFrames <= 3 || self.decodedFrames % 300 == 0) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu status=%ld rate=%.1f",
+            @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f",
             (unsigned long)self.decodedFrames, (unsigned long)self.publishedFrames,
             (unsigned long)self.emptyCopies, (unsigned long)self.publishFailures,
+            surfaceTransport ? @"iosurface" : @"mmap",
             (long)self.player.currentItem.status, self.player.rate]];
     }
 }
@@ -299,6 +315,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         @"lastFrameTimestampNanoseconds": @(self.lastFrameTimestampNanoseconds),
         @"playerStatus": @(self.player.currentItem.status),
         @"playerRate": @(self.player.rate),
+        @"transport": self.surfaceWriter != NULL ? @"iosurface" : @"mmap",
         @"error": self.lastError ?: self.player.currentItem.error.localizedDescription ?: @"",
     };
 }

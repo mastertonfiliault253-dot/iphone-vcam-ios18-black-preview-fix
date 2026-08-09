@@ -21,7 +21,7 @@ VCAMMediaServerClient_FILES = \
 	Sources/Hooks/VCAMMediaServerRefImageUtils.m \
 	$(VCAM_SHARED_FILES)
 VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=0 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation ImageIO Metal VideoToolbox
+VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal VideoToolbox
 
 # SpringBoard owns the broker; SpringBoard and filtered app clients host only
 # the white-dot UI/panel. This target never hooks camera frames or decodes media.
@@ -33,7 +33,7 @@ VCAMSpringBoardClient_FILES = \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
+VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 # vcamd is package-owned and is not injected. All local media, OBS, RTSP and
 # HLS work lives here so a decoder/network failure cannot directly crash an
@@ -53,7 +53,7 @@ vcamd_ARCHS = arm64
 vcamd_INSTALL_PATH = /usr/libexec
 vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements
 vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
-vcamd_FRAMEWORKS = Accelerate AVFoundation AudioToolbox CoreMedia CoreVideo Foundation ImageIO QuartzCore Security VideoToolbox
+vcamd_FRAMEWORKS = Accelerate AVFoundation AudioToolbox CoreMedia CoreVideo Foundation IOSurface ImageIO QuartzCore Security VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 vcamd_LIBRARIES = avformat avcodec avutil
 

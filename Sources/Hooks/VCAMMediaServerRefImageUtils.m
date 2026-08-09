@@ -17,6 +17,8 @@
 #include <unistd.h>
 
 static VCAMSharedFrameReader *VCAMReader;
+static VCAMSharedSurfaceReader *VCAMSurfaceReader;
+static VCAMSharedSurfaceFrame VCAMLastSurfaceFrame;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CVPixelBufferPoolRef VCAMCompressedStagingPool;
 static size_t VCAMCompressedStagingWidth;
@@ -267,6 +269,7 @@ void loadReplacementMedia(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         VCAMReader = VCAMSharedFrameReaderCreate();
+        VCAMSurfaceReader = VCAMSharedSurfaceReaderCreate();
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         VCAMContext = device != nil
             ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
@@ -301,6 +304,9 @@ void loadReplacementMedia(void) {
         VCAMRefLog(result == kCVReturnSuccess
             ? "shared-frame reader initialized"
             : "shared-frame scratch pool initialization failed");
+        VCAMRefLog(VCAMSurfaceReader != NULL
+            ? "shared IOSurface reader initialized"
+            : "shared IOSurface reader unavailable; mmap fallback retained");
         if (transferCreateResult == noErr && scalingResult == noErr &&
             realtimeResult == noErr) {
             VCAMRefLog("compressed pixel transfer initialized");
@@ -480,6 +486,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
     CVPixelBufferRef stagingBuffer = NULL;
     CVPixelBufferRef compressedReplacementBuffer = NULL;
     VCAMSharedFrameMetadata metadata = {0};
+    VCAMSharedSurfaceFrame surfaceFrame = {0};
     BOOL readerLocked = NO;
     BOOL rendered = NO;
     CFAbsoluteTime elapsed = 0;
@@ -492,24 +499,49 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
                 CVPixelBufferRelease(VCAMLastVirtualFrame);
                 VCAMLastVirtualFrame = NULL;
             }
+            VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
             return NO;
         }
-        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
-                                               &scratch) != kCVReturnSuccess) {
-            if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
-                    targetBuffer, replacementBufferOut)) return YES;
-            return NO;
-        }
-        BOOL copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
+        BOOL surfaceCopied = VCAMSharedSurfaceReaderCopyLatest(
+            VCAMSurfaceReader, 1000000000ULL, &surfaceFrame);
+        BOOL copied = surfaceCopied;
+        if (surfaceCopied) {
+            scratch = CVPixelBufferRetain(surfaceFrame.pixelBuffer);
+            metadata = surfaceFrame.metadata;
+            static volatile int sharedSurfaceFrames = 0;
+            int surfaceCount = __sync_add_and_fetch(&sharedSurfaceFrames, 1);
+            if (surfaceCount <= 3) {
+                char message[192] = {0};
+                snprintf(message, sizeof(message),
+                         "shared IOSurface frame count=%d sequence=%llu size=%ux%u",
+                         surfaceCount, (unsigned long long)metadata.sequence,
+                         metadata.width, metadata.height);
+                VCAMRefLog(message);
+            }
+        } else {
+            if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
+                                                   &scratch) != kCVReturnSuccess) {
+                if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
+                        targetBuffer, replacementBufferOut)) return YES;
+                return NO;
+            }
+            copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
                                                       1000000000ULL, &metadata);
-        if (!copied) {
-            // An enabled virtual camera must never expose a real frame merely
-            // because the producer paused. A stale shared virtual frame is a
-            // safer fallback than black and is still immutable while copied.
-            copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch, 0, &metadata);
+            if (!copied) {
+                // An enabled virtual camera must never expose a real frame
+                // merely because the producer paused. The legacy mmap remains
+                // the fail-closed compatibility transport.
+                copied = VCAMSharedFrameReaderCopyLatest(
+                    VCAMReader, scratch, 0, &metadata);
+            }
         }
         if (copied) {
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
+            VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
+            if (surfaceCopied) {
+                VCAMLastSurfaceFrame = surfaceFrame;
+                memset(&surfaceFrame, 0, sizeof(surfaceFrame));
+            }
             VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
             VCAMLastVirtualFrameHostTime = CFAbsoluteTimeGetCurrent();
         } else if (VCAMLastVirtualFrame != NULL &&
@@ -522,6 +554,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
             // The stream has been gone long enough that a frozen frame would
             // be mistaken for the live picture. Fail closed to black instead.
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
+            VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
             VCAMLastVirtualFrame = CVPixelBufferRetain(scratch);
             VCAMLastVirtualFrameHostTime = CFAbsoluteTimeGetCurrent();
             static volatile int staleBlackFrames = 0;
@@ -648,6 +681,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         }
         if (stagingBuffer != NULL) CVPixelBufferRelease(stagingBuffer);
         if (scratch != NULL) CVPixelBufferRelease(scratch);
+        VCAMSharedSurfaceFrameRelease(&surfaceFrame);
     }
 
     if (!rendered && compressedTarget && replacementBufferOut != NULL &&
