@@ -4,6 +4,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <errno.h>
 #import <math.h>
+#import <stdarg.h>
+#import <stdio.h>
 #import <stdlib.h>
 
 #include <libavcodec/avcodec.h>
@@ -12,6 +14,27 @@
 #include <libavutil/hwcontext.h>
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
+static volatile int VCAMCaptureFFmpegHardwareLogs;
+
+static void VCAMFFmpegDiagnosticLog(void *context, int level,
+                                    const char *format, va_list arguments) {
+    (void)context;
+    if (!VCAMCaptureFFmpegHardwareLogs || level > AV_LOG_WARNING) return;
+    char message[1024] = {0};
+    vsnprintf(message, sizeof(message), format, arguments);
+    size_t length = strlen(message);
+    while (length > 0 && (message[length - 1] == '\n' || message[length - 1] == '\r')) {
+        message[--length] = '\0';
+    }
+    if (length == 0) return;
+    static volatile int diagnosticCount = 0;
+    int count = __sync_add_and_fetch(&diagnosticCount, 1);
+    if (count <= 40) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtff] level=%d %@", level,
+            [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"]];
+    }
+}
 
 NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void) {
     @synchronized ([VCAMRTSPStreamSource class]) {
@@ -133,7 +156,10 @@ static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
         return NO;
     }
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ avformat_network_init(); });
+    dispatch_once(&onceToken, ^{
+        avformat_network_init();
+        av_log_set_callback(VCAMFFmpegDiagnosticLog);
+    });
     self.running = YES;
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.decodeQueue, ^{ [weakSelf decodeReconnectLoop]; });
@@ -501,6 +527,7 @@ cleanup:
     const AVCodec *decoder = NULL;
     BOOL useHardware = self.hardwareDecodeEnabled &&
         !self.softwareFallbackActive;
+    if (useHardware) __sync_lock_test_and_set(&VCAMCaptureFFmpegHardwareLogs, 1);
     __block BOOL producedFrame = NO;
     __block BOOL loggedSoftwareFrame = NO;
     BOOL loggedReceiveFailure = NO;
@@ -761,6 +788,7 @@ cleanup:
     }
 
 cleanup:
+    if (useHardware) __sync_lock_release(&VCAMCaptureFFmpegHardwareLogs);
     av_dict_free(&options);
     av_packet_free(&packet);
     av_frame_free(&frame);

@@ -177,6 +177,14 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("packetDiagnostic <= 4", decoder)
         self.assertIn("VCAMConfiguration appendProcessLog", decoder)
 
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[DEBUG-vtff]", stream)
+        self.assertIn("count <= 40", stream)
+        self.assertIn("level > AV_LOG_WARNING", stream)
+        self.assertIn("VCAMCaptureFFmpegHardwareLogs", stream)
+
 
 if __name__ == "__main__":
     unittest.main()
