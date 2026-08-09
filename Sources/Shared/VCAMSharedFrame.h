@@ -30,6 +30,7 @@ typedef struct {
 typedef struct {
     CVPixelBufferRef _Nullable pixelBuffer;
     void *_Nullable surface;
+    void *_Nullable useCounter;
     VCAMSharedFrameMetadata metadata;
 } VCAMSharedSurfaceFrame;
 
