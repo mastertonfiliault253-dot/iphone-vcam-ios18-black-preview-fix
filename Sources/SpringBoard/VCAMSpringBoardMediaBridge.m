@@ -97,16 +97,29 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 }
 
 - (void)stopPlayback {
+    AVPlayer *retiredPlayer = self.player;
+    AVPlayerItemVideoOutput *retiredOutput = self.output;
+    AVPlayerLayer *retiredLayer = self.playerLayer;
     [self.displayLink invalidate];
     self.displayLink = nil;
-    [self.player pause];
-    [self.playerLayer removeFromSuperlayer];
+    [retiredLayer removeFromSuperlayer];
     self.playerLayer = nil;
-    // Releasing the player item releases its outputs. removeOutput: can wait
-    // on an HLS item's media queue and must not block SpringBoard's main thread.
     self.output = nil;
     self.player = nil;
     self.configuration = nil;
+    if (retiredPlayer != nil) {
+        // AVPlayer can synchronously wait on an HLS media queue while pausing
+        // or releasing its item. SpringBoard's main thread only detaches the
+        // old graph; teardown happens off-main while reload creates the next.
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                [retiredPlayer pause];
+                (void)retiredOutput;
+                (void)retiredLayer;
+            }
+        });
+        [VCAMConfiguration appendProcessLog:@"springboard HLS stop detached"];
+    }
 }
 
 - (void)stop {
