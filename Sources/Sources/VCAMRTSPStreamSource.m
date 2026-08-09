@@ -452,9 +452,11 @@ cleanup:
     // every frame. If both hardware paths produce nothing, fall back to the
     // FFmpeg software decoder so the camera keeps receiving frames, and retry
     // hardware every 30 seconds in case it recovers.
-    if (self.softwareFallbackActive &&
-        CACurrentMediaTime() < self.hardwareRetryDeadline) {
-        return [self decodeOneSessionSoftwareOnly];
+    if (self.softwareFallbackActive) {
+        if (CACurrentMediaTime() < self.hardwareRetryDeadline) {
+            return [self decodeOneSessionSoftwareOnly];
+        }
+        self.softwareFallbackActive = NO;
     }
     BOOL produced = [self decodeOneHardwareSession];
     if (produced || !self.running) {
@@ -502,6 +504,7 @@ cleanup:
     __block CFTimeInterval recoveryStartedAt = 0;
     const CFTimeInterval recoveryTimeLimit = 5.0;
     __block NSUInteger videoPacketsWithoutFrame = 0;
+    volatile int consecutiveSendFailures = 0;
     void (^handleDecodedFrame)(AVFrame *) = nil;
     NSString *urlString = self.streamURL.absoluteString;
     const char *url = urlString.UTF8String;
@@ -612,7 +615,10 @@ cleanup:
     if (packet == NULL || frame == NULL) goto cleanup;
 
     recoveryStartedAt = CACurrentMediaTime();
-    while (self.running && av_read_frame(formatContext, packet) >= 0) {
+    while (self.running &&
+           (useHardware || !self.hardwareDecodeEnabled ||
+            CACurrentMediaTime() < self.hardwareRetryDeadline) &&
+           av_read_frame(formatContext, packet) >= 0) {
         if ((waitingForKeyPacket || awaitingCleanKeyFrame) &&
             recoveryStartedAt > 0 &&
             CACurrentMediaTime() - recoveryStartedAt > recoveryTimeLimit) {
@@ -666,7 +672,6 @@ cleanup:
             }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
-            static volatile int consecutiveSendFailures = 0;
             while (self.running) {
                 sendResult = avcodec_send_packet(codecContext, packet);
                 if (sendResult != AVERROR(EAGAIN)) break;
@@ -735,6 +740,11 @@ cleanup:
             }
         }
         av_packet_unref(packet);
+    }
+    if (!useHardware && self.hardwareDecodeEnabled && self.running &&
+        CACurrentMediaTime() >= self.hardwareRetryDeadline) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ software retry window elapsed; retrying hardware", self.streamName]];
     }
 
 cleanup:
