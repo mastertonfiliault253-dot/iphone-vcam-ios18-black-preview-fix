@@ -129,7 +129,6 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertEqual(
             entitlements,
             {
-                "platform-application": True,
                 "com.apple.private.memorystatus": True,
                 "com.apple.videotoolbox.hardwarevideodecoder": True,
             },

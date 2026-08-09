@@ -6,9 +6,6 @@
 #include <libavcodec/avcodec.h>
 #include <string.h>
 
-#ifndef kVTVideoDecoderReferenceMissingErr
-#define kVTVideoDecoderReferenceMissingErr -12780
-#endif
 #ifndef kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
 #define kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder \
     CFSTR("EnableHardwareAcceleratedVideoDecoder")
@@ -698,10 +695,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (BOOL)start:(NSError **)error {
     if (_active) return YES;
-    NSDictionary *destinationAttributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-    };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = VCAMHardwareDecoderCallback,
         .decompressionOutputRefCon = (__bridge void *)self,
@@ -710,7 +703,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         kCFAllocatorDefault,
         _formatDescription,
         NULL,
-        (__bridge CFDictionaryRef)destinationAttributes,
+        NULL,
         &callback,
         &_session);
     if (status != noErr) {

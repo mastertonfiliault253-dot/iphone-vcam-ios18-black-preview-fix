@@ -83,6 +83,22 @@ python -m unittest discover -s tests -v
 python -m py_compile desktop\*.py scripts\*.py
 ```
 
+## Authorized device experiments
+
+Privileged tests on a real device require the device owner's explicit approval
+after the exact target, mutation, and risk have been stated. Record a read-only
+baseline first, change one variable at a time, and keep the exact CI package and
+its SHA-256 available for recovery. After each test, verify the package version,
+entitlements, launchd state, decoder logs, and visible behavior. A failed or
+inconclusive experiment must be reverted before another variable is introduced.
+
+For Mach-O entitlement experiments, restore by reinstalling the verified,
+signed CI package. A normal file copy is not a reliable code-signature backup.
+Never commit device credentials, authorization tokens, or private device logs.
+The `platform-application` and `com.apple.videotoolbox.leghorn` VideoToolbox
+experiments were each explicitly authorized, tested as separate single
+variables, found ineffective, and therefore are not shipped.
+
 ## Device acceptance
 
 1. Confirm loaded images stay static and long videos loop without increasing

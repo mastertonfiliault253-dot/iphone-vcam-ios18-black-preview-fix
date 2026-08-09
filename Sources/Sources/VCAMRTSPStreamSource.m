@@ -696,11 +696,15 @@ cleanup:
                 av_packet_unref(packet);
                 continue;
             }
-            // RTP H.264/HEVC streams carry SPS/PPS as separate small packets
-            // that are NOT flagged as keyframes. Skipping them starves the
-            // decoder of parameter sets and makes VideoToolbox fail every
-            // IDR with -12780. Feed every packet; gate only the OUTPUT until
-            // a clean decoded keyframe proves the reference state is intact.
+            // A hardware session joined mid-GOP cannot decode dependent
+            // pictures. RTSP already has SDP parameter sets in extradata, and
+            // HLS carries its in-band parameter sets in the key access unit,
+            // so wait for that unit instead of poisoning VideoToolbox.
+            if (useHardware && waitingForKeyPacket &&
+                (packet->flags & AV_PKT_FLAG_KEY) == 0) {
+                av_packet_unref(packet);
+                continue;
+            }
             if (waitingForKeyPacket && (packet->flags & AV_PKT_FLAG_KEY) != 0) {
                 waitingForKeyPacket = NO;
                 awaitingCleanKeyFrame = YES;

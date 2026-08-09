@@ -8,7 +8,6 @@ ROOT = pathlib.Path(__file__).parents[1]
 class HardwareDecoderTests(unittest.TestCase):
     def test_vcamd_has_hardware_decoder_entitlement(self) -> None:
         entitlements = (ROOT / "vcamd.entitlements").read_text(encoding="utf-8")
-        self.assertIn("platform-application", entitlements)
         self.assertIn("com.apple.videotoolbox.hardwarevideodecoder", entitlements)
 
     def test_video_toolbox_session_uses_ios_default_decoder(self) -> None:
@@ -22,6 +21,8 @@ class HardwareDecoderTests(unittest.TestCase):
         )[0]
         self.assertIn("NULL,", create)
         self.assertNotIn("_decoderSpecification", create)
+        self.assertNotIn("destinationAttributes", create)
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
         self.assertNotIn("UsingHardwareAcceleratedVideoDecoder", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
@@ -30,6 +31,7 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("kVTVideoDecoderReferenceMissingErr", decoder)
+        self.assertNotIn("#define kVTVideoDecoderReferenceMissingErr", decoder)
         self.assertIn("reference frame missing", decoder)
         self.assertIn("status == noErr || status == kVTVideoDecoderReferenceMissingErr", decoder)
 
@@ -116,6 +118,19 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("timelineOrigin = pts", rtsp)
         self.assertIn("pts = CMTimeSubtract(pts, timelineOrigin)", rtsp)
         self.assertIn("duration:VCAMPacketDuration(packet, stream)", rtsp)
+
+    def test_ffmpeg_hardware_session_skips_pre_key_dependent_packets(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        loop = stream.split("- (BOOL)decodeOneSessionSoftwareOnly", 1)[1].split(
+            "cleanup:", 1
+        )[0]
+        guard = "useHardware && waitingForKeyPacket &&"
+        self.assertIn(guard, loop)
+        self.assertLess(
+            loop.index(guard), loop.index("avcodec_send_packet(codecContext, packet)")
+        )
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
