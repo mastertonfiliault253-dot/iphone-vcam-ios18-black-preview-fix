@@ -65,7 +65,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
 @property(nonatomic) BOOL localVideo;
-@property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic, copy, nullable) NSString *lastError;
 @end
 
@@ -135,7 +134,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.player = nil;
     self.configuration = nil;
     self.localVideo = NO;
-    self.sourceTransform = CGAffineTransformIdentity;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -252,10 +250,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     // resume is still required on iOS 16.1. Disabling it leaves rate=0 after
     // the first HLS frame even as the server playlist continues advancing.
     self.player.automaticallyWaitsToMinimizeStalling = YES;
-    AVAssetTrack *videoTrack = localVideo
-        ? [[item.asset tracksWithMediaType:AVMediaTypeVideo] firstObject] : nil;
-    self.sourceTransform = videoTrack == nil
-        ? CGAffineTransformIdentity : videoTrack.preferredTransform;
+    // AVPlayerItemVideoOutput already returns display-oriented pixels. Applying
+    // the asset preferredTransform again rotated some Photos videos by 180°.
     if (localVideo) {
         __weak typeof(self) weakSelf = self;
         self.playbackEndObserver = [NSNotificationCenter.defaultCenter
@@ -293,8 +289,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [self.player play];
     self.displayLink = [CADisplayLink displayLinkWithTarget:self
                                                    selector:@selector(tick:)];
-    self.displayLink.preferredFramesPerSecond =
-        MAX(1, MIN(60, next.preferredFramesPerSecond));
+    NSInteger sourceFramesPerSecond = MAX(1, MIN(60, next.preferredFramesPerSecond));
+    // HLS frames arrive in segment bursts. Sampling at the nominal 30 Hz can
+    // skip two decoded frames that become available between adjacent ticks.
+    // A 60 Hz display link still publishes only when AVPlayer reports a new
+    // pixel buffer, so it improves cadence without duplicating shared frames.
+    self.displayLink.preferredFramesPerSecond = localVideo ? sourceFramesPerSecond : 60;
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     NSString *startFormat = localVideo
         ? @"springboard local video start url=%@ output=%d layer=%d fps=%ld"
@@ -332,13 +332,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     CGRect extent = image.extent;
     image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
         -CGRectGetMidX(extent), -CGRectGetMidY(extent))];
-    BOOL sourceMirrored = self.sourceTransform.a * self.sourceTransform.d -
-        self.sourceTransform.b * self.sourceTransform.c < 0;
-    if (sourceMirrored != self.configuration.mirrorHorizontally) {
+    if (self.configuration.mirrorHorizontally) {
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(-1, 1)];
     }
-    CGFloat radians = atan2(self.sourceTransform.b, self.sourceTransform.a) +
-        self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
+    CGFloat radians = self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
     if (fabs(radians) > 0.0001) {
         image = [image imageByApplyingTransform:CGAffineTransformMakeRotation(radians)];
     }

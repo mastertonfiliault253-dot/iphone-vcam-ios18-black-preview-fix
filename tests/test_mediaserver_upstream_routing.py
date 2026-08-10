@@ -227,6 +227,11 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
 
     def test_ios16_observed_p420_preview_does_not_depend_on_capability_probe(self) -> None:
         utils = UTILS_PATH.read_text(encoding="utf-8")
+        compressed_formats = _between(
+            utils,
+            "static BOOL VCAMFormatIsCompressedVideoRange",
+            "static CVReturn VCAMCreateStagingPool",
+        )
         support = _between(
             utils,
             "BOOL VCAMTargetBufferIsSupported",
@@ -237,6 +242,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "if (compressedVideoRange)",
             "return CVPixelBufferGetWidthOfPlane",
         )
+        self.assertIn("format == (OSType)0x70343230", compressed_formats)
         self.assertIn("format == (OSType)0x70343230", compressed_branch)
 
     def test_ios16_observed_deferred_photo_format_uses_compressed_transfer(self) -> None:

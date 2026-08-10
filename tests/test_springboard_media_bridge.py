@@ -51,6 +51,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMLiveEdgeLagSeconds", source)
         self.assertIn("liveLag=%.3f", source)
         self.assertIn("8ULL * 1000000000ULL", source)
+        self.assertIn("localVideo ? sourceFramesPerSecond : 60", source)
 
     def test_local_video_reuses_native_player_pipeline_and_keeps_daemon_rollback(self) -> None:
         source = (
@@ -67,6 +68,8 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", source)
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", producer)
         self.assertIn("VCAMLocalMediaPathIsVideo", producer)
+        self.assertNotIn("videoTrack.preferredTransform", source)
+        self.assertIn("AVPlayerItemVideoOutput already returns display-oriented pixels", source)
 
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:
         source = (

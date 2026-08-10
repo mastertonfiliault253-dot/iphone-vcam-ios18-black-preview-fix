@@ -6,6 +6,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
 #import <limits.h>
+#import <math.h>
 #import <notify.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -333,6 +334,11 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     // stacking a second dot. All controller instances then share one window.
     for (UIWindow *candidate in [self allVisibleWindows]) {
         if ([candidate.accessibilityIdentifier isEqualToString:VCAMFloatingWindowIdentifier]) {
+            if (candidate.rootViewController == nil) {
+                UIViewController *rootController = [UIViewController new];
+                rootController.view.backgroundColor = UIColor.clearColor;
+                candidate.rootViewController = rootController;
+            }
             self.floatingWindow = candidate;
             return candidate;
         }
@@ -347,6 +353,9 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     // but below system alerts, Control Center and the lock screen.
     window.windowLevel = UIWindowLevelStatusBar + 1.0;
     window.backgroundColor = UIColor.clearColor;
+    UIViewController *rootController = [UIViewController new];
+    rootController.view.backgroundColor = UIColor.clearColor;
+    window.rootViewController = rootController;
     window.hidden = YES;
     self.floatingWindow = window;
     return window;
@@ -488,8 +497,15 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     CGFloat x = [position[@"x"] doubleValue];
     CGFloat y = [position[@"y"] doubleValue];
     if (x <= 0 || x >= 1 || y <= 0 || y >= 1) return nil;
-    return [NSValue valueWithCGPoint:CGPointMake(x * CGRectGetWidth(window.bounds),
-                                                 y * CGRectGetHeight(window.bounds))];
+    CGFloat width = CGRectGetWidth(window.bounds);
+    CGFloat height = CGRectGetHeight(window.bounds);
+    if (width <= 0 || height <= 0) return nil;
+    // Older builds saved the button's fixed (26,26) center instead of the
+    // floating window center, pinning every host to the top-left on restart.
+    CGFloat legacyTopLeftX = 26.0 / width;
+    CGFloat legacyTopLeftY = 26.0 / height;
+    if (fabs(x - legacyTopLeftX) < 0.005 && fabs(y - legacyTopLeftY) < 0.005) return nil;
+    return [NSValue valueWithCGPoint:CGPointMake(x * width, y * height)];
 }
 
 - (void)saveFloatingButtonPositionInWindow:(UIWindow *)window {
@@ -497,8 +513,8 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     NSMutableDictionary *positions =
         [[VCAMConfiguration currentValues][@"floatingButtonPositions"] mutableCopy] ?: [NSMutableDictionary dictionary];
     positions[[self floatingPositionIdentifier]] = @{
-        @"x": @(self.button.center.x / CGRectGetWidth(window.bounds)),
-        @"y": @(self.button.center.y / CGRectGetHeight(window.bounds)),
+        @"x": @(self.floatingWindow.center.x / CGRectGetWidth(window.bounds)),
+        @"y": @(self.floatingWindow.center.y / CGRectGetHeight(window.bounds)),
     };
     [self updatePreferences:@{@"floatingButtonPositions": positions}];
 }
@@ -534,13 +550,14 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     self.button = button;
     if (button == nil) return;
 
-    if (button.superview != floatingWindow) {
+    UIView *floatingContentView = floatingWindow.rootViewController.view;
+    if (button.superview != floatingContentView) {
         [button removeFromSuperview];
-        button.frame = floatingWindow.bounds;
+        button.frame = floatingContentView.bounds;
         floatingWindow.frame = CGRectMake(10.0, CGRectGetMidY(window.bounds) - 26.0, 52.0, 52.0);
         NSValue *savedCenter = [self savedFloatingButtonCenterForWindow:window];
         if (savedCenter != nil) floatingWindow.center = savedCenter.CGPointValue;
-        [floatingWindow addSubview:button];
+        [floatingContentView addSubview:button];
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
@@ -557,7 +574,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         !locked && !panelOpen && !hostInactive;
     floatingWindow.hidden = !visible;
     button.hidden = NO;
-    [floatingWindow bringSubviewToFront:button];
+    [floatingContentView bringSubviewToFront:button];
     [VCAMConfiguration appendProcessLog:
         [NSString stringWithFormat:@"springboard-client installButton host=%@ hostWindow=%@ floatingWindow=%@ hidden=%d frame=%@",
             NSProcessInfo.processInfo.processName ?: @"(unknown)",

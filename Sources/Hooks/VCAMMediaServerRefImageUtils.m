@@ -33,6 +33,7 @@ static CFDictionaryRef VCAMLastCompressedVirtualFrameCreationAttributes;
 static CVPixelBufferRef VCAMLastVirtualFrame;
 static CFAbsoluteTime VCAMLastVirtualFrameHostTime;
 static CIContext *VCAMContext;
+static CGColorSpaceRef VCAMStandardColorSpace;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
 // Keep the process-lifetime session in an availability-neutral CF slot. The
@@ -55,6 +56,7 @@ static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
         format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
         format == kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange ||
         format == kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange ||
+        format == (OSType)0x70343230 || // iOS 16.1 Camera preview 'p420'
         format == (OSType)0x5b387630 || // observed private compressed '[8v0'
         format == (OSType)0x7d387630 || // observed private compressed '}8v0'
         format == (OSType)0x26386630 || // observed private bi-planar '&8f0'
@@ -277,6 +279,7 @@ void loadReplacementMedia(void) {
         VCAMContext = device != nil
             ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
             : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         VCAMReaderLock = [NSLock new];
         VCAMPixelTransferLock = [NSLock new];
         CVReturn result = VCAMCreateStagingPool(
@@ -398,18 +401,17 @@ static BOOL VCAMFillBlackSharedFrame(CVPixelBufferRef pixelBuffer) {
     return YES;
 }
 
-static void VCAMCopyColorAttachments(CVPixelBufferRef sourceBuffer,
-                                     CVPixelBufferRef destinationBuffer) {
-    const CFStringRef keys[] = {
-        kCVImageBufferColorPrimariesKey,
-        kCVImageBufferTransferFunctionKey,
-        kCVImageBufferYCbCrMatrixKey,
-    };
-    for (NSUInteger index = 0; index < sizeof(keys) / sizeof(keys[0]); index++) {
-        CVAttachmentMode mode = kCVAttachmentMode_ShouldNotPropagate;
-        CFTypeRef value = CVBufferGetAttachment(sourceBuffer, keys[index], &mode);
-        if (value != NULL) CVBufferSetAttachment(destinationBuffer, keys[index], value, mode);
-    }
+static void VCAMSetStandardColorAttachments(CVPixelBufferRef buffer) {
+    if (buffer == NULL) return;
+    CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey,
+                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey,
+                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
 }
 
 static void VCAMMergeGraphAttachments(CVPixelBufferRef sourceBuffer,
@@ -447,7 +449,10 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
         VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) return NO;
 
     CVBufferRemoveAllAttachments(stagingBuffer);
-    VCAMCopyColorAttachments(originalTargetBuffer, stagingBuffer);
+    // The shared canvas is standard-range sRGB/Rec.709 content. Reusing the
+    // physical camera's HDR/headroom tags makes saved virtual photos visibly
+    // darker and over-contrasted.
+    VCAMSetStandardColorAttachments(stagingBuffer);
 
     OSStatus transferStatus = kCVReturnUnsupported;
     if (@available(iOS 16.0, *)) {
@@ -472,6 +477,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
         return NO;
     }
     VCAMMergeGraphAttachments(originalTargetBuffer, replacementTargetBuffer);
+    VCAMSetStandardColorAttachments(replacementTargetBuffer);
     return YES;
 }
 
@@ -627,7 +633,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         // Landscape sensor storage receives a downstream clockwise display
         // transform, so store portrait sources one quarter-turn left first.
         // Checking both aspects avoids rotating a future landscape source.
-        if (targetWidth > targetHeight &&
+        if (realtimeBudget && targetWidth > targetHeight &&
             CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
         }
@@ -655,6 +661,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];
+        VCAMSetStandardColorAttachments(renderBuffer);
+        destination.colorSpace = VCAMStandardColorSpace;
         NSError *startError = nil;
         CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         CIRenderTask *task = [VCAMContext startTaskToRender:image

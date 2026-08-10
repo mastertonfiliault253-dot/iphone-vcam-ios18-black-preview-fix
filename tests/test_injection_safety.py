@@ -204,11 +204,13 @@ class InjectionSafetyTests(unittest.TestCase):
 
         self.assertIn("#import <ImageIO/CGImageProperties.h>", implementation)
         self.assertIn("targetWidth > targetHeight &&", render)
+        self.assertIn("realtimeBudget &&", render)
         self.assertIn(
             "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
             render,
         )
         self.assertIn("imageByApplyingOrientation:kCGImagePropertyOrientationLeft", render)
+        self.assertIn("VCAMSetStandardColorAttachments", implementation)
         self.assertLess(
             render.index("imageByApplyingOrientation:kCGImagePropertyOrientationLeft"),
             render.index("CGAffineTransformMakeScale"),

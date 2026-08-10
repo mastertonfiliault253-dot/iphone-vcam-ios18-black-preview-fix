@@ -404,8 +404,27 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMFloatingWindowIdentifier", picker)
         self.assertIn("installGestureOnWindowIfNeeded", picker)
         self.assertIn("UIWindowLevelStatusBar", picker)
+        self.assertIn("window.rootViewController = rootController", picker)
+        self.assertIn("floatingWindow.rootViewController.view", picker)
         self.assertIn("presentPanelWithRemainingRetries", picker)
         self.assertIn("accessibilityLabel", panel)
+
+    def test_floating_dot_saves_the_window_center_and_migrates_buggy_top_left_state(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        saved = picker.split("- (nullable NSValue *)savedFloatingButtonCenterForWindow:", 1)[1].split(
+            "- (void)saveFloatingButtonPositionInWindow:", 1
+        )[0]
+        write = picker.split("- (void)saveFloatingButtonPositionInWindow:", 1)[1].split(
+            "- (void)installButtonWhenWindowIsReady", 1
+        )[0]
+        self.assertIn("legacyTopLeftX", saved)
+        self.assertIn("legacyTopLeftY", saved)
+        self.assertIn("self.floatingWindow.center.x", write)
+        self.assertIn("self.floatingWindow.center.y", write)
+        self.assertNotIn("self.button.center.x", write)
+        self.assertNotIn("self.button.center.y", write)
 
     def test_three_finger_toggle_can_coexist_with_host_gestures(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
