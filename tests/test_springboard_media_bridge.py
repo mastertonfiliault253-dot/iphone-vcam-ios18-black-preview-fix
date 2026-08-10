@@ -108,6 +108,9 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
             self.assertIn("VCAMXPCMachServiceCreate(", source)
             self.assertIn("VCAMXPCRelease(", source)
             self.assertNotIn("extern xpc_connection_t xpc_connection_create_mach_service", source)
+        self.assertIn('"xpc_connection_get_pid"', server)
+        self.assertIn("VCAMXPCConnectionGetPID(", server)
+        self.assertNotIn("pid_t pid = xpc_connection_get_pid(peer)", server)
 
     def test_iosurface_bootstrap_keeps_mmap_live_until_consumer_ready(self) -> None:
         bridge = (

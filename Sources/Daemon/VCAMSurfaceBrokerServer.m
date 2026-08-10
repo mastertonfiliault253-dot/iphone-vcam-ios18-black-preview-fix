@@ -79,6 +79,7 @@ static xpc_type_t VCAMXPCTypeDictionary(void) {
 
 typedef xpc_connection_t (*VCAMXPCMachServiceCreateFunction)(
     const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
+typedef pid_t (*VCAMXPCConnectionGetPIDFunction)(xpc_connection_t connection);
 
 static xpc_connection_t VCAMXPCMachServiceCreate(
     const char *name, dispatch_queue_t queue, uint64_t flags) {
@@ -92,9 +93,19 @@ static xpc_connection_t VCAMXPCMachServiceCreate(
     return createFunction != NULL ? createFunction(name, queue, flags) : NULL;
 }
 
+static pid_t VCAMXPCConnectionGetPID(xpc_connection_t connection) {
+    static VCAMXPCConnectionGetPIDFunction getPIDFunction;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *symbol = dlsym(RTLD_DEFAULT, "xpc_connection_get_pid");
+        memcpy(&getPIDFunction, &symbol, sizeof(getPIDFunction));
+    });
+    return getPIDFunction != NULL ? getPIDFunction(connection) : -1;
+}
+
 static bool VCAMSurfaceBrokerPeerIs(xpc_connection_t peer,
                                     const char *expectedName) {
-    pid_t pid = xpc_connection_get_pid(peer);
+    pid_t pid = VCAMXPCConnectionGetPID(peer);
     char name[64] = {0};
     return pid > 0 && proc_name(pid, name, sizeof(name)) > 0 &&
         strcmp(name, expectedName) == 0;
@@ -123,7 +134,7 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         if (VCAMBrokerRegistry != NULL) VCAMXPCRelease(VCAMBrokerRegistry);
         VCAMBrokerRegistry = registry;
         fprintf(stderr, "vcamd IOSurface registry published pid=%d\n",
-                xpc_connection_get_pid(peer));
+                VCAMXPCConnectionGetPID(peer));
         fflush(stderr);
         return;
     }
