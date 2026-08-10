@@ -43,11 +43,13 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "static NSString *VCAMNormalizedMediaName", 1
         )[0]
         self.assertIn("fallbackIdentifier", selector)
+        self.assertIn("preferredExtension", selector)
+        self.assertIn("[extension isEqualToString:preferredExtension]", selector)
         self.assertIn("registeredType.preferredFilenameExtension", selector)
         self.assertIn("VCAMIsSupportedMediaExtension", selector)
         self.assertLess(
             selector.index("VCAMIsSupportedMediaExtension"),
-            selector.index("return fallbackIdentifier"),
+            selector.index("return supportedIdentifier"),
         )
 
     def test_broker_preflights_import_before_client_sends_payload(self) -> None:
@@ -183,7 +185,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("kCGImageSourceCreateThumbnailFromImageAlways", source)
         self.assertIn("kCGImageSourceCreateThumbnailWithTransform", source)
 
-    def test_photo_picker_normalizes_images_before_broker_import(self) -> None:
+    def test_photo_picker_preserves_the_original_file_representation(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"
         )
@@ -191,11 +193,25 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "- (void)promptForOnlineVideo", 1
         )[0]
 
-        self.assertIn("loadObjectOfClass:UIImage.class", callback)
-        self.assertIn("UIGraphicsImageRenderer", callback)
-        self.assertIn("UIImageJPEGRepresentation", callback)
-        self.assertIn('@"selected.jpg"', callback)
         self.assertIn("loadFileRepresentationForTypeIdentifier", callback)
+        self.assertIn("VCAMNormalizedMediaName(suggestedName, url, mediaType)", callback)
+        self.assertNotIn("loadObjectOfClass:UIImage.class", callback)
+        self.assertNotIn("UIGraphicsImageRenderer", callback)
+        self.assertNotIn("UIImageJPEGRepresentation", callback)
+        self.assertIn("PHPickerConfigurationAssetRepresentationModeCurrent", picker)
+        self.assertNotIn("PHPickerConfigurationAssetRepresentationModeCompatible", picker)
+
+    def test_each_import_gets_a_new_path_and_old_imports_are_bounded(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        receiver = configuration.split(
+            "+ (nullable NSString *)receiveImportedMediaFromClient:", 1
+        )[1].split("+ (nullable NSString *)importMediaAtURL:", 1)[0]
+
+        self.assertIn('[@"selected-" stringByAppendingString:NSUUID.UUID.UUIDString]', receiver)
+        self.assertIn("VCAMPruneImportedMediaFiles", receiver)
+        self.assertNotIn('[NSString stringWithFormat:@"selected.%@", extension]', receiver)
 
     def test_video_reader_validates_the_first_frame_before_start_succeeds(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
@@ -297,10 +313,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(action, picker)
         self.assertIn(
-            "PHPickerConfigurationAssetRepresentationModeCompatible", picker
+            "PHPickerConfigurationAssetRepresentationModeCurrent", picker
         )
         self.assertNotIn(
-            "PHPickerConfigurationAssetRepresentationModeCurrent", picker
+            "PHPickerConfigurationAssetRepresentationModeCompatible", picker
         )
         for title in (
             "从相册选择",

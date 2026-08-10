@@ -1,6 +1,7 @@
 #import "VCAMRTSPStreamSource.h"
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import "../Daemon/VCAMPixelConverter.h"
+#import "../Shared/VCAMSharedFrame.h"
 #import <QuartzCore/QuartzCore.h>
 #import <errno.h>
 #import <math.h>
@@ -231,7 +232,10 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
         }
 
         @autoreleasepool {
-            CVPixelBufferRef pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
+            CVPixelBufferRef pixelBuffer = VCAMCopyNV12FromAVFrame(frame);
+            if (pixelBuffer == NULL) {
+                pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
+            }
             if (pixelBuffer != NULL) {
                 [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
                 CVPixelBufferRelease(pixelBuffer);
@@ -768,7 +772,13 @@ cleanup:
                     restartSession = YES;
                 }
             }
-            if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 300) {
+            // A publisher restart can leave either decoder consuming packets
+            // without producing frames after this session previously worked.
+            // Reconnect so FFmpeg rebuilds SDP/extradata and codec state.
+            if (videoPacketsWithoutFrame >= 300) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ decoder stalled hardware=%d packets=300; reconnecting",
+                    self.streamName, useHardware]];
                 av_packet_unref(packet);
                 break;
             }
@@ -794,6 +804,25 @@ cleanup:
     avcodec_free_context(&codecContext);
     avformat_close_input(&formatContext);
     return producedFrame;
+}
+
+- (CVPixelBufferRef)copyNativePixelBufferForSharedCanvas {
+    CVPixelBufferRef pixelBuffer = NULL;
+    @synchronized (self) {
+        if (!self.running || _latestPixelBuffer == NULL ||
+            CACurrentMediaTime() - _latestFrameHostTime >= 3.5 ||
+            self.configuration.mirrorHorizontally ||
+            self.configuration.rotationDegrees % 360 != 0 ||
+            CVPixelBufferGetWidth(_latestPixelBuffer) != VCAMSharedFrameWidth ||
+            CVPixelBufferGetHeight(_latestPixelBuffer) != VCAMSharedFrameHeight) {
+            return NULL;
+        }
+        OSType format = CVPixelBufferGetPixelFormatType(_latestPixelBuffer);
+        if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+            format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NULL;
+        pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
+    }
+    return pixelBuffer;
 }
 
 - (CMSampleBufferRef)copyDirectPreviewSample {

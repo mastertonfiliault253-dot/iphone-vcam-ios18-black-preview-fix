@@ -318,8 +318,14 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         VCAMStringMatches(outputName, @"VideoCapture")) {
         return VCAMReplacementRouteCameraSourceVideo;
     }
+    // iOS 16 emits the raw still source as private pf20 on the target device.
+    // That surface cannot be rendered safely, and suppressing it prevents the
+    // verified downstream 420f Meteor Headroom stage from producing a photo.
+    // Pass unsupported private source frames only inside the media graph; the
+    // downstream still-photo route remains the fail-closed app boundary.
     if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
-        VCAMStringMatches(outputName, @"StillImage")) {
+        VCAMStringMatches(outputName, @"StillImage") &&
+        VCAMTargetBufferIsSupported(pixelBuffer)) {
         return VCAMReplacementRouteStillPhoto;
     }
 

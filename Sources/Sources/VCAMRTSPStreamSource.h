@@ -12,6 +12,7 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> *VCAMRTSPPerformanceSnapshot(void
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
                               renderer:(VCAMFrameRenderer *)renderer;
 - (nullable CMSampleBufferRef)copyDirectPreviewSample CF_RETURNS_RETAINED;
+- (nullable CVPixelBufferRef)copyNativePixelBufferForSharedCanvas CF_RETURNS_RETAINED;
 @end
 
 NS_ASSUME_NONNULL_END

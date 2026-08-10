@@ -6,7 +6,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Live stream health observed by the panel preview: whether a fresh shared
 /// frame arrived recently, how old the newest frame is, and the measured
-/// preview copy rate. Used by the floating panel to show stream status.
+/// preview copy rate. Used by the floating panel to show stream status. Must
+/// be called on the main thread.
 + (NSDictionary<NSString *, id> *)streamingStatus;
 
 @end

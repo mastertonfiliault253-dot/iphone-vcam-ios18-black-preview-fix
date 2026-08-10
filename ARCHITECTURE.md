@@ -2,8 +2,10 @@
 
 VCAM separates media production, camera replacement and control UI:
 
-- `vcamd` owns local image, OBS and RTSP decoding. It publishes the latest
-  1080x1920 BGRA frame through a three-slot shared mmap.
+- `vcamd` owns local image, OBS and RTSP decoding. RTSP publishes native 8-bit
+  NV12 through the three-slot IOSurface ring when no transform is required;
+  local image/OBS and the surface-handshake fallback use the 1080x1920 BGRA
+  three-slot mmap.
 - `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
   validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
   client.
@@ -22,8 +24,8 @@ VCAM separates media production, camera replacement and control UI:
 `VCAMFrameRenderer` normalizes orientation, content mode, mirroring and target
 size before publication. Audio is never replaced.
 
-The native local-video/HLS bridge renders directly into a three-slot IOSurface
-ring. The vcamd
+The native local-video/HLS bridge and eligible RTSP frames publish into a
+three-slot IOSurface ring. The vcamd
 launchd Mach service relays only the three IOSurface XPC rights from SpringBoard
 to mediaserverd and verifies both peer process names; frame bytes never pass
 through the daemon. mediaserverd retains the selected surface while rendering

@@ -10,8 +10,9 @@ payment or authentication decisions.
 
 The media hook and UI overlay have separate injection scopes:
 
-- `mediaserverd`: reads the latest 1080×1920 BGRA frame from a three-slot shared
-  mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
+- `mediaserverd`: reads the latest 1080×1920 frame from the three-slot NV12
+  IOSurface transport, with the three-slot BGRA mmap as handshake fallback, and
+  replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
   observed BGRA and bi-planar YUV formats. Device-private compressed recording
   buffers use a target-sized public `420v` staging surface and VideoToolbox pixel
@@ -48,9 +49,9 @@ when enabled, without pre-decoding the entire asset into memory.
 
 ## Sources
 
-- Photos or Files: Photos-picker images are decoded and orientation-normalized
-  once to JPEG before import; Files/legacy PNG, JPEG and HEIC/HEIF retain the
-  ImageIO static decoder and frame cache. MOV, MP4 and M4V use SpringBoard's
+- Photos or Files: both pickers broker-copy the original selected representation
+  and preserve its extension and bytes. PNG, JPEG and HEIC/HEIF use the ImageIO
+  static decoder and frame cache. MOV, MP4 and M4V use SpringBoard's
   system `AVPlayer`, output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
@@ -58,6 +59,8 @@ when enabled, without pre-decoding the entire asset into memory.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
   it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
   where available, and a latest-only bounded software-conversion fallback.
+  Native 8-bit NV12/YUV420 frames publish through the IOSurface ring without a
+  BGRA round trip; mmap remains the automatic consumer-handshake fallback.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
   rotation, mirroring, fit/fill, scale and NV12-to-BGRA conversion in one

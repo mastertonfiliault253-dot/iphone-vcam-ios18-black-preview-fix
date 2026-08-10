@@ -78,15 +78,19 @@ static BOOL VCAMIsSupportedMediaExtension(NSString *extension) {
 
 static NSString *VCAMConcreteProviderTypeIdentifier(NSItemProvider *provider, UTType *mediaKind) {
     NSString *fallbackIdentifier = nil;
+    NSString *supportedIdentifier = nil;
+    NSString *preferredExtension = provider.suggestedName.pathExtension.lowercaseString;
     for (NSString *identifier in provider.registeredTypeIdentifiers) {
         UTType *registeredType = [UTType typeWithIdentifier:identifier];
         if (registeredType == nil || ![registeredType conformsToType:mediaKind]) continue;
         if (fallbackIdentifier == nil) fallbackIdentifier = identifier;
-        if (VCAMIsSupportedMediaExtension(registeredType.preferredFilenameExtension)) {
-            return identifier;
-        }
+        NSString *extension = registeredType.preferredFilenameExtension.lowercaseString;
+        if (!VCAMIsSupportedMediaExtension(extension)) continue;
+        if (supportedIdentifier == nil) supportedIdentifier = identifier;
+        if (preferredExtension.length > 0 &&
+            [extension isEqualToString:preferredExtension]) return identifier;
     }
-    return fallbackIdentifier ?: mediaKind.identifier;
+    return supportedIdentifier ?: fallbackIdentifier ?: mediaKind.identifier;
 }
 
 static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
@@ -861,10 +865,11 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     configuration.filter = [PHPickerFilter anyFilterMatchingSubfilters:
         @[PHPickerFilter.imagesFilter, PHPickerFilter.videosFilter]];
     configuration.selectionLimit = 1;
-    // Ask Photos for a broadly decodable representation instead of forcing
-    // the original HEVC asset into the root daemon's software fallback.
+    // SpringBoard AVPlayer and ImageIO consume the original Photos asset.
+    // Asking for a compatible copy silently transcodes HEVC/HEIF and strips
+    // image color metadata before VCAM ever sees the file.
     configuration.preferredAssetRepresentationMode =
-        PHPickerConfigurationAssetRepresentationModeCompatible;
+        PHPickerConfigurationAssetRepresentationModeCurrent;
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
     picker.delegate = self;
     [[self presentingViewController] presentViewController:picker animated:YES completion:nil];
@@ -898,37 +903,6 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         return;
     }
     NSString *suggestedName = provider.suggestedName;
-    if (!isMovie) {
-        [provider loadObjectOfClass:UIImage.class completionHandler:^(id<NSItemProviderReading> object,
-                                                                      NSError *error) {
-            UIImage *image = [object isKindOfClass:UIImage.class] ? (UIImage *)object : nil;
-            if (image == nil || error != nil) {
-                [self showMessage:error.localizedDescription ?: @"读取相册图片失败" error:YES];
-                return;
-            }
-            CGSize pixelSize = image.CGImage == NULL ? image.size : CGSizeMake(
-                CGImageGetWidth(image.CGImage), CGImageGetHeight(image.CGImage));
-            UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-            format.scale = 1.0;
-            format.opaque = YES;
-            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
-                initWithSize:pixelSize format:format];
-            UIImage *normalized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-                [image drawInRect:(CGRect){CGPointZero, pixelSize}];
-            }];
-            NSData *data = UIImageJPEGRepresentation(normalized, 0.95);
-            NSURL *temporaryURL = [NSURL fileURLWithPath:[NSTemporaryDirectory()
-                stringByAppendingPathComponent:[NSString stringWithFormat:
-                    @"vcam-photo-%@.jpg", NSUUID.UUID.UUIDString]]];
-            if (data.length == 0 || ![data writeToURL:temporaryURL options:NSDataWritingAtomic error:&error]) {
-                [self showMessage:error.localizedDescription ?: @"转换相册图片失败" error:YES];
-                return;
-            }
-            [self installMediaFromTemporaryURL:temporaryURL suggestedName:@"selected.jpg"];
-            [[NSFileManager defaultManager] removeItemAtURL:temporaryURL error:nil];
-        }];
-        return;
-    }
     [provider loadFileRepresentationForTypeIdentifier:mediaType completionHandler:^(NSURL *url, NSError *error) {
         if (url == nil || error != nil) {
             [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];

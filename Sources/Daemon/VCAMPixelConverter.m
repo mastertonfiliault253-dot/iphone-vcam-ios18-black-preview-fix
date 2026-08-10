@@ -18,6 +18,21 @@ static const vImage_YpCbCrToARGBMatrix VCAMITU601Matrix = {
     .Cr_G = -0.7141f,
 };
 
+static const vImage_YpCbCrToARGBMatrix VCAMITU709Matrix = {
+    .Yp = 1.0f,
+    .Cb_G = -0.1873f,
+    .Cb_B = 1.8556f,
+    .Cr_R = 1.5748f,
+    .Cr_G = -0.4681f,
+};
+
+static const vImage_YpCbCrToARGBMatrix *VCAMYpCbCrMatrixForDimensions(
+    size_t width, size_t height) {
+    // FFmpeg reports AVCOL_SPC_UNSPECIFIED for many live H.264 publishers.
+    // Rec.709 is the conventional matrix for HD; SD remains Rec.601.
+    return MAX(width, height) >= 1280 ? &VCAMITU709Matrix : &VCAMITU601Matrix;
+}
+
 // The conversion queues are fixed threads (RTSP conversion queue and the
 // vcamd pipeline queue), so a thread-local scratch is safe without a lock.
 static __thread uint8_t *VCAMThreadScratch;
@@ -64,6 +79,8 @@ static BOOL VCAMRowBytesAligned(size_t rowBytes) {
 
 static BOOL VCAMPrepareYpCbCrInfo(BOOL fullRange,
                                   BOOL planar,
+                                  size_t width,
+                                  size_t height,
                                   vImage_YpCbCrToARGB *info) {
     if (info == NULL) return NO;
     vImage_YpCbCrPixelRange range;
@@ -92,7 +109,7 @@ static BOOL VCAMPrepareYpCbCrInfo(BOOL fullRange,
     }
     memset(info, 0, sizeof(*info));
     vImage_Error error = vImageConvert_YpCbCrToARGB_GenerateConversion(
-        &VCAMITU601Matrix, &range, info,
+        VCAMYpCbCrMatrixForDimensions(width, height), &range, info,
         planar ? kvImage420Yp8_Cb8_Cr8 : kvImage420Yp8_CbCr8,
         kvImageARGB8888, kvImageNoFlags);
     return error == kvImageNoError;
@@ -122,7 +139,7 @@ static BOOL VCAMConvertYUVToBGRA(BOOL nv12,
         return NO;
     }
     vImage_YpCbCrToARGB info;
-    if (!VCAMPrepareYpCbCrInfo(fullRange, !nv12, &info)) return NO;
+    if (!VCAMPrepareYpCbCrInfo(fullRange, !nv12, width, height, &info)) return NO;
     vImage_Buffer yp = {
         .data = (void *)luma,
         .height = height,
@@ -318,6 +335,78 @@ static BOOL VCAMDownsample10BitNV12To8Bit(const uint8_t *source,
         }
     }
     return YES;
+}
+
+CVPixelBufferRef VCAMCopyNV12FromAVFrame(AVFrame *frame) {
+    if (frame == NULL || frame->width <= 0 || frame->height <= 0 ||
+        (frame->width & 1) != 0 || (frame->height & 1) != 0 ||
+        MAX(frame->width, frame->height) > 1920) return NULL;
+    BOOL planar = frame->format == AV_PIX_FMT_YUV420P ||
+        frame->format == AV_PIX_FMT_YUVJ420P;
+    BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
+    if ((!planar && !nv12) || frame->data[0] == NULL ||
+        frame->data[1] == NULL || (planar && frame->data[2] == NULL) ||
+        frame->linesize[0] < frame->width ||
+        frame->linesize[1] < frame->width / (planar ? 2 : 1) ||
+        (planar && frame->linesize[2] < frame->width / 2)) return NULL;
+
+    BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
+        frame->color_range == AVCOL_RANGE_JPEG;
+    OSType pixelFormat = fullRange
+        ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+    };
+    CVPixelBufferRef pixelBuffer = NULL;
+    if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
+                            (size_t)frame->height, pixelFormat,
+                            (__bridge CFDictionaryRef)attributes,
+                            &pixelBuffer) != kCVReturnSuccess) return NULL;
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+        CVPixelBufferRelease(pixelBuffer);
+        return NULL;
+    }
+
+    size_t width = (size_t)frame->width;
+    size_t height = (size_t)frame->height;
+    uint8_t *destinationY = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+    uint8_t *destinationUV = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+    size_t destinationYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+    size_t destinationUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+    for (size_t row = 0; row < height; row++) {
+        memcpy(destinationY + row * destinationYStride,
+               frame->data[0] + row * (size_t)frame->linesize[0], width);
+    }
+    for (size_t row = 0; row < height / 2; row++) {
+        uint8_t *output = destinationUV + row * destinationUVStride;
+        const uint8_t *sourceU = frame->data[1] + row * (size_t)frame->linesize[1];
+        if (nv12) {
+            memcpy(output, sourceU, width);
+            continue;
+        }
+        const uint8_t *sourceV = frame->data[2] + row * (size_t)frame->linesize[2];
+        for (size_t column = 0; column < width / 2; column++) {
+            output[column * 2] = sourceU[column];
+            output[column * 2 + 1] = sourceV[column];
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+
+    if (frame->colorspace == AVCOL_SPC_BT709 ||
+        (frame->colorspace == AVCOL_SPC_UNSPECIFIED && MAX(width, height) >= 1280)) {
+        CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                              kCVImageBufferColorPrimaries_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                              kCVImageBufferTransferFunction_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+    }
+    return pixelBuffer;
 }
 
 CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {

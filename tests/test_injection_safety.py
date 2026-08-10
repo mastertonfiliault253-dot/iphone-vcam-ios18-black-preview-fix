@@ -193,7 +193,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
 
-    def test_landscape_sensor_outputs_are_pre_rotated_before_downstream_metadata(self) -> None:
+    def test_landscape_sensor_outputs_including_stills_are_pre_rotated(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
@@ -204,7 +204,10 @@ class InjectionSafetyTests(unittest.TestCase):
 
         self.assertIn("#import <ImageIO/CGImageProperties.h>", implementation)
         self.assertIn("targetWidth > targetHeight &&", render)
-        self.assertIn("realtimeBudget &&", render)
+        orientation_guard = render.split(
+            "imageByApplyingOrientation:kCGImagePropertyOrientationLeft", 1
+        )[0].rsplit("if (", 1)[1]
+        self.assertNotIn("realtimeBudget", orientation_guard)
         self.assertIn(
             "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
             render,

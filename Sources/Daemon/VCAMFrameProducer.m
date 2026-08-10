@@ -134,6 +134,28 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     return enabled;
 }
 
+- (BOOL)usesNativeSurfaceTransport {
+    __block BOOL enabled = NO;
+    dispatch_sync(self.stateQueue, ^{
+        enabled = self.configuration.enabled &&
+            self.configuration.sourceKind == VCAMSourceKindRTSP &&
+            [self.source isKindOfClass:VCAMRTSPStreamSource.class];
+    });
+    return enabled;
+}
+
+- (CVPixelBufferRef)copyNativePixelBufferForSharedCanvas {
+    __block CVPixelBufferRef pixelBuffer = NULL;
+    dispatch_sync(self.stateQueue, ^{
+        if (self.configuration.sourceKind == VCAMSourceKindRTSP &&
+            [self.source isKindOfClass:VCAMRTSPStreamSource.class]) {
+            pixelBuffer = [(VCAMRTSPStreamSource *)self.source
+                copyNativePixelBufferForSharedCanvas];
+        }
+    });
+    return pixelBuffer;
+}
+
 - (NSInteger)preferredFramesPerSecond {
     __block NSInteger framesPerSecond = 30;
     dispatch_sync(self.stateQueue, ^{ framesPerSecond = self.configuration.preferredFramesPerSecond; });

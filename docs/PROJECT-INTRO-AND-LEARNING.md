@@ -20,8 +20,9 @@ VCAM Media Bridge 是一个面向 iOS 16.0–16.5 的 rootless 越狱虚拟相�
 flowchart LR
     UI[SpringBoard 小白点/配置/选择器/预览] -->|broker 写入配置| CFG[(/var/mobile/Media/VCAM)]
     CFG --> VCAMD[/var/jb/usr/libexec/vcamd]
-    VCAMD -->|本地图片/OBS/RTSP latest BGRA| SHM[三槽 mmap]
-    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal| SURF[三槽 IOSurface]
+    VCAMD -->|本地图片/OBS 或回退 BGRA| SHM[三槽 mmap]
+    VCAMD -->|RTSP native NV12| SURF[三槽 IOSurface]
+    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal| SURF
     VCAMD -. XPC 权限中继 .-> SURF
     SHM --> MSD[mediaserverd: BWNodeOutput 替换]
     SURF --> MSD
@@ -36,7 +37,7 @@ flowchart LR
 - **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。
 - **vcamd（项目自己的 LaunchDaemon）**：负责本地图片、OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地视频/HLS 路径只作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
-- **共享帧**：daemon 源使用三槽 mmap；SpringBoard 本地视频/HLS 优先使用三槽 IOSurface，XPC 握手未完成时自动回退 mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
+- **共享帧**：本地图片/OBS 使用三槽 BGRA mmap；RTSP 在无需变换时优先发布 native NV12 IOSurface；SpringBoard 本地视频/HLS 也使用三槽 IOSurface。XPC 握手未完成时自动回退 mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 
 ## 3. 目录与源码地图
 
@@ -84,7 +85,7 @@ flowchart LR
 
 ### 本地图片
 
-相册选择的图片先由 Photos/`UIImage` 解码、校正方向并一次性规范化为 JPEG，再通过 Broker 原子导入，避免复杂分块 HEIF 选中辅助图或黑帧。文档选择器/旧配置中的 PNG/JPEG/HEIC 仍由 `CGImageSource` 解码一次；静态渲染结果缓存后无限期显示。
+相册和文档选择器都请求 provider 的 current 原始 representation，通过 Broker 原子复制并保留实际扩展名/字节；每次选择生成新的媒体路径，避免第二次选择仍被播放器判断为同一资源。PNG/JPEG/HEIC 由 `CGImageSource` 解码一次；静态渲染结果缓存后无限期显示。
 
 ### 本地视频
 
@@ -96,7 +97,7 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
 
 ### HLS
 
@@ -221,7 +222,7 @@ python -m unittest discover -s tests -v
 
 - 发布状态不得写死在本文。每次交付都必须重新执行 `git rev-parse HEAD`、`gh run list`、下载 CI artifact、核对 SHA-256，并把同一 DEB 安装到目标设备；WSL 包只作编译检查。
 - HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、保留 iOS 16.1 必需的自动续播并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
-- 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。本地相册图片在选择时规范化为有方向的 JPEG，以避免复杂 HEIF 黑帧；必须用选择器重新选择图片验证导入 UI 和长期静态显示。
-- Camera 已分别保存过含虚拟内容的 HEIC 照片和带 HEVC/AAC 的 MOV 录像。正式发布仍需执行至少 10 轮“照片 → 视频 → 照片”切换，逐个回放/查看产物，并确认没有真实传感器帧泄漏。
+- 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。相册/文件选择现在保留原始 representation 且每次生成新路径；仍必须用新 CI 包重复选择同一类型资源验证切换和长期显示。
+- 静态照片必须在每个新 CI 包重新验收。私有 `pf20` StillImage 源不得被直接抑制，应先在 mediaserverd 内进入可替换的 420f `Meteor Headroom` 终点；普通照片与 Live Photo 都要确认主图、缩略图和配对视频完整且不含真实帧。
 - RTSP 的 FFmpeg upstream VT 仍未取得连续非空 `AVFrame.data[3]`/`CVPixelBuffer`；Apple direct-VT 对照也失败。软件回退可用，但在真机达到连续非空硬件帧前不得宣称 RTSP 硬件解码完成。
 - Camera 与 MobileSafari 已有单点所有权证据；Chrome、Edge、Firefox 未在当前设备安装，因此只具备 bundle/策略主机测试，不能写成真机已验收。三指双击也必须在每个实际安装的 UI 宿主上物理复验隐藏/显示及进程切换恢复。

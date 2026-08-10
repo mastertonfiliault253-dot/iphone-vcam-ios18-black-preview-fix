@@ -32,6 +32,21 @@ static double VCAMLiveEdgeLagSeconds(AVPlayerItem *item) {
     return isfinite(edge) && isfinite(current) ? MAX(0.0, edge - current) : NAN;
 }
 
+static void VCAMSetVideoColorAttachments(CVPixelBufferRef pixelBuffer) {
+    OSType format = pixelBuffer == NULL ? 0 : CVPixelBufferGetPixelFormatType(pixelBuffer);
+    if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return;
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+}
+
 static void VCAMSpringBoardMediaPreferencesChanged(
     CFNotificationCenterRef center, void *observer, CFStringRef name,
     const void *object, CFDictionaryRef userInfo) {
@@ -105,7 +120,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     self.writer = VCAMSharedFrameWriterCreate();
-    self.surfaceWriter = VCAMSharedSurfaceWriterCreate();
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge const void *)self, VCAMSpringBoardMediaPreferencesChanged,
@@ -134,6 +148,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.player = nil;
     self.configuration = nil;
     self.localVideo = NO;
+    if (self.surfaceWriter != NULL) {
+        VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);
+        self.surfaceWriter = NULL;
+    }
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -224,8 +242,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [self stopPlayback];
     self.configuration = next;
     self.localVideo = localVideo;
-    BOOL transportReady = self.surfaceWriter != NULL ||
-        (self.writer != NULL && [self prepareOutputPool]);
+    self.surfaceWriter = VCAMSharedSurfaceWriterCreateWithPixelFormat(
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
+    BOOL transportReady = self.writer != NULL && [self prepareOutputPool];
     if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
         return;
@@ -408,6 +427,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.decodedFrames += 1;
     self.lastDecodedFrameTimestampNanoseconds = now;
     self.reconnectAttempt = 0;
+    if (self.surfaceWriter != NULL &&
+        !VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter)) {
+        VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);
+        self.surfaceWriter = NULL;
+    }
+    if (self.surfaceWriter == NULL) {
+        self.surfaceWriter = VCAMSharedSurfaceWriterCreateWithPixelFormat(
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
+    }
     BOOL surfaceTransport = self.surfaceWriter != NULL;
     BOOL surfaceConsumerReady = surfaceTransport &&
         VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
@@ -424,6 +452,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         CIImage *image = [self imageByTransformingPixelBuffer:source];
         if (image != nil) {
             CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+            VCAMSetVideoColorAttachments(destination);
             [self.context render:image toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
             if (surfaceTransport) {
@@ -431,8 +460,20 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                     self.surfaceWriter, destination);
                 // Keep the compatibility path live until mediaserverd proves
                 // that this OS/process pair can look up the global surface.
-                published = surfacePublished && (surfaceConsumerReady ||
-                    VCAMSharedFrameWriterPublish(self.writer, destination));
+                BOOL compatibilityPublished = surfaceConsumerReady;
+                if (!surfaceConsumerReady) {
+                    CVPixelBufferRef bootstrap = NULL;
+                    if (CVPixelBufferPoolCreatePixelBuffer(
+                            kCFAllocatorDefault, self.outputPool, &bootstrap) ==
+                            kCVReturnSuccess && bootstrap != NULL) {
+                        [self.context render:image toCVPixelBuffer:bootstrap bounds:target
+                                  colorSpace:self.colorSpace];
+                        compatibilityPublished =
+                            VCAMSharedFrameWriterPublish(self.writer, bootstrap);
+                        CVPixelBufferRelease(bootstrap);
+                    }
+                }
+                published = surfacePublished && compatibilityPublished;
             } else {
                 published = VCAMSharedFrameWriterPublish(self.writer, destination);
             }

@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reload;
 - (BOOL)isEnabled;
 - (NSInteger)preferredFramesPerSecond;
+- (BOOL)usesNativeSurfaceTransport;
+- (nullable CVPixelBufferRef)copyNativePixelBufferForSharedCanvas CF_RETURNS_RETAINED;
 - (nullable CMSampleBufferRef)copyFrameForSize:(CGSize)size CF_RETURNS_RETAINED;
 
 @end

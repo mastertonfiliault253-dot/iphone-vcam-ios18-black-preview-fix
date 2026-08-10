@@ -6,6 +6,49 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
+    def test_rtsp_native_nv12_uses_iosurface_without_the_bgra_round_trip(self) -> None:
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
+            encoding="utf-8"
+        )
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VCAMCopyNV12FromAVFrame", converter)
+        self.assertIn("copyNativePixelBufferForSharedCanvas", stream)
+        self.assertIn("copyNativePixelBufferForSharedCanvas", producer)
+        self.assertIn("VCAMSharedSurfaceWriterCreateWithPixelFormat", daemon)
+        self.assertIn("VCAMCopyPixelBufferPlanes", daemon)
+        self.assertIn("VCAMSharedSurfaceWriterHasConsumer", daemon)
+        self.assertIn("vcamd native IOSurface published", daemon)
+        self.assertIn("vcamd native IOSurface consumer accepted", daemon)
+        self.assertIn("BGRA fallback active", daemon)
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", shared)
+        self.assertIn("header->pixelFormat", shared)
+        self.assertIn("consumerHeartbeatNanoseconds", shared)
+        self.assertIn("kill((pid_t)processID, 0)", shared)
+        self.assertIn("VCAMProcessIsAlive(consumerPID)", shared)
+        self.assertIn("now - heartbeat <= 2000000000ULL", shared)
+        self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
+        self.assertIn("producerPID", shared)
+        self.assertIn("VCAMSharedSurfaceWriterIsCurrent", shared)
+        self.assertIn("VCAMProcessIsAlive(activeProducer)", shared)
+        self.assertIn("!VCAMSharedSurfaceWriterIsCurrent(VCAMSurfaceWriter)", daemon)
+
+    def test_hd_yuv_fallback_uses_bt709_instead_of_bt601(self) -> None:
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMITU709Matrix", converter)
+        self.assertIn("VCAMYpCbCrMatrixForDimensions", converter)
+        self.assertIn("MAX(width, height) >= 1280", converter)
     def test_vcamd_has_hardware_decoder_entitlement(self) -> None:
         entitlements = (ROOT / "vcamd.entitlements").read_text(encoding="utf-8")
         self.assertIn("com.apple.videotoolbox.hardwarevideodecoder", entitlements)
@@ -116,6 +159,21 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("avcodec_receive_frame(codecContext, frame)", loop)
         self.assertNotIn("AV_PKT_FLAG_KEY", loop)
         self.assertNotIn("VCAMCopyCodecParametersWithPacketExtradata", loop)
+
+    def test_rtsp_reconnects_when_either_decoder_stops_producing_frames(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        session = stream.split("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
+            "cleanup:", 1
+        )[0]
+
+        self.assertIn("if (videoPacketsWithoutFrame >= 300)", session)
+        self.assertNotIn(
+            "if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 300)",
+            session,
+        )
+        self.assertIn("decoder stalled hardware=%d packets=300; reconnecting", session)
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(

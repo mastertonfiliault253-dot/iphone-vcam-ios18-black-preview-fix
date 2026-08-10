@@ -75,6 +75,9 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
 /// Zero-copy IOSurface producer. The writable buffers form a bounded
 /// three-slot ring; a slot held by a consumer is never selected for rendering.
 VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreate(void);
+VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreateWithPixelFormat(
+    OSType pixelFormat);
+bool VCAMSharedSurfaceWriterIsCurrent(VCAMSharedSurfaceWriter *_Nullable writer);
 void VCAMSharedSurfaceWriterDestroy(VCAMSharedSurfaceWriter *_Nullable writer);
 CVPixelBufferRef _Nullable VCAMSharedSurfaceWriterCopyNextPixelBuffer(
     VCAMSharedSurfaceWriter *writer) CF_RETURNS_RETAINED;

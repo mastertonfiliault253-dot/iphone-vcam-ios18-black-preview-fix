@@ -633,7 +633,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         // Landscape sensor storage receives a downstream clockwise display
         // transform, so store portrait sources one quarter-turn left first.
         // Checking both aspects avoids rotating a future landscape source.
-        if (realtimeBudget && targetWidth > targetHeight &&
+        if (targetWidth > targetHeight &&
             CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
         }

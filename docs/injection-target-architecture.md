@@ -19,12 +19,16 @@ targeted. Audio is not replaced.
 
 ## Frame path
 
-`local image / OBS / RTSP → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
+`local image / OBS → vcamd → three-slot BGRA mmap → mediaserverd + SpringBoard preview`
+
+`RTSP → vcamd FFmpeg → native NV12 → three-slot IOSurface (BGRA mmap fallback) → mediaserverd`
 
 `local video / HLS → SpringBoard AVPlayer → NV12 → Metal/Core Image → three-slot IOSurface (mmap bootstrap) → mediaserverd`
 
-The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 1080×1920 BGRA.
-Publication uses atomic slot and sequence metadata. Consumers copy without
+The compatibility frame region in `/var/tmp/com.codex.vcam.frames` is fixed at
+1080×1920 BGRA. Its surface metadata can instead describe 420v/420f IOSurface
+slots of the same canvas size. Publication uses atomic slot and sequence
+metadata. Consumers copy without
 waiting. SpringBoard is the sole writer of the requested enable/restore state;
 `vcamd` publishes pixels only and cannot overwrite that state after a delayed
 configuration reload. Shared-header initialization and requested-state updates
@@ -37,8 +41,10 @@ versioned, propagating full-PTS marker. The three exact downstream pixel-transfe
 roles (browser/WebRTC conversion, Camera preview and movie recording) skip a
 duplicate render only when their own sample or image buffer retains that marker
 with the same numeric PTS; otherwise they render again and remain fail-closed.
-Fan-out and inference nodes are never matched directly, and still capture keeps
-its independent exact `Meteor Headroom` route. It renders observed BGRA,
+Fan-out and inference nodes are never matched directly. Unsupported private
+`StillImage` source frames remain inside the mediaserverd graph so the verified
+standard 420f `Meteor Headroom` still-photo boundary can replace them; they are
+never exposed to an app consumer. It renders observed BGRA,
 `420v`/`420f`, public compressed and the device-private recording formats
 `[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. A portrait
 shared source is pre-rotated left before it is fitted into a landscape sensor
@@ -72,8 +78,9 @@ the original sample, and either construction path remains fail-closed.
 
 ## Decode behavior
 
-- Photos-picker images are normalized once to an oriented JPEG before broker
-  import; document/legacy PNG, JPEG and HEIF files retain the ImageIO static
+- Photos and document picker imports copy the provider's current original
+  representation, preserve the selected extension and bytes, and assign a new
+  broker path on every selection. PNG, JPEG and HEIF use the ImageIO static
   decoder. The rendered static sample is cached and retimed per camera callback.
 - Production local video uses SpringBoard `AVPlayerItemVideoOutput` and the same
   NV12/Metal/IOSurface pipeline as HLS. It loops by seeking to zero at item end.
@@ -83,7 +90,9 @@ the original sample, and either construction path remains fail-closed.
   without a packet.
 - RTSP uses FFmpeg inside `vcamd`, with VideoToolbox where available and a
   software fallback. It forces TCP and keeps normal RTP/H.264 reorder and
-  reference buffering. HLS uses SpringBoard's system `AVPlayer`; the old daemon
+  reference buffering. Eligible 8-bit decoded frames are repacked as native
+  NV12 and published by IOSurface without BGRA conversion. HLS uses
+  SpringBoard's system `AVPlayer`; the old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,

@@ -45,6 +45,31 @@ static NSError *VCAMConfigurationError(NSInteger code, NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message ?: @"VCAM operation failed"}];
 }
 
+static void VCAMPruneImportedMediaFiles(NSFileManager *manager,
+                                        NSString *directory,
+                                        NSString *currentPath) {
+    NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:directory error:nil];
+    NSMutableArray<NSDictionary<NSString *, id> *> *imports = [NSMutableArray array];
+    for (NSString *name in names) {
+        if (![name hasPrefix:@"selected-"]) continue;
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if ([path isEqualToString:currentPath]) continue;
+        NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
+        if (attributes == nil || [attributes[NSFileType] isEqual:NSFileTypeRegular] == NO) continue;
+        [imports addObject:@{
+            @"path": path,
+            @"date": attributes[NSFileModificationDate] ?: NSDate.distantPast,
+        }];
+    }
+    [imports sortUsingDescriptors:@[
+        [NSSortDescriptor sortDescriptorWithKey:@"date" ascending:NO]
+    ]];
+    // currentPath plus the newest predecessor is the bounded two-file set.
+    for (NSUInteger index = 1; index < imports.count; index++) {
+        [manager removeItemAtPath:imports[index][@"path"] error:nil];
+    }
+}
+
 static NSString *VCAMDiagnosticsLogPath(void) {
     return @"/var/mobile/Media/VCAM/broker-probe.log";
 }
@@ -74,7 +99,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.53+rtsp-upstream";
+    return "com.codex.vcam/0.8.54+native-photo";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -473,8 +498,9 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     }
     NSString *incoming = [directory stringByAppendingPathComponent:
         [NSString stringWithFormat:@".incoming-%@.%@", NSUUID.UUID.UUIDString, extension]];
-    NSString *destination = [directory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"selected.%@", extension]];
+    NSString *baseName = [@"selected-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSString *destination = [[directory stringByAppendingPathComponent:baseName]
+        stringByAppendingPathExtension:extension];
     int output = open(incoming.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (output < 0) {
         int openError = errno;
@@ -524,13 +550,7 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
         return nil;
     }
     NSError *moveError = nil;
-    if ([manager fileExistsAtPath:destination]) {
-        success = [manager replaceItemAtURL:[NSURL fileURLWithPath:destination]
-                              withItemAtURL:[NSURL fileURLWithPath:incoming]
-                             backupItemName:nil options:0 resultingItemURL:nil error:&moveError];
-    } else {
-        success = [manager moveItemAtPath:incoming toPath:destination error:&moveError];
-    }
+    success = [manager moveItemAtPath:incoming toPath:destination error:&moveError];
     if (!success) {
         [manager removeItemAtPath:incoming error:nil];
         if (error != NULL) *error = moveError ?: VCAMConfigurationError(23, @"Unable to publish VCAM media file");
@@ -539,6 +559,10 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
                              NSFilePosixPermissions: @0644}
               ofItemAtPath:destination error:nil];
+    // Keep the active import and one predecessor. The predecessor may still
+    // have an open AVPlayer/ImageIO reader until the configuration notification
+    // tears the old graph down.
+    VCAMPruneImportedMediaFiles(manager, directory, destination);
     return destination;
 }
 

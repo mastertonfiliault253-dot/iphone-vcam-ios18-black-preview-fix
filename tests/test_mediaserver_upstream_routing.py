@@ -43,10 +43,20 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             re.compile(
                 r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
                 r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
+                r'\s*&&\s*VCAMTargetBufferIsSupported\(pixelBuffer\)'
                 r'\s*\)\s*\{\s*return VCAMReplacementRouteStillPhoto;',
                 re.DOTALL,
             ),
         )
+
+    def test_private_still_source_reaches_supported_downstream_photo_route(self) -> None:
+        self.assertIn(
+            'VCAMStringMatches(outputName, @"StillImage") &&\n'
+            '        VCAMTargetBufferIsSupported(pixelBuffer)',
+            self.route_function,
+        )
+        self.assertIn('VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode")', self.route_function)
+        self.assertIn('VCAMStringMatches(nodeName, @"Meteor Headroom")', self.route_function)
 
     def test_source_route_is_selected_before_buffer_support_is_considered(self) -> None:
         source_match = re.search(
