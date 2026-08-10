@@ -11,6 +11,13 @@
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
+static const char *const VCAMLegacyLocalVideoDaemonMarker =
+    "/var/tmp/vcam-local-video-legacy-vcamd.enable";
+
+static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
+    NSString *extension = path.pathExtension.lowercaseString;
+    return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
+}
 
 static BOOL VCAMObjectsEqual(id left, id right) {
     return left == right || (left != nil && [left isEqual:right]);
@@ -82,8 +89,14 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         if (!self.configuration.enabled || self.configuration.sourceKind == VCAMSourceKindCamera) return;
         switch (self.configuration.sourceKind) {
             case VCAMSourceKindLocalMedia:
-                self.source = [[VCAMLocalMediaSource alloc] initWithConfiguration:self.configuration
-                                                                          renderer:self.renderer];
+                // SpringBoard owns production local-video playback through the
+                // same AVPlayer/NV12/Metal path as HLS. Keep the old daemon
+                // reader behind an explicit on-device rollback marker.
+                if (!VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) ||
+                    access(VCAMLegacyLocalVideoDaemonMarker, F_OK) == 0) {
+                    self.source = [[VCAMLocalMediaSource alloc]
+                        initWithConfiguration:self.configuration renderer:self.renderer];
+                }
                 break;
             case VCAMSourceKindOBSWebSocket:
                 self.source = [[VCAMOBSStreamSource alloc] initWithConfiguration:self.configuration

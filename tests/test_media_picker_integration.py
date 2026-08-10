@@ -173,6 +173,16 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("videoFrames", producer)
         self.assertNotIn("NSMutableArray", producer)
 
+    def test_heif_uses_the_primary_image_and_applies_embedded_orientation(self) -> None:
+        source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("CGImageSourceGetPrimaryImageIndex", source)
+        self.assertIn("CGImageSourceCreateThumbnailAtIndex", source)
+        self.assertIn("kCGImageSourceCreateThumbnailFromImageAlways", source)
+        self.assertIn("kCGImageSourceCreateThumbnailWithTransform", source)
+
     def test_video_reader_validates_the_first_frame_before_start_succeeds(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
         starter = source.split("- (BOOL)startVideoReader:", 1)[1].split(

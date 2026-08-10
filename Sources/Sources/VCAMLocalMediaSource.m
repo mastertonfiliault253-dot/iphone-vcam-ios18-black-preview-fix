@@ -284,7 +284,18 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     [[NSFileManager defaultManager] removeItemAtPath:VCAMDiagnosticPath error:nil];
     CGImageSourceRef imageSource = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
     if (imageSource != NULL) {
-        _stillImage = CGImageSourceCreateImageAtIndex(imageSource, 0, NULL);
+        size_t primaryIndex = CGImageSourceGetPrimaryImageIndex(imageSource);
+        NSDictionary *thumbnailOptions = @{
+            (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+            (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+            (id)kCGImageSourceThumbnailMaxPixelSize: @4096,
+            (id)kCGImageSourceShouldCacheImmediately: @YES,
+        };
+        _stillImage = CGImageSourceCreateThumbnailAtIndex(
+            imageSource, primaryIndex, (__bridge CFDictionaryRef)thumbnailOptions);
+        if (_stillImage == NULL) {
+            _stillImage = CGImageSourceCreateImageAtIndex(imageSource, primaryIndex, NULL);
+        }
         CFRelease(imageSource);
     }
     if (_stillImage == NULL) {

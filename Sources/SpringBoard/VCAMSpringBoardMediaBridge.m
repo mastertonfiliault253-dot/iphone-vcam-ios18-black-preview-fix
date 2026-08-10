@@ -14,7 +14,14 @@
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
+static const char *const VCAMLegacyLocalVideoDaemonMarker =
+    "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 15ULL * 1000000000ULL;
+
+static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
+    NSString *extension = path.pathExtension.lowercaseString;
+    return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
+}
 
 static void VCAMSpringBoardMediaPreferencesChanged(
     CFNotificationCenterRef center, void *observer, CFStringRef name,
@@ -31,6 +38,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *output;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
+@property(nonatomic, strong, nullable) id playbackEndObserver;
 @property(nonatomic, strong, nullable) CIContext *context;
 @property(nonatomic, strong, nullable) id<MTLDevice> metalDevice;
 @property(nonatomic) CVPixelBufferPoolRef outputPool;
@@ -47,6 +55,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) uint64_t lastDecodedFrameTimestampNanoseconds;
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
+@property(nonatomic) BOOL localVideo;
+@property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic, copy, nullable) NSString *lastError;
 @end
 
@@ -106,11 +116,17 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     AVPlayerLayer *retiredLayer = self.playerLayer;
     [self.displayLink invalidate];
     self.displayLink = nil;
+    if (self.playbackEndObserver != nil) {
+        [NSNotificationCenter.defaultCenter removeObserver:self.playbackEndObserver];
+        self.playbackEndObserver = nil;
+    }
     [retiredLayer removeFromSuperlayer];
     self.playerLayer = nil;
     self.output = nil;
     self.player = nil;
     self.configuration = nil;
+    self.localVideo = NO;
+    self.sourceTransform = CGAffineTransformIdentity;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -138,7 +154,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 
 - (BOOL)configurationMatches:(VCAMConfiguration *)configuration {
     if (self.configuration == nil || configuration == nil) return NO;
-    return [self.configuration.hlsURL isEqual:configuration.hlsURL] &&
+    return self.configuration.sourceKind == configuration.sourceKind &&
+        [self.configuration.hlsURL isEqual:configuration.hlsURL] &&
+        ((self.configuration.mediaPath == nil && configuration.mediaPath == nil) ||
+            [self.configuration.mediaPath isEqual:configuration.mediaPath]) &&
+        self.configuration.loopMedia == configuration.loopMedia &&
         self.configuration.rotationDegrees == configuration.rotationDegrees &&
         self.configuration.mirrorHorizontally == configuration.mirrorHorizontally &&
         self.configuration.contentMode == configuration.contentMode &&
@@ -183,9 +203,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     NSAssert(NSThread.isMainThread, @"SpringBoard media bridge reload requires main thread");
     if (!self.started) return;
     VCAMConfiguration *next = [VCAMConfiguration loadCurrent];
-    BOOL legacyDaemon = access(VCAMLegacyHLSDaemonMarker, F_OK) == 0;
-    BOOL shouldPlay = next.enabled && next.sourceKind == VCAMSourceKindHLS &&
-        next.hlsURL != nil && !legacyDaemon;
+    BOOL hls = next.sourceKind == VCAMSourceKindHLS && next.hlsURL != nil &&
+        access(VCAMLegacyHLSDaemonMarker, F_OK) != 0;
+    BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
+        VCAMLocalMediaPathIsVideo(next.mediaPath) &&
+        access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;
+    BOOL shouldPlay = next.enabled && (hls || localVideo);
     if (!shouldPlay) {
         [self stopPlayback];
         return;
@@ -193,6 +216,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     if (self.player != nil && [self configurationMatches:next]) return;
     [self stopPlayback];
     self.configuration = next;
+    self.localVideo = localVideo;
     BOOL transportReady = self.surfaceWriter != NULL ||
         (self.writer != NULL && [self prepareOutputPool]);
     if (!transportReady || self.context == nil) {
@@ -206,10 +230,32 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         (id)kCVPixelBufferMetalCompatibilityKey: @YES,
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
     }];
-    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:next.hlsURL];
+    NSURL *playbackURL = localVideo ? [NSURL fileURLWithPath:next.mediaPath]
+                                    : next.hlsURL;
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:playbackURL];
     [item addOutput:self.output];
     self.player = [AVPlayer playerWithPlayerItem:item];
-    self.player.automaticallyWaitsToMinimizeStalling = YES;
+    self.player.automaticallyWaitsToMinimizeStalling = !localVideo;
+    AVAssetTrack *videoTrack = localVideo
+        ? [[item.asset tracksWithMediaType:AVMediaTypeVideo] firstObject] : nil;
+    self.sourceTransform = videoTrack == nil
+        ? CGAffineTransformIdentity : videoTrack.preferredTransform;
+    if (localVideo) {
+        __weak typeof(self) weakSelf = self;
+        self.playbackEndObserver = [NSNotificationCenter.defaultCenter
+            addObserverForName:AVPlayerItemDidPlayToEndTimeNotification
+                        object:item
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf == nil || !strongSelf.configuration.loopMedia) return;
+            [strongSelf.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero
+                           toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
+                if (finished && strongSelf.player != nil) [strongSelf.player play];
+            }];
+            [VCAMConfiguration appendProcessLog:@"springboard local video loop"];
+        }];
+    }
 
     // A compositor-attached AVPlayerLayer keeps the system decode path active.
     // One near-transparent pixel is imperceptible and avoids a full-screen
@@ -234,9 +280,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.displayLink.preferredFramesPerSecond =
         MAX(1, MIN(60, next.preferredFramesPerSecond));
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"springboard HLS start url=%@ output=%d layer=%d fps=%ld",
-        next.hlsURL.absoluteString, [item.outputs containsObject:self.output],
+    NSString *startFormat = localVideo
+        ? @"springboard local video start url=%@ output=%d layer=%d fps=%ld"
+        : @"springboard HLS start url=%@ output=%d layer=%d fps=%ld";
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:startFormat,
+        playbackURL.absoluteString, [item.outputs containsObject:self.output],
         self.playerLayer.superlayer != nil,
         (long)self.displayLink.preferredFramesPerSecond]];
 }
@@ -248,8 +296,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.reconnectAttempt += 1;
     self.reconnectPending = YES;
     self.lastError = reason.length > 0 ? reason : @"player item failed";
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"springboard HLS reconnect attempt=%lu delay=%lus error=%@",
+    NSString *reconnectFormat = self.localVideo
+        ? @"springboard local video reconnect attempt=%lu delay=%lus error=%@"
+        : @"springboard HLS reconnect attempt=%lu delay=%lus error=%@";
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:reconnectFormat,
         (unsigned long)self.reconnectAttempt, (unsigned long)delay,
         self.lastError]];
     [self stopPlayback];
@@ -266,10 +316,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     CGRect extent = image.extent;
     image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
         -CGRectGetMidX(extent), -CGRectGetMidY(extent))];
-    if (self.configuration.mirrorHorizontally) {
+    BOOL sourceMirrored = self.sourceTransform.a * self.sourceTransform.d -
+        self.sourceTransform.b * self.sourceTransform.c < 0;
+    if (sourceMirrored != self.configuration.mirrorHorizontally) {
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(-1, 1)];
     }
-    CGFloat radians = self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
+    CGFloat radians = atan2(self.sourceTransform.b, self.sourceTransform.a) +
+        self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
     if (fabs(radians) > 0.0001) {
         image = [image imageByApplyingTransform:CGAffineTransformMakeRotation(radians)];
     }
@@ -306,8 +359,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.displayTicks += 1;
     if (self.displayTicks % 300 == 0) {
         CGSize presentationSize = item.presentationSize;
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@",
+        NSString *healthFormat = self.localVideo
+            ? @"springboard local video health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@"
+            : @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@";
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:healthFormat,
             (unsigned long)self.displayTicks, hasNewFrame, (long)item.status,
             (long)self.player.timeControlStatus,
             self.player.reasonForWaitingToPlay ?: @"none",
@@ -320,8 +375,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         if (item.status == AVPlayerItemStatusReadyToPlay &&
             now - self.lastDecodedFrameTimestampNanoseconds >=
                 VCAMHLSStallTimeoutNanoseconds) {
-            [self scheduleReconnectForItem:item reason:[NSString stringWithFormat:
-                @"springboard HLS stalled %.1fs status=%ld timeControl=%ld",
+            NSString *stallFormat = self.localVideo
+                ? @"springboard local video stalled %.1fs status=%ld timeControl=%ld"
+                : @"springboard HLS stalled %.1fs status=%ld timeControl=%ld";
+            [self scheduleReconnectForItem:item reason:[NSString stringWithFormat:stallFormat,
                 (double)(now - self.lastDecodedFrameTimestampNanoseconds) / 1e9,
                 (long)item.status, (long)self.player.timeControlStatus]];
         }
@@ -376,8 +433,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.publishFailures += 1;
     }
     if (self.decodedFrames <= 3 || self.decodedFrames % 300 == 0) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f",
+        NSString *frameFormat = self.localVideo
+            ? @"springboard local video frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f"
+            : @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f";
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:frameFormat,
             (unsigned long)self.decodedFrames, (unsigned long)self.publishedFrames,
             (unsigned long)self.emptyCopies, (unsigned long)self.publishFailures,
             surfaceTransport

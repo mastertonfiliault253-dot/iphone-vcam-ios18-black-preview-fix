@@ -13,8 +13,9 @@ The media hook and UI overlay have separate injection scopes:
   mmap and replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
   observed BGRA and bi-planar YUV formats. Device-private compressed recording
-  buffers use a target-sized public `420v` staging surface, VideoToolbox pixel
-  transfer into a private-format clone, and a PTS-matched encoded-output guard.
+  buffers use a target-sized public `420v` staging surface and VideoToolbox pixel
+  transfer into a private-format clone; the system encoder then owns normal
+  timestamp reordering and writes the encoded recording samples.
   Once virtual mode is enabled, a missing, stale or unrenderable source never
   exposes a real camera frame: the last virtual frame is retained when possible,
   otherwise a black frame is emitted or that consumer sample is suppressed.
@@ -26,9 +27,10 @@ The media hook and UI overlay have separate injection scopes:
   `mediaserverd`.
 
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns local
-image/video playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode,
-rotation/mirroring/content mode, and publication of only the latest frame. A
-source or decoder failure stops publication but does not disable virtual mode.
+image playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode, and
+publication of only the latest frame. SpringBoard owns local video and HLS
+playback through the same system AVPlayer/NV12/Metal path. A source or decoder
+failure stops publication but does not disable virtual mode.
 SpringBoard is the sole enable/restore control-plane writer, so a delayed worker
 reload cannot overwrite a newer user choice. Audio is not replaced; the real
 microphone continues through the normal pipeline.
@@ -45,7 +47,9 @@ when enabled, without pre-decoding the entire asset into memory.
 
 ## Sources
 
-- Photos or Files: PNG, JPEG, HEIC/HEIF, MOV, MP4 and M4V.
+- Photos or Files: PNG, JPEG and primary-image-aware HEIC/HEIF are decoded once
+  and cached by `vcamd`. MOV, MP4 and M4V use SpringBoard's system `AVPlayer`,
+  output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
   `wss://` address in the panel.
@@ -61,6 +65,9 @@ when enabled, without pre-decoding the entire asset into memory.
   the live three-slot BGRA mmap fallback. The retained daemon decoder can be
   selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.
+- Local-video rollback: creating
+  `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained daemon
+  `AVAssetReader`/FFmpeg path for MOV, MP4 and M4V diagnostics.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries

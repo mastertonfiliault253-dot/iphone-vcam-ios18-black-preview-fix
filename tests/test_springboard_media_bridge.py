@@ -41,6 +41,22 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("springboard HLS stalled", source)
         self.assertIn("scheduleReconnectForItem:item reason:", source)
 
+    def test_local_video_reuses_native_player_pipeline_and_keeps_daemon_rollback(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VCAMSourceKindLocalMedia", source)
+        self.assertIn("fileURLWithPath:next.mediaPath", source)
+        self.assertIn("AVPlayerItemDidPlayToEndTimeNotification", source)
+        self.assertIn("seekToTime:kCMTimeZero", source)
+        self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", source)
+        self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", producer)
+        self.assertIn("VCAMLocalMediaPathIsVideo", producer)
+
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
