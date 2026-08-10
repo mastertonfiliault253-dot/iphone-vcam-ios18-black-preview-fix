@@ -46,10 +46,11 @@ Fan-out and inference nodes are never matched directly. Unsupported private
 standard 420f `Meteor Headroom` still-photo boundary can replace them; they are
 never exposed to an app consumer. It renders observed BGRA,
 `420v`/`420f`, public compressed and the device-private recording formats
-`[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. A portrait
-shared source is pre-rotated left before it is fitted into a landscape sensor
-buffer, compensating for the downstream clockwise display transform while
-leaving portrait preview buffers unchanged. The canonical shared canvas is
+`[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. For
+realtime output only, a portrait shared source is pre-rotated left before it is
+fitted into a landscape sensor buffer, compensating for the downstream clockwise
+display transform. Still-photo output remains unrotated because the observed
+iOS 16 Camera JPEG is saved with EXIF Orientation=1. The canonical shared canvas is
 then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
 and browser/WebRTC outputs do not expose the black safety background behind
 the centered render.

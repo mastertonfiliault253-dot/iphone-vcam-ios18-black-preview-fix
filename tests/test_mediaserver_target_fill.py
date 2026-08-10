@@ -27,11 +27,12 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)", self.adapter)
 
     def test_fill_covers_photo_preview_and_browser_targets(self) -> None:
-        # Landscape targets receive the canonical portrait frame rotated to
-        # 1920x1080 before scaling. Every scaled axis must cover its consumer;
-        # otherwise the black safety background becomes visible as bars.
+        # Realtime landscape targets receive the canonical portrait frame
+        # rotated to 1920x1080. Still-photo storage remains unrotated because
+        # the iOS 16 Camera JPEG observed on device is Orientation=1. Every
+        # scaled axis must still cover its consumer.
         cases = (
-            ((1920, 1080), (4224, 3024)),  # Camera still-photo sensor buffer
+            ((1080, 1920), (4224, 3024)),  # Camera still-photo sensor buffer
             ((1080, 1920), (750, 1334)),  # Camera portrait preview
             ((1920, 1080), (640, 480)),  # common browser/WebRTC 4:3 buffer
         )
