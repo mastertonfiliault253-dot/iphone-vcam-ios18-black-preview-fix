@@ -193,7 +193,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
 
-    def test_only_realtime_landscape_sensor_outputs_are_pre_rotated(self) -> None:
+    def test_realtime_landscape_sensor_outputs_compensate_display_reflection(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
@@ -213,9 +213,17 @@ class InjectionSafetyTests(unittest.TestCase):
             render,
         )
         self.assertIn("imageByApplyingOrientation:kCGImagePropertyOrientationLeft", render)
+        self.assertIn(
+            "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored",
+            render,
+        )
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
         self.assertLess(
             render.index("imageByApplyingOrientation:kCGImagePropertyOrientationLeft"),
+            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored"),
+        )
+        self.assertLess(
+            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored"),
             render.index("CGAffineTransformMakeScale"),
         )
         frameworks_line = next(

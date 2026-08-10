@@ -630,12 +630,15 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
 
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
         // The shared source is kept in user-visible portrait orientation.
-        // Landscape sensor storage receives a downstream clockwise display
-        // transform, so store portrait sources one quarter-turn left first.
-        // Checking both aspects avoids rotating a future landscape source.
+        // Landscape sensor storage receives a downstream display transform.
+        // Device A/B on iOS 16.5 showed that a plain left turn emerges as a
+        // vertical reflection in Camera and WebKit, so reflect the rotated
+        // sensor image horizontally before it leaves this stage. Still-photo
+        // storage is excluded by realtimeBudget and keeps its native direction.
         if (realtimeBudget && targetWidth > targetHeight &&
             CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
         }
         // The producer has already applied the user's content mode to the
         // canonical 1080x1920 frame. This second stage only adapts that

@@ -102,7 +102,7 @@ function takeSnapshot(video, canvas) {
 
 ## 已核验的开源在线测试页
 
-下列 live URL 与源码仓库在 2026-08-11 均已核验为 HTTPS，且返回 HTTP 200。核验分为两档：WebRTC Canvas、分辨率和 GoogleChrome Image Capture 页面已实际获取并解析页面内容；两个 WPT 页面因本次浏览器读取器限制未进行可视化打开，但已分别取得 HTTP 200，并读取了对应的 WPT 原始 HTML 源码。尚未在 iOS 真机点击相机权限或完成拍照。HTTP 200 只证明服务可达，不能替代摄像头、方向和保存结果验收。
+下列 live URL 与源码仓库在 2026-08-11 均已核验为 HTTPS，且返回 HTTP 200。WebRTC Canvas 和分辨率页随后已在 iOS 16.5 真机完成授权、取帧与保存验证；GoogleChrome Image Capture 页面仅完成页面内容核验。两个 WPT 页面已取得 HTTP 200 并读取原始 HTML，尚未完成真机交互。HTTP 200 只证明服务可达，不能替代摄像头、方向和保存结果验收。
 
 | 用途 | HTTPS 在线测试 | 开源源码 | 本次链接核验 | iOS 16–16.5 预期与限制 |
 |---|---|---|---|---|
@@ -111,6 +111,82 @@ function takeSnapshot(video, canvas) {
 | 后置相机文件拍照 | [WPT: capture environment image](https://wpt.live/html-media-capture/capture_image_environment-manual.html) | [WPT html-media-capture](https://github.com/web-platform-tests/wpt/tree/master/html-media-capture) | HTTP 200 + 原始源码；未可视化打开 | 使用 `accept="image/*" capture="environment"`。人工拍照后验证得到一个 `image/*` 文件；系统仍允许回退摄像头。60 秒内完成。 |
 | 前置相机文件拍照 | [WPT: capture user image](https://wpt.live/html-media-capture/capture_image_user-manual.html) | [WPT html-media-capture](https://github.com/web-platform-tests/wpt/tree/master/html-media-capture) | HTTP 200 + 原始源码；未可视化打开 | 使用 `accept="image/*" capture="user"`。用途和限制同上。 |
 | Image Capture API | [GoogleChrome sample: grabFrame / takePhoto](https://googlechrome.github.io/samples/image-capture/grab-frame-take-photo.html) | [GoogleChrome/samples image-capture](https://github.com/googlechrome/samples/tree/gh-pages/image-capture) | 页面内容已获取；HTTP 200 | 页面可打开，但 iOS 16–16.5 应不支持 `ImageCapture`。用于验证版本边界，不用于 VCAM 正式验收。页面本身标注面向 Chrome。 |
+
+## iOS 16.5 真机分辨率与清晰度 A/B
+
+测试机为 iOS 16.5。输入使用同一张 `2160×3840` JPEG 测试图，网页保存均为无损 PNG：
+
+| 网页请求 | Safari 实际视频/Canvas | 保存文件 | 结果 |
+|---|---:|---:|---|
+| Canvas 示例默认约束 | `480×640` | `480×640` PNG，22,390 bytes | 清晰度上限已在协商阶段降到 VGA 级；保存格式不是首因。 |
+| Resolution 示例 Full HD exact | `1080×1920` | `1080×1920` PNG，75,259 bytes | 硬边梯度与同尺寸 Lanczos 参考接近；没有发现额外的强模糊。 |
+
+mediaserverd 同期证据与网页结果一致：默认页面的 RemoteQueue 为 `640×480 420f`，Full HD 页面为 `1920×1080 420f`。VCAM 只能把虚拟画面适配到网页已经协商出的目标缓冲区，不能在 `640×480` 缓冲区内保留 1080p 细节。
+
+这轮 A/B 还发现，两个分辨率的 Canvas 与 Camera 实时预览都相对源图上下翻转；静态照片存储不经过同一实时预旋转。该缺陷应在实时横向传感器适配中补偿，而不是改动 Canvas 或静态照片编码。
+
+## 方案评分
+
+| 方案 | 分数 | 结论 |
+|---|---:|---|
+| 业务网页显式请求 Full HD，并在每次拍照时令 Canvas 位图等于 `videoWidth×videoHeight` | 96/100 | 已由同源真机 A/B 验证；效果最好、零 VCAM 运行成本，但必须由网页采用。 |
+| VCAM 保持 1080×1920 共享画布并按消费者原生目标一次适配 | 91/100 | VCAM 可独立完成的最高分方案，当前架构已具备；适合 Safari/Camera 的 1080p 目标。 |
+| VCAM 强行把任意 WebKit 会话改成 1080p | 55/100 | 私有相机图协商，容易破坏不支持 1080p 的页面、前后摄切换和功耗预算。 |
+| 全链路固定升级为 4K | 38/100 | 对 `640×480` 网页仍无收益，却显著增加内存带宽和发热。 |
+| 对低分辨率结果锐化或 AI 放大 | 18/100 | 不能恢复未采集细节，并会制造光晕、延迟和额外发热。 |
+
+因此，VCAM 侧选择其范围内最高分的第二项：不伪造网页协商分辨率，也不增加锐化滤镜，在网页给定目标尺寸内只做一次高质量适配，并单独修复实时方向。第一项属于业务网页代码，VCAM 无法在不注入或篡改任意网页脚本的前提下替网站实现；业务页应按下面的最小标准写法请求并核验实际分辨率：
+
+```js
+video.srcObject?.getTracks().forEach(track => track.stop());
+const stream = await navigator.mediaDevices.getUserMedia({
+  video: {
+    width: { exact: 1920 },
+    height: { exact: 1080 },
+    frameRate: { ideal: 30, max: 30 }
+  }
+});
+video.srcObject = stream;
+await new Promise(resolve => video.addEventListener("loadedmetadata", resolve, { once: true }));
+await video.play();
+
+const shortEdge = Math.min(video.videoWidth, video.videoHeight);
+const longEdge = Math.max(video.videoWidth, video.videoHeight);
+if (shortEdge < 1080 || longEdge < 1920) {
+  stream.getTracks().forEach(track => track.stop());
+  throw new Error(`Full HD unavailable: ${video.videoWidth}x${video.videoHeight}`);
+}
+
+// 每次拍照都重新读取协商后的自然尺寸。
+canvas.width = video.videoWidth;
+canvas.height = video.videoHeight;
+canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+const snapshot = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+console.log(stream.getVideoTracks()[0].getSettings(), snapshot);
+```
+
+`exact` 在设备或并发会话无法满足时会拒绝请求；业务页应把失败明确显示给用户，而不是静默退到低分辨率继续拍照。即使浏览器返回成功，仍应读取 `getSettings()` 和 `videoWidth×videoHeight` 作为清晰度门槛。
+
+## 相册与文件重复选择 A/B
+
+iOS 16.5 真机分别完成了图片、视频的连续两次选择：
+
+- Photos 图片和 Files 图片均生成不同 UUID 路径，扩展名保持 `.jpeg`、`.png`、`.jpg`；导入文件与原件 SHA-256 一致。
+- Photos 两段视频均保持 `.mov`，与 DCIM 原件 SHA-256 一致；编码、`1920×1440` 存储尺寸及 `rotation=-90` 等原始方向元数据未被改写。
+- Files 两段 `170.9 MB`、`300.5 MB` MP4 均保持 `.mp4` 并生成不同 UUID 路径。
+- 第二段 Photos 视频间隔 1 秒的预览区域有 `47.3%` 像素变化；第二段 Files 视频间隔 4 秒的 Camera 画面有 `71.77%` 像素变化，均证明切换后仍在播放。
+- broker 只保留当前文件和最近前一文件；既避免 AVFoundation 复用旧稳定路径，又限制磁盘增长。
+
+这里的“保留原始格式和分辨率”仅指**导入资产 fidelity**：broker 文件没有转码、改扩展名或重写容器/方向元数据。播放时 `AVPlayer` 会解码资产，SpringBoard 再把像素适配到固定 `1080×1920` 共享画布并适配消费者目标；因此渲染后的预览不保留原容器/编码格式，也不承诺逐像素保持原始存储分辨率。上述动态像素证据证明第二次选择后仍在播放，不证明 rendered target 等于源文件尺寸。
+
+| 重复选择方案 | 分数 | 结论 |
+|---|---:|---|
+| `PHPicker` current representation / Files 原文件 → broker UUID 路径 → 原生 `AVPlayer` | 98/100 | 已真机验证原字节、原扩展名、方向元数据与连续播放；当前正式方案。 |
+| 固定 `selected.mov` / `selected.jpg` 覆盖 | 42/100 | 代码最少，但会让已有播放器、映射或缓存继续引用旧 inode/旧资源。 |
+| 每次统一转成 H.264 MP4 / JPEG | 31/100 | 能统一格式，却损失原始编码、方向、色彩和图片质量，并增加等待与发热。 |
+| 全文件常驻内存后播放 | 14/100 | 大视频内存代价不可接受，也不解决资源身份与播放器切换问题。 |
+
+选择第一项。它复用系统选择器和 AVFoundation，只增加文件身份所需的 UUID；不新增播放器框架、转码器或缓存层。
 
 ## 推荐真机测试顺序
 
@@ -132,7 +208,7 @@ function takeSnapshot(video, canvas) {
 4. 若页面会重复调用 `getUserMedia()`，先执行：
 
    ```js
-   oldStream?.getTracks().forEach(track => track.stop());
+   video.srcObject?.getTracks().forEach(track => track.stop());
    ```
 
    再建立新流，并等待 `loadedmetadata` 或 `resize` 后才允许拍照。

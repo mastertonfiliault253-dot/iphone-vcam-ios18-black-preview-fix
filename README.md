@@ -63,12 +63,12 @@ when enabled, without pre-decoding the entire asset into memory.
   BGRA round trip; mmap remains the automatic consumer-handshake fallback.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
-  rotation, mirroring, fit/fill, scale and NV12-to-BGRA conversion in one
-  Metal-backed Core Image render directly into a three-slot IOSurface ring.
+  rotation, mirroring, fit/fill and scale in one Metal-backed Core Image render
+  directly into the three-slot `420v` IOSurface ring.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
-  the live three-slot BGRA mmap fallback. HLS prefers a one-second forward
-  buffer, keeps AVPlayer's automatic stall recovery, logs its live-edge lag,
+  the live three-slot BGRA mmap compatibility fallback. HLS prefers a one-second
+  forward buffer, keeps AVPlayer's automatic stall recovery, logs its live-edge lag,
   and rebuilds a session after eight seconds
   without a decoded frame. The retained daemon decoder can be
   selected for rollback by creating

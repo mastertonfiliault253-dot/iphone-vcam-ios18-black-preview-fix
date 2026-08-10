@@ -13,8 +13,9 @@ VCAM separates media production, camera replacement and control UI:
   main processes one foreground-owned white dot, control panel and preview. In
   SpringBoard only, its media bridge owns local video and HLS playback through
   `AVPlayer`, takes NV12 frames from `AVPlayerItemVideoOutput`, and performs
-  rotation, mirroring, fit/fill and NV12-to-BGRA conversion in one Metal-backed
-  Core Image render.
+  rotation, mirroring, fit/fill and scale in one Metal-backed Core Image render
+  directly into the `420v` IOSurface transport; BGRA mmap is the compatibility
+  fallback.
   App hosts receive UI only; they never decode media, hook camera frames or
   publish replacement frames.
 - `vcaminjectd` repairs only the SpringBoard and `mediaserverd` mappings after
