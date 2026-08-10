@@ -26,7 +26,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         )
         self.hook = _between(self.entry, "%hook BWNodeOutput", "%end")
 
-    def test_only_video_capture_output_of_multistream_source_routes_upstream(self) -> None:
+    def test_only_observed_capture_outputs_of_multistream_source_route_upstream(self) -> None:
         self.assertIn("VCAMReplacementRouteCameraSourceVideo", self.entry)
         self.assertRegex(
             self.route_function,
@@ -38,7 +38,15 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ),
         )
         self.assertNotIn('@"Preview"', self.route_function)
-        self.assertNotIn('@"StillImage"', self.route_function)
+        self.assertRegex(
+            self.route_function,
+            re.compile(
+                r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
+                r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
+                r'\s*\)\s*\{\s*return VCAMReplacementRouteStillPhoto;',
+                re.DOTALL,
+            ),
+        )
 
     def test_source_route_is_selected_before_buffer_support_is_considered(self) -> None:
         source_match = re.search(
@@ -230,6 +238,26 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "return CVPixelBufferGetWidthOfPlane",
         )
         self.assertIn("format == (OSType)0x70343230", compressed_branch)
+
+    def test_ios16_observed_deferred_photo_format_uses_compressed_transfer(self) -> None:
+        utils = UTILS_PATH.read_text(encoding="utf-8")
+        compressed_formats = _between(
+            utils,
+            "static BOOL VCAMFormatIsCompressedVideoRange",
+            "static CVReturn VCAMCreateStagingPool",
+        )
+        support = _between(
+            utils,
+            "BOOL VCAMTargetBufferIsSupported",
+            "static BOOL VCAMFillBlackSharedFrame",
+        )
+        compressed_branch = _between(
+            support,
+            "if (compressedVideoRange)",
+            "return CVPixelBufferGetWidthOfPlane",
+        )
+        self.assertIn("format == (OSType)0x26786630", compressed_formats)
+        self.assertIn("format == (OSType)0x26786630", compressed_branch)
 
     def test_downstream_fast_path_requires_its_own_matching_numeric_marker(self) -> None:
         matcher = _between(
