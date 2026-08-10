@@ -361,29 +361,37 @@ bool VCAMSharedFrameReaderGetActiveState(VCAMSharedFrameReader *reader,
     return true;
 }
 
-bool VCAMSharedFrameReaderGetLatestMetadata(
-    VCAMSharedFrameReader *reader,
+typedef struct {
+    uint64_t sequence;
+    uint32_t slot;
+    uint64_t timestamp;
+} VCAMSharedFrameSnapshot;
+
+static bool VCAMSharedFrameReadSnapshot(
+    const _Atomic(uint64_t) *publishedSequence,
+    const _Atomic(uint32_t) *publishedSlot,
+    const _Atomic(uint64_t) *publishedTimestamp,
+    const _Atomic(uint64_t) *slotSequences,
     uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameSnapshot *snapshot,
     VCAMSharedFrameMetadata *metadata) {
-    if (reader == NULL || !VCAMSharedFrameReaderEnsureMapped(reader) ||
-        (atomic_load_explicit(&reader->header->requestedState,
-                              memory_order_acquire) & 1ULL) == 0) {
-        return false;
-    }
-    uint64_t sequence = atomic_load_explicit(&reader->header->publishedSequence,
+    if (snapshot == NULL) return false;
+    uint64_t sequence = atomic_load_explicit(publishedSequence,
                                              memory_order_acquire);
-    uint32_t slot = atomic_load_explicit(&reader->header->publishedSlot,
-                                         memory_order_relaxed);
-    uint64_t timestamp = atomic_load_explicit(
-        &reader->header->publishedTimestampNanoseconds, memory_order_relaxed);
+    uint32_t slot = atomic_load_explicit(publishedSlot, memory_order_relaxed);
+    uint64_t timestamp = atomic_load_explicit(publishedTimestamp,
+                                              memory_order_relaxed);
     uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
         (maximumAgeNanoseconds > 0 &&
          (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
-        atomic_load_explicit(&reader->header->slotSequence[slot],
-                             memory_order_acquire) != sequence) {
+        atomic_load_explicit(&slotSequences[slot], memory_order_acquire) !=
+            sequence) {
         return false;
     }
+    snapshot->sequence = sequence;
+    snapshot->slot = slot;
+    snapshot->timestamp = timestamp;
     if (metadata != NULL) {
         metadata->sequence = sequence;
         metadata->monotonicTimestampNanoseconds = timestamp;
@@ -394,32 +402,47 @@ bool VCAMSharedFrameReaderGetLatestMetadata(
     return true;
 }
 
+static bool VCAMSharedFrameReaderGetSnapshot(
+    VCAMSharedFrameReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameSnapshot *snapshot,
+    VCAMSharedFrameMetadata *metadata) {
+    if (reader == NULL || !VCAMSharedFrameReaderEnsureMapped(reader) ||
+        (atomic_load_explicit(&reader->header->requestedState,
+                              memory_order_acquire) & 1ULL) == 0) {
+        return false;
+    }
+    return VCAMSharedFrameReadSnapshot(
+        &reader->header->publishedSequence, &reader->header->publishedSlot,
+        &reader->header->publishedTimestampNanoseconds,
+        reader->header->slotSequence, maximumAgeNanoseconds, snapshot,
+        metadata);
+}
+
+bool VCAMSharedFrameReaderGetLatestMetadata(
+    VCAMSharedFrameReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameMetadata *metadata) {
+    VCAMSharedFrameSnapshot snapshot = {0};
+    return VCAMSharedFrameReaderGetSnapshot(
+        reader, maximumAgeNanoseconds, &snapshot, metadata);
+}
+
 bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      CVPixelBufferRef destination,
                                      uint64_t maximumAgeNanoseconds,
                                      VCAMSharedFrameMetadata *metadata) {
     if (reader == NULL || destination == NULL ||
-        !VCAMSharedFrameReaderEnsureMapped(reader) ||
         CVPixelBufferGetWidth(destination) != VCAMSharedFrameWidth ||
         CVPixelBufferGetHeight(destination) != VCAMSharedFrameHeight ||
-        CVPixelBufferGetPixelFormatType(destination) != kCVPixelFormatType_32BGRA ||
-        (atomic_load_explicit(&reader->header->requestedState,
-                              memory_order_acquire) & 1ULL) == 0) {
+        CVPixelBufferGetPixelFormatType(destination) != kCVPixelFormatType_32BGRA) {
         return false;
     }
-
-    uint64_t sequence = atomic_load_explicit(&reader->header->publishedSequence,
-                                             memory_order_acquire);
-    uint32_t slot = atomic_load_explicit(&reader->header->publishedSlot,
-                                         memory_order_relaxed);
-    uint64_t timestamp = atomic_load_explicit(&reader->header->publishedTimestampNanoseconds,
-                                              memory_order_relaxed);
-    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
-        (maximumAgeNanoseconds > 0 && (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
-        atomic_load_explicit(&reader->header->slotSequence[slot], memory_order_acquire) != sequence) {
-        return false;
-    }
+    VCAMSharedFrameSnapshot snapshot = {0};
+    if (!VCAMSharedFrameReaderGetSnapshot(
+            reader, maximumAgeNanoseconds, &snapshot, NULL)) return false;
+    uint64_t sequence = snapshot.sequence;
+    uint32_t slot = snapshot.slot;
 
     if (CVPixelBufferLockBaseAddress(destination, 0) != kCVReturnSuccess) return false;
     uint8_t *target = (uint8_t *)CVPixelBufferGetBaseAddress(destination);
@@ -438,7 +461,7 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
     }
     if (metadata != NULL) {
         metadata->sequence = sequence;
-        metadata->monotonicTimestampNanoseconds = timestamp;
+        metadata->monotonicTimestampNanoseconds = snapshot.timestamp;
         metadata->width = VCAMSharedFrameWidth;
         metadata->height = VCAMSharedFrameHeight;
         metadata->pixelFormat = kCVPixelFormatType_32BGRA;
@@ -684,6 +707,19 @@ static bool VCAMSharedSurfaceReaderEnsureMapped(VCAMSharedSurfaceReader *reader)
     return true;
 }
 
+static bool VCAMSharedSurfaceReaderGetSnapshot(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameSnapshot *snapshot,
+    VCAMSharedFrameMetadata *metadata) {
+    if (!VCAMSharedSurfaceReaderEnsureMapped(reader)) return false;
+    return VCAMSharedFrameReadSnapshot(
+        &reader->header->publishedSequence, &reader->header->publishedSlot,
+        &reader->header->publishedTimestampNanoseconds,
+        reader->header->slotSequence, maximumAgeNanoseconds, snapshot,
+        metadata);
+}
+
 static void VCAMSharedSurfaceReaderSetReady(VCAMSharedSurfaceReader *reader,
                                              bool ready) {
     if (reader == NULL || reader->header == NULL) return;
@@ -702,29 +738,9 @@ bool VCAMSharedSurfaceReaderGetLatestMetadata(
     VCAMSharedSurfaceReader *reader,
     uint64_t maximumAgeNanoseconds,
     VCAMSharedFrameMetadata *metadata) {
-    if (!VCAMSharedSurfaceReaderEnsureMapped(reader)) return false;
-    uint64_t sequence = atomic_load_explicit(
-        &reader->header->publishedSequence, memory_order_acquire);
-    uint32_t slot = atomic_load_explicit(
-        &reader->header->publishedSlot, memory_order_relaxed);
-    uint64_t timestamp = atomic_load_explicit(
-        &reader->header->publishedTimestampNanoseconds, memory_order_relaxed);
-    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
-        (maximumAgeNanoseconds > 0 &&
-         (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
-        atomic_load_explicit(&reader->header->slotSequence[slot],
-                             memory_order_acquire) != sequence) {
-        return false;
-    }
-    if (metadata != NULL) {
-        metadata->sequence = sequence;
-        metadata->monotonicTimestampNanoseconds = timestamp;
-        metadata->width = VCAMSharedFrameWidth;
-        metadata->height = VCAMSharedFrameHeight;
-        metadata->pixelFormat = kCVPixelFormatType_32BGRA;
-    }
-    return true;
+    VCAMSharedFrameSnapshot snapshot = {0};
+    return VCAMSharedSurfaceReaderGetSnapshot(
+        reader, maximumAgeNanoseconds, &snapshot, metadata);
 }
 
 bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
@@ -732,22 +748,17 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
                                        VCAMSharedSurfaceFrame *frame) {
     if (frame == NULL) return false;
     memset(frame, 0, sizeof(*frame));
-    if (!VCAMSharedSurfaceReaderEnsureMapped(reader)) return false;
-    uint64_t sequence = atomic_load_explicit(
-        &reader->header->publishedSequence, memory_order_acquire);
-    uint32_t slot = atomic_load_explicit(
-        &reader->header->publishedSlot, memory_order_relaxed);
-    uint64_t timestamp = atomic_load_explicit(
-        &reader->header->publishedTimestampNanoseconds, memory_order_relaxed);
-    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
-        (maximumAgeNanoseconds > 0 &&
-         (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
-        atomic_load_explicit(&reader->header->slotSequence[slot],
-                             memory_order_acquire) != sequence) {
+    if (reader == NULL || !VCAMSharedSurfaceReaderEnsureMapped(reader)) {
+        return false;
+    }
+    VCAMSharedFrameSnapshot snapshot = {0};
+    if (!VCAMSharedSurfaceReaderGetSnapshot(
+            reader, maximumAgeNanoseconds, &snapshot, NULL)) {
         reader->lastFailure = VCAMSharedSurfaceReaderFailureStale;
         return false;
     }
+    uint64_t sequence = snapshot.sequence;
+    uint32_t slot = snapshot.slot;
     _Atomic(uint32_t) *useCounter =
         (_Atomic(uint32_t) *)&reader->header->consumerUseCount[slot];
     atomic_fetch_add_explicit(useCounter, 1, memory_order_acq_rel);
@@ -792,7 +803,7 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
     frame->surface = surface;
     frame->useCounter = useCounter;
     frame->metadata.sequence = sequence;
-    frame->metadata.monotonicTimestampNanoseconds = timestamp;
+    frame->metadata.monotonicTimestampNanoseconds = snapshot.timestamp;
     frame->metadata.width = VCAMSharedFrameWidth;
     frame->metadata.height = VCAMSharedFrameHeight;
     frame->metadata.pixelFormat = kCVPixelFormatType_32BGRA;

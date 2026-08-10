@@ -477,7 +477,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("controlPanelDidRequestStatusRefresh", panel)
         self.assertNotIn("仅注入 mediaserverd 与 SpringBoard", picker)
         self.assertNotIn("麦克风保持真实输入", picker)
-        self.assertIn("VCAMPreviewLastFrameHostTime", preview)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", preview)
 
     def test_stream_health_reads_fresh_shared_metadata_without_copying_pixels(self) -> None:
         header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(
@@ -500,6 +500,36 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", status)
         self.assertNotIn("VCAMSharedFrameReaderCopyLatest", status)
         self.assertNotIn("VCAMSharedSurfaceReaderCopyLatest", status)
+        self.assertNotIn("VCAMSharedSurfaceReaderSetReady", status)
+        self.assertNotIn("consumerUseCount", status)
+        self.assertIn("NSAssert(NSThread.isMainThread", status)
+        self.assertNotIn("VCAMPreviewSeenFrame", preview)
+        self.assertNotIn("VCAMPreviewLastFrameHostTime", preview)
+
+        frame_metadata = shared.split(
+            "bool VCAMSharedFrameReaderGetLatestMetadata", 1
+        )[1].split("bool VCAMSharedFrameReaderCopyLatest", 1)[0]
+        frame_copy = shared.split("bool VCAMSharedFrameReaderCopyLatest", 1)[1].split(
+            "static bool VCAMSharedSurfaceHeaderIsValid", 1
+        )[0]
+        surface_metadata = shared.split(
+            "bool VCAMSharedSurfaceReaderGetLatestMetadata", 1
+        )[1].split("bool VCAMSharedSurfaceReaderCopyLatest", 1)[0]
+        surface_copy = shared.split("bool VCAMSharedSurfaceReaderCopyLatest", 1)[1].split(
+            "VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure", 1
+        )[0]
+        self.assertIn("VCAMSharedFrameReaderGetSnapshot", frame_metadata)
+        self.assertIn("VCAMSharedFrameReaderGetSnapshot", frame_copy)
+        self.assertIn("VCAMSharedSurfaceReaderGetSnapshot", surface_metadata)
+        self.assertIn("VCAMSharedSurfaceReaderGetSnapshot", surface_copy)
+        self.assertIn(
+            "reader == NULL || !VCAMSharedSurfaceReaderEnsureMapped(reader)",
+            surface_copy,
+        )
+        self.assertNotIn("publishedTimestampNanoseconds", frame_metadata)
+        self.assertNotIn("publishedTimestampNanoseconds", frame_copy)
+        self.assertNotIn("publishedTimestampNanoseconds", surface_metadata)
+        self.assertNotIn("publishedTimestampNanoseconds", surface_copy)
 
     def test_stale_virtual_frames_render_black_after_timeout(self) -> None:
         image_utils = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m").read_text(

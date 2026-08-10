@@ -12,14 +12,13 @@
 @property(nonatomic) uint64_t lastSequence;
 @end
 
-static BOOL VCAMPreviewSeenFrame;
-static CFTimeInterval VCAMPreviewLastFrameHostTime;
 static NSUInteger VCAMPreviewWindowFrames;
 static CFTimeInterval VCAMPreviewWindowStart;
 
 @implementation VCAMSharedFramePreviewView
 
 + (NSDictionary<NSString *, id> *)streamingStatus {
+    NSAssert(NSThread.isMainThread, @"VCAM stream health requires main thread");
     static VCAMSharedFrameReader *frameReader;
     static VCAMSharedSurfaceReader *surfaceReader;
     static dispatch_once_t onceToken;
@@ -115,8 +114,6 @@ static CFTimeInterval VCAMPreviewWindowStart;
         return;
     }
     CFTimeInterval now = CACurrentMediaTime();
-    VCAMPreviewSeenFrame = YES;
-    VCAMPreviewLastFrameHostTime = now;
     VCAMPreviewWindowFrames += 1;
     if (VCAMPreviewWindowStart == 0) VCAMPreviewWindowStart = now;
     if (now - VCAMPreviewWindowStart >= 1.0) {
