@@ -21,6 +21,16 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertNotIn("VTDecompressionSession", source)
         self.assertNotIn("avcodec_", source)
 
+    def test_failed_hls_item_reconnects_with_bounded_backoff(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("AVPlayerItemStatusFailed", source)
+        self.assertIn("dispatch_after", source)
+        self.assertIn("MIN((NSUInteger)30", source)
+        self.assertIn("self.reconnectAttempt = 0", source)
+        self.assertIn("springboard HLS reconnect", source)
+
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"

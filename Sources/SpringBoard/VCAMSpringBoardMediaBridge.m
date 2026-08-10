@@ -43,6 +43,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger publishedFrames;
 @property(nonatomic) NSUInteger publishFailures;
 @property(nonatomic) uint64_t lastFrameTimestampNanoseconds;
+@property(nonatomic) NSUInteger reconnectAttempt;
+@property(nonatomic) BOOL reconnectPending;
 @property(nonatomic, copy, nullable) NSString *lastError;
 @end
 
@@ -235,6 +237,25 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         (long)self.displayLink.preferredFramesPerSecond]];
 }
 
+- (void)scheduleReconnectForItem:(AVPlayerItem *)item {
+    if (self.reconnectPending || item.status != AVPlayerItemStatusFailed) return;
+    NSUInteger delay = MIN((NSUInteger)30,
+        (NSUInteger)1 << MIN(self.reconnectAttempt, (NSUInteger)5));
+    self.reconnectAttempt += 1;
+    self.reconnectPending = YES;
+    self.lastError = item.error.localizedDescription ?: @"player item failed";
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard HLS reconnect attempt=%lu delay=%lus error=%@",
+        (unsigned long)self.reconnectAttempt, (unsigned long)delay,
+        self.lastError]];
+    [self stopPlayback];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.reconnectPending = NO;
+        if (self.started) [self reload];
+    });
+}
+
 - (nullable CIImage *)imageByTransformingPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     if (pixelBuffer == NULL || self.configuration == nil) return nil;
     CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
@@ -270,11 +291,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 - (void)tick:(CADisplayLink *)displayLink {
     (void)displayLink;
     if (self.output == nil || self.player.currentItem == nil) return;
+    AVPlayerItem *item = self.player.currentItem;
+    if (item.status == AVPlayerItemStatusFailed) {
+        [self scheduleReconnectForItem:item];
+        return;
+    }
     CMTime itemTime = [self.output itemTimeForHostTime:CACurrentMediaTime()];
     BOOL hasNewFrame = [self.output hasNewPixelBufferForItemTime:itemTime];
     self.displayTicks += 1;
     if (self.displayTicks % 300 == 0) {
-        AVPlayerItem *item = self.player.currentItem;
         CGSize presentationSize = item.presentationSize;
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@",
@@ -294,6 +319,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         return;
     }
     self.decodedFrames += 1;
+    self.reconnectAttempt = 0;
     BOOL surfaceTransport = self.surfaceWriter != NULL;
     BOOL surfaceConsumerReady = surfaceTransport &&
         VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
