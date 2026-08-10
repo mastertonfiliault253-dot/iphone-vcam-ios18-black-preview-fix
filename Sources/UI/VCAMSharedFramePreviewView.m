@@ -20,11 +20,31 @@ static CFTimeInterval VCAMPreviewWindowStart;
 @implementation VCAMSharedFramePreviewView
 
 + (NSDictionary<NSString *, id> *)streamingStatus {
+    static VCAMSharedFrameReader *frameReader;
+    static VCAMSharedSurfaceReader *surfaceReader;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        frameReader = VCAMSharedFrameReaderCreate();
+        surfaceReader = VCAMSharedSurfaceReaderCreate();
+    });
+    const uint64_t maximumAge = 2000000000ULL;
+    VCAMSharedFrameMetadata frameMetadata = {0};
+    VCAMSharedFrameMetadata surfaceMetadata = {0};
+    BOOL hasFrame = VCAMSharedFrameReaderGetLatestMetadata(
+        frameReader, maximumAge, &frameMetadata);
+    BOOL hasSurface = VCAMSharedSurfaceReaderGetLatestMetadata(
+        surfaceReader, maximumAge, &surfaceMetadata);
+    uint64_t timestamp = hasSurface && (!hasFrame ||
+        surfaceMetadata.monotonicTimestampNanoseconds >=
+            frameMetadata.monotonicTimestampNanoseconds)
+        ? surfaceMetadata.monotonicTimestampNanoseconds
+        : frameMetadata.monotonicTimestampNanoseconds;
+    uint64_t monotonicNow = VCAMSharedFrameMonotonicNanoseconds();
+    BOOL receiving = timestamp > 0 && monotonicNow >= timestamp &&
+        monotonicNow - timestamp <= maximumAge;
     CFTimeInterval now = CACurrentMediaTime();
-    BOOL receiving = VCAMPreviewSeenFrame &&
-        (now - VCAMPreviewLastFrameHostTime) <= 2.0;
     double ageMilliseconds = receiving
-        ? (now - VCAMPreviewLastFrameHostTime) * 1000.0 : 0;
+        ? (double)(monotonicNow - timestamp) / 1000000.0 : 0;
     double fps = 0;
     if (VCAMPreviewWindowStart > 0) {
         CFTimeInterval elapsed = now - VCAMPreviewWindowStart;

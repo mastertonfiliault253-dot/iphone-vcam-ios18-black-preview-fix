@@ -63,6 +63,10 @@ VCAMSharedFrameReader *VCAMSharedFrameReaderCreate(void);
 void VCAMSharedFrameReaderDestroy(VCAMSharedFrameReader *_Nullable reader);
 bool VCAMSharedFrameReaderGetActiveState(VCAMSharedFrameReader *reader,
                                          bool *active);
+bool VCAMSharedFrameReaderGetLatestMetadata(
+    VCAMSharedFrameReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameMetadata *_Nullable metadata);
 bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      CVPixelBufferRef destination,
                                      uint64_t maximumAgeNanoseconds,
@@ -82,6 +86,10 @@ bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer);
 /// global IOSurface lookup; callers must retain the legacy mmap fallback.
 VCAMSharedSurfaceReader *_Nullable VCAMSharedSurfaceReaderCreate(void);
 void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *_Nullable reader);
+bool VCAMSharedSurfaceReaderGetLatestMetadata(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameMetadata *_Nullable metadata);
 bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
                                        uint64_t maximumAgeNanoseconds,
                                        VCAMSharedSurfaceFrame *frame);

@@ -361,6 +361,39 @@ bool VCAMSharedFrameReaderGetActiveState(VCAMSharedFrameReader *reader,
     return true;
 }
 
+bool VCAMSharedFrameReaderGetLatestMetadata(
+    VCAMSharedFrameReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameMetadata *metadata) {
+    if (reader == NULL || !VCAMSharedFrameReaderEnsureMapped(reader) ||
+        (atomic_load_explicit(&reader->header->requestedState,
+                              memory_order_acquire) & 1ULL) == 0) {
+        return false;
+    }
+    uint64_t sequence = atomic_load_explicit(&reader->header->publishedSequence,
+                                             memory_order_acquire);
+    uint32_t slot = atomic_load_explicit(&reader->header->publishedSlot,
+                                         memory_order_relaxed);
+    uint64_t timestamp = atomic_load_explicit(
+        &reader->header->publishedTimestampNanoseconds, memory_order_relaxed);
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
+        (maximumAgeNanoseconds > 0 &&
+         (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
+        atomic_load_explicit(&reader->header->slotSequence[slot],
+                             memory_order_acquire) != sequence) {
+        return false;
+    }
+    if (metadata != NULL) {
+        metadata->sequence = sequence;
+        metadata->monotonicTimestampNanoseconds = timestamp;
+        metadata->width = VCAMSharedFrameWidth;
+        metadata->height = VCAMSharedFrameHeight;
+        metadata->pixelFormat = kCVPixelFormatType_32BGRA;
+    }
+    return true;
+}
+
 bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      CVPixelBufferRef destination,
                                      uint64_t maximumAgeNanoseconds,
@@ -663,6 +696,35 @@ void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *reader) {
     if (reader == NULL) return;
     VCAMSharedSurfaceReaderUnmap(reader);
     free(reader);
+}
+
+bool VCAMSharedSurfaceReaderGetLatestMetadata(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedFrameMetadata *metadata) {
+    if (!VCAMSharedSurfaceReaderEnsureMapped(reader)) return false;
+    uint64_t sequence = atomic_load_explicit(
+        &reader->header->publishedSequence, memory_order_acquire);
+    uint32_t slot = atomic_load_explicit(
+        &reader->header->publishedSlot, memory_order_relaxed);
+    uint64_t timestamp = atomic_load_explicit(
+        &reader->header->publishedTimestampNanoseconds, memory_order_relaxed);
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
+        (maximumAgeNanoseconds > 0 &&
+         (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
+        atomic_load_explicit(&reader->header->slotSequence[slot],
+                             memory_order_acquire) != sequence) {
+        return false;
+    }
+    if (metadata != NULL) {
+        metadata->sequence = sequence;
+        metadata->monotonicTimestampNanoseconds = timestamp;
+        metadata->width = VCAMSharedFrameWidth;
+        metadata->height = VCAMSharedFrameHeight;
+        metadata->pixelFormat = kCVPixelFormatType_32BGRA;
+    }
+    return true;
 }
 
 bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,

@@ -479,6 +479,28 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("麦克风保持真实输入", picker)
         self.assertIn("VCAMPreviewLastFrameHostTime", preview)
 
+    def test_stream_health_reads_fresh_shared_metadata_without_copying_pixels(self) -> None:
+        header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(
+            encoding="utf-8"
+        )
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        status = preview.split("+ (NSDictionary<NSString *, id> *)streamingStatus", 1)[1].split(
+            "+ (Class)layerClass", 1
+        )[0]
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", header)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", header)
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", shared)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", shared)
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", status)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", status)
+        self.assertNotIn("VCAMSharedFrameReaderCopyLatest", status)
+        self.assertNotIn("VCAMSharedSurfaceReaderCopyLatest", status)
+
     def test_stale_virtual_frames_render_black_after_timeout(self) -> None:
         image_utils = (ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m").read_text(
             encoding="utf-8"
