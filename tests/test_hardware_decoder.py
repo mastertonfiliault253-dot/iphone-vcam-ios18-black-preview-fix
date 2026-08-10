@@ -87,60 +87,35 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
-    def test_rtsp_direct_decoder_waits_for_an_idr_without_custom_sample_attachments(self) -> None:
-        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
-            encoding="utf-8"
-        )
-        header = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.h").read_text(
-            encoding="utf-8"
-        )
+    def test_rtsp_uses_ffmpeg_upstream_videotoolbox_contract(self) -> None:
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("isKeyFrame:(BOOL)isKeyFrame", header)
-        self.assertNotIn("kCMSampleAttachmentKey_NotSync", decoder)
-        self.assertNotIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
-        self.assertIn("BOOL receivedKeyPacket = NO", rtsp)
-        self.assertIn("packet->flags & AV_PKT_FLAG_KEY", rtsp)
-        self.assertIn("if (!receivedKeyPacket && !isKeyFrame)", rtsp)
-        self.assertIn("if (isKeyFrame && !receivedKeyPacket)", rtsp)
-        self.assertIn("isKeyFrame:isKeyFrame", rtsp)
-        loop = rtsp.split("while (self.running && av_read_frame", 1)[1].split(
-            "[decoder flush]", 1
+        session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
+            "- (BOOL)decodeOneFFmpegSessionUsingHardware", 1
         )[0]
-        self.assertIn("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp)
-        self.assertLess(
-            rtsp.index("hardware session codec="),
-            rtsp.index("sessionStart = CFAbsoluteTimeGetCurrent();", rtsp.index("hardware session codec=")),
-        )
-        self.assertIn("receivedKeyPacket &&", loop)
-        self.assertLess(
-            loop.index("if (!receivedKeyPacket && !isKeyFrame)"),
-            loop.index("[decoder decodePacket:"),
-        )
+        self.assertNotIn("decodeOneHardwareSession", session)
+        self.assertIn("decodeOneFFmpegSessionUsingHardware:YES", session)
+        self.assertIn("decodeOneFFmpegSessionUsingHardware:NO", session)
+        self.assertIn("avcodec_get_hw_config(decoder, index)", rtsp)
+        self.assertIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
+        self.assertIn("config->device_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertIn("hardwareState.pixelFormat = config->pix_fmt", rtsp)
+        self.assertIn("codecContext->opaque = &hardwareState", rtsp)
+        self.assertIn("decodedFrame->data[3]", rtsp)
 
-    def test_rtsp_direct_decoder_preserves_packet_timing_after_the_first_idr(self) -> None:
-        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("seconds < 0", rtsp)
-        self.assertIn("CMTime timelineOrigin = kCMTimeInvalid", rtsp)
-        self.assertIn("timelineOrigin = pts", rtsp)
-        self.assertIn("pts = CMTimeSubtract(pts, timelineOrigin)", rtsp)
-        self.assertIn("duration:VCAMPacketDuration(packet, stream)", rtsp)
-
-    def test_ffmpeg_hardware_session_skips_pre_key_dependent_packets(self) -> None:
+    def test_ffmpeg_upstream_path_passes_demuxed_packets_without_manual_au_filtering(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        loop = stream.split("- (BOOL)decodeOneSessionSoftwareOnly", 1)[1].split(
+        loop = stream.split("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
             "cleanup:", 1
         )[0]
-        guard = "useHardware && waitingForKeyPacket &&"
-        self.assertIn(guard, loop)
-        self.assertLess(
-            loop.index(guard), loop.index("avcodec_send_packet(codecContext, packet)")
-        )
+        self.assertIn("avcodec_parameters_to_context(codecContext, stream->codecpar)", loop)
+        self.assertIn("avcodec_send_packet(codecContext, packet)", loop)
+        self.assertIn("avcodec_receive_frame(codecContext, frame)", loop)
+        self.assertNotIn("AV_PKT_FLAG_KEY", loop)
+        self.assertNotIn("VCAMCopyCodecParametersWithPacketExtradata", loop)
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(

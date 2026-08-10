@@ -331,7 +331,12 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn('"reorder_queue_size"', rtsp)
         self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
         self.assertIn("hardware session produced no frames; reconnecting", rtsp)
-        self.assertIn("decodeOneHardwareSession", rtsp)
+        session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
+            "- (BOOL)decodeOneFFmpegSessionUsingHardware", 1
+        )[0]
+        self.assertNotIn("decodeOneHardwareSession", session)
+        self.assertIn("decodeOneFFmpegSessionUsingHardware:YES", session)
+        self.assertIn("avcodec_get_hw_config", rtsp)
         self.assertIn("av_frame_clone", rtsp)
         self.assertIn("_pendingSoftwareFrame", rtsp)
         self.assertIn("conversionQueue", rtsp)
@@ -340,14 +345,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("retry this exact packet", rtsp)
         self.assertNotIn('"discardcorrupt"', rtsp)
         self.assertIn("AV_FRAME_FLAG_CORRUPT", rtsp)
-        self.assertIn("AV_FRAME_FLAG_KEY", rtsp)
         self.assertIn("decode_error_flags", rtsp)
-        self.assertIn("AV_PKT_FLAG_KEY", rtsp)
-        self.assertIn("recoveryPacketLimit = 120", rtsp)
-        self.assertIn("recoveryTimeLimit = 5.0", rtsp)
-        self.assertIn('@"%@ key-frame recovery timed out', rtsp)
         self.assertIn("self.streamName", rtsp)
-        self.assertIn("clean-key recovery exceeded five seconds", rtsp)
         self.assertIn("receive_frame ended", rtsp)
         self.assertIn("_latestPixelBuffer", rtsp)
         self.assertIn("< 3.5", rtsp)

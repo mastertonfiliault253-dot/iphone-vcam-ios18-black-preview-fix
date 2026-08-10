@@ -79,11 +79,16 @@ static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
         ? CMTimeMakeWithSeconds(seconds, 600) : kCMTimeInvalid;
 }
 
+typedef struct {
+    enum AVPixelFormat pixelFormat;
+} VCAMFFmpegHardwareState;
+
 static enum AVPixelFormat VCAMSelectHardwarePixelFormat(AVCodecContext *context,
                                                          const enum AVPixelFormat *formats) {
-    (void)context;
+    VCAMFFmpegHardwareState *state = context == NULL ? NULL : context->opaque;
+    if (state == NULL || state->pixelFormat == AV_PIX_FMT_NONE) return AV_PIX_FMT_NONE;
     for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
-        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
+        if (*format == state->pixelFormat) return *format;
     }
     return AV_PIX_FMT_NONE;
 }
@@ -538,25 +543,19 @@ cleanup:
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"%@ hardware decode disabled; using software decode", self.streamName]];
         self.softwareFallbackActive = YES;
-        return [self decodeOneSessionSoftwareOnly];
+        return [self decodeOneFFmpegSessionUsingHardware:NO];
     }
-    // Hardware-first with a bounded software fallback. On healthy devices the
-    // direct VideoToolbox session (or FFmpeg's VideoToolbox hwaccel) decodes
-    // every frame. If both hardware paths produce nothing, fall back to the
-    // FFmpeg software decoder so the camera keeps receiving frames, and retry
-    // hardware every 30 seconds in case it recovers.
     if (self.softwareFallbackActive) {
         if (CACurrentMediaTime() < self.hardwareRetryDeadline) {
-            return [self decodeOneSessionSoftwareOnly];
+            return [self decodeOneFFmpegSessionUsingHardware:NO];
         }
         self.softwareFallbackActive = NO;
     }
-    BOOL produced = [self decodeOneHardwareSession];
-    if (produced || !self.running) {
-        self.softwareFallbackActive = NO;
-        return produced;
-    }
-    produced = [self decodeOneSessionSoftwareOnly];
+    // FFmpeg owns RTSP/RTP depayloading, codec extradata, access-unit
+    // normalization, timestamps, reordering, and VideoToolbox integration.
+    // The former hand-built CMSampleBuffer/VT path remains only as inert
+    // rollback code until this upstream path passes device acceptance.
+    BOOL produced = [self decodeOneFFmpegSessionUsingHardware:YES];
     if (produced || !self.running) {
         self.softwareFallbackActive = NO;
         return produced;
@@ -566,10 +565,41 @@ cleanup:
         self.streamName]];
     self.softwareFallbackActive = YES;
     self.hardwareRetryDeadline = CACurrentMediaTime() + 30.0;
-    return [self decodeOneSessionSoftwareOnly];
+    return [self decodeOneFFmpegSessionUsingHardware:NO];
 }
 
-- (BOOL)decodeOneSessionSoftwareOnly {
+- (BOOL)consumeFFmpegFrame:(AVFrame *)decodedFrame
+             usingHardware:(BOOL)useHardware
+        loggedSoftwareFrame:(BOOL *)loggedSoftwareFrame
+         loggedCorruptFrame:(BOOL *)loggedCorruptFrame {
+    if ((decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) != 0 ||
+        decodedFrame->decode_error_flags != 0) {
+        if (loggedCorruptFrame != NULL && !*loggedCorruptFrame) {
+            *loggedCorruptFrame = YES;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ corrupt decoded frame dropped flags=%d decodeErrors=%d",
+                self.streamName, decodedFrame->flags, decodedFrame->decode_error_flags]];
+        }
+        return NO;
+    }
+    if (useHardware) {
+        if (decodedFrame->format != AV_PIX_FMT_VIDEOTOOLBOX ||
+            decodedFrame->data[3] == NULL) return NO;
+        [self acceptDecodedPixelBuffer:(CVPixelBufferRef)decodedFrame->data[3]
+                              hardware:YES];
+        return YES;
+    }
+    if (loggedSoftwareFrame != NULL && !*loggedSoftwareFrame) {
+        *loggedSoftwareFrame = YES;
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ software frame format=%d size=%dx%d lines=%d,%d,%d",
+            self.streamName, decodedFrame->format, decodedFrame->width, decodedFrame->height,
+            decodedFrame->linesize[0], decodedFrame->linesize[1], decodedFrame->linesize[2]]];
+    }
+    return [self enqueueLatestSoftwareFrame:decodedFrame];
+}
+
+- (BOOL)decodeOneFFmpegSessionUsingHardware:(BOOL)useHardware {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
     AVBufferRef *hardwareDevice = NULL;
@@ -579,81 +609,17 @@ cleanup:
     int videoStream = -1;
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
-    BOOL useHardware = self.hardwareDecodeEnabled &&
-        !self.softwareFallbackActive;
+    VCAMFFmpegHardwareState hardwareState = { .pixelFormat = AV_PIX_FMT_NONE };
     if (useHardware) __sync_lock_test_and_set(&VCAMCaptureFFmpegHardwareLogs, 1);
-    __block BOOL producedFrame = NO;
-    __block BOOL loggedSoftwareFrame = NO;
+    BOOL producedFrame = NO;
+    BOOL loggedSoftwareFrame = NO;
+    BOOL loggedCorruptFrame = NO;
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
-    __block BOOL loggedCorruptInput = NO;
-    // Joining an RTP stream in the middle of a GOP can produce a superficially
-    // decodable but reference-corrupted picture. Publish only after FFmpeg has
-    // emitted a clean key frame, and return to the same bounded recovery state
-    // whenever the demuxer or decoder reports corruption.
-    __block BOOL waitingForKeyPacket = YES;
-    __block BOOL awaitingCleanKeyFrame = NO;
-    __block NSUInteger recoveryPackets = 0;
-    const NSUInteger recoveryPacketLimit = 120;
-    __block CFTimeInterval recoveryStartedAt = 0;
-    const CFTimeInterval recoveryTimeLimit = 5.0;
-    __block NSUInteger videoPacketsWithoutFrame = 0;
-    volatile int consecutiveSendFailures = 0;
-    void (^handleDecodedFrame)(AVFrame *) = nil;
+    NSUInteger videoPacketsWithoutFrame = 0;
+    NSUInteger consecutiveSendFailures = 0;
     NSString *urlString = self.streamURL.absoluteString;
     const char *url = urlString.UTF8String;
-
-    // Under ARC, every cleanup jump must stay outside the lifetime entry of a
-    // strongly capturing block. Install the handler before the first possible
-    // goto so all failure paths can safely share the cleanup label.
-    handleDecodedFrame = ^(AVFrame *decodedFrame) {
-        if ((decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) != 0 ||
-            decodedFrame->decode_error_flags != 0) {
-            BOOL alreadyRecovering = waitingForKeyPacket || awaitingCleanKeyFrame;
-            waitingForKeyPacket = YES;
-            awaitingCleanKeyFrame = NO;
-            if (!alreadyRecovering) {
-                recoveryPackets = 0;
-                recoveryStartedAt = CACurrentMediaTime();
-            }
-            if (!loggedCorruptInput) {
-                loggedCorruptInput = YES;
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"%@ corrupt frame dropped flags=%d decodeErrors=%d; waiting for keyframe",
-                    self.streamName, decodedFrame->flags, decodedFrame->decode_error_flags]];
-            }
-            return;
-        }
-        if (awaitingCleanKeyFrame) {
-            if ((decodedFrame->flags & AV_FRAME_FLAG_KEY) == 0) return;
-            awaitingCleanKeyFrame = NO;
-            recoveryPackets = 0;
-            recoveryStartedAt = 0;
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"%@ recovered on clean decoded key frame", self.streamName]];
-        }
-        if (decodedFrame->format == AV_PIX_FMT_VIDEOTOOLBOX && decodedFrame->data[3] != NULL) {
-            CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)decodedFrame->data[3];
-            [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
-            producedFrame = YES;
-            videoPacketsWithoutFrame = 0;
-            return;
-        }
-        if (!useHardware) {
-            if (!loggedSoftwareFrame) {
-                loggedSoftwareFrame = YES;
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"%@ software frame format=%d size=%dx%d lines=%d,%d,%d",
-                    self.streamName, decodedFrame->format, decodedFrame->width, decodedFrame->height,
-                    decodedFrame->linesize[0], decodedFrame->linesize[1],
-                    decodedFrame->linesize[2]]];
-            }
-            if ([self enqueueLatestSoftwareFrame:decodedFrame]) {
-                producedFrame = YES;
-                videoPacketsWithoutFrame = 0;
-            }
-        }
-    };
 
     [self configureOpenOptions:&options];
     // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
@@ -679,6 +645,23 @@ cleanup:
     stream = formatContext->streams[videoStream];
     decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (decoder == NULL) goto cleanup;
+    if (useHardware) {
+        for (int index = 0; ; index++) {
+            const AVCodecHWConfig *config = avcodec_get_hw_config(decoder, index);
+            if (config == NULL) break;
+            if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0 &&
+                config->device_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX) {
+                hardwareState.pixelFormat = config->pix_fmt;
+                break;
+            }
+        }
+        if (hardwareState.pixelFormat == AV_PIX_FMT_NONE) {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ FFmpeg decoder has no VideoToolbox hardware config codec=%s",
+                self.streamName, decoder->name ?: "(unknown)"]];
+            goto cleanup;
+        }
+    }
     char extraHex[65] = {0};
     int extraBytes = MIN(32, stream->codecpar->extradata_size);
     for (int index = 0; index < extraBytes; index++) {
@@ -696,6 +679,7 @@ cleanup:
     codecContext->err_recognition = AV_EF_CAREFUL;
     codecContext->thread_count = useHardware ? 1 : 4;
     if (useHardware) {
+        codecContext->opaque = &hardwareState;
         codecContext->get_format = VCAMSelectHardwarePixelFormat;
         if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
                                    NULL, NULL, 0) < 0) goto cleanup;
@@ -708,66 +692,12 @@ cleanup:
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
-    recoveryStartedAt = CACurrentMediaTime();
     while (self.running &&
            (useHardware || !self.hardwareDecodeEnabled ||
             CACurrentMediaTime() < self.hardwareRetryDeadline) &&
            av_read_frame(formatContext, packet) >= 0) {
-        if ((waitingForKeyPacket || awaitingCleanKeyFrame) &&
-            recoveryStartedAt > 0 &&
-            CACurrentMediaTime() - recoveryStartedAt > recoveryTimeLimit) {
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"%@ clean-key recovery exceeded five seconds; reconnecting",
-                self.streamName]];
-            av_packet_unref(packet);
-            break;
-        }
         if (packet->stream_index == videoStream) {
             videoPacketsWithoutFrame += 1;
-            if (waitingForKeyPacket || awaitingCleanKeyFrame) {
-                recoveryPackets += 1;
-                if (recoveryPackets > recoveryPacketLimit) {
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"%@ key-frame recovery timed out; reconnecting", self.streamName]];
-                    av_packet_unref(packet);
-                    break;
-                }
-            }
-            if ((packet->flags & AV_PKT_FLAG_CORRUPT) != 0) {
-                BOOL alreadyRecovering = waitingForKeyPacket || awaitingCleanKeyFrame;
-                waitingForKeyPacket = YES;
-                awaitingCleanKeyFrame = NO;
-                if (!alreadyRecovering) {
-                    recoveryPackets = 0;
-                    recoveryStartedAt = CACurrentMediaTime();
-                }
-                avcodec_flush_buffers(codecContext);
-                if (!loggedCorruptInput) {
-                    loggedCorruptInput = YES;
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"%@ corrupt packet dropped; waiting for keyframe", self.streamName]];
-                }
-                av_packet_unref(packet);
-                continue;
-            }
-            // A hardware session joined mid-GOP cannot decode dependent
-            // pictures. RTSP already has SDP parameter sets in extradata, and
-            // HLS carries its in-band parameter sets in the key access unit,
-            // so wait for that unit instead of poisoning VideoToolbox.
-            if (useHardware && waitingForKeyPacket &&
-                (packet->flags & AV_PKT_FLAG_KEY) == 0) {
-                av_packet_unref(packet);
-                continue;
-            }
-            if (waitingForKeyPacket && (packet->flags & AV_PKT_FLAG_KEY) != 0) {
-                waitingForKeyPacket = NO;
-                awaitingCleanKeyFrame = YES;
-                recoveryPackets = 0;
-                recoveryStartedAt = CACurrentMediaTime();
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"%@ recovery: fed key packet; waiting for clean decoded keyframe",
-                    self.streamName]];
-            }
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
             while (self.running) {
@@ -779,7 +709,12 @@ cleanup:
                 // unref/drop a compressed H.264 packet before it is accepted.
                 int receiveResult = avcodec_receive_frame(codecContext, frame);
                 if (receiveResult >= 0) {
-                    handleDecodedFrame(frame);
+                    if ([self consumeFFmpegFrame:frame usingHardware:useHardware
+                             loggedSoftwareFrame:&loggedSoftwareFrame
+                              loggedCorruptFrame:&loggedCorruptFrame]) {
+                        producedFrame = YES;
+                        videoPacketsWithoutFrame = 0;
+                    }
                     av_frame_unref(frame);
                     continue;
                 }
@@ -793,7 +728,7 @@ cleanup:
                 break;
             }
             if (sendResult >= 0) {
-                __sync_lock_test_and_set(&consecutiveSendFailures, 0);
+                consecutiveSendFailures = 0;
                 while (self.running) {
                     int receiveResult = avcodec_receive_frame(codecContext, frame);
                     if (receiveResult < 0) {
@@ -809,7 +744,12 @@ cleanup:
                         }
                         break;
                     }
-                    handleDecodedFrame(frame);
+                    if ([self consumeFFmpegFrame:frame usingHardware:useHardware
+                             loggedSoftwareFrame:&loggedSoftwareFrame
+                              loggedCorruptFrame:&loggedCorruptFrame]) {
+                        producedFrame = YES;
+                        videoPacketsWithoutFrame = 0;
+                    }
                     av_frame_unref(frame);
                 }
             } else if (sendResult != AVERROR(EAGAIN)) {
@@ -823,8 +763,8 @@ cleanup:
                 // parameter mismatch) must not tear down a healthy session.
                 // Skip it and keep reading; only reconnect after a long run
                 // of failures that cannot self-heal.
-                int failureCount = __sync_add_and_fetch(&consecutiveSendFailures, 1);
-                if (failureCount >= 200) {
+                consecutiveSendFailures += 1;
+                if (consecutiveSendFailures >= 200) {
                     restartSession = YES;
                 }
             }
