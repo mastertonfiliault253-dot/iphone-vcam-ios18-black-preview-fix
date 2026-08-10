@@ -31,6 +31,16 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("self.reconnectAttempt = 0", source)
         self.assertIn("springboard HLS reconnect", source)
 
+    def test_ready_hls_item_reconnects_after_decoded_frame_stall(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMHLSStallTimeoutNanoseconds", source)
+        self.assertIn("lastDecodedFrameTimestampNanoseconds", source)
+        self.assertIn("AVPlayerItemStatusReadyToPlay", source)
+        self.assertIn("springboard HLS stalled", source)
+        self.assertIn("scheduleReconnectForItem:item reason:", source)
+
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
