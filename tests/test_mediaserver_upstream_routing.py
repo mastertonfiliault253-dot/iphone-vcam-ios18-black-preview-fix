@@ -5,6 +5,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).parents[1]
 ENTRY_PATH = ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
+UTILS_PATH = ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
 
 
 def _entry_source() -> str:
@@ -215,6 +216,20 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertLess(sample_builder.index(original_create), sample_builder.index(retry_guard))
         self.assertLess(sample_builder.index(retry_guard), sample_builder.index(derived_create))
         self.assertIn("compressed replacement sample used derived format", sample_builder)
+
+    def test_ios16_observed_p420_preview_does_not_depend_on_capability_probe(self) -> None:
+        utils = UTILS_PATH.read_text(encoding="utf-8")
+        support = _between(
+            utils,
+            "BOOL VCAMTargetBufferIsSupported",
+            "static BOOL VCAMFillBlackSharedFrame",
+        )
+        compressed_branch = _between(
+            support,
+            "if (compressedVideoRange)",
+            "return CVPixelBufferGetWidthOfPlane",
+        )
+        self.assertIn("format == (OSType)0x70343230", compressed_branch)
 
     def test_downstream_fast_path_requires_its_own_matching_numeric_marker(self) -> None:
         matcher = _between(

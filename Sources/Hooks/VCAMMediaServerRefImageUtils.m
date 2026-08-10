@@ -369,6 +369,7 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
         // VideoToolbox owns the write; the IOSurface and device capability
         // checks are the only safe validation available here.
         return CVIsCompressedPixelFormatAvailable(format) ||
+            format == (OSType)0x70343230 || // iOS 16.1 Camera preview 'p420'
             format == (OSType)0x5b387630 || format == (OSType)0x7d387630;
     }
     return CVPixelBufferGetWidthOfPlane(targetBuffer, 0) == width &&
