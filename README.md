@@ -47,9 +47,10 @@ when enabled, without pre-decoding the entire asset into memory.
 
 ## Sources
 
-- Photos or Files: PNG, JPEG and primary-image-aware HEIC/HEIF are decoded once
-  and cached by `vcamd`. MOV, MP4 and M4V use SpringBoard's system `AVPlayer`,
-  output NV12, and loop without pre-decoding the asset.
+- Photos or Files: Photos-picker images are decoded and orientation-normalized
+  once to JPEG before import; Files/legacy PNG, JPEG and HEIC/HEIF retain the
+  ImageIO static decoder and frame cache. MOV, MP4 and M4V use SpringBoard's
+  system `AVPlayer`, output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
   `wss://` address in the panel.
@@ -62,7 +63,10 @@ when enabled, without pre-decoding the entire asset into memory.
   Metal-backed Core Image render directly into a three-slot IOSurface ring.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
-  the live three-slot BGRA mmap fallback. The retained daemon decoder can be
+  the live three-slot BGRA mmap fallback. HLS prefers a one-second forward
+  buffer, does not wait for a large stall-safe
+  buffer, logs its live-edge lag, and rebuilds a session after five seconds
+  without a decoded frame. The retained daemon decoder can be
   selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 - Local-video rollback: creating

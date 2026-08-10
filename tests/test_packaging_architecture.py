@@ -72,7 +72,11 @@ class PackagingArchitectureTests(unittest.TestCase):
                 "org.mozilla.ios.Firefox",
             ],
         )
-        self.assertIn("hls-ffmpeg-videotoolbox", targets["vcamd"]["sources"])
+        self.assertNotIn("hls-ffmpeg-videotoolbox", targets["vcamd"]["sources"])
+        self.assertEqual(
+            targets["vcamd"]["rollbackSources"],
+            ["local-video-avassetreader", "hls-ffmpeg-videotoolbox"],
+        )
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
 
     def test_launchdaemon_runs_package_worker_from_rootless_prefix(self) -> None:

@@ -16,11 +16,20 @@ static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
-static const uint64_t VCAMHLSStallTimeoutNanoseconds = 15ULL * 1000000000ULL;
+static const uint64_t VCAMHLSStallTimeoutNanoseconds = 5ULL * 1000000000ULL;
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
     return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
+}
+
+static double VCAMLiveEdgeLagSeconds(AVPlayerItem *item) {
+    NSValue *value = item.seekableTimeRanges.lastObject;
+    if (value == nil) return NAN;
+    CMTimeRange range = value.CMTimeRangeValue;
+    double edge = CMTimeGetSeconds(CMTimeRangeGetEnd(range));
+    double current = CMTimeGetSeconds(item.currentTime);
+    return isfinite(edge) && isfinite(current) ? MAX(0.0, edge - current) : NAN;
 }
 
 static void VCAMSpringBoardMediaPreferencesChanged(
@@ -233,9 +242,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     NSURL *playbackURL = localVideo ? [NSURL fileURLWithPath:next.mediaPath]
                                     : next.hlsURL;
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:playbackURL];
+    if (!localVideo) {
+        item.preferredForwardBufferDuration = 1.0;
+        item.automaticallyPreservesTimeOffsetFromLive = NO;
+    }
     [item addOutput:self.output];
     self.player = [AVPlayer playerWithPlayerItem:item];
-    self.player.automaticallyWaitsToMinimizeStalling = !localVideo;
+    self.player.automaticallyWaitsToMinimizeStalling = NO;
     AVAssetTrack *videoTrack = localVideo
         ? [[item.asset tracksWithMediaType:AVMediaTypeVideo] firstObject] : nil;
     self.sourceTransform = videoTrack == nil
@@ -359,14 +372,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.displayTicks += 1;
     if (self.displayTicks % 300 == 0) {
         CGSize presentationSize = item.presentationSize;
+        double liveLag = self.localVideo ? NAN : VCAMLiveEdgeLagSeconds(item);
         NSString *healthFormat = self.localVideo
-            ? @"springboard local video health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@"
-            : @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f size=%.0fx%.0f error=%@";
+            ? @"springboard local video health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@"
+            : @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@";
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:healthFormat,
             (unsigned long)self.displayTicks, hasNewFrame, (long)item.status,
             (long)self.player.timeControlStatus,
             self.player.reasonForWaitingToPlay ?: @"none",
-            CMTimeGetSeconds(item.currentTime), presentationSize.width,
+            CMTimeGetSeconds(item.currentTime), liveLag, presentationSize.width,
             presentationSize.height,
             item.error.localizedDescription ?: @"none"]];
     }

@@ -25,8 +25,9 @@ VCAMMediaServerClient_FILES = \
 VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=0 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal VideoToolbox
 
-# SpringBoard owns the broker; SpringBoard and filtered app clients host only
-# the white-dot UI/panel. This target never hooks camera frames or decodes media.
+# SpringBoard owns the broker and native AVPlayer bridge for local video/HLS.
+# Filtered Camera/browser hosts run only the white-dot UI/panel; none of these
+# processes hooks camera frames.
 VCAMSpringBoardClient_FILES = \
 	Sources/Hooks/VCAMSpringBoardEntry.xm \
 	Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m \
@@ -37,8 +38,9 @@ VCAMSpringBoardClient_FILES = \
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
-# vcamd is package-owned and is not injected. Local media, OBS and RTSP decode
-# live here; it also relays IOSurface XPC rights without touching frame bytes.
+# vcamd is package-owned and is not injected. Local images, OBS and RTSP live
+# here; legacy local-video/HLS readers are explicit rollback paths only. It also
+# relays IOSurface XPC rights without touching frame bytes.
 vcamd_FILES = \
 	Sources/Daemon/main.m \
 	Sources/Daemon/VCAMSurfaceBrokerServer.m \

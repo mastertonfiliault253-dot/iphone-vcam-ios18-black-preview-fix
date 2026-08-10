@@ -7,18 +7,21 @@ The standard rootless package installs under `/var/jb` and contains exactly:
 | Target | Filter | Responsibility |
 | --- | --- | --- |
 | `VCAMMediaServerClient` | executable `mediaserverd` | Nonblocking read of a fresh shared frame and `BWNodeOutput` replacement |
-| `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker; every filtered host gets only the white dot, panel and preview |
-| `vcamd` | no injection; LaunchDaemon | Local image/video, OBS, RTSP and HLS decoding and latest-frame publication |
+| `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker and native local-video/HLS player; filtered app hosts get only the white dot, panel and preview |
+| `vcamd` | no injection; LaunchDaemon | Local-image, OBS and RTSP decoding, latest-frame publication, plus explicit legacy local-video/HLS rollback |
 | `vcaminjectd` | no injection; root LaunchDaemon | Reinject only the two allowed clients after their exact process PID changes |
 
-Camera and the listed browser main processes receive the UI dylib only. That
-dylib contains no camera hook, decoder or network source; video replacement
+Camera and the listed browser main processes receive the UI dylib only. Its
+SpringBoard process branch also owns the system `AVPlayer` bridge; app-host
+branches contain no camera hook, decoder or network source. Video replacement
 remains exclusively in `mediaserverd`. WebKit content processes are not
 targeted. Audio is not replaced.
 
 ## Frame path
 
-`local / OBS / RTSP / HLS → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
+`local image / OBS / RTSP → vcamd → three-slot mmap → mediaserverd + SpringBoard preview`
+
+`local video / HLS → SpringBoard AVPlayer → NV12 → Metal/Core Image → three-slot IOSurface (mmap bootstrap) → mediaserverd`
 
 The shared file is `/var/tmp/com.codex.vcam.frames`, fixed at 1080×1920 BGRA.
 Publication uses atomic slot and sequence metadata. Consumers copy without
@@ -49,14 +52,15 @@ Compressed recording never asks Core Image to write a private surface. Core
 Image renders into a target-sized public `420v` staging buffer; VideoToolbox
 then transfers into a private-format clone created from the camera buffer's
 creation attributes. The original timing, format and attachments are retained
-when the clone is emitted. A bounded PTS outcome ring guards the camera video
-compressor, so only encoded frames proven to originate from a successful
-virtual replacement can reach the writer. If conversion fails, the original
-raw frame is never forwarded: a last-known-good virtual compressed frame with
-the current timing is reused when its exact creation attributes match, or the
-sample is suppressed when no safe fallback exists. The encoded guard remains a
-second fail-closed boundary. Once requested mode is enabled, no real camera
-frame is allowed through until an explicit restore request.
+when the clone is emitted. If conversion fails, the original raw frame is never
+forwarded: a last-known-good virtual compressed frame with the current timing
+is reused when its exact creation attributes match, or the sample is suppressed
+when no safe fallback exists. The system encoder then consumes only the
+successfully replaced raw recording branch. Its encoded output does not retain
+the raw sample's custom marker or numeric PTS, so a second encoded PTS guard
+would suppress valid virtual recordings and is intentionally not used. Once
+requested mode is enabled, no real camera frame is allowed through until an
+explicit restore request.
 
 When CoreMedia rejects an observed private compressed camera-source clone
 because the source format description does not match the clone's attachment
@@ -68,24 +72,19 @@ the original sample, and either construction path remains fail-closed.
 
 ## Decode behavior
 
-- Images are decoded once by Core Image and rendered as a static source.
-- Local video uses one incremental `AVAssetReaderTrackOutput` configured for
-  native uncompressed `420v` bi-planar samples, driven by source PTS and sample
-  duration. `VCAMFrameRenderer` performs the single BGRA conversion needed by
-  the shared-frame target while it applies orientation and content mode. It
-  retains only the current decoded frame, does not preload the asset into a
-  frame array, and rebuilds the reader at EOF when looping is enabled. Core
-  Media marker samples without a pixel buffer are released and skipped with a
-  hard limit of 32 before the reader fails closed. The limit is deliberately
-  above the eight consecutive zero-sample markers observed on iOS 16.5 while
-  remaining bounded when an output never produces pixels.
+- Photos-picker images are normalized once to an oriented JPEG before broker
+  import; document/legacy PNG, JPEG and HEIF files retain the ImageIO static
+  decoder. The rendered static sample is cached and retimed per camera callback.
+- Production local video uses SpringBoard `AVPlayerItemVideoOutput` and the same
+  NV12/Metal/IOSurface pipeline as HLS. It loops by seeking to zero at item end.
+  Creating `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained
+  incremental `AVAssetReader`/FFmpeg daemon path for diagnostics only.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
-- RTSP and HLS use FFmpeg only inside `vcamd`, with VideoToolbox where available.
-  RTSP additionally forces TCP and keeps normal RTP/H.264 reorder and reference
-  buffering. Software conversion runs on a latest-only queue, while every
-  compressed packet is still consumed in order; corruption enters a bounded
-  clean-key-frame recovery state.
+- RTSP uses FFmpeg inside `vcamd`, with VideoToolbox where available and a
+  software fallback. It forces TCP and keeps normal RTP/H.264 reorder and
+  reference buffering. HLS uses SpringBoard's system `AVPlayer`; the old daemon
+  FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,
 reads imported media directly from `/var/mobile/Media/VCAM`; mediaserverd never

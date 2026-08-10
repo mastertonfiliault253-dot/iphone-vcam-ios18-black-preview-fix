@@ -19,7 +19,7 @@
     {
       "name": "VCAMSpringBoardClient",
       "binary": "VCAMSpringBoardClient.dylib",
-      "role": "white-dot-picker-configuration-and-preview",
+      "role": "white-dot-picker-configuration-preview-and-native-playback",
       "bundleIds": [
         "com.apple.springboard",
         "com.apple.camera",
@@ -30,7 +30,7 @@
       ],
       "executables": ["SpringBoard", "Camera", "MobileSafari", "Google Chrome", "Microsoft Edge", "Firefox"],
       "injected": true,
-      "forbiddenDependencies": ["FFmpeg", "RTSP decoder", "local video decoder"]
+      "forbiddenDependencies": ["FFmpeg", "RTSP decoder"]
     },
     {
       "name": "vcamd",
@@ -39,7 +39,8 @@
       "bundleIds": [],
       "executables": ["vcamd"],
       "injected": false,
-      "sources": ["local-image", "local-video", "obs-websocket", "rtsp-ffmpeg-videotoolbox", "hls-ffmpeg-videotoolbox"]
+      "sources": ["local-image", "obs-websocket", "rtsp-ffmpeg-videotoolbox"],
+      "rollbackSources": ["local-video-avassetreader", "hls-ffmpeg-videotoolbox"]
     },
     {
       "name": "vcaminjectd",

@@ -344,8 +344,8 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
 
     // iOS 16.1 routes movie frames through this exact 420f governor even when
     // the older Movie File Zoomer terminal is absent. Treat it as the same
-    // fail-closed recording boundary so the encoded-frame guard receives a
-    // per-frame virtual outcome instead of suppressing the entire recording.
+    // fail-closed recording boundary so the system encoder receives the
+    // virtual raw frame instead of suppressing the entire recording.
     if (VCAMStringMatches(nodeClass, @"BWFrameRateGovernorNode") &&
         VCAMStringMatches(nodeName, @"Movie File Frame Rate Governor")) {
         return VCAMReplacementRouteVideoRecording;
