@@ -298,29 +298,17 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ),
         )
 
-    def test_marked_recording_frame_authorizes_only_its_encoded_frame(self) -> None:
+    def test_marked_recording_frame_reaches_system_encoder_without_second_guard(self) -> None:
         fast_path = _between(
             self.hook,
             "BOOL propagatedReplacement =",
             "static volatile int videoSamples",
         )
-        self.assertRegex(
-            fast_path,
-            re.compile(
-                r'if\s*\(replacementRoute\s*==\s*VCAMReplacementRouteVideoRecording\)'
-                r'\s*\{\s*VCAMRecordRecordingFrameOutcome\('
-                r'\s*self,\s*sampleBuffer,\s*originalImageBuffer,\s*YES\s*\);',
-                re.DOTALL,
-            ),
-        )
-        self.assertLess(
-            fast_path.index("VCAMRecordRecordingFrameOutcome"),
-            fast_path.index("%orig(sampleBuffer)"),
-        )
+        self.assertIn("%orig(sampleBuffer)", fast_path)
         self.assertNotIn("static CMTime", fast_path)
-        self.assertNotIn("VCAMRecordRecordingFrameOutcome", fast_path.split(
-            "if (propagatedReplacement)", 1
-        )[0])
+        self.assertNotIn("VCAMRecordRecordingFrameOutcome", fast_path)
+        self.assertNotIn("VCAMEncodedRecordingSampleCanPass", self.hook)
+        self.assertNotIn("guarding encoded recording sample", self.hook)
 
     def test_unmarked_same_pts_frame_must_render_or_be_suppressed(self) -> None:
         propagated_assignment = _between(
