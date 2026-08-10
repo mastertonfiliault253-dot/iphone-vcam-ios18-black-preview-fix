@@ -3,16 +3,21 @@
 #import <Foundation/Foundation.h>
 
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 
-// Narrow stable XPC/libproc ABI; the Linux iPhoneOS 16.5 SDK omits headers.
+// Prefer Xcode's XPC types. The Linux iPhoneOS 16.5 SDK omits this header, so
+// retain a narrow ABI fallback for WSL validation builds.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+#define VCAM_HAS_SYSTEM_XPC 1
+#else
+#define VCAM_HAS_SYSTEM_XPC 0
 typedef void *xpc_object_t;
 typedef xpc_object_t xpc_connection_t;
 typedef const void *xpc_type_t;
 
-extern xpc_connection_t xpc_connection_create_mach_service(
-    const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
 extern void xpc_connection_set_event_handler(
     xpc_connection_t connection, void (^handler)(xpc_object_t event));
 extern void xpc_connection_resume(xpc_connection_t connection);
@@ -39,6 +44,14 @@ extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
 extern void xpc_release(xpc_object_t object);
 extern const struct _xpc_type_s _xpc_type_connection;
 extern const struct _xpc_type_s _xpc_type_dictionary;
+#endif
+
+#if VCAM_HAS_SYSTEM_XPC && defined(OS_OBJECT_USE_OBJC) && OS_OBJECT_USE_OBJC
+#define VCAMXPCRelease(object) ((void)(object))
+#else
+#define VCAMXPCRelease(object) xpc_release(object)
+#endif
+
 extern int proc_name(int pid, void *buffer, uint32_t bufferSize);
 
 static const char *const VCAMSurfaceBrokerService = "com.codex.vcam.surface";
@@ -49,11 +62,34 @@ static const char *const VCAMSurfaceKeys[] = {
 };
 
 static xpc_type_t VCAMXPCTypeConnection(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_CONNECTION;
+#else
     return (xpc_type_t)&_xpc_type_connection;
+#endif
 }
 
 static xpc_type_t VCAMXPCTypeDictionary(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_DICTIONARY;
+#else
     return (xpc_type_t)&_xpc_type_dictionary;
+#endif
+}
+
+typedef xpc_connection_t (*VCAMXPCMachServiceCreateFunction)(
+    const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
+
+static xpc_connection_t VCAMXPCMachServiceCreate(
+    const char *name, dispatch_queue_t queue, uint64_t flags) {
+    static VCAMXPCMachServiceCreateFunction createFunction;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *symbol = dlsym(RTLD_DEFAULT,
+                             "xpc_connection_create_mach_service");
+        memcpy(&createFunction, &symbol, sizeof(createFunction));
+    });
+    return createFunction != NULL ? createFunction(name, queue, flags) : NULL;
 }
 
 static bool VCAMSurfaceBrokerPeerIs(xpc_connection_t peer,
@@ -84,7 +120,7 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                 xpc_dictionary_set_value(registry, VCAMSurfaceKeys[slot], surface);
             }
         }
-        if (VCAMBrokerRegistry != NULL) xpc_release(VCAMBrokerRegistry);
+        if (VCAMBrokerRegistry != NULL) VCAMXPCRelease(VCAMBrokerRegistry);
         VCAMBrokerRegistry = registry;
         fprintf(stderr, "vcamd IOSurface registry published pid=%d\n",
                 xpc_connection_get_pid(peer));
@@ -109,7 +145,7 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         }
     }
     xpc_connection_send_message(peer, reply);
-    xpc_release(reply);
+    VCAMXPCRelease(reply);
 }
 
 void VCAMSurfaceBrokerStartServer(void) {
@@ -117,7 +153,7 @@ void VCAMSurfaceBrokerStartServer(void) {
     dispatch_once(&onceToken, ^{
         dispatch_queue_t queue = dispatch_queue_create(
             "com.codex.vcam.surface.server", DISPATCH_QUEUE_SERIAL);
-        xpc_connection_t listener = xpc_connection_create_mach_service(
+        xpc_connection_t listener = VCAMXPCMachServiceCreate(
             VCAMSurfaceBrokerService, queue, VCAMXPCMachServiceListener);
         if (listener == NULL) return;
         xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {

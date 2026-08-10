@@ -3,19 +3,24 @@
 #import <Foundation/Foundation.h>
 
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
-// The public iPhoneOS 16.5 SDK used by the Linux toolchain omits xpc headers.
-// Keep only the stable client ABI used by this narrow relay local.
+// Xcode ships the private-on-iOS XPC declarations while the Linux iPhoneOS
+// 16.5 SDK does not. Use the system types where present and keep the narrow ABI
+// fallback only for that header-less toolchain.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+#define VCAM_HAS_SYSTEM_XPC 1
+#else
+#define VCAM_HAS_SYSTEM_XPC 0
 typedef void *xpc_object_t;
 typedef xpc_object_t xpc_connection_t;
 typedef const void *xpc_type_t;
 
-extern xpc_connection_t xpc_connection_create_mach_service(
-    const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
 extern void xpc_connection_set_event_handler(
     xpc_connection_t connection, void (^handler)(xpc_object_t event));
 extern void xpc_connection_resume(xpc_connection_t connection);
@@ -40,6 +45,13 @@ extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
                                      xpc_object_t value);
 extern void xpc_release(xpc_object_t object);
 extern const struct _xpc_type_s _xpc_type_dictionary;
+#endif
+
+#if VCAM_HAS_SYSTEM_XPC && defined(OS_OBJECT_USE_OBJC) && OS_OBJECT_USE_OBJC
+#define VCAMXPCRelease(object) ((void)(object))
+#else
+#define VCAMXPCRelease(object) xpc_release(object)
+#endif
 
 extern xpc_object_t IOSurfaceCreateXPCObject(IOSurfaceRef surface);
 extern IOSurfaceRef _Nullable IOSurfaceLookupFromXPCObject(xpc_object_t object)
@@ -54,7 +66,26 @@ static const char *const VCAMSurfaceKeys[] = {
 };
 
 static xpc_type_t VCAMXPCTypeDictionary(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_DICTIONARY;
+#else
     return (xpc_type_t)&_xpc_type_dictionary;
+#endif
+}
+
+typedef xpc_connection_t (*VCAMXPCMachServiceCreateFunction)(
+    const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
+
+static xpc_connection_t VCAMXPCMachServiceCreate(
+    const char *name, dispatch_queue_t queue, uint64_t flags) {
+    static VCAMXPCMachServiceCreateFunction createFunction;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *symbol = dlsym(RTLD_DEFAULT,
+                             "xpc_connection_create_mach_service");
+        memcpy(&createFunction, &symbol, sizeof(createFunction));
+    });
+    return createFunction != NULL ? createFunction(name, queue, flags) : NULL;
 }
 
 static xpc_connection_t VCAMPublisherConnection;
@@ -64,7 +95,7 @@ static xpc_connection_t VCAMSurfaceBrokerPublisherConnection(void) {
     dispatch_once(&VCAMPublisherOnce, ^{
         dispatch_queue_t queue = dispatch_queue_create(
             "com.codex.vcam.surface.publisher", DISPATCH_QUEUE_SERIAL);
-        VCAMPublisherConnection = xpc_connection_create_mach_service(
+        VCAMPublisherConnection = VCAMXPCMachServiceCreate(
             VCAMSurfaceBrokerService, queue, VCAMXPCMachServicePrivileged);
         if (VCAMPublisherConnection == NULL) return;
         xpc_connection_set_event_handler(VCAMPublisherConnection,
@@ -89,10 +120,10 @@ void VCAMSurfaceBrokerPublish(IOSurfaceRef const *surfaces, uint32_t count) {
         xpc_object_t object = IOSurfaceCreateXPCObject(surfaces[slot]);
         if (object == NULL) continue;
         xpc_dictionary_set_value(message, VCAMSurfaceKeys[slot], object);
-        xpc_release(object);
+        VCAMXPCRelease(object);
     }
     xpc_connection_send_message(connection, message);
-    xpc_release(message);
+    VCAMXPCRelease(message);
 }
 
 static pthread_mutex_t VCAMSubscriberLock = PTHREAD_MUTEX_INITIALIZER;
@@ -106,7 +137,7 @@ static xpc_connection_t VCAMSurfaceBrokerSubscriberConnection(void) {
     dispatch_once(&VCAMSubscriberOnce, ^{
         VCAMSubscriberQueue = dispatch_queue_create(
             "com.codex.vcam.surface.subscriber", DISPATCH_QUEUE_SERIAL);
-        VCAMSubscriberConnection = xpc_connection_create_mach_service(
+        VCAMSubscriberConnection = VCAMXPCMachServiceCreate(
             VCAMSurfaceBrokerService, VCAMSubscriberQueue,
             VCAMXPCMachServicePrivileged);
         if (VCAMSubscriberConnection == NULL) return;
@@ -154,7 +185,7 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
             }
             pthread_mutex_unlock(&VCAMSubscriberLock);
         });
-    xpc_release(request);
+    VCAMXPCRelease(request);
 }
 
 IOSurfaceRef VCAMSurfaceBrokerCopySurface(uint32_t surfaceID) {

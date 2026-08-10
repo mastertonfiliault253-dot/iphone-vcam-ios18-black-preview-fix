@@ -93,6 +93,22 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', server)
         self.assertIn("com.codex.vcam.surface", launchd)
 
+    def test_xpc_bridge_uses_sdk_types_and_runtime_private_entrypoint(self) -> None:
+        broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        server = (
+            ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m"
+        ).read_text(encoding="utf-8")
+        for source in (broker, server):
+            self.assertIn("__has_include(<xpc/xpc.h>)", source)
+            self.assertIn('#import <xpc/xpc.h>', source)
+            self.assertIn('dlsym(RTLD_DEFAULT,', source)
+            self.assertIn('"xpc_connection_create_mach_service"', source)
+            self.assertIn("VCAMXPCMachServiceCreate(", source)
+            self.assertIn("VCAMXPCRelease(", source)
+            self.assertNotIn("extern xpc_connection_t xpc_connection_create_mach_service", source)
+
     def test_iosurface_bootstrap_keeps_mmap_live_until_consumer_ready(self) -> None:
         bridge = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
