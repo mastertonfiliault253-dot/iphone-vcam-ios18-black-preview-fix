@@ -183,6 +183,20 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("kCGImageSourceCreateThumbnailFromImageAlways", source)
         self.assertIn("kCGImageSourceCreateThumbnailWithTransform", source)
 
+    def test_photo_picker_normalizes_images_before_broker_import(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        callback = picker.split("didFinishPicking:", 1)[1].split(
+            "- (void)promptForOnlineVideo", 1
+        )[0]
+
+        self.assertIn("loadObjectOfClass:UIImage.class", callback)
+        self.assertIn("UIGraphicsImageRenderer", callback)
+        self.assertIn("UIImageJPEGRepresentation", callback)
+        self.assertIn('@"selected.jpg"', callback)
+        self.assertIn("loadFileRepresentationForTypeIdentifier", callback)
+
     def test_video_reader_validates_the_first_frame_before_start_succeeds(self) -> None:
         source = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(encoding="utf-8")
         starter = source.split("- (BOOL)startVideoReader:", 1)[1].split(

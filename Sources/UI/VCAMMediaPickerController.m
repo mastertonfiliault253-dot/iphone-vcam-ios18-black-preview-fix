@@ -872,8 +872,8 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     PHPickerResult *result = results.firstObject;
     if (result == nil) return;
     NSItemProvider *provider = result.itemProvider;
-    NSString *mediaType = [provider hasItemConformingToTypeIdentifier:UTTypeMovie.identifier]
-        ? VCAMConcreteProviderTypeIdentifier(provider, UTTypeMovie)
+    BOOL isMovie = [provider hasItemConformingToTypeIdentifier:UTTypeMovie.identifier];
+    NSString *mediaType = isMovie ? VCAMConcreteProviderTypeIdentifier(provider, UTTypeMovie)
         : ([provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier]
             ? VCAMConcreteProviderTypeIdentifier(provider, UTTypeImage) : nil);
     if (mediaType == nil) {
@@ -881,6 +881,37 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         return;
     }
     NSString *suggestedName = provider.suggestedName;
+    if (!isMovie) {
+        [provider loadObjectOfClass:UIImage.class completionHandler:^(id<NSItemProviderReading> object,
+                                                                      NSError *error) {
+            UIImage *image = [object isKindOfClass:UIImage.class] ? (UIImage *)object : nil;
+            if (image == nil || error != nil) {
+                [self showMessage:error.localizedDescription ?: @"读取相册图片失败" error:YES];
+                return;
+            }
+            CGSize pixelSize = image.CGImage == NULL ? image.size : CGSizeMake(
+                CGImageGetWidth(image.CGImage), CGImageGetHeight(image.CGImage));
+            UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+            format.scale = 1.0;
+            format.opaque = YES;
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+                initWithSize:pixelSize format:format];
+            UIImage *normalized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+                [image drawInRect:(CGRect){CGPointZero, pixelSize}];
+            }];
+            NSData *data = UIImageJPEGRepresentation(normalized, 0.95);
+            NSURL *temporaryURL = [NSURL fileURLWithPath:[NSTemporaryDirectory()
+                stringByAppendingPathComponent:[NSString stringWithFormat:
+                    @"vcam-photo-%@.jpg", NSUUID.UUID.UUIDString]]];
+            if (data.length == 0 || ![data writeToURL:temporaryURL options:NSDataWritingAtomic error:&error]) {
+                [self showMessage:error.localizedDescription ?: @"转换相册图片失败" error:YES];
+                return;
+            }
+            [self installMediaFromTemporaryURL:temporaryURL suggestedName:@"selected.jpg"];
+            [[NSFileManager defaultManager] removeItemAtURL:temporaryURL error:nil];
+        }];
+        return;
+    }
     [provider loadFileRepresentationForTypeIdentifier:mediaType completionHandler:^(NSURL *url, NSError *error) {
         if (url == nil || error != nil) {
             [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];
