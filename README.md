@@ -1,9 +1,10 @@
 # VCAM Media Bridge (iOS 16–16.5 research build)
 
 VCAM replaces camera video at `BWNodeOutput -emitSampleBuffer:` while keeping
-networking and decoding outside injected processes. It is for software you own
-or are authorized to test. It does not hook identity, liveness, KYC, payment or
-authentication decisions.
+networking and decoding outside `mediaserverd` and injected app-host branches;
+SpringBoard alone runs the native local-video/HLS player. It is for software
+you own or are authorized to test. It does not hook identity, liveness, KYC,
+payment or authentication decisions.
 
 ## Architecture
 
