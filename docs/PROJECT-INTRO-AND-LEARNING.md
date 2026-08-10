@@ -1,18 +1,18 @@
 # VCAM Media Bridge 项目介绍与学习文档
 
-> 适用范围：`D:\work\IOSVCAN-DS\vcam`（当前工作副本，HEAD `9730df6`，版本 `0.7.9+global10`）。
+> 适用范围：`D:\work\IOSVCAN-DS\vcam`。提交号与包版本以 `git rev-parse HEAD` 和 `control` 为准，不在文档中写死。
 > 本文件只描述媒体管线，不包含 SSH 密码、GitHub Token 等敏感信息；敏感信息见 `PROJECT-INFO-SECRETS.md`（已被 `.gitignore` 忽略，严禁推送到公开仓库）。
 
 ## 1. 项目是什么
 
-VCAM Media Bridge 是一个 iOS 越狱（rootless）虚拟相机/视频替换插件。它把系统相机输出替换为本地图片、本地视频、OBS 网络画面或 RTSP 直播流，目标是让“所有调用相机的 App”都看到替换后的画面，而不是逐个 App 注入。
+VCAM Media Bridge 是一个面向 iOS 16.0–16.5 的 rootless 越狱虚拟相机/视频替换插件。它把系统相机输出替换为本地图片、本地视频、OBS、RTSP 或 HLS 画面；媒体替换统一发生在 `mediaserverd`，不靠逐 App 相机 hook。
 
 项目边界：
 
 - 只做相机媒体管线（预览、录像、拍照、浏览器/WebRTC 取流、二维码/视觉分析输入）。
 - 不处理也不优化身份认证、活体检测、KYC、支付或安全决策；这些场景的媒体管线问题按“相机管线缺陷”排查。
 - 不替换音频；真实麦克风继续走原链路。
-- 只注入两个 Apple 系统进程：`mediaserverd` 与 SpringBoard；不注入任何第三方 App。
+- 只有 `mediaserverd` 与 SpringBoard 承担媒体管线职责。Camera 和受支持浏览器主进程只加载 UI dylib，用于一个前台所有者小白点、面板和预览；它们不含相机 hook、解码器或网络源。
 
 ## 2. 总体架构
 
@@ -20,8 +20,11 @@ VCAM Media Bridge 是一个 iOS 越狱（rootless）虚拟相机/视频替换插
 flowchart LR
     UI[SpringBoard 小白点/配置/选择器/预览] -->|broker 写入配置| CFG[(/var/mobile/Media/VCAM)]
     CFG --> VCAMD[/var/jb/usr/libexec/vcamd]
-    VCAMD -->|latest BGRA| SHM[(/var/tmp/com.codex.vcam.frames 三槽 mmap)]
-    SHM --> MSD[mediaserverd 注入: BWNodeOutput 替换]
+    VCAMD -->|本地/OBS/RTSP latest BGRA| SHM[三槽 mmap]
+    UI -->|HLS AVPlayerItemVideoOutput NV12 + Metal| SURF[三槽 IOSurface]
+    VCAMD -. XPC 权限中继 .-> SURF
+    SHM --> MSD[mediaserverd: BWNodeOutput 替换]
+    SURF --> MSD
     MSD --> APP[相机类 App / 浏览器 / Camera / 录像]
     MON[/var/jb/usr/libexec/vcaminjectd] -->|修复两个映射| MSD
     MON --> UI
@@ -30,10 +33,10 @@ flowchart LR
 核心设计：
 
 - **mediaserverd 注入**：`VCAMMediaServerClient.dylib` 只做“取最新虚拟帧 → 按路由渲染/替换 → 输出”，不联网、不解码、不碰 UIKit/AVAssetReader。
-- **SpringBoard 注入**：`VCAMSpringBoardClient.dylib` 负责小白点、配置 Broker、媒体选择器和最新帧预览。
-- **vcamd（项目自己的 LaunchDaemon）**：所有阻塞/重连/解码/渲染都在这一个隔离进程里，崩溃不会直接拖死 mediaserverd。
+- **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。
+- **vcamd（项目自己的 LaunchDaemon）**：负责本地媒体、OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。保留旧 daemon HLS 路径仅作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
-- **共享内存帧**：三槽 mmap + 原子槽位/序号/时间戳，消费者做有界复制并拒绝陈旧/撕裂槽。
+- **共享帧**：daemon 源使用三槽 mmap；SpringBoard HLS 优先使用三槽 IOSurface，XPC 握手未完成时自动回退 mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 
 ## 3. 目录与源码地图
 
@@ -44,7 +47,8 @@ flowchart LR
 | `Sources/Hooks/VCAMSpringBoardEntry.xm` | SpringBoard 注入入口：小白点、Broker、预览驱动 |
 | `Sources/Daemon/main.m` | vcamd 入口 |
 | `Sources/Daemon/VCAMFrameProducer.m` | 配置加载、媒体源生命周期、按模板取帧 |
-| `Sources/Sources/VCAMLocalMediaSource.m` | 本地图片/视频源（当前用 AVAssetReader，正在改造） |
+| `Sources/Sources/VCAMLocalMediaSource.m` | 本地图片/视频源：增量 AVAssetReader，带有界 FFmpeg/VideoToolbox/软件回退 |
+| `Sources/SpringBoard/VCAMSpringBoardMediaBridge.m` | SpringBoard HLS：AVPlayerItemVideoOutput → NV12 → Metal/Core Image → IOSurface/mmap |
 | `Sources/Sources/VCAMRTSPStreamSource.m` | RTSP/FFmpeg/VideoToolbox 源（最新帧模型，软解兜底） |
 | `Sources/Sources/VCAMOBSStreamSource.m` | OBS WebSocket/JPEG 源 |
 | `Sources/Core/VCAMFrameRenderer.m` | 像素格式归一化、旋转、镜像、内容模式、目标尺寸 |
@@ -54,7 +58,7 @@ flowchart LR
 | `Sources/Daemon/VCAMInjectionMonitor.m` | vcaminjectd：只允许两个目标路径 |
 | `desktop/obs_bridge.py` | PC 端 OBS 虚拟摄像头桥接（版本化包协议） |
 | `scripts/` | FFmpeg 构建、WSL 编译检查、诊断分析、配置写入 |
-| `tests/` | 主机结构测试（当前 76 项，含路由/打包/协议/性能分析器） |
+| `tests/` | 主机回归测试：路由、打包、协议、性能、HLS bridge、注入策略等 |
 | `.github/workflows/build.yml` | macOS rootless CI：测试 → 构建 FFmpeg → Theos 打包 → 校验 → artifact |
 
 ## 4. mediaserverd 替换路由
@@ -84,9 +88,7 @@ PNG/JPEG/HEIC 等：`CGImageSource` 解码一次为静态帧，无限期显示�
 
 ### 本地视频
 
-MOV/MP4/M4V：当前实现为增量 `AVAssetReaderTrackOutput` + PTS 驱动，不预解码数组，loop 时重建 reader。**已知问题**：在 iPhone SE2 / iOS 16.5 的 vcamd 守护进程里，BGRA 与原生 `420v` 两种输出设置都会连续返回 32 个 `numSamples=0` 的空 marker，reader 被判失败（fail-closed，不泄漏真实相机）。
-
-诊断结论：这不是“marker 上限太小”，也不是颜色格式问题；`vcamd` 内 VideoToolbox 同样无法出帧（RTSP 日志显示硬件解码无输出后自动切 FFmpeg 软解）。因此本地视频的既定修复方向是**改用 vcamd 已有的 FFmpeg 软解**：按 PTS 实时节流、逐帧 YUV→BGRA、只保留最新一帧、EOF 后 seek 循环。
+MOV/MP4/M4V：增量 `AVAssetReaderTrackOutput` + PTS 驱动，不预解码整段视频，loop 时重建 reader。reader 无法得到有效像素帧时，按有界顺序尝试项目 direct-VT、FFmpeg 软件解码和 FFmpeg VideoToolbox；任一路径都只保留最新帧并保持 fail-closed。流畅度必须以真机性能窗口的源帧率、P95 帧间隔、媒体时钟推进和丢帧数验收，不能只凭“能播放”。
 
 ### OBS
 
@@ -94,21 +96,37 @@ MOV/MP4/M4V：当前实现为增量 `AVAssetReaderTrackOutput` + PTS 驱动，�
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。当前设备配置 `rtsp://192.168.2.172:553/live`，排查时该服务器一度不可达，导致 vcamd 没有新帧、浏览器/KYC 窗口黑屏。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
+
+### HLS
+
+SpringBoard 使用系统 `AVPlayer` 处理分片、时间线和码率切换，从 `AVPlayerItemVideoOutput` 复制 NV12 `CVPixelBuffer`，再用 Metal-backed Core Image 一次完成旋转、镜像、fit/fill 与输出。HLS 不复用 RTSP 的 FFmpeg/direct-VT 解码路径。
 
 ## 6. 构建、CI 与发布
 
 - 目标：rootless `iphoneos-arm64` DEB，全部文件位于 `/var/jb`。
-- 工具链：Theos + iOS 15+ SDK；`vendor/ffmpeg` 由 CI 内 `scripts/build-ffmpeg-ios.sh` 构建。
+- 工具链：Theos，部署目标 iOS 16.0 且包依赖限制为 `< 16.6`；`vendor/ffmpeg` 由 CI 内 `scripts/build-ffmpeg-ios.sh` 构建。
 - 本地 WSL 构建只是编译检查；可安装产物只来自私有 macOS CI。
-- CI workflow：`Build rootless package`，只响应 `codex/ios16-media-bridge` 分支 push，跑 76 项主机测试 → Theos 安装 → 构建 → 校验（单一 DEB、双架构 dylib、vcamd 内存状态 entitlement、无旧 VCAM.dylib/AppClient/WebKitClient）→ 上传 `vcam-rootless` artifact。
-- 仓库规则：只推私有仓库（`newci` / `newprivate` / `private`）；`origin`（wordgege/iPhone-VCAM）是公开 fork，**严禁推送**；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore，且有 pre-push 保护。
+- CI workflow：`Build rootless package`，响应 `codex/ios16-media-bridge` 分支 push，运行全部主机测试 → Theos 构建 → 校验单一 DEB、arm64/arm64e、Objective-C stub sections、entitlement 与废弃 dylib → 上传 `vcam-rootless` artifact。
+- 仓库规则：当前发布 remote 为私有 `newaccount`；`origin`（wordgege/iPhone-VCAM）是公开上游，**严禁推送**。推送前必须用 `git remote -v` 再确认目标；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore。
 - 发布校验：同一 run 独立下载两份 artifact，核对 DEB SHA-256 一致，再上传设备核对一次 SHA 后 `dpkg -i`。
+
+### GitHub 外部浏览器授权
+
+切换 GitHub 账号时，不把 Token、设备码或 cookie 写进仓库/Markdown。使用 GitHub CLI 的系统凭据存储：
+
+```powershell
+gh auth login --hostname github.com --git-protocol https --web
+gh auth status --hostname github.com
+git remote -v
+```
+
+第一条命令会给出一次性设备码并打开外部浏览器；在浏览器确认新账号后，必须用 `gh auth status` 核对实际账号，再核对 push remote。若账号不对，先执行 `gh auth logout --hostname github.com`，然后重新授权。授权只保存在用户凭据存储中，不随项目提交。
 
 ## 7. 设备测试环境
 
-- 设备：iPhone SE 2（iPhone12,8）/ iOS 16.5 / Dopamine 2.x rootless。
-- SSH：`root@192.168.2.101`（密码等敏感信息只放在 `PROJECT-INFO-SECRETS.md`，本文件不重复）。
+- 当前主验收设备：iPhone13,2 / iOS 16.1 / Dopamine rootless；产品支持范围仍为 iOS 16.0–16.5。
+- SSH：`root@192.168.2.201`（密码等敏感信息只放在 `PROJECT-INFO-SECRETS.md`，本文件不重复）。
 - 远程控制：TrollVNC + noVNC，SSH 本地转发 5901/5801/5802 到本机，浏览器打开 `http://127.0.0.1:5802/novnc/vnc.html?host=127.0.0.1&port=5901&autoconnect=true&resize=scale`。
 
 关键路径：
@@ -142,26 +160,31 @@ python -m unittest discover -s tests -v
 5. 麦克风仍为真实输入。
 6. 前/后/长焦/超广角/外接摄像头路由逐项验证。
 7. 竖持手机时 Camera 预览、Safari/WebRTC、保存照片方向正确；再录 1080p30 与 4K30，检查首/中/尾帧；mediaserverd PID 稳定。
+8. 在照片→录像→照片之间连续切换 10 次；每次首个虚拟预览帧应在 500 ms 内恢复，不得出现 unsupported routed format 或真实帧。
+9. 录像至少 10 秒并成功保存；文件首/中/尾帧均来自虚拟源，音频仍来自真实麦克风，Photos 中资源可正常播放。
+10. 普通照片与 Live Photo 分别拍摄并保存；Photos 中最终主图、缩略图和配对视频不得包含物理相机画面。
 
 ## 9. 已知问题与排查手册
 
-### 本地视频黑屏（进行中）
+### 本地视频不流畅或黑屏
 
-现象：`vcamd reload started=0 error=Unable to decode the first video frame`，日志连续出现 `local reader skipped non-pixel sample`。
+先确认 `vcamd reload started=1` 和 `local reader first-frame`/`local ffmpeg first-frame`。再用 `scripts/analyze-local-playback-performance.py` 分析至少五个真机性能窗口；验收源帧率、P95 帧间隔、媒体时钟推进与丢帧，而不是只看首帧。AVAssetReader 无有效像素帧时，日志会明确记录进入哪一个有界回退路径。
 
-方向：改 FFmpeg 软解，见“媒体源/本地视频”。修复后日志应出现 `local ffmpeg session`、`local ffmpeg first-frame`、`local ffmpeg eof loop`，且 `started=1`。
+### RTSP 没有硬件帧
 
-### 浏览器/KYC 窗口黑屏
+当前 iOS 16.1 真机上，FFmpeg 上游 VideoToolbox 与 Apple `AVAssetReader` 原生压缩 `CMSampleBuffer` 的 direct-VT 对照都出现 callback `-12780`、image buffer 为 NULL；服务端帧率、RTSP/RTP、NAL/AU 重写和 HLS 资源占用已被分别排除为唯一根因。正式路径保留软件 fail-open，详细证据见 `VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md`。
+
+### 浏览器相机输出黑屏
 
 排查顺序：
 
-1. `vcamd reload` 是否 `started=1`；RTSP 源是否可达（`Test-NetConnection 192.168.2.172 -Port 553`）。
-2. `vcam-app.log` 是否持续出现 RTSP 软解帧；mediaserverd 是否 `rendered shared frame`。
-3. 打开浏览器 KYC 窗口后看 `vcam-ref-msd.log`：是否出现 `remote queue sink diagnostic video`；若只有 `non-video mediaType=00000000`，说明该末端没有收到带格式的视频样本，需要进一步确认 WebRTC 实际路由。
+1. 先确认当前源持续发布：HLS 看 `springboard HLS frame decoded=... published=... failures=0`，daemon 源看 `vcamd reload started=1` 与共享帧序号推进。
+2. 检查 mediaserverd 日志是否命中正确的 camera-source/video-converter 路由并成功渲染共享帧。
+3. 浏览器主进程的 UI dylib 只负责小白点/面板；网页摄像头替换仍必须由 mediaserverd 路由完成，不得为修黑屏恢复 WebKit WebContent 相机 hook。
 
 ### 小白点消失
 
-检查 SpringBoard 是否以新 PID 重启、`vcaminjectd` 是否修复映射、`/var/tmp/vcaminjectd.log` 是否有 proof；必要时 `kill -TERM <SpringBoard PID>` 让 launchd 干净拉起。
+检查 `floatingButtonVisibility.global` 是否为 1、SpringBoard/前台 App 的 PID 所有权是否更新，以及 `/var/tmp/vcam-springboard-client.log` 是否有该进程 ctor。SpringBoard 日志位于 Application Support；Camera 的沙箱不可写时会回退到 `/var/tmp/VCAM/vcam-app.log`。前台宿主应 `hidden=0`，SpringBoard 同时 `hidden=1`。
 
 ### 旋转/方向、拍照黑边、二维码识别
 
@@ -172,12 +195,13 @@ python -m unittest discover -s tests -v
 1. `README.md` → `ARCHITECTURE.md` → `docs/injection-target-architecture.md`（目标与安全边界）。
 2. `Sources/Hooks/VCAMMediaServerRefEntry.xm`（核心注入与路由，重点理解 fail-closed 和传播标记）。
 3. `Sources/Daemon/VCAMFrameProducer.m` + `Sources/Core/VCAMMediaSource.h`（源的生命周期与取帧契约）。
-4. `Sources/Sources/VCAMRTSPStreamSource.m`（FFmpeg 最新帧模型，也是本地视频改造的模板）。
-5. `Sources/Core/VCAMFrameRenderer.m`（格式归一化/旋转/内容模式）。
-6. `Sources/Shared/VCAMSharedFrame.m`（三槽 mmap 协议）。
-7. `Sources/UI/VCAMControlPanelViewController.m`、`Sources/UI/VCAMMediaPickerController.m`（配置/选择器）。
-8. `Sources/Daemon/VCAMInjectionMonitor.m`（注入修复边界）。
-9. `tests/`（结构测试如何守住这些不变式）。
+4. `Sources/Sources/VCAMRTSPStreamSource.m`（FFmpeg 上游 hwaccel 与软件 fail-open）。
+5. `Sources/SpringBoard/VCAMSpringBoardMediaBridge.m`（HLS AVPlayer/NV12/Metal/IOSurface）。
+6. `Sources/Core/VCAMFrameRenderer.m`（daemon 源格式归一化/旋转/内容模式）。
+7. `Sources/Shared/VCAMSharedFrame.m` + `VCAMSurfaceBroker.m`（mmap/IOSurface 三槽协议和 XPC rights relay）。
+8. `Sources/UI/VCAMControlPanelViewController.m`、`Sources/UI/VCAMMediaPickerController.m`（配置/选择器/小白点手势）。
+9. `Sources/Daemon/VCAMInjectionMonitor.m`（只修复两个系统媒体目标）。
+10. `tests/`（回归测试如何守住这些不变式）。
 
 ## 11. 术语表
 
@@ -190,15 +214,14 @@ python -m unittest discover -s tests -v
 | `CMSampleBuffer` / `CVPixelBuffer` | 视频样本/像素缓冲 |
 | 传播标记 | 替换成功后写入 sample/image 的版本化附件，供下游快速路径验证 |
 | fail-closed | 虚拟模式开启后，宁可黑屏/抑制也不泄漏真实相机帧 |
-| `vcamd` / `vcaminjectd` | 项目自己的守护进程：解码/发布与注入修复 |
-| 三槽 mmap | 共享帧三缓冲，带序号/时间戳，避免撕裂与陈旧帧 |
+| `vcamd` / `vcaminjectd` | 项目自己的守护进程：daemon 源解码/发布/XPC rights relay 与注入修复 |
+| 三槽共享帧 | mmap 或 IOSurface 三缓冲，带序号/时间戳与消费者占用计数，避免撕裂和陈旧帧 |
 
 ## 12. 当前状态与下一步
 
-- 已安装：`com.codex.vcam 0.7.9+global10`（最新 CI artifact，双下载 SHA 校验一致）。
-- 仓库 HEAD：`9730df6 fix: decode local video to native surfaces`。
-- 待办：
-  1. 将本地视频解码切到 vcamd 内 FFmpeg 软解，替换 AVAssetReader。
-  2. 推送 PRIVATE CI，下载双份校验，安装后验证 `local ffmpeg first-frame` 与相机/浏览器可见画面。
-  3. 在 VNC 里复现浏览器 KYC 窗口，依据 `remote queue sink diagnostic video` 决定是否升级 RemoteQueueSink 兜底。
-  4. 恢复/验证用户原 RTSP 配置。
+- 仓库当前固定点为 `0b0a39c feat: relay IOSurface rights over XPC`；设备仍安装 CI run `31331732801`、提交 `3a28882` 的 `0.8.50+stable` 产物，因为 `0b0a39c` 的 macOS CI 被 XPC SDK/ARC 兼容错误阻断，不能把未构建提交写成已部署。
+- HLS 已在 iOS 16.1 真机恢复后连续解码/发布超过 6,300 帧，`empty=0`、`failures=0`。Camera 与设备上唯一安装的受支持浏览器 MobileSafari 均已用新 PID 验证 UI client、三指手势和单点所有权：前台宿主 `hidden=0` 时 SpringBoard `hidden=1`。Chrome、Edge、Firefox 的 bundle/策略已有主机回归覆盖，但该设备未安装这三项，不能写成真机已验收。
+- RTSP 的 FFmpeg upstream VT 仍未取得非空 `AVFrame.data[3]`；Apple 原生压缩样本 direct-VT 对照也为 `-12780`，软件回退可用。
+- iOS 16.1 真机已捕获一个确定的 Camera 模式切换缺陷：源在 `2304x1296` 的 SDK 公共压缩 10-bit `&xv0` 格式下被旧实现判为 unsupported，并连续 fail-closed 约 9.2 秒；录像图同时出现 `BWFrameRateGovernorNode / Movie File Frame Rate Governor`，旧路由却判为 `none`。当前工作树已补齐 10-bit 压缩格式与该精确录像边界，必须由新 CI 包真机复验后才能标记完成。
+- 拍照保存真实画面仍未修复：当前设备日志没有命中既有 `Meteor Headroom / still-photo` 路由。下一 CI 诊断包会扩大有界的一次性节点签名采样，拍照后依据真实 iOS 16.1 节点补最窄路由；不得用全局 PhotoEncoder/FanOut hook 猜测替换。
+- 下一步：完成新 GitHub 账号授权并创建私有仓库，修复 macOS CI 的 XPC 头文件/availability/ARC 兼容并部署精确 arm64e artifact；随后复验 Camera 切换/录像/拍照、做 SpringBoard 系统上下文 direct-VT 探针、浏览器逐项视觉验收、物理三指双击验收以及最终业务审查/复审。

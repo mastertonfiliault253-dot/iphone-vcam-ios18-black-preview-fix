@@ -87,6 +87,17 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("height == 1334", self.route_function)
         self.assertNotIn('@"Video Data Converter/Zoomer"', self.route_function)
 
+    def test_ios16_movie_file_governor_is_a_fail_closed_recording_route(self) -> None:
+        self.assertRegex(
+            self.route_function,
+            re.compile(
+                r'VCAMStringMatches\(nodeClass,\s*@"BWFrameRateGovernorNode"\)'
+                r'\s*&&\s*VCAMStringMatches\(nodeName,\s*@"Movie File Frame Rate Governor"\)'
+                r'\s*\)\s*\{\s*return VCAMReplacementRouteVideoRecording;',
+                re.DOTALL,
+            ),
+        )
+
     def test_fanout_and_inference_nodes_are_never_direct_replacement_routes(self) -> None:
         self.assertNotIn('@"BWFanOutNode"', self.route_function)
         self.assertNotIn('@"BWInferenceNode"', self.route_function)

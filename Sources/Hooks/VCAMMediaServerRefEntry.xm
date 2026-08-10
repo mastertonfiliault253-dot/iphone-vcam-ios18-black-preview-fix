@@ -284,7 +284,9 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     BOOL derivedFormatMatchesSource = NO;
     BOOL privateCompressedCameraFormat =
         sourceSubtype == (OSType)0x5b387630 || // observed '[8v0'
-        sourceSubtype == (OSType)0x7d387630;   // observed '}8v0'
+        sourceSubtype == (OSType)0x7d387630 || // observed '}8v0'
+        sourceSubtype == (OSType)0x26787630 || // SDK '&xv0' lossless 10-bit
+        sourceSubtype == (OSType)0x2d787630;   // SDK '-xv0' lossy 10-bit
     if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&
         createStatus == kCMSampleBufferError_InvalidMediaFormat) {
         // Some private camera formats carry format-description extensions
@@ -492,6 +494,15 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         }
     }
 
+    // iOS 16.1 routes movie frames through this exact 420f governor even when
+    // the older Movie File Zoomer terminal is absent. Treat it as the same
+    // fail-closed recording boundary so the encoded-frame guard receives a
+    // per-frame virtual outcome instead of suppressing the entire recording.
+    if (VCAMStringMatches(nodeClass, @"BWFrameRateGovernorNode") &&
+        VCAMStringMatches(nodeName, @"Movie File Frame Rate Governor")) {
+        return VCAMReplacementRouteVideoRecording;
+    }
+
     // Stock Camera still capture reaches this last standard 8-bit pixel stage
     // immediately before the photo encoder. Match the role rather than a lens
     // name, resolution or pixel format. Unsupported future formats fail closed
@@ -533,7 +544,9 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     dispatch_once(&onceToken, ^{ signatures = [NSMutableSet set]; });
     BOOL shouldLog = NO;
     @synchronized (signatures) {
-        if (signatures.count < 96 && ![signatures containsObject:key]) {
+        // Keep enough one-shot signatures to include photo and movie graphs,
+        // which are created after the initial preview graph on iOS 16.1.
+        if (signatures.count < 384 && ![signatures containsObject:key]) {
             [signatures addObject:key];
             shouldLog = YES;
         }

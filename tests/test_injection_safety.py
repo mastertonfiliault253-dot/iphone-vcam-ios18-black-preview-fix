@@ -163,6 +163,16 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn('VCAMStringMatches(nodeName, @"Meteor Headroom")', entry)
         self.assertIn("VCAMReplacementRouteStillPhoto", entry)
         self.assertIn("suppressing real sample after replacement failure", entry)
+        self.assertIn(
+            "kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange",
+            implementation,
+        )
+        self.assertIn(
+            "kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange",
+            implementation,
+        )
+        self.assertIn("sourceSubtype == (OSType)0x26787630", entry)
+        self.assertIn("sourceSubtype == (OSType)0x2d787630", entry)
         self.assertNotIn('@"BWFanOutNode"', entry)
         self.assertNotIn('@"BWInferenceNode"', entry)
         self.assertNotIn('@"BWPhotoEncoderNode"', entry)

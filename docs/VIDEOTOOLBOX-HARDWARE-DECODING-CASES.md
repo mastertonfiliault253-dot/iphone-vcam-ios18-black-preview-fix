@@ -264,13 +264,15 @@ iPhoneOS 16.5 SDK 明确公开 `VTIsHardwareDecodeSupported`（iOS 11+），但�
 
 来源：[VideoToolbox](https://developer.apple.com/documentation/videotoolbox)、[VTIsHardwareDecodeSupported](https://developer.apple.com/documentation/videotoolbox/vtishardwaredecodesupported%28_%3A%29?language=objc)、[VTDecompressionSession](https://developer.apple.com/documentation/videotoolbox/vtdecompressionsession-api-collection)、[AVPlayer](https://developer.apple.com/documentation/avfoundation/avplayer/)、[AVPlayerItemVideoOutput](https://developer.apple.com/documentation/avfoundation/avplayeritemvideooutput)、本地 iPhoneOS 16.5 SDK `VTDecompressionSession.h` 与 `VTDecompressionProperties.h`。
 
-### E8：前台离线 VT 隔离探针（部分完成，已排除生命周期与 entitlement）
+### E8：离线 Apple 原生压缩样本探针（已完成，输入组装不再是唯一根因）
 
 为排除本地网络权限与 RTSP transport，探针在前台 `UIApplicationStateActive` 下读取由同一确定性 H.264 源无重编码封装的 MP4（Constrained Baseline、1280×720、30 fps、无 B 帧、GOP 30、avcC extradata 39 字节），并复用生产 `VCAMHardwareVideoDecoder`。第一次有效运行成功创建 session 并遍历 82 个包，但日志只显示 PTS 0、30、60 的三个 IDR 进入 VT。根因是 `VCAMFilterParameterSetNALs` 在“length-prefixed 且无 SPS/PPS”分支按契约返回 NULL 让调用者复用原包，却先把 `outLength` 清零，导致所有普通 P 帧被调用者误判为参数集专用包而静默跳过。
 
 修复为该 passthrough 分支恢复 `*outLength = length` 后，真机日志确认连续提交 PTS 0、1、2、3……的 IDR/P 帧，且新增回归测试先失败后通过。这是确定的生产缺陷修复，但不是底层 `-12780` 的全部根因：修复后 82 个包均完成 API 提交，前四包依次为 NAL type 5、1、1、1，callback 仍全部返回公开 SDK 未映射的 `-12780` 且 image buffer 为 NULL。给前台探针补齐与 `vcamd` 相同的 `com.apple.videotoolbox.hardwarevideodecoder` entitlement 后结果完全不变。因此 App active 生命周期、mobile/root 身份和该 entitlement 都不是当前失败的充分原因。
 
-下一对照已改为让 `AVAssetReader` 从同一 MP4 产生 Apple 原生压缩 `CMSampleBuffer` 后直接交给 VT。首版探针的第一压缩 sample 为 NULL，尚未进入 VT；显示 `AVAssetReader.status/error` 的修正版已在主机编译完成，但因远程执行额度限制尚未上传，不能把 `create=-1` 记为解码失败。恢复远程执行后应从此处继续，不再重做权限、前后台或输出属性实验。
+后续对照已经让 `AVAssetReaderTrackOutput(outputSettings=nil)` 从独立 H.264 MP4 产生 Apple 原生压缩 `CMSampleBuffer`，不再经过 FFmpeg、RTP、Annex-B 重写或项目 sample 组装。iOS 16.1 真机首个有效 sample 为 `avc1`、640×360、8083 字节、1 sample；`VTIsHardwareDecodeSupported(H.264)=true`，`VTDecompressionSessionCreate` 成功。无论 decoder specification 为 NULL，还是使用与 FFmpeg H.264 上游相同字符串键 `RequireHardwareAcceleratedVideoDecoder=true`，callback 都连续返回 `-12780` 且 image buffer 为 NULL，之后 session 进入 `-12902`。root 与 mobile 用户结果一致；切到静态图片并等待 12 秒让 SpringBoard HLS/AVPlayer 完全释放后结果仍一致。
+
+因此，当前真机上的 direct-VT 失败已经不能归因于服务端帧率、RTSP/RTP、FFmpeg extradata、NAL/AU 重写或 HLS 资源占用；这些因素仍可能造成别的错误，但不是本轮 `-12780` 的充分原因。FFmpeg、WebRTC、GStreamer `vtdec_hw` 最终都调用同一个 VT 解码边界，仅替换 demux/parser 不会绕过这条设备级失败。RTSP 正式路径仍保留 FFmpeg 上游 hwaccel 与软件 fail-open，但在找到能让同一 Apple 原生 sample 输出非空 `CVPixelBuffer` 的进程/系统上下文前，不应继续叠加第三套 parser 或输出属性实验。
 
 ### E2：把输入 contract 变成可证伪检查
 

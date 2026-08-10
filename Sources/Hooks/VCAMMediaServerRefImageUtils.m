@@ -53,6 +53,8 @@ static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
 static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
     return format == kCVPixelFormatType_Lossless_420YpCbCr8BiPlanarVideoRange ||
         format == kCVPixelFormatType_Lossy_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange ||
+        format == kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange ||
         format == (OSType)0x5b387630 || // observed private compressed '[8v0'
         format == (OSType)0x7d387630 || // observed private compressed '}8v0'
         format == (OSType)0x26386630;   // observed private bi-planar '&8f0'

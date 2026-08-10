@@ -1,5 +1,8 @@
 # mediaserverd 注入诊断（2026-08-04）
 
+> [!WARNING]
+> 本文是 0.5.0+home8 的历史故障记录，结论和“可行路线/遗留动作”均已被当前真机证据取代，不能作为现版本部署指南。2026-08-10 的设备证据已经证明 `VCAMMediaServerClient` 在 `mediaserverd` 中加载，`vcaminjectd` 对 SpringBoard 与 mediaserverd 均得到 `proof=1`。当前正式边界只有两个注入 target：`mediaserverd` 负责相机帧替换，`VCAMSpringBoardClient` 为 SpringBoard、Camera 和受支持浏览器主进程提供 UI-only 小白点/面板；不得恢复逐 App 相机 hook、WebKit WebContent hook 或旧 `VCAMWebKitClient`。现行设计以 [`injection-target-architecture.md`](injection-target-architecture.md) 和根目录 [`ARCHITECTURE.md`](../ARCHITECTURE.md) 为准。
+
 ## 结论
 
 当前设备（iPhone SE / iOS 16.5 / Dopamine 2.4.9.25 真皮版 + RootHide）无法把 dylib 注入 `mediaserverd`。

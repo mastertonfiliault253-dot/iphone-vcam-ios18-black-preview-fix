@@ -89,7 +89,7 @@ HLS 不复用 RTSP 的 FFmpeg 或手工 VT 路径：
 必须分别保存 RTSP 与 HLS 的真机证据：
 
 - iOS 版本为目标范围 16.0–16.5，当前主目标为 iOS 16.1。
-- 连续至少 30 帧 `CVPixelBufferRef != NULL`，不是仅创建硬件 session。
+- 连续至少 30 个 `CVPixelBufferRef != NULL`，用于排除“仅偶发首帧”，不要求源端必须为 30 fps；同时记录源端声明/实测帧率、输出帧率与时间戳，输出应跟随源端节奏且无长期断流。
 - 记录每帧 `AVFrame.format`（RTSP）、CoreVideo pixel format、宽高和递增帧计数。
 - RTSP 记录实际使用 `AV_PIX_FMT_VIDEOTOOLBOX`，且帧来自 `AVFrame.data[3]`。
 - HLS 记录帧来自 `AVPlayerItemVideoOutput`。
