@@ -220,7 +220,7 @@ python -m unittest discover -s tests -v
 ## 12. 当前状态与下一步
 
 - 发布状态不得写死在本文。每次交付都必须重新执行 `git rev-parse HEAD`、`gh run list`、下载 CI artifact、核对 SHA-256，并把同一 DEB 安装到目标设备；WSL 包只作编译检查。
-- HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、禁用自动等待并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
+- HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、保留 iOS 16.1 必需的自动续播并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
 - 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。本地相册图片在选择时规范化为有方向的 JPEG，以避免复杂 HEIF 黑帧；必须用选择器重新选择图片验证导入 UI 和长期静态显示。
 - Camera 已分别保存过含虚拟内容的 HEIC 照片和带 HEVC/AAC 的 MOV 录像。正式发布仍需执行至少 10 轮“照片 → 视频 → 照片”切换，逐个回放/查看产物，并确认没有真实传感器帧泄漏。
 - RTSP 的 FFmpeg upstream VT 仍未取得连续非空 `AVFrame.data[3]`/`CVPixelBuffer`；Apple direct-VT 对照也失败。软件回退可用，但在真机达到连续非空硬件帧前不得宣称 RTSP 硬件解码完成。

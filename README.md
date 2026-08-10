@@ -65,8 +65,8 @@ when enabled, without pre-decoding the entire asset into memory.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
   the live three-slot BGRA mmap fallback. HLS prefers a one-second forward
-  buffer, does not wait for a large stall-safe
-  buffer, logs its live-edge lag, and rebuilds a session after five seconds
+  buffer, keeps AVPlayer's automatic stall recovery, logs its live-edge lag,
+  and rebuilds a session after eight seconds
   without a decoded frame. The retained daemon decoder can be
   selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.

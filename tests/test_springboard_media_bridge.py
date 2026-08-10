@@ -47,10 +47,10 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("preferredForwardBufferDuration = 1.0", source)
         self.assertIn("automaticallyPreservesTimeOffsetFromLive = NO", source)
-        self.assertIn("automaticallyWaitsToMinimizeStalling = NO", source)
+        self.assertIn("automaticallyWaitsToMinimizeStalling = YES", source)
         self.assertIn("VCAMLiveEdgeLagSeconds", source)
         self.assertIn("liveLag=%.3f", source)
-        self.assertIn("5ULL * 1000000000ULL", source)
+        self.assertIn("8ULL * 1000000000ULL", source)
 
     def test_local_video_reuses_native_player_pipeline_and_keeps_daemon_rollback(self) -> None:
         source = (

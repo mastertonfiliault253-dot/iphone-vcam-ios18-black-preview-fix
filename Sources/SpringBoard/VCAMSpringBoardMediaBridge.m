@@ -16,7 +16,7 @@ static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
-static const uint64_t VCAMHLSStallTimeoutNanoseconds = 5ULL * 1000000000ULL;
+static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
@@ -248,7 +248,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     [item addOutput:self.output];
     self.player = [AVPlayer playerWithPlayerItem:item];
-    self.player.automaticallyWaitsToMinimizeStalling = NO;
+    // A one-second preferred buffer keeps the live edge close, while automatic
+    // resume is still required on iOS 16.1. Disabling it leaves rate=0 after
+    // the first HLS frame even as the server playlist continues advancing.
+    self.player.automaticallyWaitsToMinimizeStalling = YES;
     AVAssetTrack *videoTrack = localVideo
         ? [[item.asset tracksWithMediaType:AVMediaTypeVideo] firstObject] : nil;
     self.sourceTransform = videoTrack == nil
