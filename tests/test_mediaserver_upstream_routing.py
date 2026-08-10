@@ -172,12 +172,14 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn(retry_guard, sample_builder)
         self.assertIn("sourceSubtype == (OSType)0x5b387630", sample_builder)
         self.assertIn("sourceSubtype == (OSType)0x7d387630", sample_builder)
+        self.assertIn("sourceSubtype == (OSType)0x26786630", sample_builder)
         self.assertRegex(
             self.hook,
             re.compile(
                 r'VCAMCreateSampleBufferWithReplacementImage\('
                 r'\s*sampleBuffer,\s*replacementImageBuffer,\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\)',
+                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\s*\|\|\s*'
+                r'replacementRoute\s*==\s*VCAMReplacementRouteStillPhoto\)',
                 re.DOTALL,
             ),
         )

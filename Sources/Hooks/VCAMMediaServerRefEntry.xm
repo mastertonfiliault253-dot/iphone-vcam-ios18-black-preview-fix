@@ -129,6 +129,7 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     BOOL privateCompressedCameraFormat =
         sourceSubtype == (OSType)0x5b387630 || // observed '[8v0'
         sourceSubtype == (OSType)0x7d387630 || // observed '}8v0'
+        sourceSubtype == (OSType)0x26786630 || // iOS 16.1 StillImage '&xf0'
         sourceSubtype == (OSType)0x26787630 || // SDK '&xv0' lossless 10-bit
         sourceSubtype == (OSType)0x2d787630;   // SDK '-xv0' lossy 10-bit
     if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&
@@ -564,7 +565,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
                     sampleBuffer, replacementImageBuffer,
-                    replacementRoute == VCAMReplacementRouteCameraSourceVideo);
+                    replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
+                    replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
             }
             if (replacementSucceeded &&
