@@ -19,17 +19,19 @@ targeted. Audio is not replaced.
 
 ## Frame path
 
-`local image / OBS → vcamd → three-slot BGRA mmap → mediaserverd + SpringBoard preview`
+`local image / OBS → vcamd → three-slot raw BGRA mmap → mediaserverd + passive UI preview`
 
-`RTSP → vcamd FFmpeg → native NV12 → three-slot IOSurface (BGRA mmap fallback) → mediaserverd`
+`RTSP → vcamd FFmpeg → decoded raw NV12 → three-slot IOSurface (raw BGRA mmap fallback) → mediaserverd + passive UI preview`
 
-`local video / HLS → SpringBoard AVPlayer → NV12 → Metal/Core Image → three-slot IOSurface (mmap bootstrap) → mediaserverd`
+`local video / HLS → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
 
 The compatibility frame region in `/var/tmp/com.codex.vcam.frames` is fixed at
 1080×1920 BGRA. Its surface metadata can instead describe 420v/420f IOSurface
 slots of the same canvas size. Publication uses atomic slot and sequence
-metadata; neither transport contains JPEG, H.264 or another encoded payload.
-Consumers copy without
+metadata; neither transport contains JPEG, H.264, HEVC or another encoded
+payload. The SpringBoard and filtered app-host control panels may passively
+observe the freshest mmap/IOSurface frame, but they neither claim the
+mediaserverd consumer lease nor decode or publish media. Consumers copy without
 waiting. SpringBoard is the sole writer of the requested enable/restore state;
 `vcamd` publishes pixels only and cannot overwrite that state after a delayed
 configuration reload. Shared-header initialization and requested-state updates
@@ -55,12 +57,11 @@ realtime output only, a portrait shared source is pre-rotated left and then
 horizontally reflected before it is fitted into a landscape sensor buffer. The
 rotation compensates for the downstream clockwise display transform; the
 reflection compensates for the vertical flip observed after that iOS 16.5
-realtime transform. A portrait still photo is also stored one quarter-turn left
-in the landscape sensor buffer, without the realtime reflection, and its sample
-and pixel buffer carry EXIF Orientation=Right for the system photo encoder.
-This is required because the observed 4224x3024 Meteor output carried no
-orientation attachment and otherwise produced a landscape Photos asset. The
-canonical shared canvas is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
+realtime transform. Still capture does not apply any additional VCAM rotation
+and does not override photo orientation metadata. The system camera remains the
+sole owner of the final portrait/landscape tag, including an intentionally
+landscape device posture.
+The canonical shared canvas is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
 and browser/WebRTC outputs do not expose the black safety background behind
 the centered render.
 

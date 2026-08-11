@@ -21,6 +21,31 @@
 static NSUInteger VCAMPreviewWindowFrames;
 static CFTimeInterval VCAMPreviewWindowStart;
 
+static BOOL VCAMPreviewGetLatestMetadata(
+    VCAMSharedFrameReader *frameReader,
+    VCAMSharedSurfaceReader *surfaceReader,
+    uint64_t maximumAge,
+    VCAMSharedFrameMetadata *metadataOut,
+    BOOL *surfaceOut) {
+    VCAMSharedFrameMetadata frameMetadata = {0};
+    VCAMSharedFrameMetadata surfaceMetadata = {0};
+    BOOL hasFrame = frameReader != NULL &&
+        VCAMSharedFrameReaderGetLatestMetadata(
+            frameReader, maximumAge, &frameMetadata);
+    BOOL hasSurface = surfaceReader != NULL &&
+        VCAMSharedSurfaceReaderGetLatestMetadata(
+            surfaceReader, maximumAge, &surfaceMetadata);
+    if (!hasFrame && !hasSurface) return NO;
+    BOOL useSurface = hasSurface && (!hasFrame ||
+        surfaceMetadata.monotonicTimestampNanoseconds >=
+            frameMetadata.monotonicTimestampNanoseconds);
+    if (metadataOut != NULL) {
+        *metadataOut = useSurface ? surfaceMetadata : frameMetadata;
+    }
+    if (surfaceOut != NULL) *surfaceOut = useSurface;
+    return YES;
+}
+
 @implementation VCAMSharedFramePreviewView
 
 + (NSDictionary<NSString *, id> *)streamingStatus {
@@ -33,17 +58,11 @@ static CFTimeInterval VCAMPreviewWindowStart;
         surfaceReader = VCAMSharedSurfaceReaderCreate();
     });
     const uint64_t maximumAge = 2000000000ULL;
-    VCAMSharedFrameMetadata frameMetadata = {0};
-    VCAMSharedFrameMetadata surfaceMetadata = {0};
-    BOOL hasFrame = VCAMSharedFrameReaderGetLatestMetadata(
-        frameReader, maximumAge, &frameMetadata);
-    BOOL hasSurface = VCAMSharedSurfaceReaderGetLatestMetadata(
-        surfaceReader, maximumAge, &surfaceMetadata);
-    uint64_t timestamp = hasSurface && (!hasFrame ||
-        surfaceMetadata.monotonicTimestampNanoseconds >=
-            frameMetadata.monotonicTimestampNanoseconds)
-        ? surfaceMetadata.monotonicTimestampNanoseconds
-        : frameMetadata.monotonicTimestampNanoseconds;
+    VCAMSharedFrameMetadata metadata = {0};
+    BOOL hasMetadata = VCAMPreviewGetLatestMetadata(
+        frameReader, surfaceReader, maximumAge, &metadata, NULL);
+    uint64_t timestamp = hasMetadata
+        ? metadata.monotonicTimestampNanoseconds : 0;
     uint64_t monotonicNow = VCAMSharedFrameMonotonicNanoseconds();
     BOOL receiving = timestamp > 0 && monotonicNow >= timestamp &&
         monotonicNow - timestamp <= maximumAge;
@@ -112,17 +131,9 @@ static CFTimeInterval VCAMPreviewWindowStart;
     (void)displayLink;
     if ((_reader == NULL && _surfaceReader == NULL) || _pixelBufferPool == NULL) return;
     const uint64_t maximumAge = 1000000000ULL;
-    VCAMSharedFrameMetadata frameMetadata = {0};
-    VCAMSharedFrameMetadata surfaceMetadata = {0};
-    BOOL hasFrame = _reader != NULL && VCAMSharedFrameReaderGetLatestMetadata(
-        _reader, maximumAge, &frameMetadata);
-    BOOL hasSurface = _surfaceReader != NULL &&
-        VCAMSharedSurfaceReaderGetLatestMetadata(
-            _surfaceReader, maximumAge, &surfaceMetadata);
-    if (!hasFrame && !hasSurface) return;
-    BOOL frameWasSurface = hasSurface && (!hasFrame ||
-        surfaceMetadata.monotonicTimestampNanoseconds >=
-            frameMetadata.monotonicTimestampNanoseconds);
+    BOOL frameWasSurface = NO;
+    if (!VCAMPreviewGetLatestMetadata(
+            _reader, _surfaceReader, maximumAge, NULL, &frameWasSurface)) return;
 
     CVPixelBufferRef pixelBuffer = NULL;
     VCAMSharedFrameMetadata metadata = {0};
@@ -148,16 +159,6 @@ static CFTimeInterval VCAMPreviewWindowStart;
         else CVPixelBufferRelease(pixelBuffer);
         return;
     }
-    CFTimeInterval now = CACurrentMediaTime();
-    VCAMPreviewWindowFrames += 1;
-    if (VCAMPreviewWindowStart == 0) VCAMPreviewWindowStart = now;
-    if (now - VCAMPreviewWindowStart >= 1.0) {
-        VCAMPreviewWindowStart = now;
-        VCAMPreviewWindowFrames = 0;
-    }
-    self.lastSequence = metadata.sequence;
-    self.hasLastFrame = YES;
-    self.lastFrameWasSurface = frameWasSurface;
     OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
     size_t width = CVPixelBufferGetWidth(pixelBuffer);
     size_t height = CVPixelBufferGetHeight(pixelBuffer);
@@ -200,6 +201,16 @@ static CFTimeInterval VCAMPreviewWindowStart;
     }
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) [layer flush];
     [layer enqueueSampleBuffer:sample];
+    CFTimeInterval now = CACurrentMediaTime();
+    VCAMPreviewWindowFrames += 1;
+    if (VCAMPreviewWindowStart == 0) VCAMPreviewWindowStart = now;
+    if (now - VCAMPreviewWindowStart >= 1.0) {
+        VCAMPreviewWindowStart = now;
+        VCAMPreviewWindowFrames = 0;
+    }
+    self.lastSequence = metadata.sequence;
+    self.hasLastFrame = YES;
+    self.lastFrameWasSurface = frameWasSurface;
     CFRelease(sample);
     if (frameWasSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
     else CVPixelBufferRelease(pixelBuffer);

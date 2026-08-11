@@ -534,7 +534,6 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         // The periodic SpringBoard refresh keeps polling if retries run out.
         return;
     }
-
     UIWindow *floatingWindow = [self floatingDotWindow];
     if (floatingWindow.windowScene == nil && window.windowScene != nil) {
         floatingWindow.windowScene = window.windowScene;

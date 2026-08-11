@@ -68,8 +68,11 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", source)
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", producer)
         self.assertIn("VCAMLocalMediaPathIsVideo", producer)
-        self.assertNotIn("videoTrack.preferredTransform", source)
-        self.assertIn("AVPlayerItemVideoOutput already returns display-oriented pixels", source)
+        self.assertIn("videoTrack.preferredTransform", source)
+        self.assertIn("its complete rotation/mirroring matrix exactly once", source)
+        self.assertIn("self.sourceTransform.a, self.sourceTransform.b", source)
+        self.assertIn("self.sourceTransform.c, self.sourceTransform.d", source)
+        self.assertNotIn("sourceBufferNeedsTrackTransform", source)
 
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:
         source = (
@@ -142,6 +145,28 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', server)
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', server)
         self.assertIn("com.codex.vcam.surface", launchd)
+
+    def test_mediaserver_transport_accepts_only_uncompressed_pixel_buffers(self) -> None:
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        mmap_publish = shared.split("bool VCAMSharedFrameWriterPublish", 1)[1].split(
+            "bool VCAMSharedFrameSetRequestedActive", 1
+        )[0]
+        surface_create = shared.split(
+            "VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreateWithPixelFormat", 1
+        )[1].split("void VCAMSharedSurfaceWriterDestroy", 1)[0]
+
+        self.assertIn("kCVPixelFormatType_32BGRA", mmap_publish)
+        self.assertIn("CVPixelBufferLockBaseAddress", mmap_publish)
+        for raw_format in (
+            "kCVPixelFormatType_32BGRA",
+            "kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange",
+            "kCVPixelFormatType_420YpCbCr8BiPlanarFullRange",
+        ):
+            self.assertIn(raw_format, surface_create)
+        for encoded_format in ("JPEG", "H264", "HEVC"):
+            self.assertNotIn(encoded_format, surface_create)
 
     def test_xpc_bridge_uses_sdk_types_and_runtime_private_entrypoint(self) -> None:
         broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(

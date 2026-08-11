@@ -481,8 +481,8 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     return YES;
 }
 
-BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudget,
-                               BOOL aspectFit,
+BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
+                               BOOL realtimeCompensation, BOOL aspectFit,
                                CVPixelBufferRef *replacementBufferOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
@@ -629,17 +629,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
         }
 
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
-        // The shared source is kept in user-visible portrait orientation.
-        // Landscape camera buffers store portrait pixels one quarter-turn
-        // left. Realtime consumers add a reflected display transform on the
-        // observed iOS 16 graph; still photos instead carry Orientation=Right
-        // so the system encoder restores the user-visible portrait direction.
-        if (targetWidth > targetHeight &&
+        // Realtime consumers use the device-observed graph compensation.
+        // Still capture intentionally preserves the shared pixels unchanged;
+        // the system camera alone owns the final file orientation metadata.
+        if (realtimeCompensation && targetWidth > targetHeight &&
             CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
-            if (realtimeBudget) {
-                image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
-            }
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
         }
         // The producer has already applied the user's content mode to the
         // canonical 1080x1920 frame. This second stage only adapts that
@@ -735,7 +731,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
                 VCAMRefLog(message);
             }
         }
-        if (realtimeBudget && elapsed > 0.050) {
+        if (realtimeCompensation && elapsed > 0.050) {
             int slowCount = __sync_add_and_fetch(&VCAMConsecutiveSlowRenders, 1);
             if (slowCount <= 4 || slowCount % 120 == 0) {
                 char message[192] = {0};
@@ -744,11 +740,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer, BOOL realtimeBudge
                          slowCount, elapsed * 1000.0);
                 VCAMRefLog(message);
             }
-        } else if (realtimeBudget) {
+        } else if (realtimeCompensation) {
             (void)__sync_lock_test_and_set(&VCAMConsecutiveSlowRenders, 0);
         }
 
-        if (!realtimeBudget) {
+        if (!realtimeCompensation) {
             static volatile int highResolutionRenders = 0;
             int highResolutionCount = __sync_add_and_fetch(&highResolutionRenders, 1);
             if (highResolutionCount <= 4) {

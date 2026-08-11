@@ -97,7 +97,7 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
                                        uint64_t maximumAgeNanoseconds,
                                        VCAMSharedSurfaceFrame *frame);
 /// Observer copy that participates in per-slot exclusion without claiming the
-/// primary consumer heartbeat. Intended for SpringBoard preview UI.
+/// primary consumer heartbeat. Intended for passive control-panel preview UI.
 bool VCAMSharedSurfaceReaderCopyLatestPassive(
     VCAMSharedSurfaceReader *reader,
     uint64_t maximumAgeNanoseconds,

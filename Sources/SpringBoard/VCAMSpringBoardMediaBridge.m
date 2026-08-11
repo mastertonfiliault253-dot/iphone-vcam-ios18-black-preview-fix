@@ -80,6 +80,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
 @property(nonatomic) BOOL localVideo;
+@property(nonatomic) CGAffineTransform sourceTransform;
+@property(nonatomic) CGSize sourceNaturalSize;
 @property(nonatomic, copy, nullable) NSString *lastError;
 @end
 
@@ -148,6 +150,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.player = nil;
     self.configuration = nil;
     self.localVideo = NO;
+    self.sourceTransform = CGAffineTransformIdentity;
+    self.sourceNaturalSize = CGSizeZero;
     if (self.surfaceWriter != NULL) {
         VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);
         self.surfaceWriter = NULL;
@@ -258,7 +262,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }];
     NSURL *playbackURL = localVideo ? [NSURL fileURLWithPath:next.mediaPath]
                                     : next.hlsURL;
-    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:playbackURL];
+    AVAsset *asset = localVideo
+        ? [AVURLAsset URLAssetWithURL:playbackURL options:nil] : nil;
+    AVPlayerItem *item = localVideo
+        ? [AVPlayerItem playerItemWithAsset:asset]
+        : [AVPlayerItem playerItemWithURL:playbackURL];
     if (!localVideo) {
         item.preferredForwardBufferDuration = 1.0;
         item.automaticallyPreservesTimeOffsetFromLive = NO;
@@ -269,8 +277,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     // resume is still required on iOS 16.1. Disabling it leaves rate=0 after
     // the first HLS frame even as the server playlist continues advancing.
     self.player.automaticallyWaitsToMinimizeStalling = YES;
-    // AVPlayerItemVideoOutput already returns display-oriented pixels. Applying
-    // the asset preferredTransform again rotated some Photos videos by 180°.
+    AVAssetTrack *videoTrack = localVideo
+        ? [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject] : nil;
+    self.sourceTransform = videoTrack == nil
+        ? CGAffineTransformIdentity : videoTrack.preferredTransform;
+    self.sourceNaturalSize = videoTrack == nil ? CGSizeZero : videoTrack.naturalSize;
     if (localVideo) {
         __weak typeof(self) weakSelf = self;
         self.playbackEndObserver = [NSNotificationCenter.defaultCenter
@@ -351,6 +362,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     CGRect extent = image.extent;
     image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
         -CGRectGetMidX(extent), -CGRectGetMidY(extent))];
+    if (self.localVideo && !CGAffineTransformIsIdentity(self.sourceTransform)) {
+        // AVPlayerItemVideoOutput exposes decoded track pixels on iOS 16. The
+        // preferredTransform is the asset's presentation contract, so apply
+        // its complete rotation/mirroring matrix exactly once here.
+        CGAffineTransform linear = CGAffineTransformMake(
+            self.sourceTransform.a, self.sourceTransform.b,
+            self.sourceTransform.c, self.sourceTransform.d, 0, 0);
+        image = [image imageByApplyingTransform:linear];
+    }
     if (self.configuration.mirrorHorizontally) {
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(-1, 1)];
     }
@@ -427,6 +447,19 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.decodedFrames += 1;
     self.lastDecodedFrameTimestampNanoseconds = now;
     self.reconnectAttempt = 0;
+    if (self.localVideo && self.decodedFrames <= 3) {
+        CGRect displayed = CGRectStandardize(CGRectApplyAffineTransform(
+            (CGRect){CGPointZero, self.sourceNaturalSize}, self.sourceTransform));
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"springboard local video orientation frame=%lu raw=%zux%zu natural=%.0fx%.0f display=%.0fx%.0f apply=%d matrix=[%.0f %.0f %.0f %.0f]",
+            (unsigned long)self.decodedFrames,
+            CVPixelBufferGetWidth(source), CVPixelBufferGetHeight(source),
+            self.sourceNaturalSize.width, self.sourceNaturalSize.height,
+            CGRectGetWidth(displayed), CGRectGetHeight(displayed),
+            !CGAffineTransformIsIdentity(self.sourceTransform),
+            self.sourceTransform.a, self.sourceTransform.b,
+            self.sourceTransform.c, self.sourceTransform.d]];
+    }
     if (self.surfaceWriter != NULL &&
         !VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter)) {
         VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);

@@ -526,12 +526,16 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         status = preview.split("+ (NSDictionary<NSString *, id> *)streamingStatus", 1)[1].split(
             "+ (Class)layerClass", 1
         )[0]
+        latest_metadata = preview.split("static BOOL VCAMPreviewGetLatestMetadata", 1)[1].split(
+            "@implementation VCAMSharedFramePreviewView", 1
+        )[0]
         self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", header)
         self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", header)
         self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", shared)
         self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", shared)
-        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", status)
-        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", status)
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", latest_metadata)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", latest_metadata)
+        self.assertIn("VCAMPreviewGetLatestMetadata", status)
         self.assertNotIn("VCAMSharedFrameReaderCopyLatest", status)
         self.assertNotIn("VCAMSharedSurfaceReaderCopyLatest", status)
         self.assertNotIn("VCAMSharedSurfaceReaderSetReady", status)
@@ -586,15 +590,27 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
         display_tick = preview.split("- (void)displayTick:", 1)[1].split("\n}\n\n@end", 1)[0]
+        latest_metadata = preview.split("static BOOL VCAMPreviewGetLatestMetadata", 1)[1].split(
+            "@implementation VCAMSharedFramePreviewView", 1
+        )[0]
+        streaming_status = preview.split(
+            "+ (NSDictionary<NSString *, id> *)streamingStatus", 1
+        )[1].split("+ (Class)layerClass", 1)[0]
 
         self.assertIn("VCAMSharedSurfaceReader *_surfaceReader", preview)
-        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", display_tick)
-        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", display_tick)
-        self.assertIn("surfaceMetadata.monotonicTimestampNanoseconds >=", display_tick)
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", latest_metadata)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", latest_metadata)
+        self.assertIn("surfaceMetadata.monotonicTimestampNanoseconds >=", latest_metadata)
+        self.assertIn("VCAMPreviewGetLatestMetadata", display_tick)
+        self.assertIn("VCAMPreviewGetLatestMetadata", streaming_status)
         self.assertIn("VCAMSharedSurfaceReaderCopyLatestPassive", display_tick)
         self.assertIn("VCAMSharedSurfaceFrameRelease", display_tick)
         self.assertIn("frameWasSurface == self.lastFrameWasSurface", display_tick)
         self.assertIn("pixelFormat != _formatPixelFormat", display_tick)
+        self.assertLess(
+            display_tick.index("[layer enqueueSampleBuffer:sample]"),
+            display_tick.index("self.lastSequence = metadata.sequence"),
+        )
 
         shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
             encoding="utf-8"

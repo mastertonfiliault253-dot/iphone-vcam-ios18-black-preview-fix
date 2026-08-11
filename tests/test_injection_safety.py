@@ -207,7 +207,7 @@ class InjectionSafetyTests(unittest.TestCase):
         reflection_guard = render.split(
             "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored", 1
         )[0].rsplit("if (", 1)[1]
-        self.assertIn("realtimeBudget", reflection_guard)
+        self.assertIn("realtimeCompensation", reflection_guard)
         self.assertIn(
             "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
             render,

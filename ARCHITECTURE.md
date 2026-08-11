@@ -16,22 +16,32 @@ VCAM separates media production, camera replacement and control UI:
   rotation, mirroring, fit/fill and scale in one Metal-backed Core Image render
   directly into the `420v` IOSurface transport; BGRA mmap is the compatibility
   fallback.
-  App hosts receive UI only; they never decode media, hook camera frames or
-  publish replacement frames.
+  The SpringBoard and app-host control-panel previews may passively read the
+  freshest raw BGRA mmap or NV12 IOSurface frame. They never claim the
+  mediaserverd consumer lease. App hosts receive UI only; they never decode
+  media, hook camera frames or publish replacement frames.
 - `vcaminjectd` repairs only the SpringBoard and `mediaserverd` mappings after
   those exact processes restart. Normal tweak filtering loads application UI
   clients.
 
 `VCAMFrameRenderer` normalizes orientation, content mode, mirroring and target
-size before publication. Audio is never replaced.
+size before publication. The shared frame is the single user-visible direction
+reference: local video applies the asset's complete `preferredTransform` once
+to decoded track pixels; UI preview adds no transform; realtime Camera/browser
+output applies only the device-observed graph compensation; and still capture
+adds no VCAM rotation or orientation metadata, leaving the saved-file direction
+to the system camera. Audio is never replaced.
 
-The native local-video/HLS bridge and eligible RTSP frames publish into a
-three-slot IOSurface ring. The vcamd
+The native local-video/HLS bridge and eligible RTSP frames publish raw,
+uncompressed NV12 pixels into a three-slot IOSurface ring. Local-image/OBS and
+fallback publication use raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
+HEVC or source-container payload is sent to mediaserverd. The vcamd
 launchd Mach service relays only the three IOSurface XPC rights from SpringBoard
 to mediaserverd and verifies both peer process names; frame bytes never pass
 through the daemon. mediaserverd retains the selected surface while rendering
-so SpringBoard never overwrites an in-use slot. The previous three-slot BGRA
-mmap remains the automatic fallback until the XPC surface handshake succeeds.
+so SpringBoard never overwrites an in-use slot. UI previews are passive
+observers and do not alter that ownership handshake. The previous three-slot
+BGRA mmap remains the automatic fallback until the XPC surface handshake succeeds.
 Creating
 `/var/tmp/vcam-hls-legacy-vcamd.enable` disables the SpringBoard HLS bridge and
 restores the retained daemon HLS decoder for rollback. The equivalent local
