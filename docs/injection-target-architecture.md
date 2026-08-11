@@ -74,15 +74,21 @@ producer publishes canonical visual orientation and the consumer never infers
 rotation from a target buffer's width and height. The explicit iOS 16 WebKit
 `video-converter` route is identified by its graph role, not its dimensions;
 for a portrait source only, it pre-rotates pixels left into WebKit's landscape
-storage basis while Camera preview and recording remain canonical. The other
+storage basis while Camera preview and recording remain canonical. WebKit and
+Camera preview aspect-fit the complete source; recording and still-photo
+terminals retain full-bleed aspect-fill behavior. The other
 exception is the verified landscape sensor-storage contract at the `Meteor Headroom` still
 terminal: a canonical portrait source is turned left into sensor storage and
 marked EXIF `Orientation=Right`, while a landscape source is unchanged. Thus
 the final portrait/landscape presentation follows the selected source rather
 than the phone posture.
-The source-sized shared frame is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
-and browser/WebRTC outputs do not expose the black safety background behind
-the centered render.
+The real camera graph remains the browser negotiation shell. VCAM does not
+replace its capability table or force a fixed profile: WebKit keeps the target
+width, height, frame rate, pixel format, `CMFormatDescription`, timing and
+propagated sample attachments selected by the physical camera graph. The
+source-sized shared frame is composed once into that exact buffer. A mismatched
+WebKit aspect ratio may therefore show letterbox or pillarbox pixels instead of
+silently cropping and enlarging the selected source.
 
 Compressed recording never asks Core Image to write a private surface. Core
 Image renders into a target-sized public `420v` staging buffer; VideoToolbox

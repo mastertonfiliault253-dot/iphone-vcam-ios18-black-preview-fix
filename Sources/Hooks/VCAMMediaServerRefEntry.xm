@@ -97,6 +97,23 @@ static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
     return "none";
 }
 
+static VCAMFramePresentation VCAMPresentationForReplacementRoute(
+    VCAMReplacementRoute route) {
+    switch (route) {
+        case VCAMReplacementRouteVideoConverter:
+            return VCAMFramePresentationWebKitFit;
+        case VCAMReplacementRouteCameraPreview:
+            return VCAMFramePresentationCameraPreviewFit;
+        case VCAMReplacementRouteStillPhoto:
+            return VCAMFramePresentationStillPhotoFill;
+        case VCAMReplacementRouteCameraSourceVideo:
+        case VCAMReplacementRouteVideoRecording:
+        case VCAMReplacementRouteNone:
+            return VCAMFramePresentationRealtimeFill;
+    }
+    return VCAMFramePresentationRealtimeFill;
+}
+
 static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
     return [value isKindOfClass:NSString.class] &&
         [expected isKindOfClass:NSString.class] &&
@@ -597,9 +614,7 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         @try {
             replacementSucceeded = drawReplacementOntoBuffer(
                 originalImageBuffer,
-                replacementRoute != VCAMReplacementRouteStillPhoto,
-                replacementRoute == VCAMReplacementRouteCameraPreview,
-                replacementRoute == VCAMReplacementRouteVideoConverter,
+                VCAMPresentationForReplacementRoute(replacementRoute),
                 &replacementImageBuffer,
                 replacementRoute == VCAMReplacementRouteStillPhoto
                     ? &stillPhotoRequiresRightOrientation : NULL);

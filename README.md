@@ -20,6 +20,11 @@ The media hook and UI overlay have separate injection scopes:
   buffers use a target-sized public `420v` staging surface and VideoToolbox pixel
   transfer into a private-format clone; the system encoder then owns normal
   timestamp reordering and writes the encoded recording samples.
+  Browser capture keeps the physical camera graph as its negotiation shell:
+  WebKit still selects the real device's target size, frame rate, pixel format,
+  timing and attachments. VCAM only rotates a portrait source into the verified
+  iOS 16 WebKit storage basis and aspect-fits the complete source into that
+  exact target, avoiding implicit crop/zoom without forcing a fixed profile.
   Once virtual mode is enabled, a missing, stale or unrenderable source never
   exposes a real camera frame: the last virtual frame is retained when possible,
   otherwise a black frame is emitted or that consumer sample is suppressed.

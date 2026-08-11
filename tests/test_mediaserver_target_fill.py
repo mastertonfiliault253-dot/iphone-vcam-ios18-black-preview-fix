@@ -15,7 +15,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-    def test_consumer_adapter_uses_aspect_fill_without_device_orientation_guessing(self) -> None:
+    def test_consumer_adapter_selects_fit_or_fill_without_device_orientation_guessing(self) -> None:
         fill_scale = "CGFloat scale = aspectFit"
 
         self.assertIn(fill_scale, self.adapter)
@@ -77,8 +77,15 @@ class MediaServerTargetFillTests(unittest.TestCase):
             "replacementSucceeded = drawReplacementOntoBuffer", 1
         )[1].split(");", 1)[0]
         self.assertIn(
-            "replacementRoute == VCAMReplacementRouteVideoConverter",
-            render_call,
+            "VCAMPresentationForReplacementRoute(replacementRoute)", render_call
+        )
+        presentation = entry.split(
+            "static VCAMFramePresentation VCAMPresentationForReplacementRoute", 1
+        )[1].split("static BOOL VCAMStringMatches", 1)[0]
+        self.assertRegex(
+            presentation,
+            r"case VCAMReplacementRouteVideoConverter:\s*"
+            r"return VCAMFramePresentationWebKitFit;",
         )
         self.assertNotIn(
             "replacementRoute == VCAMReplacementRouteCameraPreview\n"
@@ -86,13 +93,46 @@ class MediaServerTargetFillTests(unittest.TestCase):
             render_call,
         )
 
-    def test_fill_covers_photo_preview_and_browser_targets(self) -> None:
-        # Every consumer is aspect-filled without changing the source's
-        # user-visible direction. Still-photo orientation remains system-owned.
+    def test_webkit_keeps_the_negotiated_profile_without_cropping_the_source(self) -> None:
+        entry = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
+        ).read_text(encoding="utf-8")
+        render_call = entry.split(
+            "replacementSucceeded = drawReplacementOntoBuffer", 1
+        )[1].split(");", 1)[0]
+
+        # WebKit still owns the target profile (480p/720p/1080p), pixel format
+        # and timing. VCAM must only fit the canonical source into that already
+        # negotiated buffer; aspect-fill crops a 16:9 source by 25% when the
+        # browser requests the common 640x480 profile and appears as zoom.
+        self.assertIn(
+            "VCAMPresentationForReplacementRoute(replacementRoute)", render_call
+        )
+        implementation = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            implementation,
+            r"presentation\s*==\s*VCAMFramePresentationCameraPreviewFit\s*\|\|"
+            r"\s*presentation\s*==\s*VCAMFramePresentationWebKitFit",
+        )
+
+        source_width, source_height = 3840, 2160
+        for target_width, target_height in ((640, 480), (1280, 720), (1920, 1080)):
+            with self.subTest(target=(target_width, target_height)):
+                scale = min(
+                    target_width / source_width,
+                    target_height / source_height,
+                )
+                self.assertLessEqual(source_width * scale, target_width)
+                self.assertLessEqual(source_height * scale, target_height)
+
+    def test_full_bleed_modes_cover_still_and_recording_targets(self) -> None:
+        # Recording and still-photo keep full-bleed camera behavior. Camera
+        # preview and WebKit use the separately tested whole-frame fit modes.
         cases = (
             ((1080, 1920), (4224, 3024)),  # Camera still-photo sensor buffer
-            ((1080, 1920), (750, 1334)),  # Camera portrait preview
-            ((1920, 1080), (640, 480)),  # common browser/WebRTC 4:3 buffer
+            ((1080, 1920), (1920, 1080)),  # Camera movie recording buffer
         )
         for (source_width, source_height), (target_width, target_height) in cases:
             with self.subTest(target=(target_width, target_height)):
@@ -102,6 +142,31 @@ class MediaServerTargetFillTests(unittest.TestCase):
                 )
                 self.assertGreaterEqual(source_width * scale, target_width)
                 self.assertGreaterEqual(source_height * scale, target_height)
+
+    def test_webkit_reuses_the_real_camera_negotiation_shell(self) -> None:
+        entry = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
+        ).read_text(encoding="utf-8")
+        sample_adapter = entry.split(
+            "static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage", 1
+        )[1].split("static BOOL VCAMRouteUsesPropagationMarker", 1)[0]
+        render_call = entry.split(
+            "replacementSucceeded = drawReplacementOntoBuffer", 1
+        )[1].split(");", 1)[0]
+
+        self.assertIn("originalImageBuffer", render_call)
+        self.assertRegex(
+            sample_adapter,
+            r"CMSampleBufferGetFormatDescription\(\s*originalSampleBuffer\s*\)",
+        )
+        self.assertIn(
+            "CMSampleBufferGetSampleTimingInfo(originalSampleBuffer", sample_adapter
+        )
+        self.assertIn("CMSampleBufferCreateReadyWithImageBuffer", sample_adapter)
+        self.assertIn(
+            "VCAMCopyAttachmentMode(originalSampleBuffer", sample_adapter
+        )
+        self.assertIn("CMSampleBufferGetSampleAttachmentsArray", sample_adapter)
 
 
 if __name__ == "__main__":

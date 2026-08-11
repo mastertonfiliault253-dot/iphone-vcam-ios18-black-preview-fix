@@ -36,12 +36,22 @@ reference: local video applies the asset's complete `preferredTransform` once
 to decoded track pixels; UI preview adds no transform; consumers never infer
 orientation from target dimensions. The explicit iOS 16 WebKit
 `video-converter` terminal alone pre-rotates a portrait source left into its
-landscape storage basis; Camera preview and recording routes remain unchanged.
+landscape storage basis, then aspect-fits the whole source into the target so a
+4:3 WebRTC profile does not crop and visually enlarge a 16:9 source. Camera
+preview keeps its existing whole-frame fit and recording remains full-bleed.
 At the still-photo terminal,
 only a canonical portrait source is converted into the sensor's landscape
 storage basis and marked EXIF `Orientation=Right`; a landscape source remains
 unmodified. This makes the saved aspect follow the selected source rather than
 the phone posture. Audio is never replaced.
+
+The physical camera graph is the browser negotiation shell. VCAM does not
+advertise a synthetic capability table or force a fixed resolution: Safari and
+other WebKit clients still negotiate the real device's available 480p, 720p or
+1080p target, frame rate, pixel format and timing. mediaserverd renders into
+that exact target and preserves its format description and propagated sample
+attachments. Only the replacement pixels and route-specific composition
+policy change.
 
 The native local-video/HLS bridge and eligible RTSP frames publish raw,
 uncompressed NV12 pixels into source-sized three-slot IOSurface rings. Static

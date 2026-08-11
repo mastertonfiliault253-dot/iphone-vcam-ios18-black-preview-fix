@@ -490,8 +490,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
 }
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
-                               BOOL realtimeCompensation, BOOL aspectFit,
-                               BOOL webKitLandscapeStorage,
+                               VCAMFramePresentation presentation,
                                CVPixelBufferRef *replacementBufferOut,
                                BOOL *stillPhotoRequiresRightOrientationOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
@@ -504,6 +503,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
     size_t targetHeight = CVPixelBufferGetHeight(targetBuffer);
     OSType targetFormat = CVPixelBufferGetPixelFormatType(targetBuffer);
+    BOOL realtimeCompensation =
+        presentation != VCAMFramePresentationStillPhotoFill;
+    BOOL aspectFit =
+        presentation == VCAMFramePresentationCameraPreviewFit ||
+        presentation == VCAMFramePresentationWebKitFit;
+    BOOL webKitLandscapeStorage =
+        presentation == VCAMFramePresentationWebKitFit;
     BOOL compressedTarget = VCAMFormatIsCompressedVideoRange(targetFormat);
     if (compressedTarget && replacementBufferOut == NULL) return NO;
     CVPixelBufferRef scratch = NULL;
@@ -700,12 +706,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 *stillPhotoRequiresRightOrientationOut = YES;
             }
         }
-        // The producer publishes canonical visual orientation. Other target
-        // buffer dimensions describe allocation, not camera orientation.
-        // The producer has already resolved source metadata and user
-        // transforms. This consumer stage only scales the uncompressed source
-        // pixels into each heterogeneous camera target (preview, still photo,
-        // WebRTC, and recording).
+        // The producer publishes canonical visual orientation. The real
+        // camera graph remains the negotiation shell: target dimensions,
+        // pixel format, timing and graph attachments are left untouched.
+        // WebKit and Camera preview fit the whole canonical frame; recording
+        // and still-photo terminals retain their full-bleed camera behavior.
         CGFloat scale = aspectFit
             ? MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent))
