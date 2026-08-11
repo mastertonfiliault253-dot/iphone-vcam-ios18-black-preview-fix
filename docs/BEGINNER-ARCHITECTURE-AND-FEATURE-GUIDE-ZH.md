@@ -1,7 +1,7 @@
 # VCAM 框架与功能分析（小白学习版）
 
 > 适用项目：`IOSVCAN-DS/vcam`  
-> 文档基准：`0.8.80+webkit-camera-fill-contract`  
+> 文档基准：`0.8.81+ios16-source-pipeline-audit`
 > 部署目标：越狱环境下的 iOS 16.0–16.5（不包含 iOS 15，也不承诺 iOS 16.6 及以上）
 
 最新固定提交、CI run、DEB 哈希和设备证据见 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)。
@@ -377,11 +377,12 @@ Linux Theos 工具链可以编出 arm64e 切片，但当前无法生成与 macOS
 
 ### 15.1 已有强证据
 
-- 当前源码的主机测试和双架构构建曾通过；
-- macOS CI 已产出带 arm64e Objective-C stub 段的安装包；
-- 当前版本已部署到两台目标设备；
-- 在测试机 2.101 上，Safari 640×480、420f 路径已观察到连续、正向、无 VCAM 黑边的虚拟画面；
-- 浏览器面板能显示静态图预览，静态状态不再显示波动 FPS。
+- 当前源码 174 项主机测试通过，完整 Standards/Spec 复审未发现新的确定性缺陷；
+- macOS CI run `31528507761` 已产出 `0.8.81+ios16-source-pipeline-audit` 正式候选包；
+- 本地从同一 DEB 独立验证：两个注入客户端均含 `arm64`/`arm64e`，arm64e 薄片均有非空 `__objc_stubs` 和 `__objc_intobj`；
+- 该精确 CI 包尚未记录安装到测试设备，下面的可见结果来自此前版本，不能自动继承；
+- 此前在测试机 2.101 上，Safari 640×480、420f 路径曾观察到连续、正向、无 VCAM 黑边的虚拟画面；
+- 此前浏览器面板能显示静态图预览，静态状态不再显示波动 FPS。
 
 ### 15.2 代码已实现，但还应逐项真机确认
 

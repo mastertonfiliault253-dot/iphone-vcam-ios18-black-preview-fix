@@ -6,40 +6,43 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 包版本 | `0.8.80+webkit-camera-fill-contract` |
-| Git 提交 | `a3fb13bf6c4762f22a3b2b0d8b3fae6f5f4ee7a7` |
-| 提交说明 | `match webkit camera full-bleed crop` |
+| 包版本 | `0.8.81+ios16-source-pipeline-audit` |
+| Git 提交 | `a93badbbf22d1cdf4f373d454affd320836c2d6c` |
+| 提交说明 | `fix Debian postrm executable mode` |
 | 发布分支 | `codex/ios16-media-bridge` |
 | 发布 remote | `current`（`cuentaripionose-prog/iphone-vcam-ios16-private`） |
-| macOS CI run | `31507025770` |
+| macOS CI run | `31528507761`（成功） |
 | DEB 架构 | `iphoneos-arm64`，包内客户端包含 `arm64`/`arm64e` |
-| DEB 大小 | `1,090,432` 字节 |
-| DEB SHA-256 | `57E638AB08D18AA91A887978C13E6743F01B618C672EAFAF2D1F9BFE566C2B01` |
+| DEB 大小 | `1,101,854` 字节 |
+| DEB SHA-256 | `0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F` |
 | 支持系统 | iOS `>= 16.0` 且 `< 16.6` |
 | 越狱布局 | rootless |
 
 本机已校验的 CI 产物：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-a3fb13b-run31507025770-a\com.codex.vcam_0.8.80+webkit-camera-fill-contract_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb
 ```
 
 运行时可在 `/var/mobile/Media/VCAM/broker-probe.log` 中核对：
 
 ```text
-tag=com.codex.vcam/0.8.80+webkit-camera-fill-contract
+tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
 ```
 
 ## 2. 本版本的主要技术变化
 
-本版本以 WebKit 相机输出契约为重点：
+本版本是 iOS 16 源尺寸媒体管线的完整审查加固版：
 
-- 保留真实物理相机图作为 WebKit 分辨率、帧率、像素格式、时间戳和附件的协商外壳；
-- 不伪造固定的虚拟摄像头能力表；
-- 对已验证的 iOS 16 WebKit `video-converter` 终端，将竖向源转换到其横向存储基准；
-- 按浏览器已经协商的目标比例做一次 full-bleed 中心裁剪和缩放；
-- 不拉伸、不添加 VCAM 黑边、不改变已协商档位，也不执行第二次 VCAM 放大；
-- Camera 预览、静态拍照和录像仍保留各自的路由语义，不能套用浏览器补偿。
+- 继续保留真实物理相机图作为 WebKit 分辨率、帧率、像素格式、时间戳和附件的协商外壳，只替换像素；
+- WebKit 终端仍按已验证的 iOS 16 存储基准做一次方向补偿和 full-bleed 中心裁剪，不拉伸、不添加 VCAM 黑边；
+- 静态拍照不再由 VCAM 强写系统方向 metadata；Camera、WebKit、拍照和录像保持各自路由语义；
+- mmap 与 IOSurface 交接加入 producer generation、跨进程发布锁、PID start-token 和旧帧拒绝；
+- RTSP 改为 FFmpeg 上游 VideoToolbox hwaccel，只有明确硬件拒绝或解码停滞才粘性回退软件；
+- P010/10-bit packing、BT.2020 颜色边界、源尺寸软件回退和整条管线内存预算已加固；
+- HLS 保持 Apple 原生 `AVPlayerItemVideoOutput`，加入直播边缘追赶与无帧重连；
+- 本地非循环视频正常结束后保留最后一帧，不再被通用停滞逻辑重新循环；
+- 导入、下载、配置 Broker、日志大小、安装/卸载脚本和 fresh-install 真实相机回退均完成安全与并发审查。
 
 共享传输基线没有改回固定画布：
 
@@ -53,18 +56,19 @@ tag=com.codex.vcam/0.8.80+webkit-camera-fill-contract
 
 以下证据已经具备：
 
-- Git HEAD 与 `current/codex/ios16-media-bridge` 同为 `a3fb13b`；
-- `control` 与 `VCAMBuildTag()` 均为 `0.8.80+webkit-camera-fill-contract`；
-- macOS CI run `31507025770` 成功产生正式 DEB；
-- 正式包通过 arm64/arm64e 以及 arm64e `__objc_stubs`/`__objc_intobj` 发布门禁；
+- Git HEAD 与 `current/codex/ios16-media-bridge` 同为 `a93badb`；
+- `control` 与 `VCAMBuildTag()` 均为 `0.8.81+ios16-source-pipeline-audit`；
+- 174 项主机回归测试通过，完整 Standards/Spec 复审均未发现新的确定性缺陷；
+- macOS CI run `31528507761` 成功产生正式 DEB；
+- 本地从该 DEB 独立提取两个客户端，均为 `arm64`/`arm64e`；两个 arm64e 薄片均含非空 `__objc_stubs` 和 `__objc_intobj`；
 - 本机保存的 DEB SHA-256 已重新计算并与安装文档一致；
-- 该 CI 包此前已部署到 `192.168.2.101` 和 `192.168.2.201`。
+- Debian `postinst`、`prerm`、`postrm` 在 Git 索引和正式包中均为可执行文件。
 
-“已部署”只说明相同软件包进入设备，不替代下列可见功能验收。
+该精确 CI 包尚未记录部署到 `192.168.2.101` 或 `192.168.2.201`；此前版本的安装和可见结果不能代替本版本验收。
 
 ## 4. 当前真机证据
 
-在主要测试机 `192.168.2.101` 上已经观察到：
+此前版本在主要测试机 `192.168.2.101` 上已经观察到：
 
 - Safari `getUserMedia` 实际目标为 640×480、420f；
 - 虚拟人物画面连续、正向；
@@ -72,7 +76,7 @@ tag=com.codex.vcam/0.8.80+webkit-camera-fill-contract
 - 浏览器控制面板可读取静态图预览；
 - 静态图片状态显示“已加载静态图片”，不再显示波动 FPS。
 
-这些证据只覆盖当时实际观察到的 Safari 路由，不能外推为 Chrome、Edge、Firefox 或所有分辨率档位已经通过。
+这些证据只覆盖当时安装版本和实际观察到的 Safari 路由，不能外推为当前 `0.8.81`、Chrome、Edge、Firefox 或所有分辨率档位已经通过。
 
 ## 5. 仍需用户逐项确认的设备验收
 

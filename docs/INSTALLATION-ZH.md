@@ -6,14 +6,15 @@
 
 ## 1. 当前正式版本
 
-- 版本：`0.8.80+webkit-camera-fill-contract`
+- 版本：`0.8.81+ios16-source-pipeline-audit`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
-- macOS CI：`31507025770`
-- SHA-256：`57E638AB08D18AA91A887978C13E6743F01B618C672EAFAF2D1F9BFE566C2B01`
+- macOS CI：`31528507761`（成功）
+- Git 提交：`a93badbbf22d1cdf4f373d454affd320836c2d6c`
+- SHA-256：`0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F`
 - 本机文件：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-a3fb13b-run31507025770-a\com.codex.vcam_0.8.80+webkit-camera-fill-contract_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb
 ```
 
 > 正式部署只使用 macOS CI 产物。WSL 包可用于开发编译检查，但不能替代 macOS CI 的 arm64e Objective-C section 验证。
@@ -44,14 +45,14 @@ Test-NetConnection 192.168.2.101 -Port 22
 ### 3.1 在电脑上校验安装包
 
 ```powershell
-$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-a3fb13b-run31507025770-a\com.codex.vcam_0.8.80+webkit-camera-fill-contract_iphoneos-arm64.deb"
+$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb"
 Get-FileHash -Algorithm SHA256 -LiteralPath $Package
 ```
 
 输出必须是：
 
 ```text
-57E638AB08D18AA91A887978C13E6743F01B618C672EAFAF2D1F9BFE566C2B01
+0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F
 ```
 
 哈希不一致时停止安装，重新下载 CI 产物。
@@ -87,7 +88,7 @@ sha256sum /var/tmp/vcam.deb
 手机端哈希必须与电脑端完全一致：
 
 ```text
-57e638ab08d18aa91a887978c13e6743f01b618c672eafaf2d1f9bfe566c2b01
+0017182d34811536d135ac76dc5fabe62a7666e48d227be486af0c80b8770f1f
 ```
 
 ### 3.4 安装
@@ -121,7 +122,7 @@ dpkg-query -W com.codex.vcam
 当前版本应显示：
 
 ```text
-com.codex.vcam    0.8.80+webkit-camera-fill-contract
+com.codex.vcam    0.8.81+ios16-source-pipeline-audit
 ```
 
 ### 4.2 检查关键进程
@@ -146,7 +147,7 @@ tail -n 50 /var/mobile/Media/VCAM/broker-probe.log
 应出现类似：
 
 ```text
-tag=com.codex.vcam/0.8.80+webkit-camera-fill-contract
+tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
 ```
 
 软件包安装、进程存在和 dylib 映射并不等于功能验收。还应在系统相机和 Safari `getUserMedia` 页面中检查虚拟画面、方向、裁剪比例、小白点和悬浮预览。
@@ -226,4 +227,3 @@ dpkg -i /var/tmp/vcam.deb
 ```
 
 安装脚本会覆盖旧版本并重启对应进程。需要回退时，应安装经过保存和校验的旧版 macOS CI DEB，不要使用来源不明或哈希不确定的软件包。
-
