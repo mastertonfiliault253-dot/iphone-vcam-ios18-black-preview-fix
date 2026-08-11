@@ -68,18 +68,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             "imageByApplyingOrientation:kCGImagePropertyOrientationLeft",
             webkit_adapter,
         )
-        self.assertIn(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored",
-            webkit_adapter,
-        )
-        self.assertLess(
-            webkit_adapter.index(
-                "imageByApplyingOrientation:kCGImagePropertyOrientationLeft"
-            ),
-            webkit_adapter.index(
-                "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored"
-            ),
-        )
+        self.assertNotIn("kCGImagePropertyOrientationUpMirrored", webkit_adapter)
 
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"

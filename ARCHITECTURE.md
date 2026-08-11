@@ -35,9 +35,8 @@ before publication. The shared frame is the single user-visible direction
 reference: local video applies the asset's complete `preferredTransform` once
 to decoded track pixels; UI preview adds no transform; consumers never infer
 orientation from target dimensions. The explicit iOS 16 WebKit
-`video-converter` terminal alone pre-rotates a portrait source left and applies
-the graph-observed reflection correction in its landscape storage basis;
-Camera preview and recording routes remain unchanged.
+`video-converter` terminal alone pre-rotates a portrait source left into its
+landscape storage basis; Camera preview and recording routes remain unchanged.
 At the still-photo terminal,
 only a canonical portrait source is converted into the sensor's landscape
 storage basis and marked EXIF `Orientation=Right`; a landscape source remains

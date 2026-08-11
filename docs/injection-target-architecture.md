@@ -73,9 +73,8 @@ never exposed to an app consumer. It renders observed BGRA,
 producer publishes canonical visual orientation and the consumer never infers
 rotation from a target buffer's width and height. The explicit iOS 16 WebKit
 `video-converter` route is identified by its graph role, not its dimensions;
-for a portrait source only, it pre-rotates pixels left and applies the
-graph-observed reflection correction in WebKit's landscape storage basis while
-Camera preview and recording remain canonical. The other
+for a portrait source only, it pre-rotates pixels left into WebKit's landscape
+storage basis while Camera preview and recording remain canonical. The other
 exception is the verified landscape sensor-storage contract at the `Meteor Headroom` still
 terminal: a canonical portrait source is turned left into sensor storage and
 marked EXIF `Orientation=Right`, while a landscape source is unchanged. Thus

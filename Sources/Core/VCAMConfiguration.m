@@ -105,7 +105,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.77+source-photo-aspect";
+    return "com.codex.vcam/0.8.78+webkit-quarter-turn";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

@@ -189,7 +189,7 @@ python -m unittest discover -s tests -v
 
 ### 旋转/方向、拍照黑边、二维码识别
 
-源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转并应用图链实测的反射修正，进入其横向存储基准；Camera 预览与录像不变，不得用目标宽高猜浏览器。拍照走 `still-photo` 独立路由：竖向规范源仅在 `Meteor Headroom` 末端转换到横向传感器存储并写入 EXIF `Orientation=Right`，横向源不变，使保存比例跟随源而不是手机姿态。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
+源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转进入其横向存储基准，Camera 预览与录像不变；不得用目标宽高猜浏览器。拍照走 `still-photo` 独立路由：竖向规范源仅在 `Meteor Headroom` 末端转换到横向传感器存储并写入 EXIF `Orientation=Right`，横向源不变，使保存比例跟随源而不是手机姿态。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
 
 ## 10. 学习路线（建议阅读顺序）
 

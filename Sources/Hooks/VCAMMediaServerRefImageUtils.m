@@ -687,7 +687,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         if (webKitLandscapeStorage && sourceIsPortrait &&
             targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
-            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
         }
         // iOS still-photo buffers use the sensor's landscape storage basis.
         // Only a canonical portrait source is turned into that basis; the
