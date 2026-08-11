@@ -69,9 +69,11 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", producer)
         self.assertIn("VCAMLocalMediaPathIsVideo", producer)
         self.assertIn("videoTrack.preferredTransform", source)
-        self.assertIn("its complete rotation/mirroring matrix exactly once", source)
-        self.assertIn("self.sourceTransform.a, self.sourceTransform.b", source)
-        self.assertIn("self.sourceTransform.c, self.sourceTransform.d", source)
+        self.assertIn("VCAMCoreImageLinearTransformForTrack", source)
+        self.assertIn("preferredTransform.a, -preferredTransform.b", source)
+        self.assertIn("-preferredTransform.c, preferredTransform.d", source)
+        self.assertIn("top-left basis", source)
+        self.assertIn("bottom-left basis", source)
         self.assertNotIn("sourceBufferNeedsTrackTransform", source)
 
     def test_bridge_is_lifecycle_owned_and_keeps_legacy_rollback(self) -> None:

@@ -38,7 +38,7 @@ case "$BUILD_ROOT" in
   /tmp/vcam-rootless-build.*) ;;
   *) echo "Unexpected build root: $BUILD_ROOT" >&2; exit 1 ;;
 esac
-rm -rf "$BUILD_ROOT/packages"
+rm -rf "$BUILD_ROOT/.theos" "$BUILD_ROOT/packages"
 cd "$BUILD_ROOT"
 make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 

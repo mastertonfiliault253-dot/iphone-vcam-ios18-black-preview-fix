@@ -282,6 +282,15 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("VCAMMediaServerClient_LIBRARIES", makefile)
         self.assertNotIn("VCAMSpringBoardClient_LIBRARIES", makefile)
 
+    def test_wsl_release_copy_drops_path_bound_module_cache(self) -> None:
+        build_script = (ROOT / "scripts" / "build-rootless-wsl.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'rm -rf "$BUILD_ROOT/.theos" "$BUILD_ROOT/packages"',
+            build_script,
+        )
+
     def test_configuration_accepts_images_and_worker_direct_read(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
         for extension in ('@"png"', '@"jpg"', '@"jpeg"', '@"heic"', '@"heif"'):

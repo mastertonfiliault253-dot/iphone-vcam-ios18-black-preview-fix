@@ -20,10 +20,23 @@ static const char *const VCAMLegacyLocalVideoDaemonMarker =
 static const char *const VCAMLegacyLocalImageDaemonMarker =
     "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
+static const uint64_t VCAMSurfaceHandshakeProbeIntervalNanoseconds =
+    1ULL * 1000000000ULL;
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
     return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
+}
+
+static CGAffineTransform VCAMCoreImageLinearTransformForTrack(
+    CGAffineTransform preferredTransform) {
+    // Track presentation matrices use the video/display top-left basis while
+    // Core Image renders in a bottom-left basis. Conjugating by the vertical
+    // axis flip preserves track mirroring but reverses 90-degree rotation in
+    // Core Image; applying the raw matrix produced an upside-down portrait.
+    return CGAffineTransformMake(
+        preferredTransform.a, -preferredTransform.b,
+        -preferredTransform.c, preferredTransform.d, 0, 0);
 }
 
 static double VCAMLiveEdgeLagSeconds(AVPlayerItem *item) {
@@ -82,6 +95,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger publishFailures;
 @property(nonatomic) uint64_t lastFrameTimestampNanoseconds;
 @property(nonatomic) uint64_t lastDecodedFrameTimestampNanoseconds;
+@property(nonatomic) uint64_t lastSurfaceProbeTimestampNanoseconds;
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
 @property(nonatomic) BOOL localVideo;
@@ -167,6 +181,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.surfaceWidth = 0;
     self.surfaceHeight = 0;
+    self.lastSurfaceProbeTimestampNanoseconds = 0;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -506,12 +521,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
         -CGRectGetMidX(extent), -CGRectGetMidY(extent))];
     if (self.localVideo && !CGAffineTransformIsIdentity(self.sourceTransform)) {
-        // AVPlayerItemVideoOutput exposes decoded track pixels on iOS 16. The
-        // preferredTransform is the asset's presentation contract, so apply
-        // its complete rotation/mirroring matrix exactly once here.
-        CGAffineTransform linear = CGAffineTransformMake(
-            self.sourceTransform.a, self.sourceTransform.b,
-            self.sourceTransform.c, self.sourceTransform.d, 0, 0);
+        CGAffineTransform linear =
+            VCAMCoreImageLinearTransformForTrack(self.sourceTransform);
         image = [image imageByApplyingTransform:linear];
     }
     CGRect oriented = CGRectStandardize(image.extent);
@@ -615,6 +626,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.surfaceWriter = NULL;
         self.surfaceWidth = 0;
         self.surfaceHeight = 0;
+        self.lastSurfaceProbeTimestampNanoseconds = 0;
     }
     if (image != nil && self.surfaceWriter == NULL) {
         self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
@@ -633,28 +645,38 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL surfaceTransport = self.surfaceWriter != NULL;
     BOOL surfaceConsumerReady = surfaceTransport &&
         VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
-    CVPixelBufferRef destination = surfaceTransport
+    BOOL surfaceProbeDue = surfaceTransport && !surfaceConsumerReady &&
+        (self.lastSurfaceProbeTimestampNanoseconds == 0 ||
+         now - self.lastSurfaceProbeTimestampNanoseconds >=
+             VCAMSurfaceHandshakeProbeIntervalNanoseconds);
+    BOOL useSurfaceDestination = surfaceTransport &&
+        (surfaceConsumerReady || surfaceProbeDue);
+    CVPixelBufferRef destination = useSurfaceDestination
         ? VCAMSharedSurfaceWriterCopyNextPixelBuffer(self.surfaceWriter)
         : NULL;
-    BOOL published = NO;
+    if (useSurfaceDestination && destination == NULL) {
+        useSurfaceDestination = NO;
+    }
     CVReturn destinationStatus = destination != NULL ? kCVReturnSuccess
-        : (surfaceTransport ? kCVReturnWouldExceedAllocationThreshold
-                            : CVPixelBufferPoolCreatePixelBuffer(
-                                  kCFAllocatorDefault, self.outputPool,
-                                  &destination));
+        : CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
+                                             self.outputPool, &destination);
+    BOOL published = NO;
     if (destinationStatus == kCVReturnSuccess && destination != NULL) {
         if (image != nil) {
-            CGRect target = surfaceTransport
+            CGRect target = useSurfaceDestination
                 ? CGRectMake(0, 0, outputWidth, outputHeight)
                 : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
-            CIImage *renderImage = surfaceTransport ? image
+            CIImage *renderImage = useSurfaceDestination ? image
                 : [self legacyCanvasImageFromOrientedImage:image];
             VCAMSetVideoColorAttachments(destination);
             [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
-            if (surfaceTransport) {
+            if (useSurfaceDestination) {
                 BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
                     self.surfaceWriter, destination);
+                if (surfacePublished && !surfaceConsumerReady) {
+                    self.lastSurfaceProbeTimestampNanoseconds = now;
+                }
                 // Keep the compatibility path live until mediaserverd proves
                 // that this OS/process pair can look up the global surface.
                 BOOL compatibilityPublished = surfaceConsumerReady;
@@ -680,7 +702,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                 }
                 published = surfacePublished && compatibilityPublished;
             } else {
-                published = VCAMSharedFrameWriterPublish(self.writer, destination);
+                published = surfaceTransport
+                    ? VCAMSharedFrameWriterPublishForSurfaceGeneration(
+                          self.writer, destination,
+                          VCAMSharedSurfaceWriterGeneration(self.surfaceWriter))
+                    : VCAMSharedFrameWriterPublish(self.writer, destination);
             }
         }
         CVPixelBufferRelease(destination);

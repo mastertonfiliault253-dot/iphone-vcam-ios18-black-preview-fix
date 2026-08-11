@@ -781,6 +781,22 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("8192", static_surface)
         self.assertNotIn("16000000", static_surface)
 
+    def test_unadopted_video_surface_is_probed_instead_of_rendered_every_frame(self) -> None:
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        tick = bridge.split("- (void)tick:", 1)[1].split(
+            "- (NSDictionary<NSString *, id> *)healthSnapshot", 1
+        )[0]
+
+        self.assertIn("VCAMSurfaceHandshakeProbeIntervalNanoseconds", bridge)
+        self.assertIn("surfaceProbeDue", tick)
+        self.assertIn("surfaceConsumerReady || surfaceProbeDue", tick)
+        self.assertIn("useSurfaceDestination && destination == NULL", tick)
+        self.assertIn("lastSurfaceProbeTimestampNanoseconds = now", tick)
+        self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", tick)
+        self.assertIn("VCAMSharedSurfaceWriterGeneration(self.surfaceWriter)", tick)
+
     def test_ui_only_notifications_do_not_reconnect_an_unchanged_rtsp_source(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
             encoding="utf-8"
