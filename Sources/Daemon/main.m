@@ -49,12 +49,21 @@ static void VCAMProbeStaticSurfaceAllocations(uint32_t width, uint32_t height) {
             const char *name;
             uint32_t width;
             uint32_t height;
+            OSType pixelFormat;
         } cases[] = {
-            {"exact", width, height},
-            {"aligned16", alignedWidth, alignedHeight},
-            {"width2048", MIN(width, 2048u), height},
-            {"height2048", width, MIN(height, 2048u)},
-            {"baseline", 1080u, 1920u},
+            {"exact-full", width, height,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
+            {"aligned16-full", alignedWidth, alignedHeight,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
+            {"width2048-full", MIN(width, 2048u), height,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
+            {"height2048-full", width, MIN(height, 2048u),
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
+            {"baseline-full", 1080u, 1920u,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
+            {"baseline-video", 1080u, 1920u,
+             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange},
+            {"baseline-bgra", 1080u, 1920u, kCVPixelFormatType_32BGRA},
         };
         NSDictionary *attributes = @{
             (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
@@ -63,12 +72,12 @@ static void VCAMProbeStaticSurfaceAllocations(uint32_t width, uint32_t height) {
             CVPixelBufferRef buffer = NULL;
             CVReturn status = CVPixelBufferCreate(
                 kCFAllocatorDefault, cases[index].width, cases[index].height,
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                cases[index].pixelFormat,
                 (__bridge CFDictionaryRef)attributes, &buffer);
             fprintf(stderr,
                     "[DEBUG-static-surface-probe-91a6] case=%s size=%ux%u pixel=%08x status=%d surface=%d\n",
                     cases[index].name, cases[index].width, cases[index].height,
-                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, status,
+                    cases[index].pixelFormat, status,
                     buffer != NULL && CVPixelBufferGetIOSurface(buffer) != NULL);
             if (buffer != NULL) CVPixelBufferRelease(buffer);
         }
