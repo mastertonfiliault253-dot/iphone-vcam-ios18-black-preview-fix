@@ -96,6 +96,12 @@ bool VCAMSharedSurfaceReaderGetLatestMetadata(
 bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
                                        uint64_t maximumAgeNanoseconds,
                                        VCAMSharedSurfaceFrame *frame);
+/// Observer copy that participates in per-slot exclusion without claiming the
+/// primary consumer heartbeat. Intended for SpringBoard preview UI.
+bool VCAMSharedSurfaceReaderCopyLatestPassive(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedSurfaceFrame *frame);
 VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure(
     VCAMSharedSurfaceReader *reader);
 void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame);

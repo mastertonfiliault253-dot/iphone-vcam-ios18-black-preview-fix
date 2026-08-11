@@ -581,6 +581,34 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("affineTransform", preview)
         self.assertNotIn("rotationDegrees", preview)
 
+    def test_preview_follows_the_newest_mmap_or_iosurface_producer(self) -> None:
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        display_tick = preview.split("- (void)displayTick:", 1)[1].split("\n}\n\n@end", 1)[0]
+
+        self.assertIn("VCAMSharedSurfaceReader *_surfaceReader", preview)
+        self.assertIn("VCAMSharedFrameReaderGetLatestMetadata", display_tick)
+        self.assertIn("VCAMSharedSurfaceReaderGetLatestMetadata", display_tick)
+        self.assertIn("surfaceMetadata.monotonicTimestampNanoseconds >=", display_tick)
+        self.assertIn("VCAMSharedSurfaceReaderCopyLatestPassive", display_tick)
+        self.assertIn("VCAMSharedSurfaceFrameRelease", display_tick)
+        self.assertIn("frameWasSurface == self.lastFrameWasSurface", display_tick)
+        self.assertIn("pixelFormat != _formatPixelFormat", display_tick)
+
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        passive_copy = shared.split("bool VCAMSharedSurfaceReaderCopyLatestPassive", 1)[1].split(
+            "VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure", 1
+        )[0]
+        self.assertIn("VCAMSharedSurfaceReaderCopyLatestInternal", passive_copy)
+        self.assertIn("false", passive_copy)
+        clear_ready = shared.split("static void VCAMSharedSurfaceReaderSetReady", 1)[1].split(
+            "void VCAMSharedSurfaceReaderDestroy", 1
+        )[0]
+        self.assertLess(clear_ready.index("(int32_t)getpid()"), clear_ready.index("consumerReady, 0"))
+
     def test_ui_only_notifications_do_not_reconnect_an_unchanged_rtsp_source(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
             encoding="utf-8"

@@ -104,6 +104,7 @@ struct VCAMSharedSurfaceReader {
     void *mapping;
     const VCAMSharedSurfaceHeader *header;
     VCAMSharedSurfaceReaderFailure lastFailure;
+    bool ownsConsumerLease;
 };
 
 static size_t VCAMSharedFrameMappedBytes(void) {
@@ -817,13 +818,16 @@ static void VCAMSharedSurfaceReaderSetReady(VCAMSharedSurfaceReader *reader,
                               VCAMSharedFrameMonotonicNanoseconds(),
                               memory_order_release);
         atomic_store_explicit(consumerReady, 1, memory_order_release);
+        reader->ownsConsumerLease = true;
     } else {
-        atomic_store_explicit(consumerReady, 0, memory_order_release);
-        if (atomic_load_explicit(consumerPID, memory_order_acquire) ==
-            (int32_t)getpid()) {
+        if (reader->ownsConsumerLease &&
+            atomic_load_explicit(consumerPID, memory_order_acquire) ==
+                (int32_t)getpid()) {
+            atomic_store_explicit(consumerReady, 0, memory_order_release);
             atomic_store_explicit(consumerHeartbeat, 0, memory_order_release);
             atomic_store_explicit(consumerPID, 0, memory_order_release);
         }
+        reader->ownsConsumerLease = false;
     }
 }
 
@@ -843,9 +847,11 @@ bool VCAMSharedSurfaceReaderGetLatestMetadata(
         reader, maximumAgeNanoseconds, &snapshot, metadata);
 }
 
-bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
-                                       uint64_t maximumAgeNanoseconds,
-                                       VCAMSharedSurfaceFrame *frame) {
+static bool VCAMSharedSurfaceReaderCopyLatestInternal(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedSurfaceFrame *frame,
+    bool announceConsumer) {
     if (frame == NULL) return false;
     memset(frame, 0, sizeof(*frame));
     if (reader == NULL || !VCAMSharedSurfaceReaderEnsureMapped(reader)) {
@@ -869,7 +875,7 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
     }
     if (surface == NULL) {
         atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
-        VCAMSharedSurfaceReaderSetReady(reader, false);
+        if (announceConsumer) VCAMSharedSurfaceReaderSetReady(reader, false);
         reader->lastFailure = VCAMSharedSurfaceReaderFailureLookup;
         return false;
     }
@@ -891,13 +897,13 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
         IOSurfaceDecrementUseCount(surface);
         CFRelease(surface);
         atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
-        VCAMSharedSurfaceReaderSetReady(reader, false);
+        if (announceConsumer) VCAMSharedSurfaceReaderSetReady(reader, false);
         reader->lastFailure = status == kCVReturnSuccess
             ? VCAMSharedSurfaceReaderFailureChanged
             : VCAMSharedSurfaceReaderFailurePixelBuffer;
         return false;
     }
-    VCAMSharedSurfaceReaderSetReady(reader, true);
+    if (announceConsumer) VCAMSharedSurfaceReaderSetReady(reader, true);
     reader->lastFailure = VCAMSharedSurfaceReaderFailureNone;
     frame->pixelBuffer = pixelBuffer;
     frame->surface = surface;
@@ -908,6 +914,21 @@ bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
     frame->metadata.height = VCAMSharedFrameHeight;
     frame->metadata.pixelFormat = reader->header->pixelFormat;
     return true;
+}
+
+bool VCAMSharedSurfaceReaderCopyLatest(VCAMSharedSurfaceReader *reader,
+                                       uint64_t maximumAgeNanoseconds,
+                                       VCAMSharedSurfaceFrame *frame) {
+    return VCAMSharedSurfaceReaderCopyLatestInternal(
+        reader, maximumAgeNanoseconds, frame, true);
+}
+
+bool VCAMSharedSurfaceReaderCopyLatestPassive(
+    VCAMSharedSurfaceReader *reader,
+    uint64_t maximumAgeNanoseconds,
+    VCAMSharedSurfaceFrame *frame) {
+    return VCAMSharedSurfaceReaderCopyLatestInternal(
+        reader, maximumAgeNanoseconds, frame, false);
 }
 
 VCAMSharedSurfaceReaderFailure VCAMSharedSurfaceReaderLastFailure(

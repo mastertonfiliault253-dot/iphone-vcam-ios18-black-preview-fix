@@ -55,9 +55,12 @@ realtime output only, a portrait shared source is pre-rotated left and then
 horizontally reflected before it is fitted into a landscape sensor buffer. The
 rotation compensates for the downstream clockwise display transform; the
 reflection compensates for the vertical flip observed after that iOS 16.5
-realtime transform. Still-photo output remains unrotated because the observed
-iOS 16 Camera JPEG is saved with EXIF Orientation=1. The canonical shared canvas is
-then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
+realtime transform. A portrait still photo is also stored one quarter-turn left
+in the landscape sensor buffer, without the realtime reflection, and its sample
+and pixel buffer carry EXIF Orientation=Right for the system photo encoder.
+This is required because the observed 4224x3024 Meteor output carried no
+orientation attachment and otherwise produced a landscape Photos asset. The
+canonical shared canvas is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
 and browser/WebRTC outputs do not expose the black safety background behind
 the centered render.
 

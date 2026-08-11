@@ -204,10 +204,10 @@ class InjectionSafetyTests(unittest.TestCase):
 
         self.assertIn("#import <ImageIO/CGImageProperties.h>", implementation)
         self.assertIn("targetWidth > targetHeight &&", render)
-        orientation_guard = render.split(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationLeft", 1
+        reflection_guard = render.split(
+            "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored", 1
         )[0].rsplit("if (", 1)[1]
-        self.assertIn("realtimeBudget", orientation_guard)
+        self.assertIn("realtimeBudget", reflection_guard)
         self.assertIn(
             "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
             render,

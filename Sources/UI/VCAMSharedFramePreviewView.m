@@ -5,11 +5,17 @@
 
 @interface VCAMSharedFramePreviewView () {
     VCAMSharedFrameReader *_reader;
+    VCAMSharedSurfaceReader *_surfaceReader;
     CVPixelBufferPoolRef _pixelBufferPool;
     CMVideoFormatDescriptionRef _formatDescription;
+    OSType _formatPixelFormat;
+    size_t _formatWidth;
+    size_t _formatHeight;
 }
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic) uint64_t lastSequence;
+@property(nonatomic) BOOL hasLastFrame;
+@property(nonatomic) BOOL lastFrameWasSurface;
 @end
 
 static NSUInteger VCAMPreviewWindowFrames;
@@ -71,6 +77,7 @@ static CFTimeInterval VCAMPreviewWindowStart;
         AVSampleBufferDisplayLayer *displayLayer = (AVSampleBufferDisplayLayer *)self.layer;
         displayLayer.videoGravity = AVLayerVideoGravityResizeAspect;
         _reader = VCAMSharedFrameReaderCreate();
+        _surfaceReader = VCAMSharedSurfaceReaderCreate();
         NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @3};
         NSDictionary *pixelAttributes = @{
             (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
@@ -96,21 +103,49 @@ static CFTimeInterval VCAMPreviewWindowStart;
 - (void)dealloc {
     [self.displayLink invalidate];
     VCAMSharedFrameReaderDestroy(_reader);
+    VCAMSharedSurfaceReaderDestroy(_surfaceReader);
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
     if (_formatDescription != NULL) CFRelease(_formatDescription);
 }
 
 - (void)displayTick:(CADisplayLink *)displayLink {
     (void)displayLink;
-    if (_reader == NULL || _pixelBufferPool == NULL) return;
+    if ((_reader == NULL && _surfaceReader == NULL) || _pixelBufferPool == NULL) return;
+    const uint64_t maximumAge = 1000000000ULL;
+    VCAMSharedFrameMetadata frameMetadata = {0};
+    VCAMSharedFrameMetadata surfaceMetadata = {0};
+    BOOL hasFrame = _reader != NULL && VCAMSharedFrameReaderGetLatestMetadata(
+        _reader, maximumAge, &frameMetadata);
+    BOOL hasSurface = _surfaceReader != NULL &&
+        VCAMSharedSurfaceReaderGetLatestMetadata(
+            _surfaceReader, maximumAge, &surfaceMetadata);
+    if (!hasFrame && !hasSurface) return;
+    BOOL frameWasSurface = hasSurface && (!hasFrame ||
+        surfaceMetadata.monotonicTimestampNanoseconds >=
+            frameMetadata.monotonicTimestampNanoseconds);
+
     CVPixelBufferRef pixelBuffer = NULL;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _pixelBufferPool,
-                                           &pixelBuffer) != kCVReturnSuccess) return;
     VCAMSharedFrameMetadata metadata = {0};
-    BOOL copied = VCAMSharedFrameReaderCopyLatest(_reader, pixelBuffer,
-                                                  1000000000ULL, &metadata);
-    if (!copied || metadata.sequence == self.lastSequence) {
-        CVPixelBufferRelease(pixelBuffer);
+    VCAMSharedSurfaceFrame surfaceFrame = {0};
+    if (frameWasSurface) {
+        if (!VCAMSharedSurfaceReaderCopyLatestPassive(
+                _surfaceReader, maximumAge, &surfaceFrame)) return;
+        pixelBuffer = surfaceFrame.pixelBuffer;
+        metadata = surfaceFrame.metadata;
+    } else {
+        if (CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault, _pixelBufferPool, &pixelBuffer) !=
+                kCVReturnSuccess) return;
+        if (!VCAMSharedFrameReaderCopyLatest(
+                _reader, pixelBuffer, maximumAge, &metadata)) {
+            CVPixelBufferRelease(pixelBuffer);
+            return;
+        }
+    }
+    if (self.hasLastFrame && metadata.sequence == self.lastSequence &&
+        frameWasSurface == self.lastFrameWasSurface) {
+        if (frameWasSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
+        else CVPixelBufferRelease(pixelBuffer);
         return;
     }
     CFTimeInterval now = CACurrentMediaTime();
@@ -121,9 +156,24 @@ static CFTimeInterval VCAMPreviewWindowStart;
         VCAMPreviewWindowFrames = 0;
     }
     self.lastSequence = metadata.sequence;
-    if (_formatDescription == NULL) {
+    self.hasLastFrame = YES;
+    self.lastFrameWasSurface = frameWasSurface;
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    AVSampleBufferDisplayLayer *layer = (AVSampleBufferDisplayLayer *)self.layer;
+    if (_formatDescription == NULL || pixelFormat != _formatPixelFormat ||
+        width != _formatWidth || height != _formatHeight) {
+        if (_formatDescription != NULL) CFRelease(_formatDescription);
+        _formatDescription = NULL;
         CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer,
                                                       &_formatDescription);
+        if (_formatDescription != NULL) {
+            _formatPixelFormat = pixelFormat;
+            _formatWidth = width;
+            _formatHeight = height;
+            [layer flush];
+        }
     }
     CMSampleBufferRef sample = NULL;
     CMSampleTimingInfo timing = {
@@ -136,8 +186,11 @@ static CFTimeInterval VCAMPreviewWindowStart;
                                            NULL, NULL, _formatDescription, &timing,
                                            &sample);
     }
-    CVPixelBufferRelease(pixelBuffer);
-    if (sample == NULL) return;
+    if (sample == NULL) {
+        if (frameWasSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
+        else CVPixelBufferRelease(pixelBuffer);
+        return;
+    }
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
     if (attachments != NULL && CFArrayGetCount(attachments) > 0) {
         CFMutableDictionaryRef attachment =
@@ -145,10 +198,11 @@ static CFTimeInterval VCAMPreviewWindowStart;
         CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately,
                              kCFBooleanTrue);
     }
-    AVSampleBufferDisplayLayer *layer = (AVSampleBufferDisplayLayer *)self.layer;
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) [layer flush];
     [layer enqueueSampleBuffer:sample];
     CFRelease(sample);
+    if (frameWasSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
+    else CVPixelBufferRelease(pixelBuffer);
 }
 
 @end

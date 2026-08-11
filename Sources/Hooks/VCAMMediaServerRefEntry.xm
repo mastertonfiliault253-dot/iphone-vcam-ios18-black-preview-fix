@@ -1,5 +1,6 @@
 #import "VCAMMediaServerRefImageUtils.h"
 #import <Foundation/Foundation.h>
+#import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdio.h>
@@ -29,6 +30,23 @@ static id VCAMSafeObjectResult(id object, SEL selector) {
         return ((id (*)(id, SEL))objc_msgSend)(object, selector);
     } @catch (__unused NSException *exception) {
         return nil;
+    }
+}
+
+static void VCAMSetStillPhotoOrientation(CMSampleBufferRef sampleBuffer,
+                                         CVPixelBufferRef imageBuffer) {
+    if (imageBuffer == NULL ||
+        CVPixelBufferGetWidth(imageBuffer) <= CVPixelBufferGetHeight(imageBuffer)) return;
+    NSNumber *orientation = @(kCGImagePropertyOrientationRight);
+    if (sampleBuffer != NULL) {
+        CMSetAttachment(sampleBuffer, kCGImagePropertyOrientation,
+                        (__bridge CFTypeRef)orientation,
+                        kCMAttachmentMode_ShouldPropagate);
+    }
+    if (imageBuffer != NULL) {
+        CVBufferSetAttachment(imageBuffer, kCGImagePropertyOrientation,
+                              (__bridge CFTypeRef)orientation,
+                              kCVAttachmentMode_ShouldPropagate);
     }
 }
 
@@ -593,6 +611,12 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteVideoConverter) {
                 VCAMClearPropagationMarker(
+                    replacementSampleBuffer != NULL ? replacementSampleBuffer : sampleBuffer,
+                    replacementImageBuffer != NULL ? replacementImageBuffer : originalImageBuffer);
+            }
+            if (replacementSucceeded &&
+                replacementRoute == VCAMReplacementRouteStillPhoto) {
+                VCAMSetStillPhotoOrientation(
                     replacementSampleBuffer != NULL ? replacementSampleBuffer : sampleBuffer,
                     replacementImageBuffer != NULL ? replacementImageBuffer : originalImageBuffer);
             }
