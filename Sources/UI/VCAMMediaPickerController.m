@@ -76,6 +76,11 @@ static BOOL VCAMIsSupportedMediaExtension(NSString *extension) {
     return [extensions containsObject:extension.lowercaseString ?: @""];
 }
 
+static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
+    return [@[@"mov", @"mp4", @"m4v"]
+        containsObject:path.pathExtension.lowercaseString ?: @""];
+}
+
 static NSString *VCAMConcreteProviderTypeIdentifier(NSItemProvider *provider, UTType *mediaKind) {
     NSString *fallbackIdentifier = nil;
     NSString *supportedIdentifier = nil;
@@ -667,6 +672,8 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL enabled = [values[@"enabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString] ?: @"camera";
+    BOOL staticImage = enabled && [source isEqualToString:@"local"] &&
+        !VCAMLocalMediaPathIsVideo(values[@"mediaPath"]);
     NSString *sourceTitle = @"真实相机（未替换）";
     NSString *detail = @"vcamd 未发布替换画面；真实相机保持可用";
     if (enabled && [source isEqualToString:@"local"]) {
@@ -687,10 +694,18 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
     NSDictionary *streamStatus = [VCAMSharedFramePreviewView streamingStatus];
-    detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 实测：%.1f fps", (long)rotation,
-              [streamStatus[@"fps"] doubleValue]];
+    detail = [detail stringByAppendingFormat:@"\n旋转：%ld°", (long)rotation];
+    if (staticImage) {
+        detail = [detail stringByAppendingString:@"\n静态图片"];
+    } else {
+        detail = [detail stringByAppendingFormat:@" · 实测：%.1f fps",
+                  [streamStatus[@"fps"] doubleValue]];
+    }
     NSString *streamText = nil;
-    if ([streamStatus[@"receiving"] boolValue]) {
+    if (staticImage) {
+        streamText = @"已加载静态图片";
+        if (![streamStatus[@"receiving"] boolValue]) streamText = @"静态图片未就绪";
+    } else if ([streamStatus[@"receiving"] boolValue]) {
         streamText = [NSString stringWithFormat:@"已收到推流（%.0f ms 前）",
             [streamStatus[@"ageMs"] doubleValue]];
     } else {

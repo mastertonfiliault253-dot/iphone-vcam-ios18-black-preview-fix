@@ -99,7 +99,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.67+bgra-nonmetal-probe";
+    return "com.codex.vcam/0.8.68+static-surface-orientation";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

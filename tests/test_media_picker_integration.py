@@ -287,7 +287,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
         rtsp_branch = producer.split("VCAMRTSPStreamSource *rtsp", 1)[1].split(
-            "VCAMSourceKindLocalMedia", 1
+            "- (NSInteger)preferredFramesPerSecond", 1
         )[0]
         self.assertIn("copySampleFromPixelBuffer:native", rtsp_branch)
         self.assertNotIn("copyVideoSampleForTemplate", rtsp_branch)
@@ -754,6 +754,19 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('streamStatus[@"fps"]', current_status)
         self.assertNotIn('values[@"preferredFramesPerSecond"]', current_status)
         self.assertNotIn("VCAMPreviewWindowFrames", preview)
+
+    def test_static_images_are_not_reported_as_fps_streams(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        current_status = picker.split(
+            "- (NSDictionary<NSString *, NSString *> *)currentStatus", 1
+        )[1].split("- (void)showSourceMenu:", 1)[0]
+
+        self.assertIn("BOOL staticImage", current_status)
+        self.assertIn('detail = [detail stringByAppendingString:@"\\n静态图片"]', current_status)
+        self.assertIn('streamText = @"已加载静态图片"', current_status)
+        self.assertLess(current_status.index("if (staticImage)"), current_status.index('streamStatus[@"fps"]'))
 
     def test_ui_only_notifications_do_not_reconnect_an_unchanged_rtsp_source(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(

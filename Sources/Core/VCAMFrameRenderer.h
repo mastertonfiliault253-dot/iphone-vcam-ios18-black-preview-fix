@@ -7,6 +7,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// creating a GPU/EAGL context. The worker never buffers an entire video.
 @interface VCAMFrameRenderer : NSObject
 
+/// Draws one decoded image directly into an existing BGRA buffer. Static
+/// IOSurface publication uses this to avoid a second full-resolution frame.
+- (BOOL)renderCGImage:(CGImageRef)image
+      sourceTransform:(CGAffineTransform)sourceTransform
+   intoPixelBuffer:(CVPixelBufferRef)pixelBuffer
+        configuration:(VCAMConfiguration *)configuration;
+
 - (nullable CMSampleBufferRef)copySampleFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
                                                 template:(CMSampleBufferRef)templateBuffer
                                            configuration:(VCAMConfiguration *)configuration

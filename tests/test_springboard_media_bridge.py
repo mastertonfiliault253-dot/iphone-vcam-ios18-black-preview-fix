@@ -156,6 +156,42 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', server)
         self.assertIn("com.codex.vcam.surface", launchd)
 
+    def test_static_surface_renders_directly_into_its_single_shared_buffer(self) -> None:
+        main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("nativeStillImageSize", producer)
+        self.assertIn("renderNativeStillImageIntoPixelBuffer", producer)
+        static_path = main.split("if (staticSurface && !refreshedStaticSurface)", 1)[1].split(
+            "} else if (nativeTransport", 1
+        )[0]
+        ensure_writer = main.split("static void VCAMEnsureSurfaceWriter", 1)[1].split(
+            "static void VCAMPublishTick", 1
+        )[0]
+        self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", ensure_writer)
+        self.assertIn("VCAMEnsureSurfaceWriter", static_path)
+        self.assertIn("VCAMSharedSurfaceWriterCopyNextPixelBuffer", static_path)
+        self.assertIn("renderNativeStillImageIntoPixelBuffer", static_path)
+        direct_render = renderer.split("renderCGImage:", 1)[1].split(
+            "copySampleFromPixelBuffer:", 1
+        )[0]
+        self.assertNotIn("CVPixelBufferPoolCreatePixelBuffer", direct_render)
+
+    def test_cgimage_renderer_keeps_image_row_order(self) -> None:
+        renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(
+            encoding="utf-8"
+        )
+        direct_render = renderer.split("renderCGImage:", 1)[1].split(
+            "copySampleFromPixelBuffer:", 1
+        )[0]
+
+        self.assertNotIn("CGContextScaleCTM(context, 1, -1)", direct_render)
+
     def test_mediaserver_transport_accepts_only_uncompressed_pixel_buffers(self) -> None:
         shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
             encoding="utf-8"

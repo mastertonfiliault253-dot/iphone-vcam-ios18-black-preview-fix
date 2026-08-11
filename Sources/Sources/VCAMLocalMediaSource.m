@@ -1275,6 +1275,16 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     }
 }
 
+- (BOOL)renderStillImageIntoPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    @synchronized (self) {
+        if (!self.running || _stillImage == NULL || pixelBuffer == NULL) return NO;
+        return [self.renderer renderCGImage:_stillImage
+                            sourceTransform:CGAffineTransformIdentity
+                         intoPixelBuffer:pixelBuffer
+                              configuration:self.configuration];
+    }
+}
+
 - (AVPlayer *)previewPlayer {
     return nil;
 }

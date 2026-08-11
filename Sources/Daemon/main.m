@@ -1,6 +1,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
 #import <errno.h>
+#import <math.h>
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -137,6 +138,32 @@ static BOOL VCAMCopyPixelBufferPlanes(CVPixelBufferRef source,
     return copied;
 }
 
+static void VCAMEnsureSurfaceWriter(uint32_t width, uint32_t height,
+                                    OSType pixelFormat, uint32_t slotCount) {
+    if (VCAMSurfaceWriter != NULL && VCAMSurfacePixelFormat == pixelFormat &&
+        VCAMSurfaceWidth == width && VCAMSurfaceHeight == height &&
+        VCAMSurfaceSlotCount == slotCount) return;
+    VCAMDestroySurfaceWriter();
+    VCAMSurfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
+        width, height, pixelFormat, slotCount);
+    VCAMSurfacePixelFormat = VCAMSurfaceWriter == NULL ? 0 : pixelFormat;
+    VCAMSurfaceWidth = VCAMSurfaceWriter == NULL ? 0 : width;
+    VCAMSurfaceHeight = VCAMSurfaceWriter == NULL ? 0 : height;
+    VCAMSurfaceSlotCount = VCAMSurfaceWriter == NULL ? 0 : slotCount;
+    if (VCAMSurfaceWriter == NULL && !VCAMLoggedNativeSurfaceCreateFailed) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"vcamd native IOSurface create failed size=%ux%u pixel=%08x slots=%u",
+            width, height, pixelFormat, slotCount]];
+        VCAMLoggedNativeSurfaceCreateFailed = YES;
+    }
+    if (VCAMSurfaceWriter != NULL && !VCAMLoggedNativeSurfaceReady) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"vcamd native IOSurface ready size=%ux%u pixel=%08x slots=%u",
+            width, height, pixelFormat, slotCount]];
+        VCAMLoggedNativeSurfaceReady = YES;
+    }
+}
+
 static void VCAMPublishTick(void) {
     @autoreleasepool {
         if (![VCAMProducer isEnabled]) {
@@ -153,14 +180,39 @@ static void VCAMPublishTick(void) {
         }
         uint32_t nativeSlotCount = nativeTransport
             ? [VCAMProducer nativeSurfaceSlotCount] : VCAMSharedFrameSlotCount;
+        BOOL staticSurface = nativeTransport && nativeSlotCount == 1;
         BOOL refreshedStaticSurface = nativeSlotCount == 1 &&
             VCAMStaticSurfacePublished &&
             VCAMSharedSurfaceWriterRefreshLatest(VCAMSurfaceWriter);
         BOOL nativeConsumed = refreshedStaticSurface &&
             VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
         if (nativeConsumed) return;
-        CVPixelBufferRef native = nativeTransport && !refreshedStaticSurface
-            ? [VCAMProducer copyNativePixelBufferForSurface] : NULL;
+        CVPixelBufferRef native = NULL;
+        CVPixelBufferRef destination = NULL;
+        BOOL published = refreshedStaticSurface;
+        if (staticSurface && !refreshedStaticSurface) {
+            CGSize size = [VCAMProducer nativeStillImageSize];
+            uint32_t width = (uint32_t)MAX(0.0, round(size.width));
+            uint32_t height = (uint32_t)MAX(0.0, round(size.height));
+            OSType pixelFormat = kCVPixelFormatType_32BGRA;
+            if (width > 0 && height > 0) {
+                if (!VCAMLoggedNativeTransportReceived) {
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"vcamd native transport received size=%ux%u pixel=%08x slots=1",
+                        width, height, pixelFormat]];
+                    VCAMLoggedNativeTransportReceived = YES;
+                }
+                VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
+                destination = VCAMSurfaceWriter == NULL ? NULL
+                    : VCAMSharedSurfaceWriterCopyNextPixelBuffer(VCAMSurfaceWriter);
+                published = destination != NULL &&
+                    [VCAMProducer renderNativeStillImageIntoPixelBuffer:destination] &&
+                    VCAMSharedSurfaceWriterPublish(VCAMSurfaceWriter, destination);
+                if (published) VCAMStaticSurfacePublished = YES;
+            }
+        } else if (nativeTransport && !refreshedStaticSurface) {
+            native = [VCAMProducer copyNativePixelBufferForSurface];
+        }
         if (native != NULL) {
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(native);
             uint32_t width = (uint32_t)CVPixelBufferGetWidth(native);
@@ -172,33 +224,9 @@ static void VCAMPublishTick(void) {
                     width, height, pixelFormat, slotCount]];
                 VCAMLoggedNativeTransportReceived = YES;
             }
-            if (VCAMSurfaceWriter == NULL || VCAMSurfacePixelFormat != pixelFormat ||
-                VCAMSurfaceWidth != width || VCAMSurfaceHeight != height ||
-                VCAMSurfaceSlotCount != slotCount) {
-                VCAMDestroySurfaceWriter();
-                VCAMSurfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
-                    width, height, pixelFormat, slotCount);
-                VCAMSurfacePixelFormat = VCAMSurfaceWriter == NULL ? 0 : pixelFormat;
-                VCAMSurfaceWidth = VCAMSurfaceWriter == NULL ? 0 : width;
-                VCAMSurfaceHeight = VCAMSurfaceWriter == NULL ? 0 : height;
-                VCAMSurfaceSlotCount = VCAMSurfaceWriter == NULL ? 0 : slotCount;
-                if (VCAMSurfaceWriter == NULL &&
-                    !VCAMLoggedNativeSurfaceCreateFailed) {
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"vcamd native IOSurface create failed size=%ux%u pixel=%08x slots=%u",
-                        width, height, pixelFormat, slotCount]];
-                    VCAMLoggedNativeSurfaceCreateFailed = YES;
-                }
-                if (VCAMSurfaceWriter != NULL && !VCAMLoggedNativeSurfaceReady) {
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"vcamd native IOSurface ready size=%ux%u pixel=%08x slots=%u",
-                        width, height, pixelFormat, slotCount]];
-                    VCAMLoggedNativeSurfaceReady = YES;
-                }
-            }
+            VCAMEnsureSurfaceWriter(width, height, pixelFormat, slotCount);
             BOOL immutableFrame = slotCount == 1;
-            CVPixelBufferRef destination = NULL;
-            BOOL published = immutableFrame && VCAMStaticSurfacePublished
+            published = immutableFrame && VCAMStaticSurfacePublished
                 ? VCAMSharedSurfaceWriterRefreshLatest(VCAMSurfaceWriter) : NO;
             if (!published) {
                 destination = VCAMSurfaceWriter == NULL ? NULL
@@ -208,19 +236,19 @@ static void VCAMPublishTick(void) {
                     VCAMSharedSurfaceWriterPublish(VCAMSurfaceWriter, destination);
                 if (published && immutableFrame) VCAMStaticSurfacePublished = YES;
             }
-            if (published && !VCAMLoggedNativeSurfacePublished) {
-                [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface published"];
-                VCAMLoggedNativeSurfacePublished = YES;
-            }
-            if (destination != NULL) CVPixelBufferRelease(destination);
-            nativeConsumed = published &&
-                VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
-            if (nativeConsumed && !VCAMLoggedNativeSurfaceConsumed) {
-                [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface consumer accepted"];
-                VCAMLoggedNativeSurfaceConsumed = YES;
-            }
-            CVPixelBufferRelease(native);
         }
+        if (published && !VCAMLoggedNativeSurfacePublished) {
+            [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface published"];
+            VCAMLoggedNativeSurfacePublished = YES;
+        }
+        if (destination != NULL) CVPixelBufferRelease(destination);
+        nativeConsumed = published &&
+            VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
+        if (nativeConsumed && !VCAMLoggedNativeSurfaceConsumed) {
+            [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface consumer accepted"];
+            VCAMLoggedNativeSurfaceConsumed = YES;
+        }
+        if (native != NULL) CVPixelBufferRelease(native);
         if (nativeConsumed) return;
         if (nativeTransport && !VCAMLoggedLegacyFallback) {
             [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface awaiting consumer; BGRA fallback active"];

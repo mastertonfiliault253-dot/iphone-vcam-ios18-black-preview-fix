@@ -1,6 +1,6 @@
 Package: com.codex.vcam
 Name: VCAM Media Bridge
-Version: 0.8.67+bgra-nonmetal-probe
+Version: 0.8.68+static-surface-orientation
 Architecture: iphoneos-arm
 Description: System virtual-camera bridge with isolated local, OBS, RTSP and HLS decoding plus UI-only app overlays.
 Maintainer: Local Build

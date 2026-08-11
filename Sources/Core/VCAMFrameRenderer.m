@@ -8,7 +8,6 @@
 
 @interface VCAMFrameRenderer () {
     CVPixelBufferPoolRef _pixelBufferPool;
-    CMVideoFormatDescriptionRef _formatDescription;
     CGColorSpaceRef _colorSpace;
     size_t _poolWidth;
     size_t _poolHeight;
@@ -25,7 +24,6 @@
 
 - (void)dealloc {
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
-    if (_formatDescription != NULL) CFRelease(_formatDescription);
     if (_colorSpace != NULL) CGColorSpaceRelease(_colorSpace);
 }
 
@@ -71,10 +69,6 @@
         CVPixelBufferPoolRelease(_pixelBufferPool);
         _pixelBufferPool = NULL;
     }
-    if (_formatDescription != NULL) {
-        CFRelease(_formatDescription);
-        _formatDescription = NULL;
-    }
     NSDictionary *poolAttributes = @{(id)kCVPixelBufferPoolMinimumBufferCountKey: @4};
     NSDictionary *pixelAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
@@ -90,6 +84,63 @@
     if (status != kCVReturnSuccess) return NO;
     _poolWidth = width;
     _poolHeight = height;
+    return YES;
+}
+
+- (BOOL)renderCGImage:(CGImageRef)image
+      sourceTransform:(CGAffineTransform)sourceTransform
+   intoPixelBuffer:(CVPixelBufferRef)output
+        configuration:(VCAMConfiguration *)configuration {
+    if (image == NULL || output == NULL ||
+        CVPixelBufferGetPixelFormatType(output) != kCVPixelFormatType_32BGRA) return NO;
+    const size_t width = CVPixelBufferGetWidth(output);
+    const size_t height = CVPixelBufferGetHeight(output);
+    if (width == 0 || height == 0 ||
+        CVPixelBufferLockBaseAddress(output, 0) != kCVReturnSuccess) return NO;
+
+    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(output);
+    memset(CVPixelBufferGetBaseAddress(output), 0, bytesPerRow * height);
+    CGContextRef context = CGBitmapContextCreate(
+        CVPixelBufferGetBaseAddress(output), width, height, 8, bytesPerRow,
+        _colorSpace, kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    if (context == NULL) {
+        CVPixelBufferUnlockBaseAddress(output, 0);
+        return NO;
+    }
+
+    CGFloat sourceWidth = (CGFloat)CGImageGetWidth(image);
+    CGFloat sourceHeight = (CGFloat)CGImageGetHeight(image);
+    CGFloat sourceAngle = atan2(sourceTransform.b, sourceTransform.a);
+    CGFloat rotation = sourceAngle + configuration.rotationDegrees * M_PI / 180.0;
+    CGFloat absoluteCosine = fabs(cos(rotation));
+    CGFloat absoluteSine = fabs(sin(rotation));
+    CGFloat orientedWidth = sourceWidth * absoluteCosine + sourceHeight * absoluteSine;
+    CGFloat orientedHeight = sourceWidth * absoluteSine + sourceHeight * absoluteCosine;
+    CGFloat scaleX = (CGFloat)width / MAX(1.0, orientedWidth);
+    CGFloat scaleY = (CGFloat)height / MAX(1.0, orientedHeight);
+    if (configuration.contentMode == VCAMContentModeAspectFit) {
+        scaleX = scaleY = MIN(scaleX, scaleY);
+    } else if (configuration.contentMode == VCAMContentModeAspectFill) {
+        scaleX = scaleY = MAX(scaleX, scaleY);
+    }
+    BOOL sourceMirrored = sourceTransform.a * sourceTransform.d -
+        sourceTransform.b * sourceTransform.c < 0;
+    BOOL mirror = sourceMirrored != configuration.mirrorHorizontally;
+
+    // CVPixelBuffer row zero is the displayed top row. Drawing in that row
+    // order keeps the ImageIO-normalized source upright in both the passive
+    // preview and mediaserverd; an extra Y flip inverted both consumers.
+    CGContextTranslateCTM(context, (CGFloat)width * 0.5, (CGFloat)height * 0.5);
+    CGContextScaleCTM(context, scaleX, scaleY);
+    CGContextRotateCTM(context, rotation);
+    if (mirror) CGContextScaleCTM(context, -1, 1);
+    CGContextTranslateCTM(context, -sourceWidth * 0.5, -sourceHeight * 0.5);
+    CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
+    CGContextSetShouldAntialias(context, NO);
+    CGContextSetAllowsAntialiasing(context, NO);
+    CGContextDrawImage(context, CGRectMake(0, 0, sourceWidth, sourceHeight), image);
+    CGContextRelease(context);
+    CVPixelBufferUnlockBaseAddress(output, 0);
     return YES;
 }
 
@@ -181,80 +232,11 @@
     CVPixelBufferRef output = NULL;
     if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _pixelBufferPool,
                                            &output) != kCVReturnSuccess) return NULL;
-    if (CVPixelBufferLockBaseAddress(output, 0) != kCVReturnSuccess) {
-        CVPixelBufferRelease(output);
-        return NULL;
-    }
-
-    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(output);
-    memset(CVPixelBufferGetBaseAddress(output), 0, bytesPerRow * height);
-    CGContextRef context = CGBitmapContextCreate(
-        CVPixelBufferGetBaseAddress(output), width, height, 8, bytesPerRow,
-        _colorSpace, kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-    if (context == NULL) {
-        CVPixelBufferUnlockBaseAddress(output, 0);
-        CVPixelBufferRelease(output);
-        return NULL;
-    }
-
-    CGFloat sourceWidth = (CGFloat)CGImageGetWidth(image);
-    CGFloat sourceHeight = (CGFloat)CGImageGetHeight(image);
-    CGFloat sourceAngle = atan2(sourceTransform.b, sourceTransform.a);
-    CGFloat rotation = sourceAngle + configuration.rotationDegrees * M_PI / 180.0;
-    CGFloat absoluteCosine = fabs(cos(rotation));
-    CGFloat absoluteSine = fabs(sin(rotation));
-    CGFloat orientedWidth = sourceWidth * absoluteCosine + sourceHeight * absoluteSine;
-    CGFloat orientedHeight = sourceWidth * absoluteSine + sourceHeight * absoluteCosine;
-    CGFloat scaleX = (CGFloat)width / MAX(1.0, orientedWidth);
-    CGFloat scaleY = (CGFloat)height / MAX(1.0, orientedHeight);
-    if (configuration.contentMode == VCAMContentModeAspectFit) {
-        scaleX = scaleY = MIN(scaleX, scaleY);
-    } else if (configuration.contentMode == VCAMContentModeAspectFill) {
-        scaleX = scaleY = MAX(scaleX, scaleY);
-    }
-    BOOL sourceMirrored = sourceTransform.a * sourceTransform.d -
-        sourceTransform.b * sourceTransform.c < 0;
-    BOOL mirror = sourceMirrored != configuration.mirrorHorizontally;
-
-    // Convert the bitmap's lower-left coordinate system into top-left image
-    // coordinates, then draw only the current source frame.
-    CGContextTranslateCTM(context, 0, (CGFloat)height);
-    CGContextScaleCTM(context, 1, -1);
-    CGContextTranslateCTM(context, (CGFloat)width * 0.5, (CGFloat)height * 0.5);
-    CGContextScaleCTM(context, scaleX, scaleY);
-    CGContextRotateCTM(context, rotation);
-    if (mirror) CGContextScaleCTM(context, -1, 1);
-    CGContextTranslateCTM(context, -sourceWidth * 0.5, -sourceHeight * 0.5);
-    // Video frames are already antialiased by the decoder pipeline; high
-    // quality interpolation plus antialiasing is the dominant CPU cost here
-    // and produces no visible benefit at 1080x1920. Medium + no AA keeps the
-    // scale/rotate conversion on the CPU but several times cheaper.
-    CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
-    CGContextSetShouldAntialias(context, NO);
-    CGContextSetAllowsAntialiasing(context, NO);
-    CGContextDrawImage(context, CGRectMake(0, 0, sourceWidth, sourceHeight), image);
-    CGContextRelease(context);
-    CVPixelBufferUnlockBaseAddress(output, 0);
-
-    CMSampleTimingInfo timing = {
-        .duration = CMSampleBufferGetDuration(templateBuffer),
-        .presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(templateBuffer),
-        .decodeTimeStamp = CMSampleBufferGetDecodeTimeStamp(templateBuffer),
-    };
-    OSStatus status = noErr;
-    if (_formatDescription == NULL) {
-        status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, output,
-                                                               &_formatDescription);
-    }
-    CMSampleBufferRef sample = NULL;
-    if (status == noErr && _formatDescription != NULL) {
-        status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, output, true,
-                                                    NULL, NULL, _formatDescription,
-                                                    &timing, &sample);
-    }
-    if (status == noErr && sample != NULL) {
-        [self copyAttachmentsFromTemplate:templateBuffer toSample:sample];
-    }
+    CMSampleBufferRef sample = [self renderCGImage:image
+                                   sourceTransform:sourceTransform
+                                intoPixelBuffer:output
+                                     configuration:configuration]
+        ? [self copySampleWrappingPixelBuffer:output template:templateBuffer] : NULL;
     CVPixelBufferRelease(output);
     return sample;
 }

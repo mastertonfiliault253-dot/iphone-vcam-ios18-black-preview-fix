@@ -163,6 +163,31 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     return slotCount;
 }
 
+- (CGSize)nativeStillImageSize {
+    __block CGSize size = CGSizeZero;
+    dispatch_sync(self.stateQueue, ^{
+        if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
+            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
+            size = [(VCAMLocalMediaSource *)self.source orientedStillImageSize];
+        }
+    });
+    return size;
+}
+
+- (BOOL)renderNativeStillImageIntoPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+    __block BOOL rendered = NO;
+    dispatch_sync(self.stateQueue, ^{
+        if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
+            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
+            rendered = [(VCAMLocalMediaSource *)self.source
+                renderStillImageIntoPixelBuffer:pixelBuffer];
+        }
+    });
+    return rendered;
+}
+
 - (CVPixelBufferRef)copyNativePixelBufferForSurface {
     __block CVPixelBufferRef pixelBuffer = NULL;
     dispatch_sync(self.stateQueue, ^{
@@ -213,28 +238,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                 CVPixelBufferRelease(native);
             } else {
                 pixelBuffer = native;
-            }
-        } else if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
-                   !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
-                   [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
-            VCAMLocalMediaSource *local = (VCAMLocalMediaSource *)self.source;
-            CGSize size = [local orientedStillImageSize];
-            CMSampleBufferRef template = CGSizeEqualToSize(size, CGSizeZero)
-                ? NULL : [self copyTemplateForSize:size];
-            CMSampleBufferRef sample = template == NULL ? NULL
-                : [local copyVideoSampleForTemplate:template];
-            CVPixelBufferRef imageBuffer = sample == NULL ? NULL
-                : CMSampleBufferGetImageBuffer(sample);
-            if (imageBuffer != NULL) pixelBuffer = CVPixelBufferRetain(imageBuffer);
-            if (sample != NULL) CFRelease(sample);
-            if (template != NULL) CFRelease(template);
-            // The still renderer owns its cached result. Drop the otherwise
-            // idle full-resolution template so one image does not retain two
-            // extra BGRA allocations between callbacks.
-            if (self->_templateSample != NULL) {
-                CFRelease(self->_templateSample);
-                self->_templateSample = NULL;
-                self->_templateSize = CGSizeZero;
             }
         }
     });

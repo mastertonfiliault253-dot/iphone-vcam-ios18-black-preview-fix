@@ -120,7 +120,8 @@ static void VCAMLogOrientationAttachments(const char *stage,
     NSString *description = [NSString stringWithFormat:
         @"[DEBUG-orient-7f31] stage=%@ samplePropagate=%@ sampleLocal=%@ image=%@",
         stageName, propagate ?: @{}, local ?: @{}, image ?: @{}];
-    if (description.length > 3000) description = [description substringToIndex:3000];
+    description = [description stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    if (description.length > 12000) description = [description substringToIndex:12000];
     VCAMRefLog(description.UTF8String);
 }
 
