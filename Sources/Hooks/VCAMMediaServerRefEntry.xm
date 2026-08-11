@@ -353,6 +353,9 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         if (VCAMStringMatches(nodeName, @"Video Data Converter/Rotator/Zoomer")) {
             return VCAMReplacementRouteVideoConverter;
         }
+        if (VCAMStringMatches(nodeName, @"Video Data Converter/Zoomer")) {
+            return VCAMReplacementRouteVideoConverter;
+        }
         if (VCAMStringMatches(nodeName, @"Preview Scaler")) {
             return VCAMReplacementRouteCameraPreview;
         }

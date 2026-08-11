@@ -86,6 +86,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         for terminal_name, route_name in (
             ("Video Data Converter/Scaler/Zoomer", "VideoConverter"),
             ("Video Data Converter/Rotator/Zoomer", "VideoConverter"),
+            ("Video Data Converter/Zoomer", "VideoConverter"),
             ("Preview Scaler", "CameraPreview"),
             ("Movie File Zoomer", "VideoRecording"),
         ):
@@ -104,7 +105,6 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("VCAMReplacementRouteLegacyPreview", self.entry)
         self.assertNotIn("width == 750", self.route_function)
         self.assertNotIn("height == 1334", self.route_function)
-        self.assertNotIn('@"Video Data Converter/Zoomer"', self.route_function)
 
     def test_ios16_movie_file_governor_is_a_fail_closed_recording_route(self) -> None:
         self.assertRegex(
