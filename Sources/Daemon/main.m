@@ -14,11 +14,27 @@ static VCAMFrameProducer *VCAMProducer;
 static VCAMSharedFrameWriter *VCAMWriter;
 static VCAMSharedSurfaceWriter *VCAMSurfaceWriter;
 static OSType VCAMSurfacePixelFormat;
+static uint32_t VCAMSurfaceWidth;
+static uint32_t VCAMSurfaceHeight;
+static uint32_t VCAMSurfaceSlotCount;
+static BOOL VCAMStaticSurfacePublished;
 static dispatch_source_t VCAMTimer;
 static BOOL VCAMLoggedNativeSurfaceReady;
 static BOOL VCAMLoggedNativeSurfacePublished;
 static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
+
+static void VCAMDestroySurfaceWriter(void) {
+    if (VCAMSurfaceWriter != NULL) {
+        VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
+        VCAMSurfaceWriter = NULL;
+    }
+    VCAMSurfacePixelFormat = 0;
+    VCAMSurfaceWidth = 0;
+    VCAMSurfaceHeight = 0;
+    VCAMSurfaceSlotCount = 0;
+    VCAMStaticSurfacePublished = NO;
+}
 
 enum {
     MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES = 7,
@@ -122,46 +138,61 @@ static BOOL VCAMCopyPixelBufferPlanes(CVPixelBufferRef source,
 static void VCAMPublishTick(void) {
     @autoreleasepool {
         if (![VCAMProducer isEnabled]) {
-            if (VCAMSurfaceWriter != NULL) {
-                VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
-                VCAMSurfaceWriter = NULL;
-                VCAMSurfacePixelFormat = 0;
-            }
+            VCAMDestroySurfaceWriter();
             return;
         }
         BOOL nativeTransport = [VCAMProducer usesNativeSurfaceTransport];
         if (VCAMSurfaceWriter != NULL &&
             !VCAMSharedSurfaceWriterIsCurrent(VCAMSurfaceWriter)) {
-            VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
-            VCAMSurfaceWriter = NULL;
-            VCAMSurfacePixelFormat = 0;
+            VCAMDestroySurfaceWriter();
         }
         if (!nativeTransport && VCAMSurfaceWriter != NULL) {
-            VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
-            VCAMSurfaceWriter = NULL;
-            VCAMSurfacePixelFormat = 0;
+            VCAMDestroySurfaceWriter();
         }
-        CVPixelBufferRef native = nativeTransport
-            ? [VCAMProducer copyNativePixelBufferForSharedCanvas] : NULL;
-        BOOL nativeConsumed = NO;
+        uint32_t nativeSlotCount = nativeTransport
+            ? [VCAMProducer nativeSurfaceSlotCount] : VCAMSharedFrameSlotCount;
+        BOOL refreshedStaticSurface = nativeSlotCount == 1 &&
+            VCAMStaticSurfacePublished &&
+            VCAMSharedSurfaceWriterRefreshLatest(VCAMSurfaceWriter);
+        BOOL nativeConsumed = refreshedStaticSurface &&
+            VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
+        if (nativeConsumed) return;
+        CVPixelBufferRef native = nativeTransport && !refreshedStaticSurface
+            ? [VCAMProducer copyNativePixelBufferForSurface] : NULL;
         if (native != NULL) {
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(native);
-            if (VCAMSurfaceWriter == NULL || VCAMSurfacePixelFormat != pixelFormat) {
-                VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
-                VCAMSurfaceWriter =
-                    VCAMSharedSurfaceWriterCreateWithPixelFormat(pixelFormat);
+            uint32_t width = (uint32_t)CVPixelBufferGetWidth(native);
+            uint32_t height = (uint32_t)CVPixelBufferGetHeight(native);
+            uint32_t slotCount = nativeSlotCount;
+            if (VCAMSurfaceWriter == NULL || VCAMSurfacePixelFormat != pixelFormat ||
+                VCAMSurfaceWidth != width || VCAMSurfaceHeight != height ||
+                VCAMSurfaceSlotCount != slotCount) {
+                VCAMDestroySurfaceWriter();
+                VCAMSurfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
+                    width, height, pixelFormat, slotCount);
                 VCAMSurfacePixelFormat = VCAMSurfaceWriter == NULL ? 0 : pixelFormat;
+                VCAMSurfaceWidth = VCAMSurfaceWriter == NULL ? 0 : width;
+                VCAMSurfaceHeight = VCAMSurfaceWriter == NULL ? 0 : height;
+                VCAMSurfaceSlotCount = VCAMSurfaceWriter == NULL ? 0 : slotCount;
                 if (VCAMSurfaceWriter != NULL && !VCAMLoggedNativeSurfaceReady) {
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"vcamd native IOSurface ready pixel=%08x", pixelFormat]];
+                        @"vcamd native IOSurface ready size=%ux%u pixel=%08x slots=%u",
+                        width, height, pixelFormat, slotCount]];
                     VCAMLoggedNativeSurfaceReady = YES;
                 }
             }
-            CVPixelBufferRef destination = VCAMSurfaceWriter == NULL ? NULL
-                : VCAMSharedSurfaceWriterCopyNextPixelBuffer(VCAMSurfaceWriter);
-            BOOL published = destination != NULL &&
-                VCAMCopyPixelBufferPlanes(native, destination) &&
-                VCAMSharedSurfaceWriterPublish(VCAMSurfaceWriter, destination);
+            BOOL immutableFrame = slotCount == 1;
+            CVPixelBufferRef destination = NULL;
+            BOOL published = immutableFrame && VCAMStaticSurfacePublished
+                ? VCAMSharedSurfaceWriterRefreshLatest(VCAMSurfaceWriter) : NO;
+            if (!published) {
+                destination = VCAMSurfaceWriter == NULL ? NULL
+                    : VCAMSharedSurfaceWriterCopyNextPixelBuffer(VCAMSurfaceWriter);
+                published = destination != NULL &&
+                    VCAMCopyPixelBufferPlanes(native, destination) &&
+                    VCAMSharedSurfaceWriterPublish(VCAMSurfaceWriter, destination);
+                if (published && immutableFrame) VCAMStaticSurfacePublished = YES;
+            }
             if (published && !VCAMLoggedNativeSurfacePublished) {
                 [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface published"];
                 VCAMLoggedNativeSurfacePublished = YES;
@@ -183,7 +214,16 @@ static void VCAMPublishTick(void) {
         CMSampleBufferRef sample = [VCAMProducer copyFrameForSize:
             CGSizeMake(VCAMSharedFrameWidth, VCAMSharedFrameHeight)];
         CVPixelBufferRef pixelBuffer = sample == NULL ? NULL : CMSampleBufferGetImageBuffer(sample);
-        if (pixelBuffer != NULL) VCAMSharedFrameWriterPublish(VCAMWriter, pixelBuffer);
+        if (pixelBuffer != NULL) {
+            uint64_t surfaceGeneration =
+                VCAMSharedSurfaceWriterGeneration(VCAMSurfaceWriter);
+            if (surfaceGeneration != 0) {
+                VCAMSharedFrameWriterPublishForSurfaceGeneration(
+                    VCAMWriter, pixelBuffer, surfaceGeneration);
+            } else {
+                VCAMSharedFrameWriterPublish(VCAMWriter, pixelBuffer);
+            }
+        }
         if (sample != NULL) CFRelease(sample);
     }
 }
@@ -206,6 +246,9 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
                                      CFDictionaryRef userInfo) {
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{
+        // A same-dimension media replacement still needs a fresh immutable
+        // surface; recreating here keeps the one-slot path honest.
+        VCAMDestroySurfaceWriter();
         [VCAMProducer reload];
         VCAMScheduleTimer();
     });
@@ -227,7 +270,7 @@ int main(int argc, char *argv[]) {
         VCAMScheduleTimer();
         [VCAMConfiguration appendProcessLog:@"vcamd started"];
         CFRunLoopRun();
-        VCAMSharedSurfaceWriterDestroy(VCAMSurfaceWriter);
+        VCAMDestroySurfaceWriter();
         VCAMSharedFrameWriterDestroy(VCAMWriter);
     }
     return 0;

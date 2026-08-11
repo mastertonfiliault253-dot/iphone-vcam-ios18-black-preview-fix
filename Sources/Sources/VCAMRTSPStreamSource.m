@@ -196,9 +196,11 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
 
 - (void)configureOpenOptions:(AVDictionary **)options {
     if (self.usesRTSPTransport) {
+        // MediaMTX documents interleaved TCP as the most versatile client
+        // transport. Forcing TCP already makes prefer_tcp redundant.
         av_dict_set(options, "rtsp_transport", "tcp", 0);
-        av_dict_set(options, "rtsp_flags", "prefer_tcp", 0);
-        av_dict_set(options, "timeout", "3000000", 0);
+        av_dict_set(options, "allowed_media_types", "video", 0);
+        av_dict_set(options, "timeout", "10000000", 0);
     } else {
         av_dict_set(options, "rw_timeout", "3000000", 0);
     }
@@ -806,15 +808,11 @@ cleanup:
     return producedFrame;
 }
 
-- (CVPixelBufferRef)copyNativePixelBufferForSharedCanvas {
+- (CVPixelBufferRef)copyNativePixelBufferForSurface {
     CVPixelBufferRef pixelBuffer = NULL;
     @synchronized (self) {
         if (!self.running || _latestPixelBuffer == NULL ||
-            CACurrentMediaTime() - _latestFrameHostTime >= 3.5 ||
-            self.configuration.mirrorHorizontally ||
-            self.configuration.rotationDegrees % 360 != 0 ||
-            CVPixelBufferGetWidth(_latestPixelBuffer) != VCAMSharedFrameWidth ||
-            CVPixelBufferGetHeight(_latestPixelBuffer) != VCAMSharedFrameHeight) {
+            CACurrentMediaTime() - _latestFrameHostTime >= 3.5) {
             return NULL;
         }
         OSType format = CVPixelBufferGetPixelFormatType(_latestPixelBuffer);

@@ -22,9 +22,11 @@ class HardwareDecoderTests(unittest.TestCase):
         )
 
         self.assertIn("VCAMCopyNV12FromAVFrame", converter)
-        self.assertIn("copyNativePixelBufferForSharedCanvas", stream)
-        self.assertIn("copyNativePixelBufferForSharedCanvas", producer)
-        self.assertIn("VCAMSharedSurfaceWriterCreateWithPixelFormat", daemon)
+        self.assertIn("copyNativePixelBufferForSurface", stream)
+        self.assertIn("copyNativePixelBufferForSurface", producer)
+        self.assertIn("needsTransform", producer)
+        self.assertIn("copyVideoSampleForTemplate:template", producer)
+        self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", daemon)
         self.assertIn("VCAMCopyPixelBufferPlanes", daemon)
         self.assertIn("VCAMSharedSurfaceWriterHasConsumer", daemon)
         self.assertIn("vcamd native IOSurface published", daemon)
@@ -41,6 +43,35 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceWriterIsCurrent", shared)
         self.assertIn("VCAMProcessIsAlive(activeProducer)", shared)
         self.assertIn("!VCAMSharedSurfaceWriterIsCurrent(VCAMSurfaceWriter)", daemon)
+
+    def test_rtsp_receiver_matches_the_mediamtx_tcp_client_contract(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        options = stream.split("- (void)configureOpenOptions", 1)[1].split(
+            "- (void)stop", 1
+        )[0]
+        self.assertIn('av_dict_set(options, "rtsp_transport", "tcp", 0)', options)
+        self.assertIn('av_dict_set(options, "allowed_media_types", "video", 0)', options)
+        self.assertIn('av_dict_set(options, "timeout", "10000000", 0)', options)
+        self.assertNotIn('"prefer_tcp"', options)
+        self.assertNotIn('"nobuffer"', options)
+        self.assertNotIn('"low_delay"', options)
+
+    def test_vcamd_can_publish_native_rtsp_surfaces_through_the_broker(self) -> None:
+        broker = (ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m").read_text(
+            encoding="utf-8"
+        )
+        client = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "vcamd")', broker)
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', broker)
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', broker)
+        self.assertIn('xpc_dictionary_set_uint64(message, "slotCount", count)', client)
+        self.assertIn('xpc_dictionary_get_uint64(reply, "slotCount")', client)
+        self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", broker)
+        self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", client)
 
     def test_hd_yuv_fallback_uses_bt709_instead_of_bt601(self) -> None:
         converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(

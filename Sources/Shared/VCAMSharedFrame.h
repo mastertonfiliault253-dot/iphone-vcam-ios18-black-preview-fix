@@ -1,5 +1,6 @@
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
+#import "VCAMSurfaceBroker.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -9,7 +10,9 @@ NS_ASSUME_NONNULL_BEGIN
 enum {
     VCAMSharedFrameWidth = 1080,
     VCAMSharedFrameHeight = 1920,
-    VCAMSharedFrameSlotCount = 3,
+    /// Maximum IOSurface ring depth. Static images use one slot; moving
+    /// sources use all three. The legacy mmap fallback remains fixed at three.
+    VCAMSharedFrameSlotCount = VCAMSurfaceBrokerVideoSlotCount,
 };
 
 typedef struct VCAMSharedFrameWriter VCAMSharedFrameWriter;
@@ -33,6 +36,10 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     OSType pixelFormat;
+    /// Zero for mmap; the IOSurface ID for surface-backed frames.
+    uint32_t surfaceID;
+    /// Zero for mmap; stable across every slot owned by one surface writer.
+    uint64_t surfaceGeneration;
 } VCAMSharedFrameMetadata;
 
 /// A retained, cross-process IOSurface frame. Release it with
@@ -41,6 +48,7 @@ typedef struct {
     CVPixelBufferRef _Nullable pixelBuffer;
     void *_Nullable surface;
     void *_Nullable useCounter;
+    uint32_t surfaceID;
     VCAMSharedFrameMetadata metadata;
 } VCAMSharedSurfaceFrame;
 
@@ -50,6 +58,9 @@ VCAMSharedFrameWriter *_Nullable VCAMSharedFrameWriterCreate(void);
 void VCAMSharedFrameWriterDestroy(VCAMSharedFrameWriter *_Nullable writer);
 bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
                                   CVPixelBufferRef pixelBuffer);
+bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
+    VCAMSharedFrameWriter *writer, CVPixelBufferRef pixelBuffer,
+    uint64_t surfaceGeneration);
 
 /// Updates only the requested virtual-camera state in an existing shared
 /// transport. SpringBoard is the sole control-plane writer and uses this after
@@ -72,21 +83,28 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      uint64_t maximumAgeNanoseconds,
                                      VCAMSharedFrameMetadata *_Nullable metadata);
 
-/// Zero-copy IOSurface producer. The writable buffers form a bounded
-/// three-slot ring; a slot held by a consumer is never selected for rendering.
+/// Zero-copy IOSurface producer. The writable buffers form a bounded ring; a
+/// slot held by a consumer is never selected for rendering.
 VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreate(void);
 VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreateWithPixelFormat(
     OSType pixelFormat);
+VCAMSharedSurfaceWriter *_Nullable VCAMSharedSurfaceWriterCreateConfigured(
+    uint32_t width, uint32_t height, OSType pixelFormat, uint32_t slotCount);
 bool VCAMSharedSurfaceWriterIsCurrent(VCAMSharedSurfaceWriter *_Nullable writer);
+uint64_t VCAMSharedSurfaceWriterGeneration(
+    VCAMSharedSurfaceWriter *_Nullable writer);
 void VCAMSharedSurfaceWriterDestroy(VCAMSharedSurfaceWriter *_Nullable writer);
 CVPixelBufferRef _Nullable VCAMSharedSurfaceWriterCopyNextPixelBuffer(
     VCAMSharedSurfaceWriter *writer) CF_RETURNS_RETAINED;
 bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
                                     CVPixelBufferRef pixelBuffer);
+/// Refreshes the age of an immutable one-slot frame without copying pixels.
+bool VCAMSharedSurfaceWriterRefreshLatest(VCAMSharedSurfaceWriter *writer);
 bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer);
 
-/// Zero-copy IOSurface consumer. Failure is expected when the platform blocks
-/// global IOSurface lookup; callers must retain the legacy mmap fallback.
+/// Zero-copy IOSurface consumer. Failure is expected while a new producer's
+/// XPC right is arriving; callers may use only its fresh mmap bootstrap until
+/// that surface generation has been adopted.
 VCAMSharedSurfaceReader *_Nullable VCAMSharedSurfaceReaderCreate(void);
 void VCAMSharedSurfaceReaderDestroy(VCAMSharedSurfaceReader *_Nullable reader);
 bool VCAMSharedSurfaceReaderGetLatestMetadata(

@@ -35,6 +35,8 @@ extern xpc_object_t xpc_dictionary_create(
     const xpc_object_t _Nullable *values, size_t count);
 extern const char *_Nullable xpc_dictionary_get_string(xpc_object_t dictionary,
                                                         const char *key);
+extern uint64_t xpc_dictionary_get_uint64(xpc_object_t dictionary,
+                                          const char *key);
 extern xpc_object_t _Nullable xpc_dictionary_get_value(xpc_object_t dictionary,
                                                         const char *key);
 extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
@@ -60,7 +62,6 @@ extern uint32_t IOSurfaceGetID(IOSurfaceRef surface);
 
 static const char *const VCAMSurfaceBrokerService = "com.codex.vcam.surface";
 static const uint64_t VCAMXPCMachServicePrivileged = 1ULL << 1;
-enum { VCAMSurfaceBrokerSlotCount = 3 };
 static const char *const VCAMSurfaceKeys[] = {
     "surface0", "surface1", "surface2",
 };
@@ -106,7 +107,7 @@ static xpc_connection_t VCAMSurfaceBrokerPublisherConnection(void) {
 }
 
 void VCAMSurfaceBrokerPublish(IOSurfaceRef const *surfaces, uint32_t count) {
-    if (surfaces == NULL || count != VCAMSurfaceBrokerSlotCount) return;
+    if (surfaces == NULL || !VCAMSurfaceBrokerSlotCountIsValid(count)) return;
     xpc_connection_t connection = VCAMSurfaceBrokerPublisherConnection();
     if (connection == NULL) return;
     xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
@@ -115,6 +116,7 @@ void VCAMSurfaceBrokerPublish(IOSurfaceRef const *surfaces, uint32_t count) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     uint64_t generation = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
     xpc_dictionary_set_uint64(message, "generation", generation);
+    xpc_dictionary_set_uint64(message, "slotCount", count);
     for (uint32_t slot = 0; slot < count; slot++) {
         if (surfaces[slot] == NULL) continue;
         xpc_object_t object = IOSurfaceCreateXPCObject(surfaces[slot]);
@@ -127,7 +129,7 @@ void VCAMSurfaceBrokerPublish(IOSurfaceRef const *surfaces, uint32_t count) {
 }
 
 static pthread_mutex_t VCAMSubscriberLock = PTHREAD_MUTEX_INITIALIZER;
-static IOSurfaceRef VCAMSubscriberSurfaces[VCAMSurfaceBrokerSlotCount];
+static IOSurfaceRef VCAMSubscriberSurfaces[VCAMSurfaceBrokerVideoSlotCount];
 static xpc_connection_t VCAMSubscriberConnection;
 static dispatch_queue_t VCAMSubscriberQueue;
 static dispatch_once_t VCAMSubscriberOnce;
@@ -167,8 +169,10 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
             if (xpc_get_type(reply) != VCAMXPCTypeDictionary() ||
                 strcmp(xpc_dictionary_get_string(reply, "command") ?: "",
                        "registry") != 0) return;
-            IOSurfaceRef replacements[VCAMSurfaceBrokerSlotCount] = {0};
-            for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+            uint64_t slotCount = xpc_dictionary_get_uint64(reply, "slotCount");
+            if (!VCAMSurfaceBrokerSlotCountIsValid(slotCount)) return;
+            IOSurfaceRef replacements[VCAMSurfaceBrokerVideoSlotCount] = {0};
+            for (uint32_t slot = 0; slot < slotCount; slot++) {
                 xpc_object_t object = xpc_dictionary_get_value(
                     reply, VCAMSurfaceKeys[slot]);
                 if (object != NULL) {
@@ -176,8 +180,7 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
                 }
             }
             pthread_mutex_lock(&VCAMSubscriberLock);
-            for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
-                if (replacements[slot] == NULL) continue;
+            for (uint32_t slot = 0; slot < VCAMSurfaceBrokerVideoSlotCount; slot++) {
                 if (VCAMSubscriberSurfaces[slot] != NULL) {
                     CFRelease(VCAMSubscriberSurfaces[slot]);
                 }
@@ -191,7 +194,7 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
 IOSurfaceRef VCAMSurfaceBrokerCopySurface(uint32_t surfaceID) {
     IOSurfaceRef result = NULL;
     pthread_mutex_lock(&VCAMSubscriberLock);
-    for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+    for (uint32_t slot = 0; slot < VCAMSurfaceBrokerVideoSlotCount; slot++) {
         IOSurfaceRef candidate = VCAMSubscriberSurfaces[slot];
         if (candidate != NULL && IOSurfaceGetID(candidate) == surfaceID) {
             result = (IOSurfaceRef)CFRetain(candidate);

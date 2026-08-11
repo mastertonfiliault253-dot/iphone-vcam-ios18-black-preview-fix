@@ -980,13 +980,20 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
             [self showMessage:@"直播流地址必须以 ws://、wss://、rtsp:// 或 http(s):// 开头" error:YES];
             return;
         }
-        NSDictionary *updates = nil;
+        NSMutableDictionary *updates = [@{
+            @"enabled": @YES,
+            @"rotationDegrees": @0,
+            @"mirrorHorizontally": @NO,
+        } mutableCopy];
         if (isRTSP) {
-            updates = @{@"source": @"rtsp", @"enabled": @YES, @"rtspURL": url.absoluteString};
+            updates[@"source"] = @"rtsp";
+            updates[@"rtspURL"] = url.absoluteString;
         } else if (isHLS) {
-            updates = @{@"source": @"hls", @"enabled": @YES, @"hlsURL": url.absoluteString};
+            updates[@"source"] = @"hls";
+            updates[@"hlsURL"] = url.absoluteString;
         } else {
-            updates = @{@"source": @"obs", @"enabled": @YES, @"obsWebSocketURL": url.absoluteString};
+            updates[@"source"] = @"obs";
+            updates[@"obsWebSocketURL"] = url.absoluteString;
         }
         if (![self updatePreferences:updates]) {
             [self showMessage:@"直播流配置写入失败" error:YES];
@@ -1016,6 +1023,8 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     if (![self updatePreferences:@{@"source": @"local", @"enabled": @YES,
                                   @"mediaPath": destinationURL.path, @"loopMedia": @YES,
                                   @"replaceAudio": @NO,
+                                  @"rotationDegrees": @0,
+                                  @"mirrorHorizontally": @NO,
                                   @"localDecoderMode": @"single",
                                   @"preferredFramesPerSecond": @(preferredFramesPerSecond)}]) {
         [self showMessage:@"媒体已复制，但 VCAM 配置写入失败" error:YES];

@@ -19,6 +19,13 @@
 static VCAMSharedFrameReader *VCAMReader;
 static VCAMSharedSurfaceReader *VCAMSurfaceReader;
 static VCAMSharedSurfaceFrame VCAMLastSurfaceFrame;
+/// Once a surface writer generation is consumed, its old mmap bootstrap must
+/// never become a live source again. All three video slots carry the same
+/// generation; only a new writer reopens bootstrap while XPC rights arrive.
+static uint64_t VCAMAdoptedSurfaceGeneration;
+/// When an adopted surface writer disappears, a generation-zero legacy
+/// daemon may take over only with a frame published after this observation.
+static uint64_t VCAMLegacyMmapCutoffNanoseconds;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CVPixelBufferPoolRef VCAMCompressedStagingPool;
 static size_t VCAMCompressedStagingWidth;
@@ -511,6 +518,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 VCAMLastVirtualFrame = NULL;
             }
             VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
+            VCAMAdoptedSurfaceGeneration = 0;
+            VCAMLegacyMmapCutoffNanoseconds = 0;
             return NO;
         }
         BOOL surfaceCopied = VCAMSharedSurfaceReaderCopyLatest(
@@ -519,6 +528,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         if (surfaceCopied) {
             scratch = CVPixelBufferRetain(surfaceFrame.pixelBuffer);
             metadata = surfaceFrame.metadata;
+            VCAMAdoptedSurfaceGeneration = metadata.surfaceGeneration;
+            VCAMLegacyMmapCutoffNanoseconds = 0;
             static volatile int sharedSurfaceFrames = 0;
             int surfaceCount = __sync_add_and_fetch(&sharedSurfaceFrames, 1);
             if (surfaceCount <= 3) {
@@ -545,20 +556,49 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 lastSurfaceFailure = failure;
                 surfaceFailureLogs += 1;
             }
-            if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, VCAMScratchPool,
-                                                   &scratch) != kCVReturnSuccess) {
+            VCAMSharedFrameMetadata currentSurface = {0};
+            BOOL hasCurrentSurface = VCAMSharedSurfaceReaderGetLatestMetadata(
+                VCAMSurfaceReader, 0, &currentSurface);
+            if (!hasCurrentSurface && VCAMAdoptedSurfaceGeneration != 0 &&
+                VCAMLegacyMmapCutoffNanoseconds == 0) {
+                VCAMLegacyMmapCutoffNanoseconds =
+                    VCAMSharedFrameMonotonicNanoseconds();
+            }
+            BOOL allowMmapBootstrap = VCAMAdoptedSurfaceGeneration == 0 ||
+                (hasCurrentSurface && currentSurface.surfaceGeneration != 0 &&
+                 currentSurface.surfaceGeneration !=
+                    VCAMAdoptedSurfaceGeneration) ||
+                (!hasCurrentSurface &&
+                 VCAMLegacyMmapCutoffNanoseconds != 0);
+            if (CVPixelBufferPoolCreatePixelBuffer(
+                    kCFAllocatorDefault, VCAMScratchPool,
+                    &scratch) != kCVReturnSuccess) {
                 if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
                         targetBuffer, replacementBufferOut)) return YES;
                 return NO;
             }
-            copied = VCAMSharedFrameReaderCopyLatest(VCAMReader, scratch,
-                                                      1000000000ULL, &metadata);
-            if (!copied) {
-                // An enabled virtual camera must never expose a real frame
-                // merely because the producer paused. The legacy mmap remains
-                // the fail-closed compatibility transport.
-                copied = VCAMSharedFrameReaderCopyLatest(
-                    VCAMReader, scratch, 0, &metadata);
+            copied = allowMmapBootstrap && VCAMSharedFrameReaderCopyLatest(
+                VCAMReader, scratch, 1000000000ULL, &metadata);
+            if (copied) {
+                if (metadata.surfaceGeneration != 0) {
+                    copied = hasCurrentSurface &&
+                        currentSurface.surfaceGeneration ==
+                            metadata.surfaceGeneration;
+                } else if (hasCurrentSurface) {
+                    copied = NO;
+                } else if (VCAMAdoptedSurfaceGeneration != 0) {
+                    // A direct marker rollback is allowed only after vcamd
+                    // publishes a new legacy frame following disappearance
+                    // of the adopted surface writer. Never revive its old
+                    // generation-bound bootstrap.
+                    copied = VCAMLegacyMmapCutoffNanoseconds != 0 &&
+                        metadata.monotonicTimestampNanoseconds >=
+                            VCAMLegacyMmapCutoffNanoseconds;
+                    if (copied) {
+                        VCAMAdoptedSurfaceGeneration = 0;
+                        VCAMLegacyMmapCutoffNanoseconds = 0;
+                    }
+                }
             }
         }
         if (copied) {
@@ -632,17 +672,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // Realtime consumers use the device-observed graph compensation.
         // Still capture intentionally preserves the shared pixels unchanged;
         // the system camera alone owns the final file orientation metadata.
-        if (realtimeCompensation && targetWidth > targetHeight &&
-            CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)) {
-            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
-            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
-        }
-        // The producer has already applied the user's content mode to the
-        // canonical 1080x1920 frame. This second stage only adapts that
-        // canvas to heterogeneous camera consumers (preview, still photo,
-        // WebRTC, and recording). Aspect-fill here prevents target-specific
-        // black bars, for example when a 16:9 canvas is written into a 4:3
-        // still or browser buffer.
+        // The producer publishes canonical visual orientation. Target buffer
+        // dimensions describe allocation, not camera orientation; guessing a
+        // rotation here made WebKit differ from Camera for the same source.
+        // The producer has already resolved source metadata and user
+        // transforms. This consumer stage only scales the uncompressed source
+        // pixels into each heterogeneous camera target (preview, still photo,
+        // WebRTC, and recording).
         CGFloat scale = aspectFit
             ? MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent))

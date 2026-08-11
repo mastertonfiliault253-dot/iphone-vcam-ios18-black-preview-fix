@@ -19,20 +19,29 @@ targeted. Audio is not replaced.
 
 ## Frame path
 
-`local image / OBS → vcamd → three-slot raw BGRA mmap → mediaserverd + passive UI preview`
+`local image → vcamd/ImageIO → one source-sized raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
+
+`OBS → vcamd → source-sized three-slot raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
 
 `RTSP → vcamd FFmpeg → decoded raw NV12 → three-slot IOSurface (raw BGRA mmap fallback) → mediaserverd + passive UI preview`
 
 `local video / HLS → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
 
-The compatibility frame region in `/var/tmp/com.codex.vcam.frames` is fixed at
-1080×1920 BGRA. Its surface metadata can instead describe 420v/420f IOSurface
-slots of the same canvas size. Publication uses atomic slot and sequence
+The handshake-only compatibility frame region in `/var/tmp/com.codex.vcam.frames` remains
+fixed at 1080×1920 BGRA. IOSurface metadata independently carries the source
+width, height, pixel format and an active depth of one or three slots. Publication uses atomic slot and sequence
 metadata; neither transport contains JPEG, H.264, HEVC or another encoded
 payload. The SpringBoard and filtered app-host control panels may passively
 observe the freshest mmap/IOSurface frame, but they neither claim the
 mediaserverd consumer lease nor decode or publish media. Consumers copy without
-waiting. SpringBoard is the sole writer of the requested enable/restore state;
+waiting. After mediaserverd adopts a surface writer generation, it rejects
+that generation's old mmap bootstrap; only a different producer generation
+reopens a fresh bootstrap window. Every bootstrap slot carries that same
+writer generation, so a fresh frame from the preceding source is rejected
+during a rapid switch. An explicit marker rollback to the generation-zero
+legacy daemon is accepted only from a frame timestamped after disappearance
+of the adopted surface writer. SpringBoard is the sole writer of the
+requested enable/restore state;
 `vcamd` publishes pixels only and cannot overwrite that state after a delayed
 configuration reload. Shared-header initialization and requested-state updates
 use an interprocess file lock so startup order cannot replace a newer choice.
@@ -52,16 +61,13 @@ Fan-out and inference nodes are never matched directly. Unsupported private
 standard 420f `Meteor Headroom` still-photo boundary can replace them; they are
 never exposed to an app consumer. It renders observed BGRA,
 `420v`/`420f`, public compressed and the device-private recording formats
-`[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. For
-realtime output only, a portrait shared source is pre-rotated left and then
-horizontally reflected before it is fitted into a landscape sensor buffer. The
-rotation compensates for the downstream clockwise display transform; the
-reflection compensates for the vertical flip observed after that iOS 16.5
-realtime transform. Still capture does not apply any additional VCAM rotation
+`[8v0`/`}8v0`, subject to strict dimensions and buffer-layout checks. The
+producer publishes canonical visual orientation and the consumer never infers
+rotation from a target buffer's width and height. Still capture does not apply any additional VCAM rotation
 and does not override photo orientation metadata. The system camera remains the
 sole owner of the final portrait/landscape tag, including an intentionally
 landscape device posture.
-The canonical shared canvas is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
+The source-sized shared frame is then aspect-filled into each consumer's exact buffer size, so 4:3 still-photo
 and browser/WebRTC outputs do not expose the black safety background behind
 the centered render.
 
@@ -100,9 +106,12 @@ the original sample, and either construction path remains fail-closed.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg inside `vcamd`, with VideoToolbox where available and a
-  software fallback. It forces TCP and keeps normal RTP/H.264 reorder and
+  software fallback. It forces MediaMTX-compatible interleaved TCP, accepts
+  only video media, uses a 10-second TCP I/O timeout and keeps normal RTP/H.264 reorder and
   reference buffering. Eligible 8-bit decoded frames are repacked as native
-  NV12 and published by IOSurface without BGRA conversion. HLS uses
+  NV12 and published by IOSurface without BGRA conversion; an explicit user
+  rotation/mirror is rendered once into a source-sized three-slot BGRA
+  IOSurface instead of falling back permanently to the fixed mmap. HLS uses
   SpringBoard's system `AVPlayer`; the old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 

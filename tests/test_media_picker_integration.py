@@ -184,6 +184,113 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("CGImageSourceCreateThumbnailAtIndex", source)
         self.assertIn("kCGImageSourceCreateThumbnailFromImageAlways", source)
         self.assertIn("kCGImageSourceCreateThumbnailWithTransform", source)
+        self.assertIn("kCGImagePropertyPixelWidth", source)
+        self.assertIn("kCGImagePropertyPixelHeight", source)
+        self.assertIn("MAX(sourceWidth, sourceHeight)", source)
+        self.assertIn("kCGImageSourceThumbnailMaxPixelSize: @(sourceMaximumDimension)", source)
+        self.assertNotIn("maximumDecodedPixels", source)
+        self.assertNotIn("MIN((NSUInteger)8192", source)
+
+    def test_static_images_use_one_native_surface_and_reset_old_user_transforms(self) -> None:
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(
+            encoding="utf-8"
+        )
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        install = picker.split("- (void)installMediaFromTemporaryURL:", 1)[1].split(
+            "- (void)rotateClockwise", 1
+        )[0]
+        self.assertIn("slotCount = 1", producer)
+        self.assertIn("VCAMSharedSurfaceWriterRefreshLatest", daemon)
+        self.assertIn('@"rotationDegrees": @0', install)
+        self.assertIn('@"mirrorHorizontally": @NO', install)
+        live = picker.split("- (void)promptForLiveStream", 1)[1].split(
+            "- (void)installMediaFromTemporaryURL:", 1
+        )[0]
+        self.assertIn('@"rotationDegrees": @0', live)
+        self.assertIn('@"mirrorHorizontally": @NO', live)
+
+    def test_dynamic_iosurface_metadata_carries_source_dimensions_and_slot_depth(self) -> None:
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMSharedSurfaceVersion = 6", shared)
+        self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", header)
+        broker_header = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("count == VCAMSurfaceBrokerStaticSlotCount", broker_header)
+        self.assertIn("count == VCAMSurfaceBrokerVideoSlotCount", broker_header)
+        self.assertIn("SlotCountIsValid(uint64_t count)", broker_header)
+        self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(header->slotCount)", shared)
+        self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(slotCount)", shared)
+        self.assertNotIn("header->width > 8192", shared)
+        self.assertIn("SIZE_MAX / bytesPerRow", shared)
+        self.assertIn("metadata->width = width", shared)
+        self.assertIn("frame->metadata = surfaceMetadata", shared)
+        self.assertIn("metadata->surfaceGeneration = generation", shared)
+        self.assertIn("uint32_t surfaceID", header)
+        release = shared.split("void VCAMSharedSurfaceFrameRelease", 1)[1]
+        self.assertIn("VCAMSharedSurfaceReleaseUse", release)
+        self.assertIn("frame->surfaceID", release)
+
+    def test_obs_video_uses_source_sized_three_slot_surface(self) -> None:
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        obs = (ROOT / "Sources" / "Sources" / "VCAMOBSStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("BOOL nativeOBS", producer)
+        self.assertIn("[obs copyLatestImage]", producer)
+        self.assertIn("CGImageGetWidth(image)", producer)
+        self.assertIn("copySampleFromCGImage:image", producer)
+        self.assertIn("- (CGImageRef)copyLatestImage", obs)
+        self.assertEqual(obs.count("jpeg = self.latestJPEG"), 1)
+
+    def test_mmap_is_only_a_fresh_bootstrap_for_a_new_surface_generation(self) -> None:
+        image_utils = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(
+            encoding="utf-8"
+        )
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMAdoptedSurfaceGeneration", image_utils)
+        self.assertIn("currentSurface.surfaceGeneration !=", image_utils)
+        self.assertIn("allowMmapBootstrap && VCAMSharedFrameReaderCopyLatest", image_utils)
+        self.assertNotIn("VCAMReader, scratch, 0, &metadata", image_utils)
+        self.assertIn("VCAMAdoptedSurfaceGeneration = metadata.surfaceGeneration", image_utils)
+        self.assertIn("currentSurface.surfaceGeneration ==", image_utils)
+        self.assertIn("metadata.surfaceGeneration != 0", image_utils)
+        self.assertIn("VCAMLegacyMmapCutoffNanoseconds", image_utils)
+        self.assertIn("metadata.monotonicTimestampNanoseconds >=", image_utils)
+        self.assertIn("VCAMAdoptedSurfaceGeneration = 0", image_utils)
+        self.assertIn("slotSurfaceGeneration", shared)
+        self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", daemon)
+        self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", bridge)
+
+    def test_rtsp_transform_uses_the_same_native_frame_for_size_and_render(self) -> None:
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        rtsp_branch = producer.split("VCAMRTSPStreamSource *rtsp", 1)[1].split(
+            "VCAMSourceKindLocalMedia", 1
+        )[0]
+        self.assertIn("copySampleFromPixelBuffer:native", rtsp_branch)
+        self.assertNotIn("copyVideoSampleForTemplate", rtsp_branch)
 
     def test_photo_picker_preserves_the_original_file_representation(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
@@ -539,7 +646,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("VCAMSharedFrameReaderCopyLatest", status)
         self.assertNotIn("VCAMSharedSurfaceReaderCopyLatest", status)
         self.assertNotIn("VCAMSharedSurfaceReaderSetReady", status)
-        self.assertNotIn("consumerUseCount", status)
+        self.assertNotIn("consumerUseState", status)
         self.assertIn("NSAssert(NSThread.isMainThread", status)
         self.assertNotIn("VCAMPreviewSeenFrame", preview)
         self.assertNotIn("VCAMPreviewLastFrameHostTime", preview)
@@ -606,6 +713,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceReaderCopyLatestPassive", display_tick)
         self.assertIn("VCAMSharedSurfaceFrameRelease", display_tick)
         self.assertIn("frameWasSurface == self.lastFrameWasSurface", display_tick)
+        self.assertIn("metadata.surfaceGeneration == self.lastSurfaceGeneration", display_tick)
+        self.assertIn("self.lastSurfaceGeneration = metadata.surfaceGeneration", display_tick)
         self.assertIn("pixelFormat != _formatPixelFormat", display_tick)
         self.assertLess(
             display_tick.index("[layer enqueueSampleBuffer:sample]"),

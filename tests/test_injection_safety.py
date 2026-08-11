@@ -132,7 +132,9 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("com.codex.vcam/preferences.changed", implementation)
         self.assertIn("replacement render window count=120", implementation)
         self.assertIn("1000000000ULL", implementation)
-        self.assertIn("VCAMReader, scratch, 0, &metadata", implementation)
+        self.assertNotIn("VCAMReader, scratch, 0, &metadata", implementation)
+        self.assertIn("allowMmapBootstrap", implementation)
+        self.assertIn("VCAMAdoptedSurfaceGeneration", implementation)
         self.assertIn("BWNodeOutput", entry)
         self.assertIn("%orig(sampleBuffer)", entry)
         self.assertIn("output signature", entry)
@@ -193,45 +195,17 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
 
-    def test_realtime_landscape_sensor_outputs_compensate_display_reflection(self) -> None:
+    def test_consumer_does_not_guess_orientation_from_target_dimensions(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         render = implementation.split("CIImage *image =", 1)[1].split(
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertIn("#import <ImageIO/CGImageProperties.h>", implementation)
-        self.assertIn("targetWidth > targetHeight &&", render)
-        reflection_guard = render.split(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored", 1
-        )[0].rsplit("if (", 1)[1]
-        self.assertIn("realtimeCompensation", reflection_guard)
-        self.assertIn(
-            "CGRectGetHeight(image.extent) > CGRectGetWidth(image.extent)",
-            render,
-        )
-        self.assertIn("imageByApplyingOrientation:kCGImagePropertyOrientationLeft", render)
-        self.assertIn(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored",
-            render,
-        )
+        self.assertNotIn("targetWidth > targetHeight", render)
+        self.assertNotIn("imageByApplyingOrientation", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
-        self.assertLess(
-            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationLeft"),
-            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored"),
-        )
-        self.assertLess(
-            render.index("imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored"),
-            render.index("CGAffineTransformMakeScale"),
-        )
-        frameworks_line = next(
-            line
-            for line in makefile.splitlines()
-            if line.startswith("VCAMMediaServerClient_FRAMEWORKS")
-        )
-        self.assertIn("ImageIO", frameworks_line)
 
 
 if __name__ == "__main__":

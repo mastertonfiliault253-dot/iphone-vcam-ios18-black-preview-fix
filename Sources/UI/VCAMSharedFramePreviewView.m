@@ -14,6 +14,7 @@
 }
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic) uint64_t lastSequence;
+@property(nonatomic) uint64_t lastSurfaceGeneration;
 @property(nonatomic) BOOL hasLastFrame;
 @property(nonatomic) BOOL lastFrameWasSurface;
 @end
@@ -154,7 +155,8 @@ static BOOL VCAMPreviewGetLatestMetadata(
         }
     }
     if (self.hasLastFrame && metadata.sequence == self.lastSequence &&
-        frameWasSurface == self.lastFrameWasSurface) {
+        frameWasSurface == self.lastFrameWasSurface &&
+        metadata.surfaceGeneration == self.lastSurfaceGeneration) {
         if (frameWasSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
         else CVPixelBufferRelease(pixelBuffer);
         return;
@@ -209,6 +211,7 @@ static BOOL VCAMPreviewGetLatestMetadata(
         VCAMPreviewWindowFrames = 0;
     }
     self.lastSequence = metadata.sequence;
+    self.lastSurfaceGeneration = metadata.surfaceGeneration;
     self.hasLastFrame = YES;
     self.lastFrameWasSurface = frameWasSurface;
     CFRelease(sample);

@@ -10,8 +10,9 @@ payment or authentication decisions.
 
 The media hook and UI overlay have separate injection scopes:
 
-- `mediaserverd`: reads the latest 1080×1920 frame from the three-slot NV12
-  IOSurface transport, with the three-slot BGRA mmap as handshake fallback, and
+- `mediaserverd`: reads the latest source-sized frame from a one-slot BGRA
+  IOSurface for static images or a three-slot NV12/BGRA IOSurface for moving media,
+  with the fixed three-slot BGRA mmap retained only as handshake fallback, and
   replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
   observed BGRA and bi-planar YUV formats. Device-private compressed recording
@@ -55,16 +56,20 @@ when enabled, without pre-decoding the entire asset into memory.
   system `AVPlayer`, output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
-  `wss://` address in the panel.
+  `wss://` address in the panel. Each decoded JPEG is published as raw,
+  source-sized BGRA pixels through the three-slot IOSurface ring.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
-  it uses TCP, normal RTP/H.264 reorder and reference buffering, VideoToolbox
+  it uses MediaMTX-compatible interleaved TCP, accepts only the video track,
+  keeps normal RTP/H.264 reorder and reference buffering, uses VideoToolbox
   where available, and a latest-only bounded software-conversion fallback.
   Native 8-bit NV12/YUV420 frames publish through the IOSurface ring without a
-  BGRA round trip; mmap remains the automatic consumer-handshake fallback.
+  BGRA round trip. An explicit user rotation or mirror is rendered once into a
+  source-sized three-slot BGRA IOSurface; mmap remains only the automatic
+  consumer-handshake fallback.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
-  rotation, mirroring, fit/fill and scale in one Metal-backed Core Image render
-  directly into the three-slot `420v` IOSurface ring.
+  source orientation and explicit user transforms in one Metal-backed Core
+  Image render directly into a source-sized three-slot `420v` IOSurface ring.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
   the live three-slot BGRA mmap compatibility fallback. HLS prefers a one-second

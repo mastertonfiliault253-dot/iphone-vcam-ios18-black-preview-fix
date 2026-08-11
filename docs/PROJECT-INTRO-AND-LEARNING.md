@@ -20,9 +20,9 @@ VCAM Media Bridge 是一个面向 iOS 16.0–16.5 的 rootless 越狱虚拟相�
 flowchart LR
     UI[SpringBoard 小白点/配置/选择器/预览] -->|broker 写入配置| CFG[(/var/mobile/Media/VCAM)]
     CFG --> VCAMD[/var/jb/usr/libexec/vcamd]
-    VCAMD -->|本地图片/OBS 或回退 BGRA| SHM[三槽 mmap]
-    VCAMD -->|RTSP native NV12| SURF[三槽 IOSurface]
-    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal| SURF
+    VCAMD -->|启动握手回退 BGRA| SHM[固定三槽 mmap]
+    VCAMD -->|本地图片 1 槽 / OBS 与 RTSP 3 槽| SURF[源尺寸 IOSurface]
+    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal，3 槽| SURF
     VCAMD -. XPC 权限中继 .-> SURF
     SHM --> MSD[mediaserverd: BWNodeOutput 替换]
     SURF --> MSD
@@ -37,7 +37,7 @@ flowchart LR
 - **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。
 - **vcamd（项目自己的 LaunchDaemon）**：负责本地图片、OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地视频/HLS 路径只作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
-- **共享帧**：本地图片/OBS 使用三槽 BGRA mmap；RTSP 在无需变换时优先发布 native NV12 IOSurface；SpringBoard 本地视频/HLS 也使用三槽 IOSurface。XPC 握手未完成时自动回退 mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
+- **共享帧**：本地图片按解码后的原始方向和尺寸发布一个不可变 BGRA IOSurface；本地视频和 HLS 使用三个源尺寸 NV12 IOSurface；OBS 使用三个源尺寸 BGRA IOSurface；RTSP 无变换时使用 NV12、显式旋转或镜像后使用 BGRA。只有 XPC 握手回退保留固定三槽 BGRA mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 
 ## 3. 目录与源码地图
 
@@ -54,7 +54,7 @@ flowchart LR
 | `Sources/Sources/VCAMOBSStreamSource.m` | OBS WebSocket/JPEG 源 |
 | `Sources/Core/VCAMFrameRenderer.m` | 像素格式归一化、旋转、镜像、内容模式、目标尺寸 |
 | `Sources/Core/VCAMConfiguration.m` | 配置读写、Broker 客户端/服务端、媒体导入 |
-| `Sources/Shared/VCAMSharedFrame.m` | 三槽共享帧协议 |
+| `Sources/Shared/VCAMSharedFrame.m` | 动态 IOSurface（图片一槽/视频三槽）与固定 mmap 回退协议 |
 | `Sources/UI/` | 控制面板、媒体选择器、共享帧预览 |
 | `Sources/Daemon/VCAMInjectionMonitor.m` | vcaminjectd：只允许两个目标路径 |
 | `desktop/obs_bridge.py` | PC 端 OBS 虚拟摄像头桥接（版本化包协议） |
@@ -93,11 +93,11 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### OBS
 
-`desktop/obs_bridge.py` 在可信局域网运行，接收 OBS 虚拟摄像头并按版本化协议发送最新 JPEG；3.5 秒无包视为过期。
+`desktop/obs_bridge.py` 在可信局域网运行，接收 OBS 虚拟摄像头并按版本化协议发送最新 JPEG；vcamd 解码后按源尺寸发布三槽原始 BGRA IOSurface，3.5 秒无包视为过期。
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；显式旋转或镜像时改为源尺寸三槽 BGRA IOSurface；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
 
 ### HLS
 
@@ -199,7 +199,7 @@ python -m unittest discover -s tests -v
 4. `Sources/Sources/VCAMRTSPStreamSource.m`（FFmpeg 上游 hwaccel 与软件 fail-open）。
 5. `Sources/SpringBoard/VCAMSpringBoardMediaBridge.m`（HLS AVPlayer/NV12/Metal/IOSurface）。
 6. `Sources/Core/VCAMFrameRenderer.m`（daemon 源格式归一化/旋转/内容模式）。
-7. `Sources/Shared/VCAMSharedFrame.m` + `VCAMSurfaceBroker.m`（mmap/IOSurface 三槽协议和 XPC rights relay）。
+7. `Sources/Shared/VCAMSharedFrame.m` + `VCAMSurfaceBroker.m`（动态 IOSurface 槽深、固定 mmap 回退和 XPC rights relay）。
 8. `Sources/UI/VCAMControlPanelViewController.m`、`Sources/UI/VCAMMediaPickerController.m`（配置/选择器/小白点手势）。
 9. `Sources/Daemon/VCAMInjectionMonitor.m`（只修复两个系统媒体目标）。
 10. `tests/`（回归测试如何守住这些不变式）。
@@ -216,7 +216,7 @@ python -m unittest discover -s tests -v
 | 传播标记 | 替换成功后写入 sample/image 的版本化附件，供下游快速路径验证 |
 | fail-closed | 虚拟模式开启后，宁可黑屏/抑制也不泄漏真实相机帧 |
 | `vcamd` / `vcaminjectd` | 项目自己的守护进程：daemon 源解码/发布/XPC rights relay 与注入修复 |
-| 三槽共享帧 | mmap 或 IOSurface 三缓冲，带序号/时间戳与消费者占用计数，避免撕裂和陈旧帧 |
+| 共享帧 | 图片使用一个不可变 IOSurface；视频使用三个 IOSurface；兼容 mmap 保留三缓冲。均带序号/时间戳与消费者占用计数 |
 
 ## 12. 当前状态与下一步
 

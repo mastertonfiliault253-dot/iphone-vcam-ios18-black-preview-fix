@@ -15,21 +15,20 @@ class MediaServerTargetFillTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-    def test_consumer_adapter_uses_aspect_fill_after_orientation(self) -> None:
-        orientation = "imageByApplyingOrientation:kCGImagePropertyOrientationLeft"
+    def test_consumer_adapter_uses_aspect_fill_without_orientation_guessing(self) -> None:
         fill_scale = "CGFloat scale = aspectFit"
 
-        self.assertIn(orientation, self.adapter)
         self.assertIn(fill_scale, self.adapter)
         self.assertIn("MIN((CGFloat)renderWidth", self.adapter)
         self.assertIn("MAX((CGFloat)renderWidth", self.adapter)
-        self.assertLess(self.adapter.index(orientation), self.adapter.index(fill_scale))
+        self.assertNotIn("imageByApplyingOrientation", self.adapter)
         self.assertIn("imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)", self.adapter)
 
     def test_still_photo_does_not_rotate_or_override_system_orientation(self) -> None:
         # VCAM only replaces raw pixels. The system camera remains the sole
         # owner of the saved file's portrait/landscape metadata.
-        self.assertIn("if (realtimeCompensation && targetWidth > targetHeight", self.adapter)
+        self.assertNotIn("targetWidth > targetHeight", self.adapter)
+        self.assertNotIn("imageByApplyingOrientation", self.adapter)
         self.assertNotIn("interfaceOrientation", self.adapter)
 
         entry = (

@@ -5,6 +5,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+enum {
+    VCAMSurfaceBrokerStaticSlotCount = 1,
+    VCAMSurfaceBrokerVideoSlotCount = 3,
+};
+
+static inline bool VCAMSurfaceBrokerSlotCountIsValid(uint64_t count) {
+    return count == VCAMSurfaceBrokerStaticSlotCount ||
+        count == VCAMSurfaceBrokerVideoSlotCount;
+}
+
 /// Starts the launchd-owned XPC relay in vcamd. Other processes must not call
 /// this entry point.
 void VCAMSurfaceBrokerStartServer(void);

@@ -26,10 +26,10 @@ extern void IOSurfaceIncrementUseCount(IOSurfaceRef surface);
 extern void IOSurfaceDecrementUseCount(IOSurfaceRef surface);
 
 static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
-static const uint32_t VCAMSharedFrameVersion = 2;
+static const uint32_t VCAMSharedFrameVersion = 3;
 static const char *const VCAMSharedFramePath = "/var/tmp/com.codex.vcam.frames";
 static const uint32_t VCAMSharedSurfaceMagic = 0x56435346;
-static const uint32_t VCAMSharedSurfaceVersion = 4;
+static const uint32_t VCAMSharedSurfaceVersion = 6;
 static const char *const VCAMSharedSurfacePath = "/var/tmp/com.codex.vcam.surfaces";
 static const size_t VCAMSharedFrameBytesPerRow = VCAMSharedFrameWidth * 4;
 static const size_t VCAMSharedFrameSlotBytes = VCAMSharedFrameBytesPerRow * VCAMSharedFrameHeight;
@@ -52,6 +52,9 @@ typedef struct {
     _Atomic(uint64_t) publishedSequence;
     _Atomic(uint64_t) publishedTimestampNanoseconds;
     _Atomic(uint64_t) slotSequence[VCAMSharedFrameSlotCount];
+    /// Zero for legacy-only publication; otherwise binds a bootstrap frame to
+    /// exactly one IOSurface writer generation.
+    _Atomic(uint64_t) slotSurfaceGeneration[VCAMSharedFrameSlotCount];
 } VCAMSharedFrameHeader;
 
 struct VCAMSharedFrameWriter {
@@ -77,12 +80,16 @@ typedef struct {
     uint32_t height;
     uint32_t pixelFormat;
     _Atomic(int32_t) producerPID;
-    uint32_t surfaceIDs[VCAMSharedFrameSlotCount];
+    _Atomic(uint64_t) producerGeneration;
+    _Atomic(uint32_t) surfaceIDs[VCAMSharedFrameSlotCount];
     _Atomic(uint32_t) publishedSlot;
     _Atomic(uint64_t) publishedSequence;
     _Atomic(uint64_t) publishedTimestampNanoseconds;
     _Atomic(uint64_t) slotSequence[VCAMSharedFrameSlotCount];
-    _Atomic(uint32_t) consumerUseCount[VCAMSharedFrameSlotCount];
+    // High 32 bits identify the IOSurface generation; low 32 bits are the
+    // active reader count. One CAS word prevents an old reader from releasing
+    // a newly-created surface that reused the same header slot.
+    _Atomic(uint64_t) consumerUseState[VCAMSharedFrameSlotCount];
     _Atomic(int32_t) consumerPID;
     _Atomic(uint64_t) consumerHeartbeatNanoseconds;
     _Atomic(uint32_t) consumerReady;
@@ -233,8 +240,9 @@ void VCAMSharedFrameWriterDestroy(VCAMSharedFrameWriter *writer) {
     free(writer);
 }
 
-bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
-                                  CVPixelBufferRef pixelBuffer) {
+bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
+    VCAMSharedFrameWriter *writer, CVPixelBufferRef pixelBuffer,
+    uint64_t surfaceGeneration) {
     if (writer == NULL || writer->header == NULL || pixelBuffer == NULL ||
         CVPixelBufferGetWidth(pixelBuffer) != VCAMSharedFrameWidth ||
         CVPixelBufferGetHeight(pixelBuffer) != VCAMSharedFrameHeight ||
@@ -261,12 +269,20 @@ bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
     uint64_t timestamp = VCAMSharedFrameMonotonicNanoseconds();
+    atomic_store_explicit(&writer->header->slotSurfaceGeneration[slot],
+                          surfaceGeneration, memory_order_relaxed);
     atomic_store_explicit(&writer->header->slotSequence[slot], sequence, memory_order_release);
     atomic_store_explicit(&writer->header->publishedTimestampNanoseconds, timestamp,
                           memory_order_relaxed);
     atomic_store_explicit(&writer->header->publishedSlot, slot, memory_order_relaxed);
     atomic_store_explicit(&writer->header->publishedSequence, sequence, memory_order_release);
     return true;
+}
+
+bool VCAMSharedFrameWriterPublish(VCAMSharedFrameWriter *writer,
+                                  CVPixelBufferRef pixelBuffer) {
+    return VCAMSharedFrameWriterPublishForSurfaceGeneration(
+        writer, pixelBuffer, 0);
 }
 
 bool VCAMSharedFrameSetRequestedActive(bool active) {
@@ -377,6 +393,10 @@ static bool VCAMSharedFrameReadSnapshot(
     const _Atomic(uint32_t) *publishedSlot,
     const _Atomic(uint64_t) *publishedTimestamp,
     const _Atomic(uint64_t) *slotSequences,
+    uint32_t slotCount,
+    uint32_t width,
+    uint32_t height,
+    OSType pixelFormat,
     uint64_t maximumAgeNanoseconds,
     VCAMSharedFrameSnapshot *snapshot,
     VCAMSharedFrameMetadata *metadata) {
@@ -387,7 +407,7 @@ static bool VCAMSharedFrameReadSnapshot(
     uint64_t timestamp = atomic_load_explicit(publishedTimestamp,
                                               memory_order_relaxed);
     uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-    if (sequence == 0 || slot >= VCAMSharedFrameSlotCount || timestamp == 0 ||
+    if (sequence == 0 || slot >= slotCount || timestamp == 0 ||
         (maximumAgeNanoseconds > 0 &&
          (now < timestamp || now - timestamp > maximumAgeNanoseconds)) ||
         atomic_load_explicit(&slotSequences[slot], memory_order_acquire) !=
@@ -400,9 +420,11 @@ static bool VCAMSharedFrameReadSnapshot(
     if (metadata != NULL) {
         metadata->sequence = sequence;
         metadata->monotonicTimestampNanoseconds = timestamp;
-        metadata->width = VCAMSharedFrameWidth;
-        metadata->height = VCAMSharedFrameHeight;
-        metadata->pixelFormat = kCVPixelFormatType_32BGRA;
+        metadata->width = width;
+        metadata->height = height;
+        metadata->pixelFormat = pixelFormat;
+        metadata->surfaceID = 0;
+        metadata->surfaceGeneration = 0;
     }
     return true;
 }
@@ -417,11 +439,24 @@ static bool VCAMSharedFrameReaderGetSnapshot(
                               memory_order_acquire) & 1ULL) == 0) {
         return false;
     }
-    return VCAMSharedFrameReadSnapshot(
+    bool success = VCAMSharedFrameReadSnapshot(
         &reader->header->publishedSequence, &reader->header->publishedSlot,
         &reader->header->publishedTimestampNanoseconds,
-        reader->header->slotSequence, maximumAgeNanoseconds, snapshot,
+        reader->header->slotSequence, reader->header->slotCount,
+        reader->header->width, reader->header->height,
+        reader->header->pixelFormat, maximumAgeNanoseconds, snapshot,
         metadata);
+    if (success && metadata != NULL) {
+        uint64_t generation = atomic_load_explicit(
+            &reader->header->slotSurfaceGeneration[snapshot->slot],
+            memory_order_acquire);
+        if (atomic_load_explicit(&reader->header->slotSequence[snapshot->slot],
+                                 memory_order_acquire) != snapshot->sequence) {
+            return false;
+        }
+        metadata->surfaceGeneration = generation;
+    }
+    return success;
 }
 
 bool VCAMSharedFrameReaderGetLatestMetadata(
@@ -460,6 +495,8 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
     }
     CVPixelBufferUnlockBaseAddress(destination, 0);
 
+    uint64_t surfaceGeneration = atomic_load_explicit(
+        &reader->header->slotSurfaceGeneration[slot], memory_order_acquire);
     if (atomic_load_explicit(&reader->header->slotSequence[slot], memory_order_acquire) != sequence ||
         atomic_load_explicit(&reader->header->publishedSequence, memory_order_acquire) < sequence) {
         return false;
@@ -470,6 +507,8 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
         metadata->width = VCAMSharedFrameWidth;
         metadata->height = VCAMSharedFrameHeight;
         metadata->pixelFormat = kCVPixelFormatType_32BGRA;
+        metadata->surfaceID = 0;
+        metadata->surfaceGeneration = surfaceGeneration;
     }
     return true;
 }
@@ -482,11 +521,14 @@ static bool VCAMSharedSurfaceHeaderIsValid(const VCAMSharedSurfaceHeader *header
     if (header == NULL || header->magic != VCAMSharedSurfaceMagic ||
         header->version != VCAMSharedSurfaceVersion ||
         header->headerBytes != sizeof(VCAMSharedSurfaceHeader) ||
-        header->slotCount != VCAMSharedFrameSlotCount ||
-        header->width != VCAMSharedFrameWidth ||
-        header->height != VCAMSharedFrameHeight || !supportedPixelFormat) return false;
-    for (uint32_t slot = 0; slot < VCAMSharedFrameSlotCount; slot++) {
-        if (header->surfaceIDs[slot] == 0) return false;
+        !VCAMSurfaceBrokerSlotCountIsValid(header->slotCount) ||
+        header->width == 0 || header->height == 0 ||
+        atomic_load_explicit(&header->producerGeneration,
+                             memory_order_acquire) == 0 ||
+        !supportedPixelFormat) return false;
+    for (uint32_t slot = 0; slot < header->slotCount; slot++) {
+        if (atomic_load_explicit(&header->surfaceIDs[slot],
+                                 memory_order_acquire) == 0) return false;
     }
     return true;
 }
@@ -497,6 +539,33 @@ static bool VCAMProcessIsAlive(int32_t processID) {
     return kill((pid_t)processID, 0) == 0 || errno == EPERM;
 }
 
+static uint64_t VCAMSharedSurfaceUseState(uint32_t surfaceID,
+                                          uint32_t useCount) {
+    return ((uint64_t)surfaceID << 32) | useCount;
+}
+
+static bool VCAMSharedSurfaceAcquireUse(_Atomic(uint64_t) *state,
+                                        uint32_t surfaceID) {
+    uint64_t current = atomic_load_explicit(state, memory_order_acquire);
+    while ((uint32_t)(current >> 32) == surfaceID &&
+           (uint32_t)current != UINT32_MAX) {
+        if (atomic_compare_exchange_weak_explicit(
+                state, &current, current + 1,
+                memory_order_acq_rel, memory_order_acquire)) return true;
+    }
+    return false;
+}
+
+static void VCAMSharedSurfaceReleaseUse(_Atomic(uint64_t) *state,
+                                        uint32_t surfaceID) {
+    uint64_t current = atomic_load_explicit(state, memory_order_acquire);
+    while ((uint32_t)(current >> 32) == surfaceID && (uint32_t)current > 0) {
+        if (atomic_compare_exchange_weak_explicit(
+                state, &current, current - 1,
+                memory_order_acq_rel, memory_order_acquire)) return;
+    }
+}
+
 bool VCAMSharedSurfaceWriterIsCurrent(VCAMSharedSurfaceWriter *writer) {
     if (writer == NULL || writer->header == NULL ||
         !VCAMSharedSurfaceHeaderIsValid(writer->header) ||
@@ -504,17 +573,29 @@ bool VCAMSharedSurfaceWriterIsCurrent(VCAMSharedSurfaceWriter *writer) {
                              memory_order_acquire) != (int32_t)getpid() ||
         writer->pixelBuffers[0] == NULL ||
         writer->header->pixelFormat !=
-            CVPixelBufferGetPixelFormatType(writer->pixelBuffers[0])) return false;
-    for (uint32_t slot = 0; slot < VCAMSharedFrameSlotCount; slot++) {
+            CVPixelBufferGetPixelFormatType(writer->pixelBuffers[0]) ||
+        writer->header->width != CVPixelBufferGetWidth(writer->pixelBuffers[0]) ||
+        writer->header->height != CVPixelBufferGetHeight(writer->pixelBuffers[0])) return false;
+    for (uint32_t slot = 0; slot < writer->header->slotCount; slot++) {
         if (writer->surfaces[slot] == NULL ||
-            writer->header->surfaceIDs[slot] != IOSurfaceGetID(writer->surfaces[slot])) {
+            atomic_load_explicit(&writer->header->surfaceIDs[slot],
+                                 memory_order_acquire) !=
+                IOSurfaceGetID(writer->surfaces[slot])) {
             return false;
         }
     }
     return true;
 }
 
-static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(OSType pixelFormat) {
+uint64_t VCAMSharedSurfaceWriterGeneration(VCAMSharedSurfaceWriter *writer) {
+    return VCAMSharedSurfaceWriterIsCurrent(writer)
+        ? atomic_load_explicit(&writer->header->producerGeneration,
+                               memory_order_acquire)
+        : 0;
+}
+
+static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
+    uint32_t width, uint32_t height, OSType pixelFormat) {
     if (pixelFormat != kCVPixelFormatType_32BGRA) {
         NSDictionary *attributes = @{
             (id)kCVPixelBufferIOSurfacePropertiesKey: @{@"IOSurfaceIsGlobal": @YES},
@@ -522,17 +603,18 @@ static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(OSType pixelFormat) {
         };
         CVPixelBufferRef pixelBuffer = NULL;
         CVReturn status = CVPixelBufferCreate(
-            kCFAllocatorDefault, VCAMSharedFrameWidth, VCAMSharedFrameHeight,
+            kCFAllocatorDefault, width, height,
             pixelFormat, (__bridge CFDictionaryRef)attributes, &pixelBuffer);
         return status == kCVReturnSuccess ? pixelBuffer : NULL;
     }
     size_t bytesPerRow = IOSurfaceAlignProperty(
-        CFSTR("IOSurfaceBytesPerRow"), VCAMSharedFrameWidth * 4);
+        CFSTR("IOSurfaceBytesPerRow"), (size_t)width * 4);
+    if (bytesPerRow == 0 || (size_t)height > SIZE_MAX / bytesPerRow) return NULL;
     size_t allocationSize = IOSurfaceAlignProperty(
-        CFSTR("IOSurfaceAllocSize"), bytesPerRow * VCAMSharedFrameHeight);
+        CFSTR("IOSurfaceAllocSize"), bytesPerRow * height);
     NSDictionary *surfaceProperties = @{
-        @"IOSurfaceWidth": @(VCAMSharedFrameWidth),
-        @"IOSurfaceHeight": @(VCAMSharedFrameHeight),
+        @"IOSurfaceWidth": @(width),
+        @"IOSurfaceHeight": @(height),
         @"IOSurfaceBytesPerElement": @4,
         @"IOSurfaceBytesPerRow": @(bytesPerRow),
         @"IOSurfaceAllocSize": @(allocationSize),
@@ -554,14 +636,25 @@ static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(OSType pixelFormat) {
 }
 
 VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreate(void) {
-    return VCAMSharedSurfaceWriterCreateWithPixelFormat(kCVPixelFormatType_32BGRA);
+    return VCAMSharedSurfaceWriterCreateConfigured(
+        VCAMSharedFrameWidth, VCAMSharedFrameHeight,
+        kCVPixelFormatType_32BGRA, VCAMSharedFrameSlotCount);
 }
 
 VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreateWithPixelFormat(
     OSType pixelFormat) {
+    return VCAMSharedSurfaceWriterCreateConfigured(
+        VCAMSharedFrameWidth, VCAMSharedFrameHeight, pixelFormat,
+        VCAMSharedFrameSlotCount);
+}
+
+VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreateConfigured(
+    uint32_t width, uint32_t height, OSType pixelFormat, uint32_t slotCount) {
     if (pixelFormat != kCVPixelFormatType_32BGRA &&
         pixelFormat != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
         pixelFormat != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NULL;
+    if (width == 0 || height == 0 ||
+        !VCAMSurfaceBrokerSlotCountIsValid(slotCount)) return NULL;
     VCAMSharedSurfaceWriter *writer = calloc(1, sizeof(*writer));
     if (writer == NULL) return NULL;
     writer->descriptor = -1;
@@ -597,8 +690,9 @@ VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreateWithPixelFormat(
     }
 
     uint32_t surfaceIDs[VCAMSharedFrameSlotCount] = {0};
-    for (uint32_t slot = 0; slot < VCAMSharedFrameSlotCount; slot++) {
-        writer->pixelBuffers[slot] = VCAMSharedSurfaceCreatePixelBuffer(pixelFormat);
+    for (uint32_t slot = 0; slot < slotCount; slot++) {
+        writer->pixelBuffers[slot] = VCAMSharedSurfaceCreatePixelBuffer(
+            width, height, pixelFormat);
         writer->surfaces[slot] = writer->pixelBuffers[slot] == NULL ? NULL
             : CVPixelBufferGetIOSurface(writer->pixelBuffers[slot]);
         if (writer->pixelBuffers[slot] == NULL || writer->surfaces[slot] == NULL) {
@@ -617,17 +711,28 @@ VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreateWithPixelFormat(
     memset(writer->header, 0, sizeof(*writer->header));
     writer->header->version = VCAMSharedSurfaceVersion;
     writer->header->headerBytes = sizeof(*writer->header);
-    writer->header->slotCount = VCAMSharedFrameSlotCount;
-    writer->header->width = VCAMSharedFrameWidth;
-    writer->header->height = VCAMSharedFrameHeight;
+    writer->header->slotCount = slotCount;
+    writer->header->width = width;
+    writer->header->height = height;
     writer->header->pixelFormat = pixelFormat;
     atomic_store_explicit(&writer->header->producerPID, (int32_t)getpid(),
                           memory_order_relaxed);
-    memcpy(writer->header->surfaceIDs, surfaceIDs, sizeof(surfaceIDs));
+    uint64_t generation = VCAMSharedFrameMonotonicNanoseconds() ^
+        ((uint64_t)(uint32_t)getpid() << 32);
+    atomic_store_explicit(&writer->header->producerGeneration,
+                          generation == 0 ? 1 : generation,
+                          memory_order_relaxed);
+    for (uint32_t slot = 0; slot < slotCount; slot++) {
+        atomic_store_explicit(&writer->header->surfaceIDs[slot],
+                              surfaceIDs[slot], memory_order_relaxed);
+        atomic_store_explicit(&writer->header->consumerUseState[slot],
+                              VCAMSharedSurfaceUseState(surfaceIDs[slot], 0),
+                              memory_order_relaxed);
+    }
     atomic_thread_fence(memory_order_release);
     writer->header->magic = VCAMSharedSurfaceMagic;
     VCAMSharedFrameUnlock(writer->descriptor);
-    VCAMSurfaceBrokerPublish(writer->surfaces, VCAMSharedFrameSlotCount);
+    VCAMSurfaceBrokerPublish(writer->surfaces, slotCount);
     writer->lastBrokerPublishNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
     return writer;
 }
@@ -661,10 +766,15 @@ CVPixelBufferRef VCAMSharedSurfaceWriterCopyNextPixelBuffer(
     writer->pendingSequence = 0;
     uint64_t sequence = atomic_load_explicit(
         &writer->header->publishedSequence, memory_order_relaxed) + 1;
-    for (uint32_t offset = 0; offset < VCAMSharedFrameSlotCount; offset++) {
-        uint32_t slot = (uint32_t)((sequence + offset) % VCAMSharedFrameSlotCount);
-        if (atomic_load_explicit(&writer->header->consumerUseCount[slot],
-                                 memory_order_acquire) != 0) continue;
+    uint32_t slotCount = writer->header->slotCount;
+    for (uint32_t offset = 0; offset < slotCount; offset++) {
+        uint32_t slot = (uint32_t)((sequence + offset) % slotCount);
+        uint64_t useState = atomic_load_explicit(
+            &writer->header->consumerUseState[slot], memory_order_acquire);
+        if ((uint32_t)(useState >> 32) !=
+                atomic_load_explicit(&writer->header->surfaceIDs[slot],
+                                     memory_order_acquire) ||
+            (uint32_t)useState != 0) continue;
         atomic_store_explicit(&writer->header->slotSequence[slot], 0,
                               memory_order_release);
         writer->pendingSlot = slot;
@@ -678,7 +788,7 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
                                     CVPixelBufferRef pixelBuffer) {
     if (!VCAMSharedSurfaceWriterIsCurrent(writer) || pixelBuffer == NULL ||
         writer->pendingSlot >=
-        VCAMSharedFrameSlotCount ||
+        writer->header->slotCount ||
         writer->pixelBuffers[writer->pendingSlot] != pixelBuffer) return false;
     uint32_t slot = writer->pendingSlot;
     uint64_t sequence = writer->pendingSequence;
@@ -693,6 +803,17 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
                           memory_order_release);
     writer->pendingSlot = UINT32_MAX;
     writer->pendingSequence = 0;
+    return true;
+}
+
+bool VCAMSharedSurfaceWriterRefreshLatest(VCAMSharedSurfaceWriter *writer) {
+    if (!VCAMSharedSurfaceWriterIsCurrent(writer) ||
+        writer->header->slotCount != 1 ||
+        atomic_load_explicit(&writer->header->publishedSequence,
+                             memory_order_acquire) == 0) return false;
+    atomic_store_explicit(&writer->header->publishedTimestampNanoseconds,
+                          VCAMSharedFrameMonotonicNanoseconds(),
+                          memory_order_release);
     return true;
 }
 
@@ -720,15 +841,19 @@ bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer) {
                 atomic_store_explicit(
                     &writer->header->consumerHeartbeatNanoseconds, 0,
                     memory_order_release);
-                for (uint32_t slot = 0; slot < VCAMSharedFrameSlotCount; slot++) {
-                    atomic_store_explicit(&writer->header->consumerUseCount[slot], 0,
-                                          memory_order_release);
+                for (uint32_t slot = 0; slot < writer->header->slotCount; slot++) {
+                    uint32_t surfaceID = atomic_load_explicit(
+                        &writer->header->surfaceIDs[slot], memory_order_acquire);
+                    atomic_store_explicit(
+                        &writer->header->consumerUseState[slot],
+                        VCAMSharedSurfaceUseState(surfaceID, 0),
+                        memory_order_release);
                 }
             }
         }
         if (writer->lastBrokerPublishNanoseconds == 0 || now == 0 ||
             now - writer->lastBrokerPublishNanoseconds >= 1000000000ULL) {
-            VCAMSurfaceBrokerPublish(writer->surfaces, VCAMSharedFrameSlotCount);
+            VCAMSurfaceBrokerPublish(writer->surfaces, writer->header->slotCount);
             writer->lastBrokerPublishNanoseconds = now;
         }
     }
@@ -794,12 +919,28 @@ static bool VCAMSharedSurfaceReaderGetSnapshot(
     VCAMSharedFrameSnapshot *snapshot,
     VCAMSharedFrameMetadata *metadata) {
     if (!VCAMSharedSurfaceReaderEnsureMapped(reader)) return false;
+    uint64_t generation = atomic_load_explicit(
+        &reader->header->producerGeneration, memory_order_acquire);
     bool success = VCAMSharedFrameReadSnapshot(
         &reader->header->publishedSequence, &reader->header->publishedSlot,
         &reader->header->publishedTimestampNanoseconds,
-        reader->header->slotSequence, maximumAgeNanoseconds, snapshot,
+        reader->header->slotSequence, reader->header->slotCount,
+        reader->header->width, reader->header->height,
+        reader->header->pixelFormat, maximumAgeNanoseconds, snapshot,
         metadata);
-    if (success && metadata != NULL) metadata->pixelFormat = reader->header->pixelFormat;
+    if (success) {
+        uint32_t surfaceID = atomic_load_explicit(
+            &reader->header->surfaceIDs[snapshot->slot], memory_order_acquire);
+        success = surfaceID != 0 && atomic_load_explicit(
+            &reader->header->slotSequence[snapshot->slot],
+            memory_order_acquire) == snapshot->sequence &&
+            atomic_load_explicit(&reader->header->producerGeneration,
+                                 memory_order_acquire) == generation;
+        if (success && metadata != NULL) {
+            metadata->surfaceID = surfaceID;
+            metadata->surfaceGeneration = generation;
+        }
+    }
     return success;
 }
 
@@ -858,23 +999,29 @@ static bool VCAMSharedSurfaceReaderCopyLatestInternal(
         return false;
     }
     VCAMSharedFrameSnapshot snapshot = {0};
+    VCAMSharedFrameMetadata surfaceMetadata = {0};
     if (!VCAMSharedSurfaceReaderGetSnapshot(
-            reader, maximumAgeNanoseconds, &snapshot, NULL)) {
+            reader, maximumAgeNanoseconds, &snapshot, &surfaceMetadata)) {
         reader->lastFailure = VCAMSharedSurfaceReaderFailureStale;
         return false;
     }
     uint64_t sequence = snapshot.sequence;
     uint32_t slot = snapshot.slot;
-    _Atomic(uint32_t) *useCounter =
-        (_Atomic(uint32_t) *)&reader->header->consumerUseCount[slot];
-    atomic_fetch_add_explicit(useCounter, 1, memory_order_acq_rel);
-    IOSurfaceRef surface = VCAMSurfaceBrokerCopySurface(
-        reader->header->surfaceIDs[slot]);
+    uint32_t surfaceID = atomic_load_explicit(
+        &reader->header->surfaceIDs[slot],
+                                              memory_order_acquire);
+    _Atomic(uint64_t) *useCounter =
+        (_Atomic(uint64_t) *)&reader->header->consumerUseState[slot];
+    if (!VCAMSharedSurfaceAcquireUse(useCounter, surfaceID)) {
+        reader->lastFailure = VCAMSharedSurfaceReaderFailureChanged;
+        return false;
+    }
+    IOSurfaceRef surface = VCAMSurfaceBrokerCopySurface(surfaceID);
     if (surface == NULL) {
-        surface = IOSurfaceLookup(reader->header->surfaceIDs[slot]);
+        surface = IOSurfaceLookup(surfaceID);
     }
     if (surface == NULL) {
-        atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
+        VCAMSharedSurfaceReleaseUse(useCounter, surfaceID);
         if (announceConsumer) VCAMSharedSurfaceReaderSetReady(reader, false);
         reader->lastFailure = VCAMSharedSurfaceReaderFailureLookup;
         return false;
@@ -891,12 +1038,17 @@ static bool VCAMSharedSurfaceReaderCopyLatestInternal(
         atomic_load_explicit(&reader->header->slotSequence[slot],
                              memory_order_acquire) == sequence &&
         atomic_load_explicit(&reader->header->publishedSequence,
-                             memory_order_acquire) >= sequence;
+                             memory_order_acquire) >= sequence &&
+        atomic_load_explicit(&reader->header->surfaceIDs[slot],
+                             memory_order_acquire) == surfaceID &&
+        atomic_load_explicit(&reader->header->producerGeneration,
+                             memory_order_acquire) ==
+            surfaceMetadata.surfaceGeneration;
     if (!unchanged) {
         if (pixelBuffer != NULL) CVPixelBufferRelease(pixelBuffer);
         IOSurfaceDecrementUseCount(surface);
         CFRelease(surface);
-        atomic_fetch_sub_explicit(useCounter, 1, memory_order_acq_rel);
+        VCAMSharedSurfaceReleaseUse(useCounter, surfaceID);
         if (announceConsumer) VCAMSharedSurfaceReaderSetReady(reader, false);
         reader->lastFailure = status == kCVReturnSuccess
             ? VCAMSharedSurfaceReaderFailureChanged
@@ -908,11 +1060,8 @@ static bool VCAMSharedSurfaceReaderCopyLatestInternal(
     frame->pixelBuffer = pixelBuffer;
     frame->surface = surface;
     frame->useCounter = useCounter;
-    frame->metadata.sequence = sequence;
-    frame->metadata.monotonicTimestampNanoseconds = snapshot.timestamp;
-    frame->metadata.width = VCAMSharedFrameWidth;
-    frame->metadata.height = VCAMSharedFrameHeight;
-    frame->metadata.pixelFormat = reader->header->pixelFormat;
+    frame->surfaceID = surfaceID;
+    frame->metadata = surfaceMetadata;
     return true;
 }
 
@@ -946,11 +1095,8 @@ void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame) {
         CFRelease(surface);
     }
     if (frame->useCounter != NULL) {
-        _Atomic(uint32_t) *useCounter = frame->useCounter;
-        uint32_t current = atomic_load_explicit(useCounter, memory_order_acquire);
-        while (current > 0 && !atomic_compare_exchange_weak_explicit(
-                   useCounter, &current, current - 1,
-                   memory_order_acq_rel, memory_order_acquire)) {}
+        VCAMSharedSurfaceReleaseUse(
+            (_Atomic(uint64_t) *)frame->useCounter, frame->surfaceID);
     }
     memset(frame, 0, sizeof(*frame));
 }

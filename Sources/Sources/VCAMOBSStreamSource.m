@@ -103,15 +103,7 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
 }
 
 - (CMSampleBufferRef)copyVideoSampleForTemplate:(CMSampleBufferRef)templateBuffer {
-    NSData *jpeg = nil;
-    @synchronized (self) {
-        if (CACurrentMediaTime() - self.latestFrameHostTime < 3.5) jpeg = self.latestJPEG;
-    }
-    if (jpeg.length == 0) return NULL;
-    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
-    if (source == NULL) return NULL;
-    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-    CFRelease(source);
+    CGImageRef image = [self copyLatestImage];
     if (image == NULL) return NULL;
     CMSampleBufferRef sample = [self.renderer copySampleFromCGImage:image
                                                     sourceTransform:CGAffineTransformIdentity
@@ -119,6 +111,22 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
                                                       configuration:self.configuration];
     CGImageRelease(image);
     return sample;
+}
+
+- (CGImageRef)copyLatestImage {
+    NSData *jpeg = nil;
+    @synchronized (self) {
+        if (self.running &&
+            CACurrentMediaTime() - self.latestFrameHostTime < 3.5) {
+            jpeg = self.latestJPEG;
+        }
+    }
+    if (jpeg.length == 0) return NULL;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
+    if (source == NULL) return NULL;
+    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+    CFRelease(source);
+    return image;
 }
 
 - (CMSampleBufferRef)copyAudioSampleForTemplate:(CMSampleBufferRef)templateBuffer {

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import "../Core/VCAMMediaSource.h"
 #import "../Core/VCAMFrameRenderer.h"
 
@@ -9,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface VCAMOBSStreamSource : NSObject <VCAMMediaSource>
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
                               renderer:(VCAMFrameRenderer *)renderer;
+/// Decodes one atomic snapshot of the latest non-stale JPEG packet.
+- (nullable CGImageRef)copyLatestImage CF_RETURNS_RETAINED;
 @end
 
 NS_ASSUME_NONNULL_END

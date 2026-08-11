@@ -56,7 +56,6 @@ extern int proc_name(int pid, void *buffer, uint32_t bufferSize);
 
 static const char *const VCAMSurfaceBrokerService = "com.codex.vcam.surface";
 static const uint64_t VCAMXPCMachServiceListener = 1ULL << 0;
-enum { VCAMSurfaceBrokerSlotCount = 3 };
 static const char *const VCAMSurfaceKeys[] = {
     "surface0", "surface1", "surface2",
 };
@@ -111,6 +110,11 @@ static bool VCAMSurfaceBrokerPeerIs(xpc_connection_t peer,
         strcmp(name, expectedName) == 0;
 }
 
+static bool VCAMSurfaceBrokerPeerCanPublish(xpc_connection_t peer) {
+    return VCAMSurfaceBrokerPeerIs(peer, "SpringBoard") ||
+        VCAMSurfaceBrokerPeerIs(peer, "vcamd");
+}
+
 static xpc_object_t VCAMBrokerRegistry;
 
 static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
@@ -119,12 +123,15 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
     const char *command = xpc_dictionary_get_string(message, "command");
     if (command == NULL) return;
     if (strcmp(command, "publish") == 0) {
-        if (!VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")) return;
+        if (!VCAMSurfaceBrokerPeerCanPublish(peer)) return;
+        uint64_t slotCount = xpc_dictionary_get_uint64(message, "slotCount");
+        if (!VCAMSurfaceBrokerSlotCountIsValid(slotCount)) return;
         xpc_object_t registry = xpc_dictionary_create(NULL, NULL, 0);
         xpc_dictionary_set_uint64(
             registry, "generation",
             xpc_dictionary_get_uint64(message, "generation"));
-        for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+        xpc_dictionary_set_uint64(registry, "slotCount", slotCount);
+        for (uint32_t slot = 0; slot < slotCount; slot++) {
             xpc_object_t surface = xpc_dictionary_get_value(
                 message, VCAMSurfaceKeys[slot]);
             if (surface != NULL) {
@@ -147,7 +154,10 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         xpc_dictionary_set_uint64(
             reply, "generation",
             xpc_dictionary_get_uint64(VCAMBrokerRegistry, "generation"));
-        for (uint32_t slot = 0; slot < VCAMSurfaceBrokerSlotCount; slot++) {
+        uint64_t slotCount = xpc_dictionary_get_uint64(
+            VCAMBrokerRegistry, "slotCount");
+        xpc_dictionary_set_uint64(reply, "slotCount", slotCount);
+        for (uint32_t slot = 0; slot < slotCount; slot++) {
             xpc_object_t surface = xpc_dictionary_get_value(
                 VCAMBrokerRegistry, VCAMSurfaceKeys[slot]);
             if (surface != NULL) {

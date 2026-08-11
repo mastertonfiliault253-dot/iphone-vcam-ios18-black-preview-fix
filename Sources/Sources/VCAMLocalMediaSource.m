@@ -285,14 +285,27 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
     CGImageSourceRef imageSource = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
     if (imageSource != NULL) {
         size_t primaryIndex = CGImageSourceGetPrimaryImageIndex(imageSource);
-        NSDictionary *thumbnailOptions = @{
-            (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
-            (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
-            (id)kCGImageSourceThumbnailMaxPixelSize: @4096,
-            (id)kCGImageSourceShouldCacheImmediately: @YES,
-        };
-        _stillImage = CGImageSourceCreateThumbnailAtIndex(
-            imageSource, primaryIndex, (__bridge CFDictionaryRef)thumbnailOptions);
+        NSDictionary *properties = CFBridgingRelease(
+            CGImageSourceCopyPropertiesAtIndex(imageSource, primaryIndex, NULL));
+        NSUInteger sourceWidth = [properties[(id)kCGImagePropertyPixelWidth]
+            unsignedIntegerValue];
+        NSUInteger sourceHeight = [properties[(id)kCGImagePropertyPixelHeight]
+            unsignedIntegerValue];
+        NSUInteger sourceMaximumDimension = MAX(sourceWidth, sourceHeight);
+        if (sourceMaximumDimension > 0) {
+            // ImageIO applies EXIF orientation while keeping the decoded
+            // dimensions at their original maximum edge. Never silently
+            // downsample a source that must reach mediaserverd uncompressed.
+            NSDictionary *thumbnailOptions = @{
+                (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                (id)kCGImageSourceThumbnailMaxPixelSize: @(sourceMaximumDimension),
+                (id)kCGImageSourceShouldCacheImmediately: @YES,
+            };
+            _stillImage = CGImageSourceCreateThumbnailAtIndex(
+                imageSource, primaryIndex,
+                (__bridge CFDictionaryRef)thumbnailOptions);
+        }
         if (_stillImage == NULL) {
             _stillImage = CGImageSourceCreateImageAtIndex(imageSource, primaryIndex, NULL);
         }
@@ -1249,6 +1262,17 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
 
 - (BOOL)hasVideoAsset {
     @synchronized (self) { return self.asset != nil; }
+}
+
+- (CGSize)orientedStillImageSize {
+    @synchronized (self) {
+        if (_stillImage == NULL) return CGSizeZero;
+        CGFloat width = CGImageGetWidth(_stillImage);
+        CGFloat height = CGImageGetHeight(_stillImage);
+        NSInteger rotation = ((self.configuration.rotationDegrees % 360) + 360) % 360;
+        return rotation == 90 || rotation == 270
+            ? CGSizeMake(height, width) : CGSizeMake(width, height);
+    }
 }
 
 - (AVPlayer *)previewPlayer {

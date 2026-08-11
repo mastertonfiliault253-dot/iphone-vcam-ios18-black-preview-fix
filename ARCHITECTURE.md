@@ -3,9 +3,11 @@
 VCAM separates media production, camera replacement and control UI:
 
 - `vcamd` owns local image, OBS and RTSP decoding. RTSP publishes native 8-bit
-  NV12 through the three-slot IOSurface ring when no transform is required;
-  local image/OBS and the surface-handshake fallback use the 1080x1920 BGRA
-  three-slot mmap.
+  NV12 through a source-sized three-slot IOSurface ring when no transform is
+  required, or source-sized three-slot BGRA after an explicit user transform.
+  Local images publish once into one source-sized BGRA IOSurface; OBS publishes
+  source-sized BGRA through a three-slot IOSurface ring. The surface-handshake
+  fallback alone uses the fixed 1080x1920 BGRA mmap.
 - `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
   validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
   client.
@@ -13,8 +15,9 @@ VCAM separates media production, camera replacement and control UI:
   main processes one foreground-owned white dot, control panel and preview. In
   SpringBoard only, its media bridge owns local video and HLS playback through
   `AVPlayer`, takes NV12 frames from `AVPlayerItemVideoOutput`, and performs
-  rotation, mirroring, fit/fill and scale in one Metal-backed Core Image render
-  directly into the `420v` IOSurface transport; BGRA mmap is the compatibility
+  source orientation and explicit user transforms in one Metal-backed Core
+  Image render directly into a source-sized three-slot `420v` IOSurface;
+  BGRA mmap is the compatibility
   fallback.
   The SpringBoard and app-host control-panel previews may passively read the
   freshest raw BGRA mmap or NV12 IOSurface frame. They never claim the
@@ -24,20 +27,22 @@ VCAM separates media production, camera replacement and control UI:
   those exact processes restart. Normal tweak filtering loads application UI
   clients.
 
-`VCAMFrameRenderer` normalizes orientation, content mode, mirroring and target
-size before publication. The shared frame is the single user-visible direction
+`VCAMFrameRenderer` normalizes image metadata and explicit user transforms
+before publication. The shared frame is the single user-visible direction
 reference: local video applies the asset's complete `preferredTransform` once
-to decoded track pixels; UI preview adds no transform; realtime Camera/browser
-output applies only the device-observed graph compensation; and still capture
-adds no VCAM rotation or orientation metadata, leaving the saved-file direction
-to the system camera. Audio is never replaced.
+to decoded track pixels; UI preview adds no transform; Camera/browser consumers
+never guess orientation from target dimensions; and still capture adds no VCAM
+rotation or orientation metadata, leaving the saved-file direction to the
+system camera. Audio is never replaced.
 
 The native local-video/HLS bridge and eligible RTSP frames publish raw,
-uncompressed NV12 pixels into a three-slot IOSurface ring. Local-image/OBS and
-fallback publication use raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
+uncompressed NV12 pixels into source-sized three-slot IOSurface rings. Static
+images use one source-sized uncompressed BGRA IOSurface; OBS and transformed
+RTSP use source-sized three-slot BGRA IOSurfaces. Fallback publication alone
+uses raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
 HEVC or source-container payload is sent to mediaserverd. The vcamd
-launchd Mach service relays only the three IOSurface XPC rights from SpringBoard
-to mediaserverd and verifies both peer process names; frame bytes never pass
+launchd Mach service relays one or three IOSurface XPC rights from SpringBoard
+or `vcamd` to mediaserverd and verifies exact peer process names; frame bytes never pass
 through the daemon. mediaserverd retains the selected surface while rendering
 so SpringBoard never overwrites an in-use slot. UI previews are passive
 observers and do not alter that ownership handshake. The previous three-slot

@@ -175,14 +175,16 @@ class PackagingArchitectureTests(unittest.TestCase):
 
     def test_shared_transport_is_triple_buffered_atomic_and_stale_aware(self) -> None:
         header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(encoding="utf-8")
+        broker_header = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.h").read_text(encoding="utf-8")
         implementation = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(encoding="utf-8")
-        self.assertIn("VCAMSharedFrameSlotCount = 3", header)
+        self.assertIn("VCAMSharedFrameSlotCount = VCAMSurfaceBrokerVideoSlotCount", header)
+        self.assertIn("VCAMSurfaceBrokerVideoSlotCount = 3", broker_header)
         self.assertIn("mmap", implementation)
         self.assertIn("_Atomic", implementation)
         self.assertIn("slotSequence[slot], 0", implementation)
         self.assertIn("maximumAgeNanoseconds", implementation)
         self.assertIn("active", implementation)
-        self.assertIn("VCAMSharedFrameVersion = 2", implementation)
+        self.assertIn("VCAMSharedFrameVersion = 3", implementation)
         self.assertIn("_Atomic(uint64_t) requestedState", implementation)
         self.assertIn("atomic_compare_exchange_weak_explicit", implementation)
         self.assertIn("VCAMSharedFrameSetRequestedActive", header)
@@ -219,7 +221,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("VCAMSharedFrameWriterClear", main)
         self.assertNotIn("VCAMSharedFrameWriterSetActive", main)
         self.assertNotIn("VCAMSharedFrameSetRequestedActive", main)
-        self.assertIn("if (pixelBuffer != NULL) VCAMSharedFrameWriterPublish", main)
+        self.assertIn("if (pixelBuffer != NULL) {", main)
+        self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", main)
         self.assertIn("preferences.changed", main)
         is_enabled = producer.split("- (BOOL)isEnabled", 1)[1].split(
             "- (NSInteger)preferredFramesPerSecond", 1

@@ -6,6 +6,7 @@
 #import "../Sources/VCAMLocalMediaSource.h"
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
+#import "../Shared/VCAMSharedFrame.h"
 
 #include <unistd.h>
 
@@ -137,20 +138,104 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 - (BOOL)usesNativeSurfaceTransport {
     __block BOOL enabled = NO;
     dispatch_sync(self.stateQueue, ^{
-        enabled = self.configuration.enabled &&
-            self.configuration.sourceKind == VCAMSourceKindRTSP &&
+        BOOL nativeRTSP = self.configuration.sourceKind == VCAMSourceKindRTSP &&
             [self.source isKindOfClass:VCAMRTSPStreamSource.class];
+        BOOL nativeOBS = self.configuration.sourceKind == VCAMSourceKindOBSWebSocket &&
+            [self.source isKindOfClass:VCAMOBSStreamSource.class];
+        BOOL nativeStill = self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
+            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            [self.source isKindOfClass:VCAMLocalMediaSource.class];
+        enabled = self.configuration.enabled &&
+            (nativeOBS || nativeRTSP || nativeStill);
     });
     return enabled;
 }
 
-- (CVPixelBufferRef)copyNativePixelBufferForSharedCanvas {
+- (uint32_t)nativeSurfaceSlotCount {
+    __block uint32_t slotCount = VCAMSharedFrameSlotCount;
+    dispatch_sync(self.stateQueue, ^{
+        if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
+            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
+            slotCount = 1;
+        }
+    });
+    return slotCount;
+}
+
+- (CVPixelBufferRef)copyNativePixelBufferForSurface {
     __block CVPixelBufferRef pixelBuffer = NULL;
     dispatch_sync(self.stateQueue, ^{
-        if (self.configuration.sourceKind == VCAMSourceKindRTSP &&
+        if (self.configuration.sourceKind == VCAMSourceKindOBSWebSocket &&
+            [self.source isKindOfClass:VCAMOBSStreamSource.class]) {
+            VCAMOBSStreamSource *obs = (VCAMOBSStreamSource *)self.source;
+            CGImageRef image = [obs copyLatestImage];
+            CGSize size = image == NULL ? CGSizeZero : CGSizeMake(
+                CGImageGetWidth(image), CGImageGetHeight(image));
+            NSInteger rotation = ((self.configuration.rotationDegrees % 360) + 360) % 360;
+            if (rotation == 90 || rotation == 270) {
+                size = CGSizeMake(size.height, size.width);
+            }
+            CMSampleBufferRef template = CGSizeEqualToSize(size, CGSizeZero)
+                ? NULL : [self copyTemplateForSize:size];
+            CMSampleBufferRef sample = template == NULL ? NULL
+                : [self.renderer copySampleFromCGImage:image
+                                       sourceTransform:CGAffineTransformIdentity
+                                              template:template
+                                         configuration:self.configuration];
+            CVPixelBufferRef imageBuffer = sample == NULL ? NULL
+                : CMSampleBufferGetImageBuffer(sample);
+            if (imageBuffer != NULL) pixelBuffer = CVPixelBufferRetain(imageBuffer);
+            if (sample != NULL) CFRelease(sample);
+            if (template != NULL) CFRelease(template);
+            if (image != NULL) CGImageRelease(image);
+        } else if (self.configuration.sourceKind == VCAMSourceKindRTSP &&
             [self.source isKindOfClass:VCAMRTSPStreamSource.class]) {
-            pixelBuffer = [(VCAMRTSPStreamSource *)self.source
-                copyNativePixelBufferForSharedCanvas];
+            VCAMRTSPStreamSource *rtsp = (VCAMRTSPStreamSource *)self.source;
+            CVPixelBufferRef native = [rtsp copyNativePixelBufferForSurface];
+            NSInteger rotation = ((self.configuration.rotationDegrees % 360) + 360) % 360;
+            BOOL needsTransform = self.configuration.mirrorHorizontally || rotation != 0;
+            if (native != NULL && needsTransform) {
+                size_t width = CVPixelBufferGetWidth(native);
+                size_t height = CVPixelBufferGetHeight(native);
+                CGSize outputSize = rotation == 90 || rotation == 270
+                    ? CGSizeMake(height, width) : CGSizeMake(width, height);
+                CMSampleBufferRef template = [self copyTemplateForSize:outputSize];
+                CMSampleBufferRef sample = template == NULL ? NULL
+                    : [self.renderer copySampleFromPixelBuffer:native
+                                                      template:template
+                                                 configuration:self.configuration];
+                CVPixelBufferRef imageBuffer = sample == NULL ? NULL
+                    : CMSampleBufferGetImageBuffer(sample);
+                if (imageBuffer != NULL) pixelBuffer = CVPixelBufferRetain(imageBuffer);
+                if (sample != NULL) CFRelease(sample);
+                if (template != NULL) CFRelease(template);
+                CVPixelBufferRelease(native);
+            } else {
+                pixelBuffer = native;
+            }
+        } else if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
+                   !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+                   [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
+            VCAMLocalMediaSource *local = (VCAMLocalMediaSource *)self.source;
+            CGSize size = [local orientedStillImageSize];
+            CMSampleBufferRef template = CGSizeEqualToSize(size, CGSizeZero)
+                ? NULL : [self copyTemplateForSize:size];
+            CMSampleBufferRef sample = template == NULL ? NULL
+                : [local copyVideoSampleForTemplate:template];
+            CVPixelBufferRef imageBuffer = sample == NULL ? NULL
+                : CMSampleBufferGetImageBuffer(sample);
+            if (imageBuffer != NULL) pixelBuffer = CVPixelBufferRetain(imageBuffer);
+            if (sample != NULL) CFRelease(sample);
+            if (template != NULL) CFRelease(template);
+            // The still renderer owns its cached result. Drop the otherwise
+            // idle full-resolution template so one image does not retain two
+            // extra BGRA allocations between callbacks.
+            if (self->_templateSample != NULL) {
+                CFRelease(self->_templateSample);
+                self->_templateSample = NULL;
+                self->_templateSize = CGSizeZero;
+            }
         }
     });
     return pixelBuffer;

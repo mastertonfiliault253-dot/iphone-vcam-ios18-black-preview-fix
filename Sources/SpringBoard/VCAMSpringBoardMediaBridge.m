@@ -69,6 +69,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) CGColorSpaceRef colorSpace;
 @property(nonatomic) VCAMSharedFrameWriter *writer;
 @property(nonatomic) VCAMSharedSurfaceWriter *surfaceWriter;
+@property(nonatomic) uint32_t surfaceWidth;
+@property(nonatomic) uint32_t surfaceHeight;
 @property(nonatomic) BOOL started;
 @property(nonatomic) NSUInteger decodedFrames;
 @property(nonatomic) NSUInteger displayTicks;
@@ -156,6 +158,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);
         self.surfaceWriter = NULL;
     }
+    self.surfaceWidth = 0;
+    self.surfaceHeight = 0;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -246,8 +250,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [self stopPlayback];
     self.configuration = next;
     self.localVideo = localVideo;
-    self.surfaceWriter = VCAMSharedSurfaceWriterCreateWithPixelFormat(
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
     BOOL transportReady = self.writer != NULL && [self prepareOutputPool];
     if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
@@ -356,7 +358,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     });
 }
 
-- (nullable CIImage *)imageByTransformingPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+- (nullable CIImage *)imageByOrientingPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     if (pixelBuffer == NULL || self.configuration == nil) return nil;
     CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
     CGRect extent = image.extent;
@@ -379,6 +381,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         image = [image imageByApplyingTransform:CGAffineTransformMakeRotation(radians)];
     }
 
+    CGRect oriented = CGRectStandardize(image.extent);
+    return [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+        -CGRectGetMinX(oriented), -CGRectGetMinY(oriented))];
+}
+
+- (CIImage *)legacyCanvasImageFromOrientedImage:(CIImage *)image {
     CGRect oriented = image.extent;
     CGFloat scaleX = VCAMSharedFrameWidth / MAX(1.0, CGRectGetWidth(oriented));
     CGFloat scaleY = VCAMSharedFrameHeight / MAX(1.0, CGRectGetHeight(oriented));
@@ -460,14 +468,33 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             self.sourceTransform.a, self.sourceTransform.b,
             self.sourceTransform.c, self.sourceTransform.d]];
     }
+    CIImage *image = [self imageByOrientingPixelBuffer:source];
+    CGRect sourceExtent = image == nil ? CGRectZero : image.extent;
+    uint32_t outputWidth = (uint32_t)MAX(2.0, ceil(CGRectGetWidth(sourceExtent)));
+    uint32_t outputHeight = (uint32_t)MAX(2.0, ceil(CGRectGetHeight(sourceExtent)));
+    outputWidth = (outputWidth + 1U) & ~1U;
+    outputHeight = (outputHeight + 1U) & ~1U;
     if (self.surfaceWriter != NULL &&
-        !VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter)) {
+        (!VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter) ||
+         self.surfaceWidth != outputWidth || self.surfaceHeight != outputHeight)) {
         VCAMSharedSurfaceWriterDestroy(self.surfaceWriter);
         self.surfaceWriter = NULL;
+        self.surfaceWidth = 0;
+        self.surfaceHeight = 0;
     }
-    if (self.surfaceWriter == NULL) {
-        self.surfaceWriter = VCAMSharedSurfaceWriterCreateWithPixelFormat(
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
+    if (image != nil && self.surfaceWriter == NULL) {
+        self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
+            outputWidth, outputHeight,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            VCAMSharedFrameSlotCount);
+        if (self.surfaceWriter != NULL) {
+            self.surfaceWidth = outputWidth;
+            self.surfaceHeight = outputHeight;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"springboard %@ IOSurface configured size=%ux%u slots=%d",
+                self.localVideo ? @"local video" : @"HLS", outputWidth,
+                outputHeight, VCAMSharedFrameSlotCount]];
+        }
     }
     BOOL surfaceTransport = self.surfaceWriter != NULL;
     BOOL surfaceConsumerReady = surfaceTransport &&
@@ -482,11 +509,14 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                                   kCFAllocatorDefault, self.outputPool,
                                   &destination));
     if (destinationStatus == kCVReturnSuccess && destination != NULL) {
-        CIImage *image = [self imageByTransformingPixelBuffer:source];
         if (image != nil) {
-            CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+            CGRect target = surfaceTransport
+                ? CGRectMake(0, 0, outputWidth, outputHeight)
+                : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+            CIImage *renderImage = surfaceTransport ? image
+                : [self legacyCanvasImageFromOrientedImage:image];
             VCAMSetVideoColorAttachments(destination);
-            [self.context render:image toCVPixelBuffer:destination bounds:target
+            [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
             if (surfaceTransport) {
                 BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
@@ -499,10 +529,18 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                     if (CVPixelBufferPoolCreatePixelBuffer(
                             kCFAllocatorDefault, self.outputPool, &bootstrap) ==
                             kCVReturnSuccess && bootstrap != NULL) {
-                        [self.context render:image toCVPixelBuffer:bootstrap bounds:target
+                        CGRect bootstrapTarget = CGRectMake(
+                            0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+                        CIImage *bootstrapImage =
+                            [self legacyCanvasImageFromOrientedImage:image];
+                        [self.context render:bootstrapImage
+                             toCVPixelBuffer:bootstrap bounds:bootstrapTarget
                                   colorSpace:self.colorSpace];
                         compatibilityPublished =
-                            VCAMSharedFrameWriterPublish(self.writer, bootstrap);
+                            VCAMSharedFrameWriterPublishForSurfaceGeneration(
+                                self.writer, bootstrap,
+                                VCAMSharedSurfaceWriterGeneration(
+                                    self.surfaceWriter));
                         CVPixelBufferRelease(bootstrap);
                     }
                 }

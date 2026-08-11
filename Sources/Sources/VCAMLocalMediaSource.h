@@ -10,6 +10,7 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> *VCAMLocalPlaybackPerformanceSnap
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
                               renderer:(VCAMFrameRenderer *)renderer;
 - (BOOL)hasVideoAsset;
+- (CGSize)orientedStillImageSize;
 - (nullable AVPlayer *)previewPlayer;
 - (void)tickDirectPreviewDiagnostics;
 @end
