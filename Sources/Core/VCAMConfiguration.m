@@ -7,6 +7,10 @@
 #import <sys/stat.h>
 #import <sys/socket.h>
 #import <unistd.h>
+#if VCAM_WITH_CONTROL_UI
+#import <CoreImage/CoreImage.h>
+#import <UIKit/UIKit.h>
+#endif
 
 static const uint16_t VCAMConfigurationBrokerPort = 46321;
 static const NSUInteger VCAMConfigurationMaximumRequestBytes = 1024 * 1024;
@@ -15,6 +19,8 @@ static const uint8_t VCAMConfigurationBrokerReadCommand = 2;
 static const uint8_t VCAMConfigurationBrokerLegacyImportCommand = 3;
 static const uint8_t VCAMConfigurationBrokerFetchMediaCommand = 4;
 static const uint8_t VCAMConfigurationBrokerImportCommand = 5;
+static const uint8_t VCAMConfigurationBrokerPreviewCommand = 6;
+static const NSUInteger VCAMConfigurationMaximumPreviewBytes = 2 * 1024 * 1024;
 
 static BOOL VCAMReadAll(int descriptor, void *bytes, size_t length) {
     uint8_t *cursor = bytes;
@@ -99,7 +105,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.75+video-orientation-cadence";
+    return "com.codex.vcam/0.8.76+browser-preview-broker";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -155,6 +161,131 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     }
     return written;
 }
+
+#if VCAM_WITH_CONTROL_UI
+static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
+    static VCAMSharedFrameReader *frameReader;
+    static VCAMSharedSurfaceReader *surfaceReader;
+    static CVPixelBufferPoolRef framePool;
+    static CIContext *context;
+    static CGColorSpaceRef colorSpace;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        frameReader = VCAMSharedFrameReaderCreate();
+        surfaceReader = VCAMSharedSurfaceReaderCreate();
+        NSDictionary *poolAttributes = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @2,
+        };
+        NSDictionary *pixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
+            (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                (__bridge CFDictionaryRef)poolAttributes,
+                                (__bridge CFDictionaryRef)pixelAttributes,
+                                &framePool);
+        context = [CIContext contextWithOptions:@{
+            kCIContextUseSoftwareRenderer: @NO,
+        }];
+        colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    });
+
+    const uint64_t maximumAge = 2000000000ULL;
+    VCAMSharedFrameMetadata frameMetadata = {0};
+    VCAMSharedFrameMetadata surfaceMetadata = {0};
+    BOOL hasFrame = frameReader != NULL &&
+        VCAMSharedFrameReaderGetLatestMetadata(
+            frameReader, maximumAge, &frameMetadata);
+    BOOL hasSurface = surfaceReader != NULL &&
+        VCAMSharedSurfaceReaderGetLatestMetadata(
+            surfaceReader, maximumAge, &surfaceMetadata);
+    if (!hasFrame && !hasSurface) return nil;
+    BOOL useSurface = hasSurface && (!hasFrame ||
+        surfaceMetadata.monotonicTimestampNanoseconds >=
+            frameMetadata.monotonicTimestampNanoseconds);
+    VCAMSharedFrameMetadata newestMetadata =
+        useSurface ? surfaceMetadata : frameMetadata;
+
+    static uint64_t cachedSequence;
+    static uint64_t cachedGeneration;
+    static BOOL cachedSurface;
+    static NSDictionary<NSString *, id> *cachedSnapshot;
+    if (cachedSnapshot != nil && newestMetadata.sequence == cachedSequence &&
+        newestMetadata.surfaceGeneration == cachedGeneration &&
+        useSurface == cachedSurface) {
+        return cachedSnapshot;
+    }
+
+    CVPixelBufferRef pixelBuffer = NULL;
+    VCAMSharedSurfaceFrame surfaceFrame = {0};
+    VCAMSharedFrameMetadata copiedMetadata = {0};
+    BOOL ownsPixelBuffer = NO;
+    if (useSurface) {
+        if (VCAMSharedSurfaceReaderCopyLatestPassive(
+                surfaceReader, maximumAge, &surfaceFrame)) {
+            pixelBuffer = surfaceFrame.pixelBuffer;
+            copiedMetadata = surfaceFrame.metadata;
+        } else if (hasFrame) {
+            useSurface = NO;
+        } else {
+            return nil;
+        }
+    }
+    if (!useSurface) {
+        if (framePool == NULL || CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault, framePool, &pixelBuffer) !=
+                kCVReturnSuccess) return nil;
+        ownsPixelBuffer = YES;
+        if (!VCAMSharedFrameReaderCopyLatest(
+                frameReader, pixelBuffer, maximumAge, &copiedMetadata)) {
+            CVPixelBufferRelease(pixelBuffer);
+            return nil;
+        }
+    }
+
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    CGFloat scale = MIN(1.0, 640.0 / (CGFloat)MAX(width, height));
+    CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    image = [image imageByApplyingTransform:
+        CGAffineTransformMakeScale(scale, scale)];
+    CGRect extent = CGRectStandardize(image.extent);
+    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+        -CGRectGetMinX(extent), -CGRectGetMinY(extent))];
+    CGRect outputRect = CGRectMake(0, 0,
+        MAX(1.0, ceil(CGRectGetWidth(extent))),
+        MAX(1.0, ceil(CGRectGetHeight(extent))));
+    CGImageRef cgImage = context != nil && colorSpace != NULL
+        ? [context createCGImage:image fromRect:outputRect
+                          format:kCIFormatBGRA8 colorSpace:colorSpace]
+        : NULL;
+    NSData *jpegData = nil;
+    if (cgImage != NULL) {
+        UIImage *previewImage = [UIImage imageWithCGImage:cgImage];
+        jpegData = UIImageJPEGRepresentation(previewImage, 0.72);
+        CGImageRelease(cgImage);
+    }
+    if (useSurface) VCAMSharedSurfaceFrameRelease(&surfaceFrame);
+    else if (ownsPixelBuffer) CVPixelBufferRelease(pixelBuffer);
+    if (jpegData.length == 0 ||
+        jpegData.length > VCAMConfigurationMaximumPreviewBytes) return nil;
+
+    cachedSequence = copiedMetadata.sequence;
+    cachedGeneration = copiedMetadata.surfaceGeneration;
+    cachedSurface = useSurface;
+    cachedSnapshot = @{
+        @"jpegData": jpegData,
+        @"sequence": @(copiedMetadata.sequence),
+        @"surfaceGeneration": @(copiedMetadata.surfaceGeneration),
+        @"timestampNs": @(copiedMetadata.monotonicTimestampNanoseconds),
+        @"width": @(width),
+        @"height": @(height),
+        @"surface": @(useSurface),
+    };
+    return cachedSnapshot;
+}
+#endif
 
 @interface VCAMConfiguration ()
 @property(nonatomic, readwrite) BOOL enabled;
@@ -307,6 +438,50 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
     NSDictionary *values = [self readValuesFromDisk];
     if (values.count > 0 || self.isWriteBrokerHost) return values;
     return [self copyValuesFromBroker];
+}
+
++ (NSDictionary<NSString *, id> *)copyPreviewSnapshotFromBroker {
+    int descriptor = [self connectedBrokerSocket];
+    if (descriptor < 0) return nil;
+    struct timeval timeout = {.tv_sec = 0, .tv_usec = 500000};
+    setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    uint8_t command = VCAMConfigurationBrokerPreviewCommand;
+    uint8_t status = 0;
+    BOOL success = VCAMWriteAll(descriptor, &command, sizeof(command)) &&
+        VCAMReadAll(descriptor, &status, sizeof(status)) && status == 1;
+    uint32_t networkHeaderLength = 0;
+    if (success) {
+        success = VCAMReadAll(descriptor, &networkHeaderLength,
+                              sizeof(networkHeaderLength));
+    }
+    NSUInteger headerLength = ntohl(networkHeaderLength);
+    success = success && headerLength > 0 && headerLength <= 4096;
+    NSMutableData *headerData = success
+        ? [NSMutableData dataWithLength:headerLength] : nil;
+    if (success) {
+        success = VCAMReadAll(descriptor, headerData.mutableBytes, headerLength);
+    }
+    id decodedHeader = success
+        ? [NSJSONSerialization JSONObjectWithData:headerData options:0 error:nil]
+        : nil;
+    NSDictionary<NSString *, id> *header =
+        [decodedHeader isKindOfClass:NSDictionary.class] ? decodedHeader : nil;
+    id dataLengthValue = header[@"dataLength"];
+    NSUInteger dataLength = [dataLengthValue isKindOfClass:NSNumber.class]
+        ? [dataLengthValue unsignedIntegerValue] : 0;
+    success = success && dataLength > 0 &&
+        dataLength <= VCAMConfigurationMaximumPreviewBytes;
+    NSMutableData *jpegData = success
+        ? [NSMutableData dataWithLength:dataLength] : nil;
+    if (success) {
+        success = VCAMReadAll(descriptor, jpegData.mutableBytes, dataLength);
+    }
+    close(descriptor);
+    if (!success) return nil;
+    NSMutableDictionary<NSString *, id> *snapshot = [header mutableCopy];
+    snapshot[@"jpegData"] = jpegData;
+    return snapshot;
 }
 
 + (NSSet<NSString *> *)allowedPreferenceKeys {
@@ -782,6 +957,37 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
                         uint32_t responseLength = htonl((uint32_t)data.length);
                         VCAMWriteAll(client, &responseLength, sizeof(responseLength));
                         if (data.length > 0) VCAMWriteAll(client, data.bytes, data.length);
+                        close(client);
+                        continue;
+                    }
+                    if (success && command == VCAMConfigurationBrokerPreviewCommand) {
+#if VCAM_WITH_CONTROL_UI
+                        NSDictionary<NSString *, id> *snapshot =
+                            VCAMCreateBrokerPreviewSnapshot();
+#else
+                        NSDictionary<NSString *, id> *snapshot = nil;
+#endif
+                        NSData *jpegData = [snapshot[@"jpegData"]
+                            isKindOfClass:NSData.class] ? snapshot[@"jpegData"] : nil;
+                        NSMutableDictionary<NSString *, id> *header =
+                            jpegData.length > 0 ? [snapshot mutableCopy] : nil;
+                        [header removeObjectForKey:@"jpegData"];
+                        header[@"dataLength"] = @(jpegData.length);
+                        NSData *headerData = header != nil
+                            ? [NSJSONSerialization dataWithJSONObject:header
+                                                              options:0 error:nil]
+                            : nil;
+                        uint8_t previewStatus = headerData.length > 0 ? 1 : 0;
+                        VCAMWriteAll(client, &previewStatus, sizeof(previewStatus));
+                        if (previewStatus == 1) {
+                            uint32_t responseHeaderLength =
+                                htonl((uint32_t)headerData.length);
+                            VCAMWriteAll(client, &responseHeaderLength,
+                                         sizeof(responseHeaderLength));
+                            VCAMWriteAll(client, headerData.bytes,
+                                         headerData.length);
+                            VCAMWriteAll(client, jpegData.bytes, jpegData.length);
+                        }
                         close(client);
                         continue;
                     }

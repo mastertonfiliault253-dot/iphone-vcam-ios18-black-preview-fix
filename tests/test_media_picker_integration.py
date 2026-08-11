@@ -768,6 +768,29 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('streamText = @"已加载静态图片"', current_status)
         self.assertLess(current_status.index("if (staticImage)"), current_status.index('streamStatus[@"fps"]'))
 
+    def test_sandboxed_app_preview_falls_back_to_springboard_broker(self) -> None:
+        configuration_header = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.h"
+        ).read_text(encoding="utf-8")
+        configuration = (
+            ROOT / "Sources" / "Core" / "VCAMConfiguration.m"
+        ).read_text(encoding="utf-8")
+        preview = (
+            ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VCAMConfigurationBrokerPreviewCommand", configuration)
+        self.assertIn("copyPreviewSnapshotFromBroker", configuration_header)
+        self.assertIn("VCAMSharedSurfaceReaderCopyLatestPassive", configuration)
+        self.assertIn("UIImageJPEGRepresentation", configuration)
+        self.assertIn("requestBrokerPreviewIfNeeded", preview)
+        self.assertIn("dispatch_get_global_queue", preview)
+        self.assertIn("brokerImageView", preview)
+        self.assertNotIn(
+            "(_reader == NULL && _surfaceReader == NULL) || _pixelBufferPool == NULL",
+            preview,
+        )
+
     def test_large_static_images_use_source_sized_springboard_surface(self) -> None:
         bridge = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"

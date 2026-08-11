@@ -34,8 +34,8 @@ flowchart LR
 核心设计：
 
 - **mediaserverd 注入**：`VCAMMediaServerClient.dylib` 只做“取最新虚拟帧 → 按路由渲染/替换 → 输出”，不联网、不解码、不碰 UIKit/AVAssetReader。
-- **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。
-- **vcamd（项目自己的 LaunchDaemon）**：负责本地图片、OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地视频/HLS 路径只作显式回滚。
+- **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地图片、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。应用沙箱不能直接读取 mmap/IOSurface 时，悬浮面板只通过回环 Broker 获取降采样 JPEG，绝不把 JPEG 送入 mediaserverd。
+- **vcamd（项目自己的 LaunchDaemon）**：负责 OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地图片/视频/HLS 路径只作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
 - **共享帧**：本地图片按解码后的原始方向和尺寸发布一个不可变 BGRA IOSurface；本地视频和 HLS 使用三个源尺寸 NV12 IOSurface；OBS 使用三个源尺寸 BGRA IOSurface；RTSP 无变换时使用 NV12、显式旋转或镜像后使用 BGRA。只有 XPC 握手回退保留固定三槽 BGRA mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 

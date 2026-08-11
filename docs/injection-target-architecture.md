@@ -33,7 +33,10 @@ width, height, pixel format and an active depth of one or three slots. Publicati
 metadata; neither transport contains JPEG, H.264, HEVC or another encoded
 payload. The SpringBoard and filtered app-host control panels may passively
 observe the freshest mmap/IOSurface frame, but they neither claim the
-mediaserverd consumer lease. Filtered app hosts never decode or publish media. Consumers copy without
+mediaserverd consumer lease. If an app sandbox cannot open either raw transport,
+the panel obtains a downscaled JPEG from SpringBoard through the loopback
+configuration broker. This UI-only fallback never feeds mediaserverd. Filtered
+app hosts never decode or publish media. Consumers copy without
 waiting. After mediaserverd adopts a surface writer generation, it rejects
 that generation's old mmap bootstrap; only a different producer generation
 reopens a fresh bootstrap window. Every bootstrap slot carries that same

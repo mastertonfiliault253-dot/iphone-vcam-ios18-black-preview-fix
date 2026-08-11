@@ -52,6 +52,10 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
                                   error:(NSError **)error;
 + (nullable NSString *)resolvedMediaPathForSharedPath:(NSString *)sharedPath
                                                 error:(NSError **)error;
+/// Returns a small JPEG preview plus shared-frame metadata through the
+/// SpringBoard loopback broker. App sandboxes use this only when direct mmap
+/// and IOSurface reads are unavailable.
++ (nullable NSDictionary<NSString *, id> *)copyPreviewSnapshotFromBroker;
 + (NSString *)processLogPath;
 + (void)appendProcessLog:(NSString *)message;
 + (void)startWriteBroker;

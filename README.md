@@ -28,7 +28,10 @@ The media hook and UI overlay have separate injection scopes:
 - Camera, MobileSafari, Chrome, Edge and Firefox main processes receive the UI
   dylib only: one foreground-owned white dot and the same control panel. They
   contain no camera hook, decoder or network source; replacement remains in
-  `mediaserverd`.
+  `mediaserverd`. If an app sandbox cannot directly read the raw mmap/IOSurface
+  preview, its panel requests a downscaled JPEG from SpringBoard over the
+  loopback broker. That JPEG is UI-only; the camera replacement path remains
+  raw, source-sized BGRA/NV12.
 
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns OBS
 WebSocket/JPEG reception, direct RTSP demux/decode, and publication of only the

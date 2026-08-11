@@ -1,6 +1,7 @@
 #import "VCAMSharedFramePreviewView.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
 
 @interface VCAMSharedFramePreviewView () {
@@ -17,6 +18,9 @@
 @property(nonatomic) uint64_t lastSurfaceGeneration;
 @property(nonatomic) BOOL hasLastFrame;
 @property(nonatomic) BOOL lastFrameWasSurface;
+@property(nonatomic, strong) UIImageView *brokerImageView;
+@property(nonatomic) BOOL brokerFetchInFlight;
+@property(nonatomic) uint64_t lastBrokerFetchNanoseconds;
 @end
 
 static BOOL VCAMPreviewGetLatestMetadata(
@@ -44,6 +48,35 @@ static BOOL VCAMPreviewGetLatestMetadata(
     return YES;
 }
 
+static BOOL VCAMPreviewGetBrokerMetadata(
+    NSDictionary<NSString *, id> *snapshot,
+    VCAMSharedFrameMetadata *metadataOut,
+    BOOL *surfaceOut) {
+    NSNumber *sequence = [snapshot[@"sequence"] isKindOfClass:NSNumber.class]
+        ? snapshot[@"sequence"] : nil;
+    NSNumber *timestamp = [snapshot[@"timestampNs"] isKindOfClass:NSNumber.class]
+        ? snapshot[@"timestampNs"] : nil;
+    NSNumber *width = [snapshot[@"width"] isKindOfClass:NSNumber.class]
+        ? snapshot[@"width"] : nil;
+    NSNumber *height = [snapshot[@"height"] isKindOfClass:NSNumber.class]
+        ? snapshot[@"height"] : nil;
+    if (sequence == nil || timestamp == nil || width == nil || height == nil ||
+        sequence.unsignedLongLongValue == 0 ||
+        timestamp.unsignedLongLongValue == 0 ||
+        width.unsignedIntValue == 0 || height.unsignedIntValue == 0) return NO;
+    if (metadataOut != NULL) {
+        metadataOut->sequence = sequence.unsignedLongLongValue;
+        metadataOut->monotonicTimestampNanoseconds =
+            timestamp.unsignedLongLongValue;
+        metadataOut->width = width.unsignedIntValue;
+        metadataOut->height = height.unsignedIntValue;
+        metadataOut->surfaceGeneration =
+            [snapshot[@"surfaceGeneration"] unsignedLongLongValue];
+    }
+    if (surfaceOut != NULL) *surfaceOut = [snapshot[@"surface"] boolValue];
+    return YES;
+}
+
 @implementation VCAMSharedFramePreviewView
 
 + (NSDictionary<NSString *, id> *)streamingStatus {
@@ -66,6 +99,12 @@ static BOOL VCAMPreviewGetLatestMetadata(
     BOOL frameWasSurface = NO;
     BOOL hasMetadata = VCAMPreviewGetLatestMetadata(
         frameReader, surfaceReader, maximumAge, &metadata, &frameWasSurface);
+    if (!hasMetadata) {
+        NSDictionary<NSString *, id> *brokerSnapshot =
+            [VCAMConfiguration copyPreviewSnapshotFromBroker];
+        hasMetadata = VCAMPreviewGetBrokerMetadata(
+            brokerSnapshot, &metadata, &frameWasSurface);
+    }
     uint64_t timestamp = hasMetadata
         ? metadata.monotonicTimestampNanoseconds : 0;
     uint64_t monotonicNow = VCAMSharedFrameMonotonicNanoseconds();
@@ -129,6 +168,14 @@ static BOOL VCAMPreviewGetLatestMetadata(
                                 (__bridge CFDictionaryRef)poolAttributes,
                                 (__bridge CFDictionaryRef)pixelAttributes,
                                 &_pixelBufferPool);
+        _brokerImageView = [[UIImageView alloc] initWithFrame:self.bounds];
+        _brokerImageView.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _brokerImageView.backgroundColor = UIColor.blackColor;
+        _brokerImageView.contentMode = UIViewContentModeScaleAspectFit;
+        _brokerImageView.hidden = YES;
+        _brokerImageView.accessibilityIdentifier = @"vcam-broker-preview";
+        [self addSubview:_brokerImageView];
         _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
         if (@available(iOS 15.0, *)) {
             _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(10, 15, 15);
@@ -148,29 +195,71 @@ static BOOL VCAMPreviewGetLatestMetadata(
     if (_formatDescription != NULL) CFRelease(_formatDescription);
 }
 
+- (void)requestBrokerPreviewIfNeeded {
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+    if (self.brokerFetchInFlight ||
+        (self.lastBrokerFetchNanoseconds != 0 && now != 0 &&
+         now - self.lastBrokerFetchNanoseconds < 250000000ULL)) return;
+    self.brokerFetchInFlight = YES;
+    self.lastBrokerFetchNanoseconds = now;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary<NSString *, id> *snapshot =
+            [VCAMConfiguration copyPreviewSnapshotFromBroker];
+        NSData *jpegData = [snapshot[@"jpegData"] isKindOfClass:NSData.class]
+            ? snapshot[@"jpegData"] : nil;
+        UIImage *image = jpegData.length > 0
+            ? [UIImage imageWithData:jpegData] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) return;
+            strongSelf.brokerFetchInFlight = NO;
+            if (image == nil) return;
+            if (VCAMPreviewGetLatestMetadata(
+                    strongSelf->_reader, strongSelf->_surfaceReader,
+                    1000000000ULL, NULL, NULL)) return;
+            strongSelf.brokerImageView.image = image;
+            strongSelf.brokerImageView.hidden = NO;
+        });
+    });
+}
+
 - (void)displayTick:(CADisplayLink *)displayLink {
     (void)displayLink;
-    if ((_reader == NULL && _surfaceReader == NULL) || _pixelBufferPool == NULL) return;
     const uint64_t maximumAge = 1000000000ULL;
     BOOL frameWasSurface = NO;
     if (!VCAMPreviewGetLatestMetadata(
-            _reader, _surfaceReader, maximumAge, NULL, &frameWasSurface)) return;
+            _reader, _surfaceReader, maximumAge, NULL, &frameWasSurface)) {
+        [self requestBrokerPreviewIfNeeded];
+        return;
+    }
 
     CVPixelBufferRef pixelBuffer = NULL;
     VCAMSharedFrameMetadata metadata = {0};
     VCAMSharedSurfaceFrame surfaceFrame = {0};
     if (frameWasSurface) {
         if (!VCAMSharedSurfaceReaderCopyLatestPassive(
-                _surfaceReader, maximumAge, &surfaceFrame)) return;
+                _surfaceReader, maximumAge, &surfaceFrame)) {
+            [self requestBrokerPreviewIfNeeded];
+            return;
+        }
         pixelBuffer = surfaceFrame.pixelBuffer;
         metadata = surfaceFrame.metadata;
     } else {
+        if (_pixelBufferPool == NULL) {
+            [self requestBrokerPreviewIfNeeded];
+            return;
+        }
         if (CVPixelBufferPoolCreatePixelBuffer(
                 kCFAllocatorDefault, _pixelBufferPool, &pixelBuffer) !=
-                kCVReturnSuccess) return;
+                kCVReturnSuccess) {
+            [self requestBrokerPreviewIfNeeded];
+            return;
+        }
         if (!VCAMSharedFrameReaderCopyLatest(
                 _reader, pixelBuffer, maximumAge, &metadata)) {
             CVPixelBufferRelease(pixelBuffer);
+            [self requestBrokerPreviewIfNeeded];
             return;
         }
     }
@@ -223,6 +312,7 @@ static BOOL VCAMPreviewGetLatestMetadata(
     }
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) [layer flush];
     [layer enqueueSampleBuffer:sample];
+    self.brokerImageView.hidden = YES;
     self.lastSequence = metadata.sequence;
     self.lastSurfaceGeneration = metadata.surfaceGeneration;
     self.hasLastFrame = YES;

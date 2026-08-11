@@ -21,8 +21,11 @@ VCAM separates media production, camera replacement and control UI:
   fallback.
   The SpringBoard and app-host control-panel previews may passively read the
   freshest raw BGRA mmap or NV12 IOSurface frame. They never claim the
-  mediaserverd consumer lease. App hosts receive UI only; they never decode
-  media, hook camera frames or publish replacement frames.
+  mediaserverd consumer lease. When an app sandbox cannot open either raw
+  transport, SpringBoard returns a downscaled JPEG over the existing loopback
+  broker for panel display only. App hosts receive UI only; they never decode
+  media, hook camera frames or publish replacement frames, and the JPEG never
+  enters the mediaserverd replacement path.
 - `vcaminjectd` repairs only the SpringBoard and `mediaserverd` mappings after
   those exact processes restart. Normal tweak filtering loads application UI
   clients.
