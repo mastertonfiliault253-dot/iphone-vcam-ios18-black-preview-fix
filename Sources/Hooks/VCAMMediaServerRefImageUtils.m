@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSurfaceBroker.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -551,7 +552,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 (failure != lastSurfaceFailure || surfaceFailureLogs < 3)) {
                 char message[128] = {0};
                 snprintf(message, sizeof(message),
-                         "shared IOSurface unavailable failure=%d", failure);
+                         "shared IOSurface unavailable failure=%d broker=%s",
+                         failure, VCAMSurfaceBrokerSubscriberStatus());
                 VCAMRefLog(message);
                 lastSurfaceFailure = failure;
                 surfaceFailureLogs += 1;

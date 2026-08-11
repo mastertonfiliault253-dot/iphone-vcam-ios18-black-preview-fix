@@ -145,7 +145,6 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
 @property(nonatomic) BOOL usesRTSPTransport;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
 @property(nonatomic) BOOL softwareFallbackActive;
-@property(nonatomic) CFTimeInterval hardwareRetryDeadline;
 @end
 
 @implementation VCAMRTSPStreamSource
@@ -164,7 +163,6 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
         _conversionQueue = dispatch_queue_create("com.codex.vcam.stream.convert", DISPATCH_QUEUE_SERIAL);
         _hardwareDecodeEnabled = YES;
         _softwareFallbackActive = NO;
-        _hardwareRetryDeadline = 0;
     }
     return self;
 }
@@ -552,10 +550,12 @@ cleanup:
         return [self decodeOneFFmpegSessionUsingHardware:NO];
     }
     if (self.softwareFallbackActive) {
-        if (CACurrentMediaTime() < self.hardwareRetryDeadline) {
-            return [self decodeOneFFmpegSessionUsingHardware:NO];
-        }
-        self.softwareFallbackActive = NO;
+        // A decoder instance represents one concrete source configuration.
+        // Once iOS rejects VideoToolbox for that source, keep the stable
+        // software session until the user changes/reloads the source. The old
+        // 30-second retry repeatedly tore down a healthy session and produced
+        // a visible cadence pause without changing any decoder inputs.
+        return [self decodeOneFFmpegSessionUsingHardware:NO];
     }
     // FFmpeg owns RTSP/RTP depayloading, codec extradata, access-unit
     // normalization, timestamps, reordering, and VideoToolbox integration.
@@ -570,7 +570,6 @@ cleanup:
         @"%@ hardware decode produced no frames; software fallback active",
         self.streamName]];
     self.softwareFallbackActive = YES;
-    self.hardwareRetryDeadline = CACurrentMediaTime() + 30.0;
     return [self decodeOneFFmpegSessionUsingHardware:NO];
 }
 
@@ -698,10 +697,7 @@ cleanup:
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
-    while (self.running &&
-           (useHardware || !self.hardwareDecodeEnabled ||
-            CACurrentMediaTime() < self.hardwareRetryDeadline) &&
-           av_read_frame(formatContext, packet) >= 0) {
+    while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
             videoPacketsWithoutFrame += 1;
             int sendResult = AVERROR(EAGAIN);
@@ -791,12 +787,6 @@ cleanup:
         }
         av_packet_unref(packet);
     }
-    if (!useHardware && self.hardwareDecodeEnabled && self.running &&
-        CACurrentMediaTime() >= self.hardwareRetryDeadline) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ software retry window elapsed; retrying hardware", self.streamName]];
-    }
-
 cleanup:
     if (useHardware) __sync_lock_release(&VCAMCaptureFFmpegHardwareLogs);
     av_dict_free(&options);

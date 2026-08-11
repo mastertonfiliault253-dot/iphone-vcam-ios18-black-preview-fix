@@ -33,4 +33,8 @@ void VCAMSurfaceBrokerRequestRegistry(void);
 IOSurfaceRef _Nullable VCAMSurfaceBrokerCopySurface(uint32_t surfaceID)
     CF_RETURNS_RETAINED;
 
+/// Low-volume subscriber state for device diagnostics. The returned string is
+/// process-lifetime storage and never contains media or user data.
+const char *VCAMSurfaceBrokerSubscriberStatus(void);
+
 NS_ASSUME_NONNULL_END

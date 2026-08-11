@@ -355,14 +355,10 @@ CVPixelBufferRef VCAMCopyNV12FromAVFrame(AVFrame *frame) {
     OSType pixelFormat = fullRange
         ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
-    NSDictionary *attributes = @{
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-    };
     CVPixelBufferRef pixelBuffer = NULL;
     if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
                             (size_t)frame->height, pixelFormat,
-                            (__bridge CFDictionaryRef)attributes,
+                            NULL,
                             &pixelBuffer) != kCVReturnSuccess) return NULL;
     if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
         CVPixelBufferRelease(pixelBuffer);

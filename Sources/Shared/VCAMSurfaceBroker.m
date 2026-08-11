@@ -134,6 +134,17 @@ static xpc_connection_t VCAMSubscriberConnection;
 static dispatch_queue_t VCAMSubscriberQueue;
 static dispatch_once_t VCAMSubscriberOnce;
 static _Atomic(uint64_t) VCAMSubscriberLastRequestNanoseconds;
+static _Atomic(int32_t) VCAMSubscriberStatus;
+
+enum {
+    VCAMSubscriberStatusWaiting = 0,
+    VCAMSubscriberStatusConnectionUnavailable = 1,
+    VCAMSubscriberStatusInvalidReply = 2,
+    VCAMSubscriberStatusInvalidRegistry = 3,
+    VCAMSubscriberStatusImportFailed = 4,
+    VCAMSubscriberStatusReady = 5,
+    VCAMSubscriberStatusSurfaceMiss = 6,
+};
 
 static xpc_connection_t VCAMSurfaceBrokerSubscriberConnection(void) {
     dispatch_once(&VCAMSubscriberOnce, ^{
@@ -142,7 +153,12 @@ static xpc_connection_t VCAMSurfaceBrokerSubscriberConnection(void) {
         VCAMSubscriberConnection = VCAMXPCMachServiceCreate(
             VCAMSurfaceBrokerService, VCAMSubscriberQueue,
             VCAMXPCMachServicePrivileged);
-        if (VCAMSubscriberConnection == NULL) return;
+        if (VCAMSubscriberConnection == NULL) {
+            atomic_store_explicit(&VCAMSubscriberStatus,
+                                  VCAMSubscriberStatusConnectionUnavailable,
+                                  memory_order_release);
+            return;
+        }
         xpc_connection_set_event_handler(VCAMSubscriberConnection,
                                           ^(xpc_object_t event) { (void)event; });
         xpc_connection_resume(VCAMSubscriberConnection);
@@ -168,17 +184,34 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
         connection, request, VCAMSubscriberQueue, ^(xpc_object_t reply) {
             if (xpc_get_type(reply) != VCAMXPCTypeDictionary() ||
                 strcmp(xpc_dictionary_get_string(reply, "command") ?: "",
-                       "registry") != 0) return;
+                       "registry") != 0) {
+                atomic_store_explicit(&VCAMSubscriberStatus,
+                                      VCAMSubscriberStatusInvalidReply,
+                                      memory_order_release);
+                return;
+            }
             uint64_t slotCount = xpc_dictionary_get_uint64(reply, "slotCount");
-            if (!VCAMSurfaceBrokerSlotCountIsValid(slotCount)) return;
+            if (!VCAMSurfaceBrokerSlotCountIsValid(slotCount)) {
+                atomic_store_explicit(&VCAMSubscriberStatus,
+                                      VCAMSubscriberStatusInvalidRegistry,
+                                      memory_order_release);
+                return;
+            }
             IOSurfaceRef replacements[VCAMSurfaceBrokerVideoSlotCount] = {0};
+            uint32_t imported = 0;
             for (uint32_t slot = 0; slot < slotCount; slot++) {
                 xpc_object_t object = xpc_dictionary_get_value(
                     reply, VCAMSurfaceKeys[slot]);
                 if (object != NULL) {
                     replacements[slot] = IOSurfaceLookupFromXPCObject(object);
+                    if (replacements[slot] != NULL) imported += 1;
                 }
             }
+            atomic_store_explicit(&VCAMSubscriberStatus,
+                                  imported == slotCount
+                                      ? VCAMSubscriberStatusReady
+                                      : VCAMSubscriberStatusImportFailed,
+                                  memory_order_release);
             pthread_mutex_lock(&VCAMSubscriberLock);
             for (uint32_t slot = 0; slot < VCAMSurfaceBrokerVideoSlotCount; slot++) {
                 if (VCAMSubscriberSurfaces[slot] != NULL) {
@@ -202,6 +235,27 @@ IOSurfaceRef VCAMSurfaceBrokerCopySurface(uint32_t surfaceID) {
         }
     }
     pthread_mutex_unlock(&VCAMSubscriberLock);
-    if (result == NULL) VCAMSurfaceBrokerRequestRegistry();
+    if (result == NULL) {
+        if (atomic_load_explicit(&VCAMSubscriberStatus,
+                                 memory_order_acquire) ==
+            VCAMSubscriberStatusReady) {
+            atomic_store_explicit(&VCAMSubscriberStatus,
+                                  VCAMSubscriberStatusSurfaceMiss,
+                                  memory_order_release);
+        }
+        VCAMSurfaceBrokerRequestRegistry();
+    }
     return result;
+}
+
+const char *VCAMSurfaceBrokerSubscriberStatus(void) {
+    switch (atomic_load_explicit(&VCAMSubscriberStatus, memory_order_acquire)) {
+        case VCAMSubscriberStatusConnectionUnavailable: return "connection-unavailable";
+        case VCAMSubscriberStatusInvalidReply: return "invalid-reply";
+        case VCAMSubscriberStatusInvalidRegistry: return "invalid-registry";
+        case VCAMSubscriberStatusImportFailed: return "surface-import-failed";
+        case VCAMSubscriberStatusReady: return "ready";
+        case VCAMSubscriberStatusSurfaceMiss: return "surface-id-miss";
+        default: return "waiting-for-reply";
+    }
 }

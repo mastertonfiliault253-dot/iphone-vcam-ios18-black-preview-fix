@@ -44,6 +44,22 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMProcessIsAlive(activeProducer)", shared)
         self.assertIn("!VCAMSharedSurfaceWriterIsCurrent(VCAMSurfaceWriter)", daemon)
 
+    def test_software_nv12_intermediate_does_not_require_iosurface(self) -> None:
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
+            encoding="utf-8"
+        )
+        nv12 = converter.split("CVPixelBufferRef VCAMCopyNV12FromAVFrame", 1)[1].split(
+            "CVPixelBufferRef VCAMCopyBGRAFromAVFrame", 1
+        )[0]
+
+        # vcamd copies this short-lived software-decode buffer into the
+        # brokered IOSurface ring. Requiring the intermediate allocation itself
+        # to be IOSurface-backed fails in the root daemon context and silently
+        # diverts RTSP back to the fixed BGRA mmap canvas.
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", nv12)
+        self.assertNotIn("kCVPixelBufferMetalCompatibilityKey", nv12)
+        self.assertIn("pixelFormat,\n                            NULL,", nv12)
+
     def test_rtsp_receiver_matches_the_mediamtx_tcp_client_contract(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
@@ -72,6 +88,9 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('xpc_dictionary_get_uint64(reply, "slotCount")', client)
         self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", broker)
         self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", client)
+        self.assertIn("VCAMSurfaceBrokerSubscriberStatus", client)
+        self.assertIn("surface-import-failed", client)
+        self.assertIn("IOSurface registry request pid=", broker)
 
     def test_hd_yuv_fallback_uses_bt709_instead_of_bt601(self) -> None:
         converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
@@ -227,8 +246,10 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('@"%@ hardware first-frame size=', stream)
         self.assertNotIn('@"rtsp ', stream)
         self.assertIn("self.softwareFallbackActive = NO;", stream)
-        self.assertIn("CACurrentMediaTime() < self.hardwareRetryDeadline", stream)
-        self.assertIn("software retry window elapsed; retrying hardware", stream)
+        self.assertNotIn("hardwareRetryDeadline", stream)
+        self.assertNotIn("software retry window elapsed; retrying hardware", stream)
+        self.assertIn("if (self.softwareFallbackActive)", stream)
+        self.assertIn("return [self decodeOneFFmpegSessionUsingHardware:NO];", stream)
         self.assertNotIn("static volatile int consecutiveSendFailures", stream)
         self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)

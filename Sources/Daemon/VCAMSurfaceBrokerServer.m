@@ -5,6 +5,7 @@
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 
 // Prefer Xcode's XPC types. The Linux iPhoneOS 16.5 SDK omits this header, so
@@ -116,6 +117,7 @@ static bool VCAMSurfaceBrokerPeerCanPublish(xpc_connection_t peer) {
 }
 
 static xpc_object_t VCAMBrokerRegistry;
+static _Atomic(uint32_t) VCAMBrokerGetDiagnostics;
 
 static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                                             xpc_object_t message) {
@@ -145,8 +147,21 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         fflush(stderr);
         return;
     }
-    if (strcmp(command, "get") != 0 ||
-        !VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")) return;
+    if (strcmp(command, "get") != 0) return;
+    pid_t peerPID = VCAMXPCConnectionGetPID(peer);
+    char peerName[64] = {0};
+    if (peerPID > 0) proc_name(peerPID, peerName, sizeof(peerName));
+    bool accepted = VCAMSurfaceBrokerPeerIs(peer, "mediaserverd");
+    uint32_t diagnostic = atomic_fetch_add_explicit(
+        &VCAMBrokerGetDiagnostics, 1, memory_order_relaxed);
+    if (diagnostic < 6) {
+        fprintf(stderr,
+                "vcamd IOSurface registry request pid=%d name=%s accepted=%d registry=%d\n",
+                peerPID, peerName[0] == '\0' ? "(unknown)" : peerName,
+                accepted, VCAMBrokerRegistry != NULL);
+        fflush(stderr);
+    }
+    if (!accepted) return;
     xpc_object_t reply = xpc_dictionary_create_reply(message);
     if (reply == NULL) return;
     xpc_dictionary_set_string(reply, "command", "registry");
