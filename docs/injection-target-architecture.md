@@ -7,8 +7,8 @@ The standard rootless package installs under `/var/jb` and contains exactly:
 | Target | Filter | Responsibility |
 | --- | --- | --- |
 | `VCAMMediaServerClient` | executable `mediaserverd` | Nonblocking read of a fresh shared frame and `BWNodeOutput` replacement |
-| `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker and native local-video/HLS player; filtered app hosts get only the white dot, panel and preview |
-| `vcamd` | no injection; LaunchDaemon | Local-image, OBS and RTSP decoding, latest-frame publication, plus explicit legacy local-video/HLS rollback |
+| `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker, static-image publisher and native local-video/HLS player; filtered app hosts get only the white dot, panel and preview |
+| `vcamd` | no injection; LaunchDaemon | OBS and RTSP decoding, latest-frame publication, plus explicit legacy local-image/video/HLS rollback |
 | `vcaminjectd` | no injection; root LaunchDaemon | Reinject only the two allowed clients after their exact process PID changes |
 
 Camera and the listed browser main processes receive the UI dylib only. Its
@@ -19,7 +19,7 @@ targeted. Audio is not replaced.
 
 ## Frame path
 
-`local image → vcamd/ImageIO → one source-sized raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
+`local image → SpringBoard/ImageIO → one source-sized raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
 
 `OBS → vcamd → source-sized three-slot raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
 
@@ -33,7 +33,7 @@ width, height, pixel format and an active depth of one or three slots. Publicati
 metadata; neither transport contains JPEG, H.264, HEVC or another encoded
 payload. The SpringBoard and filtered app-host control panels may passively
 observe the freshest mmap/IOSurface frame, but they neither claim the
-mediaserverd consumer lease nor decode or publish media. Consumers copy without
+mediaserverd consumer lease. Filtered app hosts never decode or publish media. Consumers copy without
 waiting. After mediaserverd adopts a surface writer generation, it rejects
 that generation's old mmap bootstrap; only a different producer generation
 reopens a fresh bootstrap window. Every bootstrap slot carries that same
@@ -103,6 +103,10 @@ the original sample, and either construction path remains fail-closed.
   NV12/Metal/IOSurface pipeline as HLS. It loops by seeking to zero at item end.
   Creating `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained
   incremental `AVAssetReader`/FFmpeg daemon path for diagnostics only.
+- Production static images use SpringBoard ImageIO orientation normalization and
+  publish once into a source-sized one-slot BGRA IOSurface. Creating
+  `/var/tmp/vcam-local-image-legacy-vcamd.enable` restores the retained daemon
+  static-image publisher for diagnostics only.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
 - RTSP uses FFmpeg inside `vcamd`, with VideoToolbox where available and a

@@ -2,7 +2,8 @@
 
 VCAM replaces camera video at `BWNodeOutput -emitSampleBuffer:` while keeping
 networking and decoding outside `mediaserverd` and injected app-host branches;
-SpringBoard alone runs the native local-video/HLS player. It is for software
+SpringBoard alone publishes static images and runs the native local-video/HLS
+player. It is for software
 you own or are authorized to test. It does not hook identity, liveness, KYC,
 payment or authentication decisions.
 
@@ -29,10 +30,10 @@ The media hook and UI overlay have separate injection scopes:
   contain no camera hook, decoder or network source; replacement remains in
   `mediaserverd`.
 
-`vcamd` is this package's LaunchDaemon, not an injected dylib. It owns local
-image playback, OBS WebSocket/JPEG reception, direct RTSP demux/decode, and
-publication of only the latest frame. SpringBoard owns local video and HLS
-playback through the same system AVPlayer/NV12/Metal path. A source or decoder
+`vcamd` is this package's LaunchDaemon, not an injected dylib. It owns OBS
+WebSocket/JPEG reception, direct RTSP demux/decode, and publication of only the
+latest frame. SpringBoard publishes source-sized static images and owns local
+video and HLS playback through the same system AVPlayer/NV12/Metal path. A source or decoder
 failure stops publication but does not disable virtual mode.
 SpringBoard is the sole enable/restore control-plane writer, so a delayed worker
 reload cannot overwrite a newer user choice. Audio is not replaced; the real
@@ -51,8 +52,9 @@ when enabled, without pre-decoding the entire asset into memory.
 ## Sources
 
 - Photos or Files: both pickers broker-copy the original selected representation
-  and preserve its extension and bytes. PNG, JPEG and HEIC/HEIF use the ImageIO
-  static decoder and frame cache. MOV, MP4 and M4V use SpringBoard's
+  and preserve its extension and bytes. PNG, JPEG and HEIC/HEIF use SpringBoard
+  ImageIO normalization and a source-sized one-slot BGRA IOSurface. MOV, MP4
+  and M4V use SpringBoard's
   system `AVPlayer`, output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
@@ -81,6 +83,9 @@ when enabled, without pre-decoding the entire asset into memory.
 - Local-video rollback: creating
   `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained daemon
   `AVAssetReader`/FFmpeg path for MOV, MP4 and M4V diagnostics.
+- Local-image rollback: creating
+  `/var/tmp/vcam-local-image-legacy-vcamd.enable` restores the retained daemon
+  ImageIO publisher for diagnostics.
 
 The selected media and configuration live under `/var/mobile/Media/VCAM`.
 The shared frame transport lives at `/var/tmp/com.codex.vcam.frames` and carries

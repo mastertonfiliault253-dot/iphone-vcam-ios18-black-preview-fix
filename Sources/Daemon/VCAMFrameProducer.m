@@ -14,6 +14,8 @@ static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
+static const char *const VCAMLegacyLocalImageDaemonMarker =
+    "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
@@ -89,16 +91,21 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         self.configuration = nextConfiguration;
         if (!self.configuration.enabled || self.configuration.sourceKind == VCAMSourceKindCamera) return;
         switch (self.configuration.sourceKind) {
-            case VCAMSourceKindLocalMedia:
+            case VCAMSourceKindLocalMedia: {
                 // SpringBoard owns production local-video playback through the
                 // same AVPlayer/NV12/Metal path as HLS. Keep the old daemon
                 // reader behind an explicit on-device rollback marker.
-                if (!VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) ||
-                    access(VCAMLegacyLocalVideoDaemonMarker, F_OK) == 0) {
+                BOOL localVideo = VCAMLocalMediaPathIsVideo(
+                    self.configuration.mediaPath);
+                BOOL daemonRollback = localVideo
+                    ? access(VCAMLegacyLocalVideoDaemonMarker, F_OK) == 0
+                    : access(VCAMLegacyLocalImageDaemonMarker, F_OK) == 0;
+                if (daemonRollback) {
                     self.source = [[VCAMLocalMediaSource alloc]
                         initWithConfiguration:self.configuration renderer:self.renderer];
                 }
                 break;
+            }
             case VCAMSourceKindOBSWebSocket:
                 self.source = [[VCAMOBSStreamSource alloc] initWithConfiguration:self.configuration
                                                                           renderer:self.renderer];

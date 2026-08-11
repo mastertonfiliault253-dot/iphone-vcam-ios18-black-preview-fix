@@ -768,22 +768,18 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('streamText = @"已加载静态图片"', current_status)
         self.assertLess(current_status.index("if (staticImage)"), current_status.index('streamStatus[@"fps"]'))
 
-    def test_large_static_images_fall_back_to_full_resolution_nv12_surface(self) -> None:
-        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")
-        local = (ROOT / "Sources" / "Sources" / "VCAMLocalMediaSource.m").read_text(
-            encoding="utf-8"
-        )
-        static_surface = daemon.split("if (staticSurface && !refreshedStaticSurface)", 1)[1].split(
-            "} else if (nativeTransport", 1
-        )[0]
-        still_render = local.split("- (BOOL)renderStillImageIntoPixelBuffer:", 1)[1].split(
-            "- (CMSampleBufferRef)copyVideoSampleForTemplate:", 1
+    def test_large_static_images_use_source_sized_springboard_surface(self) -> None:
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        static_surface = bridge.split("- (BOOL)startStaticImage:", 1)[1].split(
+            "- (void)refreshStaticImage:", 1
         )[0]
 
-        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarFullRange", static_surface)
-        self.assertIn("VCAMSurfaceWriter == NULL", static_surface)
-        self.assertIn("VTPixelTransferSessionTransferImage", still_render)
-        self.assertNotIn("CGImageSourceThumbnailMaxPixelSize", static_surface)
+        self.assertIn("MAX(width, height)", static_surface)
+        self.assertIn("outputWidth, outputHeight, kCVPixelFormatType_32BGRA, 1", static_surface)
+        self.assertNotIn("8192", static_surface)
+        self.assertNotIn("16000000", static_surface)
 
     def test_ui_only_notifications_do_not_reconnect_an_unchanged_rtsp_source(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(

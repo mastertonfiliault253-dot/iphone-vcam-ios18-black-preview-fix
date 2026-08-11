@@ -2,6 +2,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -16,6 +17,8 @@ static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
+static const char *const VCAMLegacyLocalImageDaemonMarker =
+    "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
@@ -82,6 +85,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
 @property(nonatomic) BOOL localVideo;
+@property(nonatomic) BOOL staticImage;
+@property(nonatomic, strong, nullable) CIImage *staticRenderImage;
 @property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic) CGSize sourceNaturalSize;
 @property(nonatomic, copy, nullable) NSString *lastError;
@@ -152,6 +157,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.player = nil;
     self.configuration = nil;
     self.localVideo = NO;
+    self.staticImage = NO;
+    self.staticRenderImage = nil;
     self.sourceTransform = CGAffineTransformIdentity;
     self.sourceNaturalSize = CGSizeZero;
     if (self.surfaceWriter != NULL) {
@@ -188,7 +195,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 - (BOOL)configurationMatches:(VCAMConfiguration *)configuration {
     if (self.configuration == nil || configuration == nil) return NO;
     return self.configuration.sourceKind == configuration.sourceKind &&
-        [self.configuration.hlsURL isEqual:configuration.hlsURL] &&
+        ((self.configuration.hlsURL == nil && configuration.hlsURL == nil) ||
+            [self.configuration.hlsURL isEqual:configuration.hlsURL]) &&
         ((self.configuration.mediaPath == nil && configuration.mediaPath == nil) ||
             [self.configuration.mediaPath isEqual:configuration.mediaPath]) &&
         self.configuration.loopMedia == configuration.loopMedia &&
@@ -232,6 +240,128 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     return YES;
 }
 
+- (nullable CIImage *)imageByApplyingConfiguredTransform:(CIImage *)image {
+    if (image == nil || self.configuration == nil) return nil;
+    CGRect extent = image.extent;
+    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+        -CGRectGetMidX(extent), -CGRectGetMidY(extent))];
+    if (self.configuration.mirrorHorizontally) {
+        image = [image imageByApplyingTransform:CGAffineTransformMakeScale(-1, 1)];
+    }
+    CGFloat radians = self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
+    if (fabs(radians) > 0.0001) {
+        image = [image imageByApplyingTransform:CGAffineTransformMakeRotation(radians)];
+    }
+    CGRect oriented = CGRectStandardize(image.extent);
+    return [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+        -CGRectGetMinX(oriented), -CGRectGetMinY(oriented))];
+}
+
+- (BOOL)publishStaticBootstrap {
+    if (self.staticRenderImage == nil || self.writer == NULL ||
+        self.outputPool == NULL || self.surfaceWriter == NULL) return NO;
+    CVPixelBufferRef bootstrap = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, self.outputPool,
+                                           &bootstrap) != kCVReturnSuccess ||
+        bootstrap == NULL) return NO;
+    CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+    CIImage *image = [self legacyCanvasImageFromOrientedImage:self.staticRenderImage];
+    [self.context render:image toCVPixelBuffer:bootstrap bounds:target
+              colorSpace:self.colorSpace];
+    BOOL published = VCAMSharedFrameWriterPublishForSurfaceGeneration(
+        self.writer, bootstrap,
+        VCAMSharedSurfaceWriterGeneration(self.surfaceWriter));
+    CVPixelBufferRelease(bootstrap);
+    return published;
+}
+
+- (BOOL)startStaticImage:(VCAMConfiguration *)configuration {
+    NSURL *url = [NSURL fileURLWithPath:configuration.mediaPath];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (source == NULL) {
+        self.lastError = @"static image source unavailable";
+        return NO;
+    }
+    size_t index = CGImageSourceGetPrimaryImageIndex(source);
+    NSDictionary *properties = CFBridgingRelease(
+        CGImageSourceCopyPropertiesAtIndex(source, index, NULL));
+    NSUInteger width = [properties[(id)kCGImagePropertyPixelWidth] unsignedIntegerValue];
+    NSUInteger height = [properties[(id)kCGImagePropertyPixelHeight] unsignedIntegerValue];
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @(MAX(width, height)),
+        (id)kCGImageSourceShouldCacheImmediately: @YES,
+    };
+    CGImageRef decoded = CGImageSourceCreateThumbnailAtIndex(
+        source, index, (__bridge CFDictionaryRef)options);
+    if (decoded == NULL) decoded = CGImageSourceCreateImageAtIndex(source, index, NULL);
+    CFRelease(source);
+    if (decoded == NULL) {
+        self.lastError = @"static image decode failed";
+        return NO;
+    }
+    CIImage *image = [self imageByApplyingConfiguredTransform:
+        [CIImage imageWithCGImage:decoded]];
+    CGImageRelease(decoded);
+    CGRect extent = image.extent;
+    uint32_t outputWidth = (uint32_t)MAX(1.0, ceil(CGRectGetWidth(extent)));
+    uint32_t outputHeight = (uint32_t)MAX(1.0, ceil(CGRectGetHeight(extent)));
+    self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
+        outputWidth, outputHeight, kCVPixelFormatType_32BGRA, 1);
+    if (self.surfaceWriter == NULL) {
+        self.lastError = [NSString stringWithFormat:
+            @"static IOSurface unavailable size=%ux%u", outputWidth, outputHeight];
+        return NO;
+    }
+    self.surfaceWidth = outputWidth;
+    self.surfaceHeight = outputHeight;
+    self.staticRenderImage = image;
+    CVPixelBufferRef destination =
+        VCAMSharedSurfaceWriterCopyNextPixelBuffer(self.surfaceWriter);
+    BOOL surfacePublished = NO;
+    if (destination != NULL) {
+        [self.context render:image toCVPixelBuffer:destination
+                      bounds:CGRectMake(0, 0, outputWidth, outputHeight)
+                 colorSpace:self.colorSpace];
+        surfacePublished = VCAMSharedSurfaceWriterPublish(self.surfaceWriter, destination);
+        CVPixelBufferRelease(destination);
+    }
+    BOOL bootstrapPublished = surfacePublished && [self publishStaticBootstrap];
+    if (!surfacePublished || !bootstrapPublished) {
+        self.lastError = @"static image publish failed";
+        return NO;
+    }
+    self.publishedFrames = 1;
+    self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
+    self.displayLink = [CADisplayLink displayLinkWithTarget:self
+                                                   selector:@selector(refreshStaticImage:)];
+    self.displayLink.preferredFramesPerSecond = 1;
+    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard static image published size=%ux%u slots=1 generation=%llu",
+        outputWidth, outputHeight,
+        (unsigned long long)VCAMSharedSurfaceWriterGeneration(self.surfaceWriter)]];
+    return YES;
+}
+
+- (void)refreshStaticImage:(CADisplayLink *)displayLink {
+    (void)displayLink;
+    if (!self.staticImage || self.surfaceWriter == NULL) return;
+    if (!VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter)) {
+        [self reload];
+        return;
+    }
+    BOOL refreshed = VCAMSharedSurfaceWriterRefreshLatest(self.surfaceWriter);
+    BOOL consumerReady = VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
+    BOOL bootstrap = consumerReady || [self publishStaticBootstrap];
+    if (refreshed && bootstrap) {
+        self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
+    } else {
+        self.publishFailures += 1;
+    }
+}
+
 - (void)reload {
     NSAssert(NSThread.isMainThread, @"SpringBoard media bridge reload requires main thread");
     if (!self.started) return;
@@ -241,18 +371,29 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
         VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;
-    BOOL shouldPlay = next.enabled && (hls || localVideo);
+    BOOL staticImage = next.sourceKind == VCAMSourceKindLocalMedia &&
+        next.mediaPath.length > 0 && !VCAMLocalMediaPathIsVideo(next.mediaPath) &&
+        access(VCAMLegacyLocalImageDaemonMarker, F_OK) != 0;
+    BOOL shouldPlay = next.enabled && (hls || localVideo || staticImage);
     if (!shouldPlay) {
         [self stopPlayback];
         return;
     }
-    if (self.player != nil && [self configurationMatches:next]) return;
+    BOOL transportCurrent = !self.staticImage ||
+        VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter);
+    if (self.configuration != nil && transportCurrent &&
+        [self configurationMatches:next]) return;
     [self stopPlayback];
     self.configuration = next;
     self.localVideo = localVideo;
+    self.staticImage = staticImage;
     BOOL transportReady = self.writer != NULL && [self prepareOutputPool];
     if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
+        return;
+    }
+    if (staticImage) {
+        if (![self startStaticImage:next]) [self stopPlayback];
         return;
     }
 
@@ -373,17 +514,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             self.sourceTransform.c, self.sourceTransform.d, 0, 0);
         image = [image imageByApplyingTransform:linear];
     }
-    if (self.configuration.mirrorHorizontally) {
-        image = [image imageByApplyingTransform:CGAffineTransformMakeScale(-1, 1)];
-    }
-    CGFloat radians = self.configuration.rotationDegrees * (CGFloat)M_PI / 180.0;
-    if (fabs(radians) > 0.0001) {
-        image = [image imageByApplyingTransform:CGAffineTransformMakeRotation(radians)];
-    }
-
     CGRect oriented = CGRectStandardize(image.extent);
-    return [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
         -CGRectGetMinX(oriented), -CGRectGetMinY(oriented))];
+    return [self imageByApplyingConfiguredTransform:image];
 }
 
 - (CIImage *)legacyCanvasImageFromOrientedImage:(CIImage *)image {
@@ -574,7 +708,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 
 - (NSDictionary<NSString *, id> *)healthSnapshot {
     return @{
-        @"running": @(self.player != nil && self.displayLink != nil),
+        @"running": @(self.displayLink != nil &&
+            (self.player != nil || self.staticImage)),
         @"decodedFrames": @(self.decodedFrames),
         @"publishedFrames": @(self.publishedFrames),
         @"emptyCopies": @(self.emptyCopies),

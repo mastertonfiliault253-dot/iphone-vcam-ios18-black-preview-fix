@@ -2,19 +2,19 @@
 
 VCAM separates media production, camera replacement and control UI:
 
-- `vcamd` owns local image, OBS and RTSP decoding. RTSP publishes native 8-bit
+- `vcamd` owns OBS and RTSP decoding. RTSP publishes native 8-bit
   NV12 through a source-sized three-slot IOSurface ring when no transform is
   required, or source-sized three-slot BGRA after an explicit user transform.
-  Local images publish once into one source-sized BGRA IOSurface; OBS publishes
-  source-sized BGRA through a three-slot IOSurface ring. The surface-handshake
+  OBS publishes source-sized BGRA through a three-slot IOSurface ring. The surface-handshake
   fallback alone uses the fixed 1080x1920 BGRA mmap.
 - `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
   validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
   client.
 - `VCAMSpringBoardClient` gives SpringBoard, Camera and the supported browser
   main processes one foreground-owned white dot, control panel and preview. In
-  SpringBoard only, its media bridge owns local video and HLS playback through
-  `AVPlayer`, takes NV12 frames from `AVPlayerItemVideoOutput`, and performs
+  SpringBoard only, its media bridge normalizes static images with ImageIO into
+  one source-sized BGRA IOSurface and owns local video/HLS playback through
+  `AVPlayer`. It takes NV12 frames from `AVPlayerItemVideoOutput` and performs
   source orientation and explicit user transforms in one Metal-backed Core
   Image render directly into a source-sized three-slot `420v` IOSurface;
   BGRA mmap is the compatibility
@@ -51,6 +51,8 @@ Creating
 `/var/tmp/vcam-hls-legacy-vcamd.enable` disables the SpringBoard HLS bridge and
 restores the retained daemon HLS decoder for rollback. The equivalent local
 video rollback marker is `/var/tmp/vcam-local-video-legacy-vcamd.enable`.
+`/var/tmp/vcam-local-image-legacy-vcamd.enable` restores the retained daemon
+static-image publisher.
 
 Once virtual mode is enabled, capture is fail-closed: a missing, stale or
 unrenderable source may retain the last virtual frame, emit black or suppress a

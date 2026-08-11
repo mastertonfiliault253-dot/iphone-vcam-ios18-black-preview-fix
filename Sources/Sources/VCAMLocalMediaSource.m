@@ -1311,7 +1311,7 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
                 transferSession, scratch, pixelBuffer);
         }
         fprintf(stderr,
-                "[DEBUG-static-nv12-4c2d] transfer status=%d size=%zux%zu\n",
+                "vcamd legacy static NV12 transfer status=%d size=%zux%zu\n",
                 (int)transferStatus, CVPixelBufferGetWidth(pixelBuffer),
                 CVPixelBufferGetHeight(pixelBuffer));
         fflush(stderr);

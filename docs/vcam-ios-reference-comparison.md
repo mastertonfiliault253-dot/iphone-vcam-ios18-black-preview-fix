@@ -14,7 +14,7 @@ replacement seam.
 | Concern | Reference | This project (`worker1`) |
 | --- | --- | --- |
 | Media path | Hard-coded `/tmp/test.png` or commented DCIM MOV | SpringBoard picker and shared configuration |
-| Image | UIImage/CGImage | Core Image in isolated `vcamd` |
+| Image | UIImage/CGImage | SpringBoard ImageIO normalization into one source-sized IOSurface |
 | Local video | AVAssetReader preloads at most 60 BGRA frames | SpringBoard AVPlayerItemVideoOutput, source-sized NV12, no frame-array preload |
 | Loop | Callback index modulo the short frame array | Complete asset timeline loops at end-of-item |
 | Memory | Frame array remains resident; README notes leaks | Only source state, renderer pools and latest shared frames stay resident |
@@ -29,8 +29,8 @@ replacement seam.
 
 The reference implementation proves that mediaserverd can consume a decoded
 pixel frame, but it does not make mediaserverd a safe place for file/network
-decoders. Here `vcamd` owns image/OBS/RTSP blocking, reconnecting and decode
-state while SpringBoard owns native local-video/HLS playback. Static images
+decoders. Here `vcamd` owns OBS/RTSP blocking, reconnecting and decode state,
+while SpringBoard owns static images and native local-video/HLS playback. Static images
 publish one source-sized BGRA IOSurface; moving native sources use three
 source-sized NV12 surfaces, with a fixed BGRA mmap only for compatibility. The
 consumer roles—mediaserverd replacement and UI preview clients—only perform a
