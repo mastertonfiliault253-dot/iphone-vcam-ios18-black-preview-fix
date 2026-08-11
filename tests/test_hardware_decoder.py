@@ -89,8 +89,18 @@ class HardwareDecoderTests(unittest.TestCase):
         subscriber = broker.split("static bool VCAMSurfaceBrokerPeerCanSubscribe", 1)[1].split(
             "static xpc_object_t VCAMBrokerRegistry", 1
         )[0]
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', subscriber)
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', subscriber)
+        for process_name in (
+            "mediaserverd",
+            "SpringBoard",
+            "Camera",
+            "MobileSafari",
+            "Google Chrome",
+            "Microsoft Edge",
+            "Firefox",
+        ):
+            self.assertIn(
+                f'VCAMSurfaceBrokerPeerIs(peer, "{process_name}")', subscriber
+            )
         self.assertIn('xpc_dictionary_set_uint64(message, "slotCount", count)', client)
         self.assertIn('xpc_dictionary_get_uint64(reply, "slotCount")', client)
         self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", broker)

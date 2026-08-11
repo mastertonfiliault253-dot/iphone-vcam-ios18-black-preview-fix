@@ -117,11 +117,16 @@ static bool VCAMSurfaceBrokerPeerCanPublish(xpc_connection_t peer) {
 }
 
 static bool VCAMSurfaceBrokerPeerCanSubscribe(xpc_connection_t peer) {
-    // mediaserverd replaces camera frames; SpringBoard owns the in-process
-    // preview and native local-video/HLS producer. Both need read-only access
-    // to the current IOSurface registry.
+    // mediaserverd replaces camera frames. The remaining exact process names
+    // mirror VCAMSpringBoardClient.plist: those UI-only hosts render the
+    // in-process preview and therefore need read-only registry access.
     return VCAMSurfaceBrokerPeerIs(peer, "mediaserverd") ||
-        VCAMSurfaceBrokerPeerIs(peer, "SpringBoard");
+        VCAMSurfaceBrokerPeerIs(peer, "SpringBoard") ||
+        VCAMSurfaceBrokerPeerIs(peer, "Camera") ||
+        VCAMSurfaceBrokerPeerIs(peer, "MobileSafari") ||
+        VCAMSurfaceBrokerPeerIs(peer, "Google Chrome") ||
+        VCAMSurfaceBrokerPeerIs(peer, "Microsoft Edge") ||
+        VCAMSurfaceBrokerPeerIs(peer, "Firefox");
 }
 
 static xpc_object_t VCAMBrokerRegistry;
