@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <stdio.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -605,6 +606,15 @@ static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
         CVReturn status = CVPixelBufferCreate(
             kCFAllocatorDefault, width, height,
             pixelFormat, (__bridge CFDictionaryRef)attributes, &pixelBuffer);
+        if (status != kCVReturnSuccess) {
+            static dispatch_once_t createFailureToken;
+            dispatch_once(&createFailureToken, ^{
+                fprintf(stderr,
+                        "vcam shared NV12 IOSurface create failed status=%d size=%ux%u pixel=%08x\n",
+                        status, width, height, pixelFormat);
+                fflush(stderr);
+            });
+        }
         return status == kCVReturnSuccess ? pixelBuffer : NULL;
     }
     size_t bytesPerRow = IOSurfaceAlignProperty(

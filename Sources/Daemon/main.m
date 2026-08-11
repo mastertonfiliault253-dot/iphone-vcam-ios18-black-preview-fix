@@ -20,6 +20,8 @@ static uint32_t VCAMSurfaceSlotCount;
 static BOOL VCAMStaticSurfacePublished;
 static dispatch_source_t VCAMTimer;
 static BOOL VCAMLoggedNativeSurfaceReady;
+static BOOL VCAMLoggedNativeTransportReceived;
+static BOOL VCAMLoggedNativeSurfaceCreateFailed;
 static BOOL VCAMLoggedNativeSurfacePublished;
 static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
@@ -164,6 +166,12 @@ static void VCAMPublishTick(void) {
             uint32_t width = (uint32_t)CVPixelBufferGetWidth(native);
             uint32_t height = (uint32_t)CVPixelBufferGetHeight(native);
             uint32_t slotCount = nativeSlotCount;
+            if (!VCAMLoggedNativeTransportReceived) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"vcamd native transport received size=%ux%u pixel=%08x slots=%u",
+                    width, height, pixelFormat, slotCount]];
+                VCAMLoggedNativeTransportReceived = YES;
+            }
             if (VCAMSurfaceWriter == NULL || VCAMSurfacePixelFormat != pixelFormat ||
                 VCAMSurfaceWidth != width || VCAMSurfaceHeight != height ||
                 VCAMSurfaceSlotCount != slotCount) {
@@ -174,6 +182,13 @@ static void VCAMPublishTick(void) {
                 VCAMSurfaceWidth = VCAMSurfaceWriter == NULL ? 0 : width;
                 VCAMSurfaceHeight = VCAMSurfaceWriter == NULL ? 0 : height;
                 VCAMSurfaceSlotCount = VCAMSurfaceWriter == NULL ? 0 : slotCount;
+                if (VCAMSurfaceWriter == NULL &&
+                    !VCAMLoggedNativeSurfaceCreateFailed) {
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"vcamd native IOSurface create failed size=%ux%u pixel=%08x slots=%u",
+                        width, height, pixelFormat, slotCount]];
+                    VCAMLoggedNativeSurfaceCreateFailed = YES;
+                }
                 if (VCAMSurfaceWriter != NULL && !VCAMLoggedNativeSurfaceReady) {
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                         @"vcamd native IOSurface ready size=%ux%u pixel=%08x slots=%u",

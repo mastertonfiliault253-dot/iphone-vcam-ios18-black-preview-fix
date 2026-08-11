@@ -99,7 +99,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.63+ui-preview-orientation-probe";
+    return "com.codex.vcam/0.8.64+surface-create-probe";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
