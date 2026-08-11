@@ -1,6 +1,7 @@
 import json
 import pathlib
 import plistlib
+import subprocess
 import unittest
 
 
@@ -8,6 +9,24 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class PackagingArchitectureTests(unittest.TestCase):
+    def test_debian_maintainer_scripts_are_executable_in_git(self) -> None:
+        for relative_path in (
+            "layout/DEBIAN/postinst",
+            "layout/DEBIAN/prerm",
+            "layout/DEBIAN/postrm",
+        ):
+            result = subprocess.run(
+                ["git", "ls-files", "--stage", relative_path],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(
+                result.stdout.startswith("100755 "),
+                f"{relative_path} must be committed as executable",
+            )
+
     def test_package_targets_only_ios_16_through_16_5(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         control = (ROOT / "control").read_text(encoding="utf-8")
