@@ -99,7 +99,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.69+static-nv12-fallback";
+    return "com.codex.vcam/0.8.70+static-surface-probe";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

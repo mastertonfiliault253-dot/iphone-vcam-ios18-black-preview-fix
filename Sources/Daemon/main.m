@@ -26,6 +26,7 @@ static BOOL VCAMLoggedNativeSurfaceCreateFailed;
 static BOOL VCAMLoggedNativeSurfacePublished;
 static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
+static BOOL VCAMLoggedStaticNV12Fallback;
 
 static void VCAMDestroySurfaceWriter(void) {
     if (VCAMSurfaceWriter != NULL) {
@@ -37,6 +38,42 @@ static void VCAMDestroySurfaceWriter(void) {
     VCAMSurfaceHeight = 0;
     VCAMSurfaceSlotCount = 0;
     VCAMStaticSurfacePublished = NO;
+}
+
+static void VCAMProbeStaticSurfaceAllocations(uint32_t width, uint32_t height) {
+    static dispatch_once_t probeToken;
+    dispatch_once(&probeToken, ^{
+        uint32_t alignedWidth = (width + 15u) & ~15u;
+        uint32_t alignedHeight = (height + 15u) & ~15u;
+        struct {
+            const char *name;
+            uint32_t width;
+            uint32_t height;
+        } cases[] = {
+            {"exact", width, height},
+            {"aligned16", alignedWidth, alignedHeight},
+            {"width2048", MIN(width, 2048u), height},
+            {"height2048", width, MIN(height, 2048u)},
+            {"baseline", 1080u, 1920u},
+        };
+        NSDictionary *attributes = @{
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); index++) {
+            CVPixelBufferRef buffer = NULL;
+            CVReturn status = CVPixelBufferCreate(
+                kCFAllocatorDefault, cases[index].width, cases[index].height,
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                (__bridge CFDictionaryRef)attributes, &buffer);
+            fprintf(stderr,
+                    "[DEBUG-static-surface-probe-91a6] case=%s size=%ux%u pixel=%08x status=%d surface=%d\n",
+                    cases[index].name, cases[index].width, cases[index].height,
+                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, status,
+                    buffer != NULL && CVPixelBufferGetIOSurface(buffer) != NULL);
+            if (buffer != NULL) CVPixelBufferRelease(buffer);
+        }
+        fflush(stderr);
+    });
 }
 
 enum {
@@ -199,10 +236,14 @@ static void VCAMPublishTick(void) {
                 VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
                 if (VCAMSurfaceWriter == NULL) {
                     pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
-                    fprintf(stderr,
-                            "[DEBUG-static-nv12-4c2d] BGRA surface unavailable size=%ux%u; retrying uncompressed NV12\n",
-                            width, height);
-                    fflush(stderr);
+                    if (!VCAMLoggedStaticNV12Fallback) {
+                        fprintf(stderr,
+                                "[DEBUG-static-nv12-4c2d] BGRA surface unavailable size=%ux%u; retrying uncompressed NV12\n",
+                                width, height);
+                        fflush(stderr);
+                        VCAMLoggedStaticNV12Fallback = YES;
+                    }
+                    VCAMProbeStaticSurfaceAllocations(width, height);
                     VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
                 }
                 if (!VCAMLoggedNativeTransportReceived) {
