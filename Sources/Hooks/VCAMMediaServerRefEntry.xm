@@ -250,6 +250,16 @@ static BOOL VCAMWritePropagationMarker(CMSampleBufferRef sampleBuffer,
     return YES;
 }
 
+static void VCAMClearPropagationMarker(CMSampleBufferRef sampleBuffer,
+                                       CVPixelBufferRef imageBuffer) {
+    if (sampleBuffer != NULL) {
+        CMRemoveAttachment(sampleBuffer, VCAMPropagationMarkerKey);
+    }
+    if (imageBuffer != NULL) {
+        CVBufferRemoveAttachment(imageBuffer, VCAMPropagationMarkerKey);
+    }
+}
+
 static BOOL VCAMPropagationMarkerGetTime(CFTypeRef markerObject,
                                          CMTime *presentationTimeOut) {
     if (markerObject == NULL || presentationTimeOut == NULL ||
@@ -576,6 +586,12 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
+            }
+            if (replacementSucceeded &&
+                replacementRoute == VCAMReplacementRouteVideoConverter) {
+                VCAMClearPropagationMarker(
+                    replacementSampleBuffer != NULL ? replacementSampleBuffer : sampleBuffer,
+                    replacementImageBuffer != NULL ? replacementImageBuffer : originalImageBuffer);
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteCameraSourceVideo) {

@@ -325,6 +325,13 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("VCAMReplacementRouteVideoConverter", route_helper)
         self.assertIn("VCAMReplacementRouteCameraPreview", route_helper)
         self.assertIn("VCAMReplacementRouteVideoRecording", route_helper)
+        redraw_path = _between(
+            self.hook,
+            "replacementSucceeded = drawReplacementOntoBuffer(",
+            "} @catch (NSException *exception)",
+        )
+        self.assertIn("replacementRoute == VCAMReplacementRouteVideoConverter", redraw_path)
+        self.assertIn("VCAMClearPropagationMarker", redraw_path)
 
     def test_marked_recording_frame_reaches_system_encoder_without_second_guard(self) -> None:
         fast_path = _between(
