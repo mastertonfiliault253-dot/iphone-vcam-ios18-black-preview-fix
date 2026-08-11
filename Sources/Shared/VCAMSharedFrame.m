@@ -18,10 +18,16 @@
 // CoreVideo but does not ship IOSurface framework headers. Keep the narrow
 // cross-process ABI local instead of copying the private framework header.
 extern uint32_t IOSurfaceGetID(IOSurfaceRef surface);
+extern IOSurfaceRef _Nullable IOSurfaceCreate(CFDictionaryRef properties)
+    CF_RETURNS_RETAINED;
 extern IOSurfaceRef _Nullable IOSurfaceLookup(uint32_t surfaceID)
     CF_RETURNS_RETAINED;
 extern void IOSurfaceIncrementUseCount(IOSurfaceRef surface);
 extern void IOSurfaceDecrementUseCount(IOSurfaceRef surface);
+extern const CFStringRef kIOSurfaceWidth;
+extern const CFStringRef kIOSurfaceHeight;
+extern const CFStringRef kIOSurfaceBytesPerElement;
+extern const CFStringRef kIOSurfacePixelFormat;
 
 static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
 static const uint32_t VCAMSharedFrameVersion = 3;
@@ -594,11 +600,34 @@ uint64_t VCAMSharedSurfaceWriterGeneration(VCAMSharedSurfaceWriter *writer) {
 
 static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
     uint32_t width, uint32_t height, OSType pixelFormat) {
+    if (pixelFormat == kCVPixelFormatType_32BGRA) {
+        NSDictionary *surfaceProperties = @{
+            (__bridge id)kIOSurfaceWidth: @(width),
+            (__bridge id)kIOSurfaceHeight: @(height),
+            (__bridge id)kIOSurfaceBytesPerElement: @4,
+            (__bridge id)kIOSurfacePixelFormat: @(pixelFormat),
+            @"IOSurfaceIsGlobal": @YES,
+        };
+        IOSurfaceRef surface = IOSurfaceCreate(
+            (__bridge CFDictionaryRef)surfaceProperties);
+        CVPixelBufferRef globalPixelBuffer = NULL;
+        CVReturn globalStatus = surface == NULL ? kCVReturnAllocationFailed
+            : CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface,
+                                               NULL, &globalPixelBuffer);
+        if (surface != NULL) CFRelease(surface);
+        if (globalStatus == kCVReturnSuccess && globalPixelBuffer != NULL) {
+            return globalPixelBuffer;
+        }
+        static dispatch_once_t globalFailureToken;
+        dispatch_once(&globalFailureToken, ^{
+            fprintf(stderr,
+                    "vcam direct global BGRA IOSurface failed status=%d size=%ux%u; using CoreVideo fallback\n",
+                    globalStatus, width, height);
+            fflush(stderr);
+        });
+    }
     NSDictionary *attributes = @{
-        // mediaserverd cannot always resolve the package Mach service from its
-        // iOS 16 sandbox. The reader already falls back to IOSurfaceLookup by
-        // ID; make that native fallback usable without another broker.
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{ @"IOSurfaceIsGlobal": @YES },
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
     };
     CVPixelBufferRef pixelBuffer = NULL;
     CVReturn status = CVPixelBufferCreate(
