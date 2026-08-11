@@ -46,7 +46,9 @@ or `vcamd` to mediaserverd and verifies exact peer process names; frame bytes ne
 through the daemon. mediaserverd retains the selected surface while rendering
 so SpringBoard never overwrites an in-use slot. UI previews are passive
 observers and do not alter that ownership handshake. The previous three-slot
-BGRA mmap remains the automatic fallback until the XPC surface handshake succeeds.
+BGRA mmap remains the automatic fallback until the surface handshake succeeds.
+On iOS 16 sandboxes that cannot resolve the package Mach service, the same
+global IOSurface is looked up by its published ID; no frame bytes cross XPC.
 Creating
 `/var/tmp/vcam-hls-legacy-vcamd.enable` disables the SpringBoard HLS bridge and
 restores the retained daemon HLS decoder for rollback. The equivalent local

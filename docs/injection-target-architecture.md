@@ -46,6 +46,11 @@ requested enable/restore state;
 configuration reload. Shared-header initialization and requested-state updates
 use an interprocess file lock so startup order cannot replace a newer choice.
 
+The XPC relay remains the preferred surface-right path. If an iOS 16 sandbox
+cannot resolve the package Mach service, consumers use the existing
+`IOSurfaceLookup(surfaceID)` fallback against the same globally published raw
+surface; XPC never carries frame bytes.
+
 `mediaserverd` recognizes the exact upstream
 `BWMultiStreamCameraSourceNode / VideoCapture` role before preview, recording
 and Smart Camera analysis split. A successful upstream replacement carries a

@@ -595,7 +595,10 @@ uint64_t VCAMSharedSurfaceWriterGeneration(VCAMSharedSurfaceWriter *writer) {
 static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
     uint32_t width, uint32_t height, OSType pixelFormat) {
     NSDictionary *attributes = @{
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        // mediaserverd cannot always resolve the package Mach service from its
+        // iOS 16 sandbox. The reader already falls back to IOSurfaceLookup by
+        // ID; make that native fallback usable without another broker.
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{ @"IOSurfaceIsGlobal": @YES },
     };
     CVPixelBufferRef pixelBuffer = NULL;
     CVReturn status = CVPixelBufferCreate(
