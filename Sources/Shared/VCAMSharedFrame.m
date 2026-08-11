@@ -596,7 +596,6 @@ static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
     uint32_t width, uint32_t height, OSType pixelFormat) {
     NSDictionary *attributes = @{
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
     CVPixelBufferRef pixelBuffer = NULL;
     CVReturn status = CVPixelBufferCreate(

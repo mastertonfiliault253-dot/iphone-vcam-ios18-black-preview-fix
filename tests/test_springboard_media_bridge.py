@@ -126,6 +126,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedFrameSlotCount", shared)
         self.assertIn("CVPixelBufferCreate", create_pixel_buffer)
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", create_pixel_buffer)
+        self.assertNotIn("kCVPixelBufferMetalCompatibilityKey", create_pixel_buffer)
         self.assertNotIn("IOSurfaceCreate(", create_pixel_buffer)
         self.assertNotIn("CVPixelBufferCreateWithIOSurface", create_pixel_buffer)
         self.assertIn("consumerUseState", shared)
