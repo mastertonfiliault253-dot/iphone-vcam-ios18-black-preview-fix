@@ -254,7 +254,7 @@ WebRTC 的 iOS H.264 解码器提供了与生命周期相关的一手旁证：�
 
 ### E6：Jetsam 6 MB 假设（无需部署，已由运行时证据排除）
 
-真机 `launchctl print user/501/com.codex.vcamd` 显示 launch job 的静态活动/非活动限制为 6 MB，但这不是 worker 的最终有效额度。`vcamd` 在创建共享帧和解码器前调用 `memorystatus_control(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES)`，把 active/inactive limit 都设为 256 MB；随后用 GET 命令回读。设备日志持续确认 `result=0`、`ready=1`、`effective active=256`、`inactive=256 MB`，同时 direct-VT 仍无输出而软件解码正常。因此不再修改 launch plist 重复设置相同额度，Jetsam 6 MB 不是当前失败的充分原因。
+真机 `launchctl print user/501/com.codex.vcamd` 曾显示 launch job 的静态活动/非活动限制为 6 MB，但这不是 worker 的最终有效额度。旧实验版在创建共享帧和解码器前调用 `memorystatus_control(MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES)` 请求 256 MB，设备日志曾确认 `effective active=256`、`inactive=256 MB`，同时 direct-VT 仍无输出而软件解码正常，因此 Jetsam 6 MB 不是当时失败的充分原因。当前源码为 source-sized 三槽管线请求 384 MB，并把软件解码整条管线限制在 256 MiB；384 MB 的真机回读结果仍属于新版本验收项，不能沿用旧日志冒充已验证。
 
 ### E7：Apple 官方 API 与 iOS 16.5 SDK 边界（已核对）
 

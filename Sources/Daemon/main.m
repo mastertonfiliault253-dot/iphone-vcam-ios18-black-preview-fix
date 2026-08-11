@@ -43,7 +43,9 @@ static void VCAMDestroySurfaceWriter(void) {
 enum {
     MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES = 7,
     MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES = 8,
-    VCAMWorkerMemoryLimitMB = 256,
+    // The source-sized software pipeline is capped at 256 MiB. Keep a
+    // separate 128 MB process margin for FFmpeg and framework bookkeeping.
+    VCAMWorkerMemoryLimitMB = 384,
 };
 
 typedef struct {

@@ -40,6 +40,11 @@ typedef struct {
     uint32_t surfaceID;
     /// Zero for mmap; stable across every slot owned by one surface writer.
     uint64_t surfaceGeneration;
+    /// Compact CoreVideo color attachment identifiers. Zero means the source
+    /// did not provide that attachment.
+    uint32_t colorPrimaries;
+    uint32_t transferFunction;
+    uint32_t yCbCrMatrix;
 } VCAMSharedFrameMetadata;
 
 /// A retained, cross-process IOSurface frame. Release it with

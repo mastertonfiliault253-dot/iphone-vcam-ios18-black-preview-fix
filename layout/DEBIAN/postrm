@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+# prerm stops package-owned daemons. The injected clients can only be unloaded
+# after dpkg has removed their dylibs/filters, so restart the two exact hosts
+# here on a real removal (not during an upgrade).
+case "$1" in
+    remove|purge)
+        killall -9 mediaserverd >/dev/null 2>&1 || true
+        killall -9 SpringBoard >/dev/null 2>&1 || true
+        ;;
+esac
+
+exit 0

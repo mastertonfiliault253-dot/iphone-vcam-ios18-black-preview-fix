@@ -33,24 +33,6 @@ static id VCAMSafeObjectResult(id object, SEL selector) {
     }
 }
 
-static void VCAMSetStillPhotoDisplayOrientation(
-    CMSampleBufferRef sampleBuffer,
-    CVPixelBufferRef imageBuffer,
-    BOOL requiresRightOrientation) {
-    if (!requiresRightOrientation) return;
-    NSNumber *orientation = @(kCGImagePropertyOrientationRight);
-    if (sampleBuffer != NULL) {
-        CMSetAttachment(sampleBuffer, kCGImagePropertyOrientation,
-                        (__bridge CFTypeRef)orientation,
-                        kCMAttachmentMode_ShouldPropagate);
-    }
-    if (imageBuffer != NULL) {
-        CVBufferSetAttachment(imageBuffer, kCGImagePropertyOrientation,
-                              (__bridge CFTypeRef)orientation,
-                              kCVAttachmentMode_ShouldPropagate);
-    }
-}
-
 static NSString *VCAMSafeStringValue(id value) {
     return [value isKindOfClass:NSString.class] ? value : @"(none)";
 }
@@ -608,32 +590,19 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
 
     CVPixelBufferRef replacementImageBuffer = NULL;
     CMSampleBufferRef replacementSampleBuffer = NULL;
-    BOOL stillPhotoRequiresRightOrientation = NO;
     BOOL replacementSucceeded = NO;
     @autoreleasepool {
         @try {
             replacementSucceeded = drawReplacementOntoBuffer(
                 originalImageBuffer,
                 VCAMPresentationForReplacementRoute(replacementRoute),
-                &replacementImageBuffer,
-                replacementRoute == VCAMReplacementRouteStillPhoto
-                    ? &stillPhotoRequiresRightOrientation : NULL);
+                &replacementImageBuffer);
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
                     sampleBuffer, replacementImageBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
-            }
-            if (replacementSucceeded &&
-                replacementRoute == VCAMReplacementRouteStillPhoto) {
-                CMSampleBufferRef finalSample = replacementSampleBuffer != NULL
-                    ? replacementSampleBuffer : sampleBuffer;
-                CVPixelBufferRef finalImage = replacementImageBuffer != NULL
-                    ? replacementImageBuffer : originalImageBuffer;
-                VCAMSetStillPhotoDisplayOrientation(
-                    finalSample, finalImage,
-                    stillPhotoRequiresRightOrientation);
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteVideoConverter) {

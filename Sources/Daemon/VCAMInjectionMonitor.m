@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "../Shared/VCAMProcessIdentity.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -25,7 +26,9 @@ typedef struct {
     const char *proofPath;
     const char *proofFormat;
     pid_t observedPID;
+    uint64_t observedStartToken;
     pid_t injectedPID;
+    uint64_t injectedStartToken;
     time_t nextAttempt;
 } VCAMInjectionTarget;
 
@@ -50,15 +53,17 @@ static pid_t VCAMFindProcessAtPath(const char *expectedPath) {
     return match;
 }
 
-static BOOL VCAMProofContainsPID(VCAMInjectionTarget *target, pid_t pid) {
-    if (pid <= 0) return NO;
+static BOOL VCAMProofContainsProcess(VCAMInjectionTarget *target, pid_t pid,
+                                     uint64_t startToken) {
+    if (pid <= 0 || startToken == 0) return NO;
     NSString *path = [NSString stringWithUTF8String:target->proofPath];
     NSString *contents = [NSString stringWithContentsOfFile:path
                                                    encoding:NSUTF8StringEncoding
                                                       error:nil];
     if (contents.length == 0) return NO;
     NSString *format = [NSString stringWithUTF8String:target->proofFormat];
-    NSString *needle = [NSString stringWithFormat:format, pid];
+    NSString *needle = [NSString stringWithFormat:format, pid,
+        (unsigned long long)startToken];
     return [contents containsString:needle];
 }
 
@@ -93,21 +98,31 @@ static int VCAMRunInjector(VCAMInjectionTarget *target, pid_t pid) {
 
 static void VCAMCheckTarget(VCAMInjectionTarget *target) {
     pid_t pid = VCAMFindProcessAtPath(target->processPath);
-    if (pid != target->observedPID) {
-        fprintf(stderr, "target=%s pid changed old=%d new=%d\n",
-                target->name, target->observedPID, pid);
+    uint64_t startToken = VCAMProcessStartToken(pid);
+    if (pid != target->observedPID ||
+        startToken != target->observedStartToken) {
+        fprintf(stderr,
+                "target=%s process changed old=%d/%llu new=%d/%llu\n",
+                target->name, target->observedPID,
+                (unsigned long long)target->observedStartToken, pid,
+                (unsigned long long)startToken);
         target->observedPID = pid;
+        target->observedStartToken = startToken;
         target->injectedPID = 0;
+        target->injectedStartToken = 0;
         target->nextAttempt = 0;
     }
-    if (pid <= 0 || target->injectedPID == pid) return;
+    if (pid <= 0 || startToken == 0 ||
+        (target->injectedPID == pid &&
+         target->injectedStartToken == startToken)) return;
 
     // A proof line already in the shared log means the dylib is loaded in this
     // exact pid (from postinst or a previous daemon run). Never re-inject:
     // repeated PAC injection into an already-loaded process is what wedges the
     // target and leaves spinning opainject children behind.
-    if (VCAMProofContainsPID(target, pid)) {
+    if (VCAMProofContainsProcess(target, pid, startToken)) {
         target->injectedPID = pid;
+        target->injectedStartToken = startToken;
         fprintf(stderr, "target=%s pid=%d already-loaded proof=1\n",
                 target->name, pid);
         return;
@@ -126,20 +141,29 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
     // opainject's PAC bootstrap thread never reports back. The constructor
     // proof is the source of truth; require only that the pid survived and the
     // proof appeared.
-    BOOL proved = observed == pid && VCAMProofContainsPID(target, pid);
+    uint64_t observedStartToken = VCAMProcessStartToken(observed);
+    BOOL proved = observed == pid && observedStartToken == startToken &&
+        VCAMProofContainsProcess(target, pid, startToken);
     fprintf(stderr, "target=%s pid=%d injector=%d stable=%d proof=%d\n",
             target->name, pid, result, observed == pid, proved);
-    if (proved) target->injectedPID = pid;
+    if (proved) {
+        target->injectedPID = pid;
+        target->injectedStartToken = startToken;
+    }
     else {
         // The injected ctor can flush its proof shortly after the injector
         // returns or is killed. Give it a few more seconds before ever
         // considering a retry, regardless of the injector exit status.
-        for (int extra = 0; extra < 5 && !VCAMProofContainsPID(target, pid); extra++) {
+        for (int extra = 0; extra < 5 &&
+             !VCAMProofContainsProcess(target, pid, startToken); extra++) {
             sleep(1);
         }
         observed = VCAMFindProcessAtPath(target->processPath);
-        if (observed == pid && VCAMProofContainsPID(target, pid)) {
+        observedStartToken = VCAMProcessStartToken(observed);
+        if (observed == pid && observedStartToken == startToken &&
+            VCAMProofContainsProcess(target, pid, startToken)) {
             target->injectedPID = pid;
+            target->injectedStartToken = startToken;
             fprintf(stderr, "target=%s pid=%d late-proof=1\n", target->name, pid);
         }
     }
@@ -154,14 +178,14 @@ int main(int argc, char *argv[]) {
             .processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
             .proofPath = "/var/tmp/vcam-springboard-client.log",
-            .proofFormat = "pid=%d ",
+            .proofFormat = "pid=%d start=%llu ",
         },
         {
             .name = "mediaserverd",
             .processPath = "/usr/sbin/mediaserverd",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib",
             .proofPath = "/var/tmp/vcam-ref-msd.log",
-            .proofFormat = "[%d][",
+            .proofFormat = "[%d][start=%llu][",
         },
     };
     fprintf(stderr, "vcaminjectd starting with %zu exact targets (application clients use ElleKit auto-injection)\n",

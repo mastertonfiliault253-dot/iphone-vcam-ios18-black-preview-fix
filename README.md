@@ -1,5 +1,7 @@
 # VCAM Media Bridge (iOS 16–16.5 research build)
 
+Current release baseline: [`docs/CURRENT-RELEASE-STATUS-ZH.md`](docs/CURRENT-RELEASE-STATUS-ZH.md). Beginner-oriented architecture and feature guide: [`docs/BEGINNER-ARCHITECTURE-AND-FEATURE-GUIDE-ZH.md`](docs/BEGINNER-ARCHITECTURE-AND-FEATURE-GUIDE-ZH.md).
+
 VCAM replaces camera video at `BWNodeOutput -emitSampleBuffer:` while keeping
 networking and decoding outside `mediaserverd` and injected app-host branches;
 SpringBoard alone publishes static images and runs the native local-video/HLS
@@ -106,8 +108,13 @@ With current Theos and an iOS 16+ SDK, build the standard rootless package:
 
 ```bash
 export THEOS=/path/to/theos
+./scripts/build-ffmpeg-ios.sh
 ./scripts/build-all.sh
 ```
+
+The first command creates the gitignored `vendor/ffmpeg` headers and static
+libraries required by `vcamd`; it exits quickly when the expected files are
+already present. On WSL use `./scripts/build-ffmpeg-ios-linux.sh` instead.
 
 On this Windows workspace, `scripts/build-rootless-wsl.sh` uses `/opt/theos` and
 stages an `iphoneos-arm64` package under `dist/wsl-rootless`. This local build is

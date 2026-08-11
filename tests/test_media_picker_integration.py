@@ -12,7 +12,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("PHPickerFilter.imagesFilter", picker)
         self.assertIn("PHPickerFilter.videosFilter", picker)
         self.assertIn("@[UTTypeImage, UTTypeMovie]", picker)
-        self.assertIn("installMediaFromTemporaryURL", picker)
+        self.assertIn("importMediaFromURL", picker)
         self.assertIn("loadFileRepresentationForTypeIdentifier", picker)
 
     def test_import_is_brokered_and_activates_single_decoder(self) -> None:
@@ -62,7 +62,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAM media import preflight failed", client)
         self.assertLess(client.index("VCAMReadBrokerMessage"), client.index("while (success && remaining > 0)"))
         server = configuration.split("BOOL importCommand =", 1)[1].split(
-            "if (success && command == VCAMConfigurationBrokerFetchMediaCommand)", 1
+            "success = success && command == VCAMConfigurationBrokerUpdateCommand", 1
         )[0]
         self.assertIn("validatedMediaImportHeader", server)
         self.assertGreaterEqual(server.count("VCAMWriteBrokerMessage"), 2)
@@ -79,24 +79,20 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             validator.index("[fileSizeValue unsignedLongLongValue]"),
         )
         server = configuration.split("BOOL importCommand =", 1)[1].split(
-            "if (success && command == VCAMConfigurationBrokerFetchMediaCommand)", 1
+            "success = success && command == VCAMConfigurationBrokerUpdateCommand", 1
         )[0]
         self.assertIn("NSDictionary<NSString *, id> *headerDictionary", server)
         self.assertNotIn('header[@"suggestedName"]', server)
         self.assertNotIn('header[@"fileSize"]', server)
 
-    def test_media_fetch_rejects_an_untyped_broker_response_header(self) -> None:
+    def test_media_path_never_uses_the_broker_as_a_file_read_oracle(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
         fetch = configuration.split("+ (nullable NSString *)resolvedMediaPathForSharedPath:", 1)[1].split(
             "+ (void)startWriteBroker", 1
         )[0]
-        self.assertIn("id decodedResponseHeader", fetch)
-        self.assertIn("[decodedResponseHeader isKindOfClass:NSDictionary.class]", fetch)
-        self.assertIn("[fileSizeValue isKindOfClass:NSNumber.class]", fetch)
-        self.assertLess(
-            fetch.index("[fileSizeValue isKindOfClass:NSNumber.class]"),
-            fetch.index("[fileSizeValue unsignedLongLongValue]"),
-        )
+        self.assertIn("VCAMMediaPathIsAllowed(sharedPath)", fetch)
+        self.assertNotIn("dataWithContentsOfFile", fetch)
+        self.assertNotIn("BrokerFetchMediaCommand", configuration)
 
     def test_broker_suppresses_sigpipe_on_each_accepted_client(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
@@ -201,7 +197,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"
         )
-        install = picker.split("- (void)installMediaFromTemporaryURL:", 1)[1].split(
+        install = picker.split("- (void)importMediaFromURL:", 1)[1].split(
             "- (void)rotateClockwise", 1
         )[0]
         self.assertIn("slotCount = 1", producer)
@@ -209,10 +205,29 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('@"rotationDegrees": @0', install)
         self.assertIn('@"mirrorHorizontally": @NO', install)
         live = picker.split("- (void)promptForLiveStream", 1)[1].split(
-            "- (void)installMediaFromTemporaryURL:", 1
+            "- (NSUInteger)beginMediaSelection", 1
         )[0]
         self.assertIn('@"rotationDegrees": @0', live)
         self.assertIn('@"mirrorHorizontally": @NO', live)
+
+    def test_async_media_selection_is_backgrounded_main_committed_and_last_wins(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("mediaSelectionGeneration", picker)
+        self.assertIn("NSUInteger generation = [self beginMediaSelection]", picker)
+        self.assertIn("generation != self.mediaSelectionGeneration", picker)
+        self.assertIn("dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)", picker)
+        importer = picker.split("- (void)importMediaFromURL:", 1)[1].split(
+            "- (void)activateImportedMediaAtPath:", 1
+        )[0]
+        self.assertIn("preferredFramesPerSecondForMediaPath", importer)
+        self.assertIn("dispatch_async(dispatch_get_main_queue()", importer)
+        activation = picker.split("- (void)activateImportedMediaAtPath:", 1)[1].split(
+            "- (void)rotateClockwise", 1
+        )[0]
+        self.assertNotIn("tracksWithMediaType", activation)
+        self.assertIn("generation != self.mediaSelectionGeneration", activation)
 
     def test_dynamic_iosurface_metadata_carries_source_dimensions_and_slot_depth(self) -> None:
         shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
@@ -221,7 +236,9 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         header = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.h").read_text(
             encoding="utf-8"
         )
-        self.assertIn("VCAMSharedSurfaceVersion = 6", shared)
+        self.assertIn("VCAMSharedSurfaceVersion = 8", shared)
+        self.assertIn("producerStartToken", shared)
+        self.assertIn("consumerStartToken", shared)
         self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", header)
         broker_header = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.h").read_text(
             encoding="utf-8"
@@ -236,6 +253,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("metadata->width = width", shared)
         self.assertIn("frame->metadata = surfaceMetadata", shared)
         self.assertIn("metadata->surfaceGeneration = generation", shared)
+        self.assertIn("slotColorPrimaries", shared)
+        self.assertIn("slotTransferFunction", shared)
+        self.assertIn("slotYCbCrMatrix", shared)
+        self.assertIn("VCAMApplyColorMetadata(pixelBuffer, &surfaceMetadata)", shared)
         self.assertIn("uint32_t surfaceID", header)
         release = shared.split("void VCAMSharedSurfaceFrameRelease", 1)[1]
         self.assertIn("VCAMSharedSurfaceReleaseUse", release)
@@ -478,7 +499,13 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AV_PIX_FMT_NV12", converter)
         self.assertIn("AV_PIX_FMT_YUV420P10LE", converter)
         self.assertIn("AV_PIX_FMT_P010LE", converter)
-        self.assertIn("maximumDimension = 1920", converter)
+        self.assertNotIn("maximumDimension = 1920", converter)
+        self.assertIn("int outputWidth = frame->width", converter)
+        self.assertIn("int outputHeight = frame->height", converter)
+        self.assertIn("VCAMSourceSizedVideoPipelineBudget", converter)
+        self.assertIn("VCAMSourceSizedVideoBGRACopies = 8ULL", converter)
+        self.assertIn("256ULL * 1024ULL * 1024ULL", converter)
+        self.assertNotIn("VCAMScaleBGRAInPlace", converter)
         self.assertIn("kCVPixelBufferCGImageCompatibilityKey", converter)
         self.assertIn("kCVPixelBufferCGBitmapContextCompatibilityKey", converter)
         self.assertIn("vImageConvert_420Yp8_CbCr8ToARGB8888", converter)
@@ -873,6 +900,175 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn('CFSTR("com.codex.vcam/preferences.changed")', picker)
         self.assertIn("VCAMSharedFrameSetRequestedActive", configuration)
         self.assertIn("!VCAMSynchronizeSharedRequestedState(readBack, error)", configuration)
+
+
+    def test_configuration_schema_rejects_wrong_types_and_sanitizes_disk_values(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMConfigurationValueIsValid", configuration)
+        self.assertIn("VCAMSanitizedConfigurationValues", configuration)
+        self.assertIn("number >= 1 && number <= 60", configuration)
+        self.assertIn("配置值类型或范围无效", configuration)
+        self.assertGreaterEqual(configuration.count("VCAMSanitizedConfigurationValues(values)"), 3)
+
+    def test_stream_health_never_waits_for_the_broker_on_the_main_thread(self) -> None:
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        status = preview.split("+ (NSDictionary<NSString *, id> *)streamingStatus", 1)[1].split(
+            "+ (Class)layerClass", 1
+        )[0]
+        broker_call = status.index("copyPreviewSnapshotFromBroker")
+        background = status.rfind("dispatch_async(dispatch_get_global_queue", 0, broker_call)
+        self.assertGreaterEqual(background, 0)
+        self.assertIn("brokerStatusFetchInFlight", status)
+        self.assertIn('removeObjectForKey:@"jpegData"', status)
+
+    def test_loopback_broker_has_a_short_handshake_timeout(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        broker = configuration.split("+ (void)startWriteBroker", 1)[1].split(
+            "+ (instancetype)loadCurrent", 1
+        )[0]
+        self.assertIn("struct timeval clientTimeout = {.tv_sec = 2", broker)
+        self.assertIn("clientTimeout.tv_sec = 30;", broker)
+        self.assertNotIn(".tv_sec = 120", broker)
+        self.assertIn("VCAMSurfaceBrokerValidateConfigurationToken", configuration)
+        self.assertIn("broker rejected unauthenticated loopback client", broker)
+        connect = configuration.split("+ (int)connectedBrokerSocket", 1)[1].split(
+            "+ (NSDictionary<NSString *, id> *)copyValuesFromBroker", 1
+        )[0]
+        self.assertIn("VCAMSurfaceBrokerCopyConfigurationToken", connect)
+        self.assertIn("VCAMWriteAll(descriptor, token, sizeof(token))", connect)
+
+    def test_broker_tokens_are_xpc_issued_single_use_and_concurrent_safe(self) -> None:
+        broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        server = (ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"config-auth"', broker)
+        self.assertIn("xpc_connection_send_message_with_reply_sync", broker)
+        self.assertIn('"config-auth-consume"', broker)
+        self.assertIn("VCAMSurfaceBrokerValidateConfigurationToken", broker)
+        self.assertIn("VCAMSurfaceBrokerPeerCanControl", server)
+        self.assertIn("VCAMConfigurationTokenCapacity = 16", server)
+        self.assertIn("VCAMSurfaceBrokerStoreConfigurationToken", server)
+        self.assertIn("VCAMSurfaceBrokerConsumeConfigurationToken", server)
+        self.assertIn("memset(token, 0, sizeof(*token))", server)
+        self.assertIn("VCAMSurfaceBrokerPeerIdentitySpringBoard", server)
+
+    def test_surface_writer_claims_a_slot_before_rendering(self) -> None:
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        copy_next = shared.split("VCAMSharedSurfaceWriterCopyNextPixelBuffer", 1)[1].split(
+            "VCAMSharedSurfaceWriterPublish", 1
+        )[0]
+        self.assertIn("atomic_compare_exchange_strong_explicit", copy_next)
+        self.assertIn("VCAMSharedSurfaceUseState(surfaceID, UINT32_MAX)", copy_next)
+        self.assertLess(
+            copy_next.index("atomic_compare_exchange_strong_explicit"),
+            copy_next.index("slotSequence[slot], 0"),
+        )
+
+    def test_configuration_write_rolls_back_before_notifying(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        write = configuration.split("+ (BOOL)writeValuesDirectly", 1)[1].split(
+            "+ (BOOL)submitChangesToBroker", 1
+        )[0]
+        self.assertIn("previousValues", write)
+        self.assertIn("previousFileExisted && previousData == nil", write)
+        self.assertIn("existing config backup unreadable", write)
+        self.assertIn("rolled back restored=", write)
+        self.assertLess(write.index("if (!written)"), write.index("CFNotificationCenterPostNotification"))
+
+    def test_static_images_have_an_explicit_source_sized_memory_budget(self) -> None:
+        bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMStaticImageMaximumSurfaceBytes", bridge)
+        self.assertIn("pixelCount > VCAMStaticImageMaximumSurfaceBytes / 4ULL", bridge)
+        self.assertIn("(uint64_t)transformedWidth * (uint64_t)transformedHeight", bridge)
+        self.assertIn("exceeds the 64 MiB source-sized surface budget", bridge)
+
+    def test_files_import_does_not_block_the_springboard_main_thread(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        delegate = picker.split("didPickDocumentsAtURLs:", 1)[1].split(
+            "- (void)picker:(PHPickerViewController *)picker", 1
+        )[0]
+        self.assertIn("QOS_CLASS_UTILITY", delegate)
+        self.assertIn("importMediaFromURL", delegate)
+        importer = picker.split("- (void)importMediaFromURL:", 1)[1].split(
+            "- (void)activateImportedMediaAtPath:", 1
+        )[0]
+        self.assertIn("importMediaAtURL", importer)
+        self.assertIn("dispatch_get_main_queue()", importer)
+        self.assertLess(importer.index("importMediaAtURL"), importer.index("dispatch_get_main_queue()"))
+
+    def test_imports_do_not_block_control_and_never_prune_the_active_media(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        prune = configuration.split("static void VCAMPruneImportedMediaFiles", 1)[1].split(
+            "static NSString *VCAMDiagnosticsLogPath", 1
+        )[0]
+        self.assertIn("activePath", prune)
+        self.assertIn("[path isEqualToString:activePath]", prune)
+        receiver = configuration.split("+ (nullable NSString *)receiveImportedMediaFromClient", 1)[1].split(
+            "+ (nullable NSString *)importMediaAtURL", 1
+        )[0]
+        self.assertIn("VCAMConfiguration.configurationPath", receiver)
+        self.assertIn('persisted[@"mediaPath"]', receiver)
+        broker = configuration.split("+ (void)startWriteBroker", 1)[1].split(
+            "+ (instancetype)loadCurrent", 1
+        )[0]
+        self.assertIn('"com.codex.vcam.configuration.import"', broker)
+        self.assertIn("dispatch_async(importQueue", broker)
+        self.assertLess(broker.index("dispatch_async(importQueue"), broker.index("continue;", broker.index("dispatch_async(importQueue")))
+
+    def test_online_download_is_stream_capped_and_supersedable(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("NSURLSessionDownloadDelegate", picker)
+        self.assertIn("VCAMOnlineMediaMaximumBytes", picker)
+        self.assertIn("VCAMOnlineMediaReserveBytes", picker)
+        self.assertIn("totalBytesWritten > VCAMOnlineMediaMaximumBytes", picker)
+        self.assertIn("[downloadTask cancel]", picker)
+        selection = picker.split("- (NSUInteger)beginMediaSelection", 1)[1].split(
+            "- (NSInteger)preferredFramesPerSecondForMediaPath", 1
+        )[0]
+        self.assertIn("[self.onlineDownloadTask cancel]", selection)
+        self.assertIn("self.button.enabled = YES", selection)
+
+    def test_hls_catches_up_only_after_sustained_live_edge_lag(self) -> None:
+        bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("self.consecutiveHighLiveLagTicks >= 90", bridge)
+        self.assertIn("CMTimeRangeGetEnd", bridge)
+        self.assertIn("springboard HLS live-edge catch-up", bridge)
+
+    def test_diagnostic_logs_are_bounded(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        mediaserver = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMAppendBoundedLine", configuration)
+        self.assertIn("metadata.st_size > 4 * 1024 * 1024", configuration)
+        self.assertIn("metadata.st_size > 4 * 1024 * 1024", mediaserver)
+        self.assertIn("flock(descriptor, LOCK_EX)", configuration)
+        self.assertIn("flock(descriptor, LOCK_EX)", mediaserver)
 
 
 if __name__ == "__main__":

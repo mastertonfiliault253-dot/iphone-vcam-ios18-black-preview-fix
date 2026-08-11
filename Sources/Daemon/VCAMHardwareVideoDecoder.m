@@ -4,6 +4,7 @@
 #import <VideoToolbox/VideoToolbox.h>
 
 #include <libavcodec/avcodec.h>
+#include <stdint.h>
 #include <string.h>
 
 #ifndef kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
@@ -186,14 +187,25 @@ static CFDataRef VCAMBuildHVCCRecord(const uint8_t *const vpsPointers[],
                                      const size_t spsSizes[], int spsCount,
                                      const uint8_t *const ppsPointers[],
                                      const size_t ppsSizes[], int ppsCount) {
-    if (vpsCount < 1 || spsCount < 1 || ppsCount < 1 || vpsSizes[0] < 14 ||
+    if (vpsCount < 1 || spsCount < 1 || ppsCount < 1 ||
+        vpsPointers[0] == NULL || spsPointers[0] == NULL ||
+        ppsPointers[0] == NULL || vpsSizes[0] < 14 ||
         spsSizes[0] < 4 || ppsSizes[0] < 4) {
         return NULL;
     }
-    size_t total = 22 + 3;
-    total += 2 + vpsSizes[0];
-    total += 2 + spsSizes[0];
-    total += 2 + ppsSizes[0];
+    const uint8_t *sets[3] = {vpsPointers[0], spsPointers[0], ppsPointers[0]};
+    size_t setSizes[3] = {vpsSizes[0], spsSizes[0], ppsSizes[0]};
+    int setTypes[3] = {32, 33, 34};
+    size_t total = 22;
+    for (int arrayIndex = 0; arrayIndex < 3; arrayIndex++) {
+        // Each hvcC array is one type byte, a two-byte NAL count, a two-byte
+        // NAL length, then the NAL bytes themselves.
+        if (setSizes[arrayIndex] > UINT16_MAX ||
+            total > SIZE_MAX - 5 - setSizes[arrayIndex]) {
+            return NULL;
+        }
+        total += 5 + setSizes[arrayIndex];
+    }
     uint8_t *record = malloc(total);
     if (record == NULL) return NULL;
     record[0] = 1;
@@ -211,9 +223,6 @@ static CFDataRef VCAMBuildHVCCRecord(const uint8_t *const vpsPointers[],
     record[20] = 0x03; // lengthSizeMinusOne = 3, temporal id nested
     record[21] = 3;    // numOfArrays: VPS, SPS, PPS
     size_t cursor = 22;
-    const uint8_t *sets[3] = {vpsPointers[0], spsPointers[0], ppsPointers[0]};
-    size_t setSizes[3] = {vpsSizes[0], spsSizes[0], ppsSizes[0]};
-    int setTypes[3] = {32, 33, 34};
     for (int arrayIndex = 0; arrayIndex < 3; arrayIndex++) {
         record[cursor++] = 0x80 | (uint8_t)setTypes[arrayIndex];
         record[cursor++] = 0;

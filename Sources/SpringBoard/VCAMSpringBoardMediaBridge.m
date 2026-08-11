@@ -22,6 +22,9 @@ static const char *const VCAMLegacyLocalImageDaemonMarker =
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
 static const uint64_t VCAMSurfaceHandshakeProbeIntervalNanoseconds =
     1ULL * 1000000000ULL;
+static const NSUInteger VCAMStaticImageMaximumStartRetries = 20;
+static const NSTimeInterval VCAMStaticImageStartRetryDelaySeconds = 0.25;
+static const uint64_t VCAMStaticImageMaximumSurfaceBytes = 64ULL * 1024ULL * 1024ULL;
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
@@ -63,6 +66,16 @@ static void VCAMSetVideoColorAttachments(CVPixelBufferRef pixelBuffer) {
                           kCVAttachmentMode_ShouldPropagate);
 }
 
+static void VCAMSetRGBColorAttachments(CVPixelBufferRef pixelBuffer) {
+    if (pixelBuffer == NULL) return;
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+}
+
 static void VCAMSpringBoardMediaPreferencesChanged(
     CFNotificationCenterRef center, void *observer, CFStringRef name,
     const void *object, CFDictionaryRef userInfo) {
@@ -90,6 +103,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) BOOL started;
 @property(nonatomic) NSUInteger decodedFrames;
 @property(nonatomic) NSUInteger displayTicks;
+@property(nonatomic) NSUInteger consecutiveHighLiveLagTicks;
+@property(nonatomic) uint64_t lastLiveEdgeSeekTimestampNanoseconds;
 @property(nonatomic) NSUInteger emptyCopies;
 @property(nonatomic) NSUInteger publishedFrames;
 @property(nonatomic) NSUInteger publishFailures;
@@ -99,7 +114,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) NSUInteger reconnectAttempt;
 @property(nonatomic) BOOL reconnectPending;
 @property(nonatomic) BOOL localVideo;
+@property(nonatomic) BOOL localVideoReachedEnd;
 @property(nonatomic) BOOL staticImage;
+@property(nonatomic) BOOL staticImageStartRetryable;
+@property(nonatomic) BOOL staticImageStartRetryPending;
+@property(nonatomic) NSUInteger staticImageStartRetryAttempt;
 @property(nonatomic, strong, nullable) CIImage *staticRenderImage;
 @property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic) CGSize sourceNaturalSize;
@@ -141,7 +160,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             kCIContextCacheIntermediates: @NO,
         }];
     }
-    self.colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    self.colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_709);
     self.writer = VCAMSharedFrameWriterCreate();
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -182,6 +201,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.surfaceWidth = 0;
     self.surfaceHeight = 0;
     self.lastSurfaceProbeTimestampNanoseconds = 0;
+    self.consecutiveHighLiveLagTicks = 0;
+    self.lastLiveEdgeSeekTimestampNanoseconds = 0;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -283,6 +304,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     CIImage *image = [self legacyCanvasImageFromOrientedImage:self.staticRenderImage];
     [self.context render:image toCVPixelBuffer:bootstrap bounds:target
               colorSpace:self.colorSpace];
+    VCAMSetRGBColorAttachments(bootstrap);
     BOOL published = VCAMSharedFrameWriterPublishForSurfaceGeneration(
         self.writer, bootstrap,
         VCAMSharedSurfaceWriterGeneration(self.surfaceWriter));
@@ -291,6 +313,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 }
 
 - (BOOL)startStaticImage:(VCAMConfiguration *)configuration {
+    self.staticImageStartRetryable = NO;
     NSURL *url = [NSURL fileURLWithPath:configuration.mediaPath];
     CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
     if (source == NULL) {
@@ -302,6 +325,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         CGImageSourceCopyPropertiesAtIndex(source, index, NULL));
     NSUInteger width = [properties[(id)kCGImagePropertyPixelWidth] unsignedIntegerValue];
     NSUInteger height = [properties[(id)kCGImagePropertyPixelHeight] unsignedIntegerValue];
+    uint64_t pixelCount = (uint64_t)width * (uint64_t)height;
+    if (width == 0 || height == 0 || width > UINT32_MAX || height > UINT32_MAX ||
+        pixelCount > VCAMStaticImageMaximumSurfaceBytes / 4ULL) {
+        CFRelease(source);
+        self.lastError = @"static image exceeds the 64 MiB source-sized surface budget";
+        return NO;
+    }
     NSDictionary *options = @{
         (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
         (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
@@ -320,11 +350,21 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         [CIImage imageWithCGImage:decoded]];
     CGImageRelease(decoded);
     CGRect extent = image.extent;
-    uint32_t outputWidth = (uint32_t)MAX(1.0, ceil(CGRectGetWidth(extent)));
-    uint32_t outputHeight = (uint32_t)MAX(1.0, ceil(CGRectGetHeight(extent)));
+    double transformedWidth = MAX(1.0, ceil(CGRectGetWidth(extent)));
+    double transformedHeight = MAX(1.0, ceil(CGRectGetHeight(extent)));
+    if (!isfinite(transformedWidth) || !isfinite(transformedHeight) ||
+        transformedWidth > UINT32_MAX || transformedHeight > UINT32_MAX ||
+        (uint64_t)transformedWidth * (uint64_t)transformedHeight >
+            VCAMStaticImageMaximumSurfaceBytes / 4ULL) {
+        self.lastError = @"transformed static image exceeds the 64 MiB surface budget";
+        return NO;
+    }
+    uint32_t outputWidth = (uint32_t)transformedWidth;
+    uint32_t outputHeight = (uint32_t)transformedHeight;
     self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
         outputWidth, outputHeight, kCVPixelFormatType_32BGRA, 1);
     if (self.surfaceWriter == NULL) {
+        self.staticImageStartRetryable = YES;
         self.lastError = [NSString stringWithFormat:
             @"static IOSurface unavailable size=%ux%u", outputWidth, outputHeight];
         return NO;
@@ -339,13 +379,21 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         [self.context render:image toCVPixelBuffer:destination
                       bounds:CGRectMake(0, 0, outputWidth, outputHeight)
                  colorSpace:self.colorSpace];
+        VCAMSetRGBColorAttachments(destination);
         surfacePublished = VCAMSharedSurfaceWriterPublish(self.surfaceWriter, destination);
         CVPixelBufferRelease(destination);
     }
-    BOOL bootstrapPublished = surfacePublished && [self publishStaticBootstrap];
-    if (!surfacePublished || !bootstrapPublished) {
+    if (!surfacePublished) {
+        self.staticImageStartRetryable = YES;
         self.lastError = @"static image publish failed";
         return NO;
+    }
+    // The IOSurface is the authoritative transport. The fixed mmap frame only
+    // bridges the XPC handshake and is retried by refreshStaticImage if needed.
+    BOOL bootstrapPublished = [self publishStaticBootstrap];
+    if (!bootstrapPublished) {
+        [VCAMConfiguration appendProcessLog:
+            @"springboard static bootstrap deferred until refresh"];
     }
     self.publishedFrames = 1;
     self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
@@ -358,6 +406,38 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         outputWidth, outputHeight,
         (unsigned long long)VCAMSharedSurfaceWriterGeneration(self.surfaceWriter)]];
     return YES;
+}
+
+- (void)scheduleStaticImageStartRetryForConfiguration:
+    (VCAMConfiguration *)configuration {
+    if (self.staticImageStartRetryPending ||
+        self.staticImageStartRetryAttempt >= VCAMStaticImageMaximumStartRetries) return;
+    self.staticImageStartRetryPending = YES;
+    self.staticImageStartRetryAttempt += 1;
+    NSUInteger attempt = self.staticImageStartRetryAttempt;
+    NSString *mediaPath = [configuration.mediaPath copy];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard static start retry=%lu/%lu error=%@",
+        (unsigned long)attempt,
+        (unsigned long)VCAMStaticImageMaximumStartRetries,
+        self.lastError ?: @"unknown"]];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(VCAMStaticImageStartRetryDelaySeconds * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        self.staticImageStartRetryPending = NO;
+        if (!self.started) return;
+        VCAMConfiguration *current = [VCAMConfiguration loadCurrent];
+        BOOL stillCurrent = current.enabled &&
+            current.sourceKind == VCAMSourceKindLocalMedia &&
+            current.mediaPath.length > 0 &&
+            !VCAMLocalMediaPathIsVideo(current.mediaPath) &&
+            [current.mediaPath isEqualToString:mediaPath];
+        if (!stillCurrent) {
+            self.staticImageStartRetryAttempt = 0;
+            return;
+        }
+        [self reload];
+    });
 }
 
 - (void)refreshStaticImage:(CADisplayLink *)displayLink {
@@ -408,9 +488,21 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         return;
     }
     if (staticImage) {
-        if (![self startStaticImage:next]) [self stopPlayback];
+        if (![self startStaticImage:next]) {
+            BOOL retryable = self.staticImageStartRetryable;
+            [self stopPlayback];
+            if (retryable &&
+                self.staticImageStartRetryAttempt < VCAMStaticImageMaximumStartRetries) {
+                [self scheduleStaticImageStartRetryForConfiguration:next];
+            } else {
+                self.staticImageStartRetryAttempt = 0;
+            }
+        } else {
+            self.staticImageStartRetryAttempt = 0;
+        }
         return;
     }
+    self.staticImageStartRetryAttempt = 0;
 
     self.output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:@{
         (id)kCVPixelBufferPixelFormatTypeKey:
@@ -448,7 +540,14 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                          queue:NSOperationQueue.mainQueue
                     usingBlock:^(__unused NSNotification *notification) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (strongSelf == nil || !strongSelf.configuration.loopMedia) return;
+            if (strongSelf == nil) return;
+            if (!strongSelf.configuration.loopMedia) {
+                strongSelf.localVideoReachedEnd = YES;
+                [VCAMConfiguration appendProcessLog:
+                    @"springboard local video reached end; holding last frame"];
+                return;
+            }
+            strongSelf.localVideoReachedEnd = NO;
             [strongSelf.player seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero
                            toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
                 if (finished && strongSelf.player != nil) [strongSelf.player play];
@@ -466,7 +565,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     [[self hostWindow].layer addSublayer:self.playerLayer];
 
     self.decodedFrames = 0;
+    self.localVideoReachedEnd = NO;
     self.displayTicks = 0;
+    self.consecutiveHighLiveLagTicks = 0;
+    self.lastLiveEdgeSeekTimestampNanoseconds = 0;
     self.emptyCopies = 0;
     self.publishedFrames = 0;
     self.publishFailures = 0;
@@ -561,10 +663,38 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     CMTime itemTime = [self.output itemTimeForHostTime:CACurrentMediaTime()];
     BOOL hasNewFrame = [self.output hasNewPixelBufferForItemTime:itemTime];
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     self.displayTicks += 1;
+    double liveLag = self.localVideo ? NAN : VCAMLiveEdgeLagSeconds(item);
+    if (!self.localVideo && isfinite(liveLag) && liveLag > 3.0) {
+        self.consecutiveHighLiveLagTicks += 1;
+    } else {
+        self.consecutiveHighLiveLagTicks = 0;
+    }
+    if (self.consecutiveHighLiveLagTicks >= 90 &&
+        (self.lastLiveEdgeSeekTimestampNanoseconds == 0 || now == 0 ||
+         now - self.lastLiveEdgeSeekTimestampNanoseconds >= 5000000000ULL)) {
+        NSValue *rangeValue = item.seekableTimeRanges.lastObject;
+        CMTime edge = rangeValue == nil ? kCMTimeInvalid
+            : CMTimeRangeGetEnd(rangeValue.CMTimeRangeValue);
+        if (CMTIME_IS_NUMERIC(edge)) {
+            CMTime target = CMTimeSubtract(edge, CMTimeMakeWithSeconds(0.5, 600));
+            if (CMTIME_COMPARE_INLINE(target, <, kCMTimeZero)) target = kCMTimeZero;
+            self.lastLiveEdgeSeekTimestampNanoseconds = now;
+            self.consecutiveHighLiveLagTicks = 0;
+            [self.player seekToTime:target
+                    toleranceBefore:CMTimeMakeWithSeconds(0.25, 600)
+                     toleranceAfter:CMTimeMakeWithSeconds(0.25, 600)
+                  completionHandler:^(BOOL finished) {
+                if (finished && self.player != nil) [self.player play];
+            }];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"springboard HLS live-edge catch-up lag=%.3f target=%.3f",
+                liveLag, CMTimeGetSeconds(target)]];
+        }
+    }
     if (self.displayTicks % 300 == 0) {
         CGSize presentationSize = item.presentationSize;
-        double liveLag = self.localVideo ? NAN : VCAMLiveEdgeLagSeconds(item);
         NSString *healthFormat = self.localVideo
             ? @"springboard local video health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@"
             : @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@";
@@ -576,8 +706,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             presentationSize.height,
             item.error.localizedDescription ?: @"none"]];
     }
-    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     if (!hasNewFrame) {
+        if (self.localVideoReachedEnd) return;
         if (item.status == AVPlayerItemStatusReadyToPlay &&
             now - self.lastDecodedFrameTimestampNanoseconds >=
                 VCAMHLSStallTimeoutNanoseconds) {

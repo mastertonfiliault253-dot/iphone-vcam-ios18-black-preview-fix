@@ -9,6 +9,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+// A transformed software frame can coexist with three publication slots, the
+// retained decoded image, one transformed output, two transform scratches and
+// one source-sized template. Cap that eight-BGRA-equivalent working set at
+// 256 MiB; vcamd's 384 MB jetsam limit leaves another 128 MB for FFmpeg,
+// Objective-C and IOSurface bookkeeping. UHD/4K fits, larger sources fail
+// explicitly instead of being silently downscaled.
+static const uint64_t VCAMSourceSizedVideoPipelineBudget = 256ULL * 1024ULL * 1024ULL;
+static const uint64_t VCAMSourceSizedVideoBGRACopies = 8ULL;
+
+static BOOL VCAMSourceSizedVideoFrameFitsBudget(int width, int height) {
+    if (width <= 0 || height <= 0) return NO;
+    uint64_t pixels = (uint64_t)width * (uint64_t)height;
+    return pixels <= VCAMSourceSizedVideoPipelineBudget /
+        (VCAMSourceSizedVideoBGRACopies * 4ULL);
+}
+
 // BT.601 coefficients from the vImage documentation example. The SDK headers
 // do not export kvImageITU601_YpCbCrToARGBMatrix, so define it explicitly.
 static const vImage_YpCbCrToARGBMatrix VCAMITU601Matrix = {
@@ -27,11 +43,81 @@ static const vImage_YpCbCrToARGBMatrix VCAMITU709Matrix = {
     .Cr_G = -0.4681f,
 };
 
-static const vImage_YpCbCrToARGBMatrix *VCAMYpCbCrMatrixForDimensions(
-    size_t width, size_t height) {
+static const vImage_YpCbCrToARGBMatrix VCAMITU2020Matrix = {
+    .Yp = 1.0f,
+    .Cb_G = -0.1646f,
+    .Cb_B = 1.8814f,
+    .Cr_R = 1.4746f,
+    .Cr_G = -0.5714f,
+};
+
+static const vImage_YpCbCrToARGBMatrix *VCAMYpCbCrMatrix(
+    enum AVColorSpace colorSpace, size_t width, size_t height) {
+    if (colorSpace == AVCOL_SPC_BT2020_NCL) return &VCAMITU2020Matrix;
+    if (colorSpace == AVCOL_SPC_BT709) return &VCAMITU709Matrix;
+    if (colorSpace == AVCOL_SPC_BT470BG ||
+        colorSpace == AVCOL_SPC_SMPTE170M) return &VCAMITU601Matrix;
     // FFmpeg reports AVCOL_SPC_UNSPECIFIED for many live H.264 publishers.
     // Rec.709 is the conventional matrix for HD; SD remains Rec.601.
     return MAX(width, height) >= 1280 ? &VCAMITU709Matrix : &VCAMITU601Matrix;
+}
+
+static void VCAMSetAVFrameColorAttachments(AVFrame *frame,
+                                           CVPixelBufferRef pixelBuffer,
+                                           size_t width, size_t height) {
+    if (frame == NULL || pixelBuffer == NULL) return;
+    CFStringRef primaries = NULL;
+    switch (frame->color_primaries) {
+        case AVCOL_PRI_BT709: primaries = kCVImageBufferColorPrimaries_ITU_R_709_2; break;
+        case AVCOL_PRI_BT470BG: primaries = kCVImageBufferColorPrimaries_EBU_3213; break;
+        case AVCOL_PRI_SMPTE170M: primaries = kCVImageBufferColorPrimaries_SMPTE_C; break;
+        case AVCOL_PRI_BT2020: primaries = kCVImageBufferColorPrimaries_ITU_R_2020; break;
+        default:
+            if (frame->colorspace == AVCOL_SPC_BT2020_NCL) {
+                primaries = kCVImageBufferColorPrimaries_ITU_R_2020;
+            } else {
+                primaries = MAX(width, height) >= 1280
+                    ? kCVImageBufferColorPrimaries_ITU_R_709_2
+                    : kCVImageBufferColorPrimaries_SMPTE_C;
+            }
+            break;
+    }
+    CFStringRef transfer = NULL;
+    switch (frame->color_trc) {
+        case AVCOL_TRC_SMPTE2084:
+            transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ; break;
+        case AVCOL_TRC_ARIB_STD_B67:
+            transfer = kCVImageBufferTransferFunction_ITU_R_2100_HLG; break;
+        case AVCOL_TRC_IEC61966_2_1:
+            transfer = kCVImageBufferTransferFunction_sRGB; break;
+        case AVCOL_TRC_BT2020_10:
+        case AVCOL_TRC_BT2020_12:
+            transfer = kCVImageBufferTransferFunction_ITU_R_2020; break;
+        default:
+            transfer = kCVImageBufferTransferFunction_ITU_R_709_2; break;
+    }
+    CFStringRef matrix = NULL;
+    switch (frame->colorspace) {
+        case AVCOL_SPC_BT709:
+            matrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2; break;
+        case AVCOL_SPC_BT2020_NCL:
+            matrix = kCVImageBufferYCbCrMatrix_ITU_R_2020; break;
+        case AVCOL_SPC_SMPTE240M:
+            matrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995; break;
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_SMPTE170M:
+            matrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4; break;
+        default:
+            matrix = MAX(width, height) >= 1280
+                ? kCVImageBufferYCbCrMatrix_ITU_R_709_2
+                : kCVImageBufferYCbCrMatrix_ITU_R_601_4; break;
+    }
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                          primaries, kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                          transfer, kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                          matrix, kCVAttachmentMode_ShouldPropagate);
 }
 
 // The conversion queues are fixed threads (RTSP conversion queue and the
@@ -44,7 +130,8 @@ static __thread size_t VCAMThreadTransformScratchSize;
 
 static uint8_t *VCAMConverterScratchBuffer(size_t width, size_t height) {
     size_t required = width * height * 4;
-    if (required == 0 || required > 512ULL * 1024 * 1024) return NULL;
+    if (required == 0 || required >
+        VCAMSourceSizedVideoPipelineBudget / VCAMSourceSizedVideoBGRACopies) return NULL;
     if (VCAMThreadScratch == NULL ||
         VCAMThreadScratchWidth != width ||
         VCAMThreadScratchHeight != height) {
@@ -63,7 +150,8 @@ static uint8_t *VCAMConverterScratchBuffer(size_t width, size_t height) {
 }
 
 static uint8_t *VCAMTransformScratchBuffer(size_t required) {
-    if (required == 0 || required > 512ULL * 1024 * 1024) return NULL;
+    if (required == 0 || required >
+        VCAMSourceSizedVideoPipelineBudget / VCAMSourceSizedVideoBGRACopies) return NULL;
     if (VCAMThreadTransformScratch == NULL ||
         VCAMThreadTransformScratchSize < required) {
         free(VCAMThreadTransformScratch);
@@ -78,8 +166,44 @@ static BOOL VCAMRowBytesAligned(size_t rowBytes) {
     return rowBytes > 0 && (rowBytes % 16) == 0;
 }
 
+static enum AVColorSpace VCAMColorSpaceForPixelBuffer(
+    CVPixelBufferRef pixelBuffer) {
+    CFTypeRef matrix = CVBufferCopyAttachment(
+        pixelBuffer, kCVImageBufferYCbCrMatrixKey, NULL);
+    enum AVColorSpace result = AVCOL_SPC_UNSPECIFIED;
+    if (matrix != NULL && CFEqual(matrix, kCVImageBufferYCbCrMatrix_ITU_R_2020)) {
+        result = AVCOL_SPC_BT2020_NCL;
+    } else if (matrix != NULL &&
+               CFEqual(matrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2)) {
+        result = AVCOL_SPC_BT709;
+    } else if (matrix != NULL &&
+               CFEqual(matrix, kCVImageBufferYCbCrMatrix_ITU_R_601_4)) {
+        result = AVCOL_SPC_SMPTE170M;
+    }
+    if (matrix != NULL) CFRelease(matrix);
+    return result;
+}
+
+static void VCAMLumaCoefficients(enum AVColorSpace colorSpace,
+                                 size_t width, size_t height,
+                                 double *red, double *blue) {
+    if (colorSpace == AVCOL_SPC_BT2020_NCL) {
+        *red = 0.2627;
+        *blue = 0.0593;
+    } else if (colorSpace == AVCOL_SPC_BT709 ||
+               (colorSpace == AVCOL_SPC_UNSPECIFIED &&
+                MAX(width, height) >= 1280)) {
+        *red = 0.2126;
+        *blue = 0.0722;
+    } else {
+        *red = 0.2990;
+        *blue = 0.1140;
+    }
+}
+
 static BOOL VCAMPrepareYpCbCrInfo(BOOL fullRange,
                                   BOOL planar,
+                                  enum AVColorSpace colorSpace,
                                   size_t width,
                                   size_t height,
                                   vImage_YpCbCrToARGB *info) {
@@ -110,7 +234,7 @@ static BOOL VCAMPrepareYpCbCrInfo(BOOL fullRange,
     }
     memset(info, 0, sizeof(*info));
     vImage_Error error = vImageConvert_YpCbCrToARGB_GenerateConversion(
-        VCAMYpCbCrMatrixForDimensions(width, height), &range, info,
+        VCAMYpCbCrMatrix(colorSpace, width, height), &range, info,
         planar ? kvImage420Yp8_Cb8_Cr8 : kvImage420Yp8_CbCr8,
         kvImageARGB8888, kvImageNoFlags);
     return error == kvImageNoError;
@@ -122,6 +246,7 @@ static const uint8_t VCAMBGRAPermuteMap[4] = {3, 2, 1, 0};
 
 static BOOL VCAMConvertYUVToBGRA(BOOL nv12,
                                  BOOL fullRange,
+                                 enum AVColorSpace colorSpace,
                                  const uint8_t *luma,
                                  size_t lumaStride,
                                  const uint8_t *chroma,
@@ -140,7 +265,8 @@ static BOOL VCAMConvertYUVToBGRA(BOOL nv12,
         return NO;
     }
     vImage_YpCbCrToARGB info;
-    if (!VCAMPrepareYpCbCrInfo(fullRange, !nv12, width, height, &info)) return NO;
+    if (!VCAMPrepareYpCbCrInfo(fullRange, !nv12, colorSpace,
+                              width, height, &info)) return NO;
     vImage_Buffer yp = {
         .data = (void *)luma,
         .height = height,
@@ -184,42 +310,11 @@ static BOOL VCAMConvertYUVToBGRA(BOOL nv12,
     return error == kvImageNoError;
 }
 
-static BOOL VCAMScaleBGRAInPlace(const uint8_t *source,
-                                 size_t sourceStride,
-                                 size_t sourceWidth,
-                                 size_t sourceHeight,
-                                 uint8_t *destination,
-                                 size_t destinationStride,
-                                 size_t destinationWidth,
-                                 size_t destinationHeight) {
-    if (source == NULL || destination == NULL || sourceWidth == 0 ||
-        sourceHeight == 0 || destinationWidth == 0 || destinationHeight == 0 ||
-        !VCAMRowBytesAligned(sourceStride) ||
-        !VCAMRowBytesAligned(destinationStride)) {
-        return NO;
-    }
-    vImage_Buffer src = {
-        .data = (void *)source,
-        .height = sourceHeight,
-        .width = sourceWidth,
-        .rowBytes = sourceStride,
-    };
-    vImage_Buffer dst = {
-        .data = destination,
-        .height = destinationHeight,
-        .width = destinationWidth,
-        .rowBytes = destinationStride,
-    };
-    vImage_Error error = vImageScale_ARGB8888(
-        &src, &dst, NULL, kvImageHighQualityResampling);
-    return error == kvImageNoError;
-}
-
 // Legacy scalar conversion kept as a fallback for formats or row alignment
 // that Accelerate rejects (10-bit is first downsampled, then handled below).
 static CVPixelBufferRef VCAMCopyBGRAFromAVFrameScalar(AVFrame *frame,
-                                                      int outputWidth,
-                                                      int outputHeight) {
+                                                       int outputWidth,
+                                                       int outputHeight) {
     BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
         frame->format == AV_PIX_FMT_YUVJ420P;
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
@@ -244,9 +339,14 @@ static CVPixelBufferRef VCAMCopyBGRAFromAVFrameScalar(AVFrame *frame,
     }
     uint8_t *destination = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
     size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    int shift = (planar420p10 || p010) ? 2 : 0;
+    int shift = planar420p10 ? 2 : (p010 ? 8 : 0);
     BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
         frame->color_range == AVCOL_RANGE_JPEG;
+    double redLuma = 0.0;
+    double blueLuma = 0.0;
+    VCAMLumaCoefficients(frame->colorspace, (size_t)frame->width,
+                         (size_t)frame->height, &redLuma, &blueLuma);
+    double greenLuma = 1.0 - redLuma - blueLuma;
     for (int y = 0; y < outputHeight; y++) {
         int sourceY = MIN(frame->height - 1,
                           (int)((int64_t)y * frame->height / outputHeight));
@@ -280,15 +380,17 @@ static CVPixelBufferRef VCAMCopyBGRAFromAVFrameScalar(AVFrame *frame,
                     sampleV = AV_RL16(chromaU + (((sourceX / 2) * 2) * 2) + 2) >> shift;
                 }
             }
-            int c = fullRange ? sampleY : MAX(0, sampleY - 16);
-            int d = sampleU - 128;
-            int e = sampleV - 128;
-            int red = fullRange ? c + ((359 * e + 128) >> 8)
-                                : (298 * c + 409 * e + 128) >> 8;
-            int green = fullRange ? c - ((88 * d + 183 * e + 128) >> 8)
-                                  : (298 * c - 100 * d - 208 * e + 128) >> 8;
-            int blue = fullRange ? c + ((454 * d + 128) >> 8)
-                                 : (298 * c + 516 * d + 128) >> 8;
+            double normalizedY = fullRange
+                ? sampleY / 255.0 : (sampleY - 16.0) / 219.0;
+            double normalizedU = (sampleU - 128.0) / (fullRange ? 255.0 : 224.0);
+            double normalizedV = (sampleV - 128.0) / (fullRange ? 255.0 : 224.0);
+            int red = (int)lrint(255.0 * (normalizedY +
+                2.0 * (1.0 - redLuma) * normalizedV));
+            int blue = (int)lrint(255.0 * (normalizedY +
+                2.0 * (1.0 - blueLuma) * normalizedU));
+            int green = (int)lrint(255.0 * (normalizedY -
+                2.0 * blueLuma * (1.0 - blueLuma) / greenLuma * normalizedU -
+                2.0 * redLuma * (1.0 - redLuma) / greenLuma * normalizedV));
             row[x * 4 + 0] = (uint8_t)MAX(0, MIN(255, blue));
             row[x * 4 + 1] = (uint8_t)MAX(0, MIN(255, green));
             row[x * 4 + 2] = (uint8_t)MAX(0, MIN(255, red));
@@ -296,43 +398,27 @@ static CVPixelBufferRef VCAMCopyBGRAFromAVFrameScalar(AVFrame *frame,
         }
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    VCAMSetAVFrameColorAttachments(frame, pixelBuffer,
+                                   (size_t)outputWidth, (size_t)outputHeight);
     return pixelBuffer;
 }
 
-static BOOL VCAMDownsample10BitPlanarTo8Bit(const uint8_t *source,
-                                            size_t sourceStride,
-                                            uint8_t *destination,
-                                            size_t destinationStride,
-                                            size_t width,
-                                            size_t height) {
-    if (source == NULL || destination == NULL || width == 0 || height == 0) {
-        return NO;
-    }
-    for (size_t y = 0; y < height; y++) {
-        const uint8_t *inputRow = source + y * sourceStride;
-        uint8_t *outputRow = destination + y * destinationStride;
-        for (size_t x = 0; x < width; x++) {
-            outputRow[x] = (uint8_t)((AV_RL16(inputRow + x * 2) >> 2) & 0xff);
-        }
-    }
-    return YES;
-}
-
-static BOOL VCAMDownsample10BitNV12To8Bit(const uint8_t *source,
-                                          size_t sourceStride,
-                                          uint8_t *destination,
-                                          size_t destinationStride,
-                                          size_t width,
-                                          size_t height) {
+static BOOL VCAMDownsample10BitTo8Bit(const uint8_t *source,
+                                      size_t sourceStride,
+                                      uint8_t *destination,
+                                      size_t destinationStride,
+                                      size_t width,
+                                      size_t height,
+                                      unsigned int shift) {
     if (source == NULL || destination == NULL || width == 0 || height == 0 ||
-        (width & 1) != 0) {
+        (shift != 2 && shift != 8)) {
         return NO;
     }
     for (size_t y = 0; y < height; y++) {
         const uint8_t *inputRow = source + y * sourceStride;
         uint8_t *outputRow = destination + y * destinationStride;
         for (size_t x = 0; x < width; x++) {
-            outputRow[x] = (uint8_t)((AV_RL16(inputRow + x * 2) >> 2) & 0xff);
+            outputRow[x] = (uint8_t)((AV_RL16(inputRow + x * 2) >> shift) & 0xff);
         }
     }
     return YES;
@@ -341,7 +427,8 @@ static BOOL VCAMDownsample10BitNV12To8Bit(const uint8_t *source,
 CVPixelBufferRef VCAMCopyNV12FromAVFrame(AVFrame *frame) {
     if (frame == NULL || frame->width <= 0 || frame->height <= 0 ||
         (frame->width & 1) != 0 || (frame->height & 1) != 0 ||
-        MAX(frame->width, frame->height) > 1920) return NULL;
+        !VCAMSourceSizedVideoFrameFitsBudget(frame->width, frame->height) ||
+        frame->colorspace == AVCOL_SPC_BT2020_CL) return NULL;
     BOOL planar = frame->format == AV_PIX_FMT_YUV420P ||
         frame->format == AV_PIX_FMT_YUVJ420P;
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
@@ -407,23 +494,13 @@ CVPixelBufferRef VCAMCopyNV12FromAVFrame(AVFrame *frame) {
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
 
-    if (frame->colorspace == AVCOL_SPC_BT709 ||
-        (frame->colorspace == AVCOL_SPC_UNSPECIFIED && MAX(width, height) >= 1280)) {
-        CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
-                              kCVImageBufferColorPrimaries_ITU_R_709_2,
-                              kCVAttachmentMode_ShouldPropagate);
-        CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
-                              kCVImageBufferTransferFunction_ITU_R_709_2,
-                              kCVAttachmentMode_ShouldPropagate);
-        CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
-                              kCVImageBufferYCbCrMatrix_ITU_R_709_2,
-                              kCVAttachmentMode_ShouldPropagate);
-    }
+    VCAMSetAVFrameColorAttachments(frame, pixelBuffer, width, height);
     return pixelBuffer;
 }
 
 CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {
-    if (frame == NULL || frame->width <= 0 || frame->height <= 0) return NULL;
+    if (frame == NULL || frame->width <= 0 || frame->height <= 0 ||
+        frame->colorspace == AVCOL_SPC_BT2020_CL) return NULL;
     BOOL planar420 = frame->format == AV_PIX_FMT_YUV420P ||
         frame->format == AV_PIX_FMT_YUVJ420P;
     BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
@@ -433,13 +510,9 @@ CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {
     if (frame->data[0] == NULL || frame->data[1] == NULL ||
         ((planar420 || planar420p10) && frame->data[2] == NULL)) return NULL;
 
-    const int maximumDimension = 1920;
-    double scale = MIN(1.0, (double)maximumDimension /
-        (double)MAX(frame->width, frame->height));
-    int outputWidth = MAX(1, (int)lrint((double)frame->width * scale));
-    int outputHeight = MAX(1, (int)lrint((double)frame->height * scale));
-    if ((outputWidth & 1) != 0) outputWidth += 1;
-    if ((outputHeight & 1) != 0) outputHeight += 1;
+    if (!VCAMSourceSizedVideoFrameFitsBudget(frame->width, frame->height)) return NULL;
+    int outputWidth = frame->width;
+    int outputHeight = frame->height;
 
     NSDictionary *attributes = @{
         (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
@@ -460,31 +533,17 @@ CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {
         VCAMRowBytesAligned(frame->linesize[0]) &&
         VCAMRowBytesAligned(frame->linesize[1]) &&
         ((frame->linesize[0] * (size_t)frame->height) < (512ULL << 20))) {
-        uint8_t *scratch = VCAMConverterScratchBuffer(
-            (size_t)frame->width, (size_t)frame->height);
-        if (scratch != NULL) {
-            BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
-                frame->color_range == AVCOL_RANGE_JPEG;
-            BOOL convertedAtSourceSize = VCAMConvertYUVToBGRA(
-                nv12, fullRange,
-                frame->data[0], (size_t)frame->linesize[0],
-                frame->data[1], (size_t)frame->linesize[1],
-                planar420 ? frame->data[2] : NULL,
-                planar420 ? (size_t)frame->linesize[2] : 0,
-                (size_t)frame->width, (size_t)frame->height,
-                scratch, (size_t)frame->width * 4);
-            if (convertedAtSourceSize) {
-                uint8_t *destination =
-                    (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
-                size_t destinationStride =
-                    CVPixelBufferGetBytesPerRow(pixelBuffer);
-                converted = VCAMScaleBGRAInPlace(
-                    scratch, (size_t)frame->width * 4,
-                    (size_t)frame->width, (size_t)frame->height,
-                    destination, destinationStride,
-                    (size_t)outputWidth, (size_t)outputHeight);
-            }
-        }
+        BOOL fullRange = frame->format == AV_PIX_FMT_YUVJ420P ||
+            frame->color_range == AVCOL_RANGE_JPEG;
+        converted = VCAMConvertYUVToBGRA(
+            nv12, fullRange, frame->colorspace,
+            frame->data[0], (size_t)frame->linesize[0],
+            frame->data[1], (size_t)frame->linesize[1],
+            planar420 ? frame->data[2] : NULL,
+            planar420 ? (size_t)frame->linesize[2] : 0,
+            (size_t)frame->width, (size_t)frame->height,
+            (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer),
+            CVPixelBufferGetBytesPerRow(pixelBuffer));
     } else if (planar420p10 || p010) {
         size_t width = (size_t)frame->width;
         size_t height = (size_t)frame->height;
@@ -494,56 +553,48 @@ CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {
         size_t uvStride = (uvWidth + 15) & ~(size_t)15;
         uint8_t *luma8 = malloc(lumaStride * height);
         uint8_t *chroma8 = malloc(uvStride * uvHeight * 2);
-        uint8_t *argb = malloc(width * height * 4);
-        if (luma8 != NULL && chroma8 != NULL && argb != NULL &&
-            VCAMDownsample10BitPlanarTo8Bit(
+        uint8_t *destination =
+            (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+        size_t destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        if (luma8 != NULL && chroma8 != NULL &&
+            VCAMDownsample10BitTo8Bit(
                 frame->data[0], (size_t)frame->linesize[0],
-                luma8, lumaStride, width, height)) {
+                luma8, lumaStride, width, height, p010 ? 8 : 2)) {
             BOOL fullRange = frame->color_range == AVCOL_RANGE_JPEG;
             BOOL convertedAtSourceSize = NO;
             if (p010) {
-                if (VCAMDownsample10BitNV12To8Bit(
+                if (VCAMDownsample10BitTo8Bit(
                         frame->data[1], (size_t)frame->linesize[1],
-                        chroma8, lumaStride, width, uvHeight)) {
+                        chroma8, lumaStride, width, uvHeight, 8)) {
                     convertedAtSourceSize = VCAMConvertYUVToBGRA(
-                        YES, fullRange,
+                        YES, fullRange, frame->colorspace,
                         luma8, lumaStride,
                         chroma8, lumaStride,
                         NULL, 0,
                         width, height,
-                        argb, width * 4);
+                        destination, destinationStride);
                 }
             } else {
-                if (VCAMDownsample10BitPlanarTo8Bit(
+                if (VCAMDownsample10BitTo8Bit(
                         frame->data[1], (size_t)frame->linesize[1],
-                        chroma8, uvStride, uvWidth, uvHeight) &&
-                    VCAMDownsample10BitPlanarTo8Bit(
+                        chroma8, uvStride, uvWidth, uvHeight, 2) &&
+                    VCAMDownsample10BitTo8Bit(
                         frame->data[2], (size_t)frame->linesize[2],
                         chroma8 + uvStride * uvHeight, uvStride,
-                        uvWidth, uvHeight)) {
+                        uvWidth, uvHeight, 2)) {
                     convertedAtSourceSize = VCAMConvertYUVToBGRA(
-                        NO, fullRange,
+                        NO, fullRange, frame->colorspace,
                         luma8, lumaStride,
                         chroma8, uvStride,
                         chroma8 + uvStride * uvHeight, uvStride,
                         width, height,
-                        argb, width * 4);
+                        destination, destinationStride);
                 }
             }
-            if (convertedAtSourceSize) {
-                uint8_t *destination =
-                    (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
-                size_t destinationStride =
-                    CVPixelBufferGetBytesPerRow(pixelBuffer);
-                converted = VCAMScaleBGRAInPlace(
-                    argb, width * 4, width, height,
-                    destination, destinationStride,
-                    (size_t)outputWidth, (size_t)outputHeight);
-            }
+            converted = convertedAtSourceSize;
         }
         free(luma8);
         free(chroma8);
-        free(argb);
     }
 
     if (!converted) {
@@ -552,6 +603,8 @@ CVPixelBufferRef VCAMCopyBGRAFromAVFrame(AVFrame *frame) {
         return VCAMCopyBGRAFromAVFrameScalar(frame, outputWidth, outputHeight);
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    VCAMSetAVFrameColorAttachments(frame, pixelBuffer,
+                                   (size_t)outputWidth, (size_t)outputHeight);
     return pixelBuffer;
 }
 
@@ -578,7 +631,7 @@ BOOL VCAMCopyNV12PixelBufferToBGRA(CVPixelBufferRef source,
         return NO;
     }
     BOOL converted = VCAMConvertYUVToBGRA(
-        YES, NO,
+        YES, NO, VCAMColorSpaceForPixelBuffer(source),
         (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0),
         CVPixelBufferGetBytesPerRowOfPlane(source, 0),
         (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1),
@@ -813,7 +866,7 @@ BOOL VCAMRenderNV12PixelBufferToBGRA(CVPixelBufferRef source,
     BOOL fullRange = CVPixelBufferGetPixelFormatType(source) ==
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
     BOOL converted = VCAMConvertYUVToBGRA(
-        YES, fullRange,
+        YES, fullRange, VCAMColorSpaceForPixelBuffer(source),
         (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0),
         CVPixelBufferGetBytesPerRowOfPlane(source, 0),
         (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1),

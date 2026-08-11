@@ -37,4 +37,11 @@ IOSurfaceRef _Nullable VCAMSurfaceBrokerCopySurface(uint32_t surfaceID)
 /// process-lifetime storage and never contains media or user data.
 const char *VCAMSurfaceBrokerSubscriberStatus(void);
 
+/// Obtains a short-lived, single-use configuration token from the
+/// audit-identified XPC service. Returns false for non-UI peers.
+bool VCAMSurfaceBrokerCopyConfigurationToken(uint64_t *high, uint64_t *low);
+
+/// Asks the audit-identified XPC service to consume a previously issued token.
+bool VCAMSurfaceBrokerValidateConfigurationToken(uint64_t high, uint64_t low);
+
 NS_ASSUME_NONNULL_END

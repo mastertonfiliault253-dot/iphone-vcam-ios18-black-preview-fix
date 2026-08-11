@@ -75,7 +75,11 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertNotIn("hls-ffmpeg-videotoolbox", targets["vcamd"]["sources"])
         self.assertEqual(
             targets["vcamd"]["rollbackSources"],
-            ["local-video-avassetreader", "hls-ffmpeg-videotoolbox"],
+            [
+                "local-image-imageio",
+                "local-video-avassetreader",
+                "hls-ffmpeg-videotoolbox",
+            ],
         )
         self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
 
@@ -85,14 +89,18 @@ class PackagingArchitectureTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(encoding="utf-8")
         prerm = (ROOT / "layout" / "DEBIAN" / "prerm").read_text(encoding="utf-8")
+        postrm = (ROOT / "layout" / "DEBIAN" / "postrm").read_text(encoding="utf-8")
         self.assertIn("com.codex.vcamd", launchd)
         self.assertIn("<string>/var/jb/usr/libexec/vcamd</string>", launchd)
         self.assertNotIn("tweaksupport", launchd)
         self.assertIn("launchctl bootstrap system", postinst)
-        self.assertIn("launchctl kickstart -k user/foreground/com.codex.vcamd", postinst)
+        self.assertIn("launchctl kickstart -k system/com.codex.vcamd", postinst)
         self.assertIn("for attempt in 1 2 3 4 5", postinst)
-        self.assertIn("launchctl print user/foreground/com.codex.vcamd", postinst)
-        self.assertIn("launchctl bootout user/foreground/com.codex.vcamd", prerm)
+        self.assertIn("launchctl print system/com.codex.vcamd", postinst)
+        self.assertIn("launchctl bootout system/com.codex.vcamd", prerm)
+        self.assertIn('remove|purge)', postrm)
+        self.assertIn("killall -9 mediaserverd", postrm)
+        self.assertIn("killall -9 SpringBoard", postrm)
 
         injection_launchd = (
             ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcaminjectd.plist"
@@ -148,7 +156,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES", main)
         self.assertIn("memlimit_active = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("memlimit_inactive = VCAMWorkerMemoryLimitMB", main)
-        self.assertIn("VCAMWorkerMemoryLimitMB = 256", main)
+        self.assertIn("VCAMWorkerMemoryLimitMB = 384", main)
         for unsafe_escalation in (
             "JETSAM_PRIORITY_CRITICAL",
             "MEMORYSTATUS_CMD_SET_PRIORITY_PROPERTIES",
@@ -171,6 +179,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertTrue((ROOT / "scripts" / "build-rootless-wsl.sh").exists())
         self.assertIn("EXPECTED_PACKAGE_VERSION", wsl_build)
         self.assertIn('"$PROJECT_ROOT/control"', wsl_build)
+        self.assertIn("--exclude='./dist'", wsl_build)
+        self.assertNotIn('cp -a "$PROJECT_ROOT/."', wsl_build)
         self.assertNotIn("worker7", wsl_build)
 
     def test_shared_transport_is_triple_buffered_atomic_and_stale_aware(self) -> None:
@@ -198,6 +208,8 @@ class PackagingArchitectureTests(unittest.TestCase):
         )[0]
         self.assertLess(writer_create.index("VCAMSharedFrameLockExclusive"), writer_create.index("HeaderIsValid"))
         self.assertLess(writer_create.index("HeaderIsValid"), writer_create.index("VCAMSharedFrameUnlock"))
+        self.assertNotIn("VCAMSharedFrameInitializeHeader(writer->header", writer_create)
+        self.assertIn("VCAMSharedFrameWriterDestroy(writer);", writer_create)
         mode_write = implementation.split("bool VCAMSharedFrameSetRequestedActive", 1)[1].split(
             "VCAMSharedFrameReader *VCAMSharedFrameReaderCreate", 1
         )[0]
@@ -211,6 +223,14 @@ class PackagingArchitectureTests(unittest.TestCase):
             "bool VCAMSharedFrameSetRequestedActive", 1
         )[0]
         self.assertNotIn("writer->header->requestedState", writer_publish)
+        self.assertLess(
+            writer_publish.index("VCAMSharedFrameLockExclusive(writer->descriptor)"),
+            writer_publish.index("publishedSequence"),
+        )
+        self.assertLess(
+            writer_publish.index("publishedSequence, sequence, memory_order_release"),
+            writer_publish.rindex("VCAMSharedFrameUnlock(writer->descriptor)"),
+        )
 
     def test_worker_hides_source_selection_and_publication(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
@@ -286,10 +306,9 @@ class PackagingArchitectureTests(unittest.TestCase):
         build_script = (ROOT / "scripts" / "build-rootless-wsl.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            'rm -rf "$BUILD_ROOT/.theos" "$BUILD_ROOT/packages"',
-            build_script,
-        )
+        self.assertIn("--exclude='./.theos'", build_script)
+        self.assertIn("--exclude='./packages'", build_script)
+        self.assertIn("--exclude='./dist'", build_script)
 
     def test_configuration_accepts_images_and_worker_direct_read(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")

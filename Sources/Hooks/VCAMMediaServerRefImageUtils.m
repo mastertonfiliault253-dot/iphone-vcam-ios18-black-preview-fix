@@ -1,4 +1,5 @@
 #import "VCAMMediaServerRefImageUtils.h"
+#import "../Shared/VCAMProcessIdentity.h"
 
 #import <CoreImage/CoreImage.h>
 #import <CoreVideo/CVPixelFormatDescription.h>
@@ -13,6 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -44,14 +47,14 @@ static CIContext *VCAMContext;
 static CGColorSpaceRef VCAMStandardColorSpace;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
-// Keep the process-lifetime session in an availability-neutral CF slot. The
-// concrete VTPixelTransferSessionRef type is iOS 16+, while the package keeps
-// an iOS 15 deployment target so unsupported systems can fail closed.
+// VTPixelTransferSession is available throughout the supported iOS 16.0-16.5
+// range. Keep the process-lifetime object in a narrow CF slot so this hook does
+// not depend on SDK-specific public typedef details.
 static CFTypeRef VCAMPixelTransferSession;
 static volatile int VCAMConsecutiveSlowRenders;
-// -1 means no valid configuration has been read yet. Treat that state as
-// enabled/fail-closed until an explicit valid false is observed.
-static volatile int VCAMConfiguredMode = -1;
+// Fresh installs start on the real camera. After a valid value is observed,
+// transient read failures retain that last value in VCAMReloadConfiguredMode.
+static volatile int VCAMConfiguredMode = 0;
 
 static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     double a = *(const double *)left;
@@ -269,11 +272,24 @@ void VCAMRefLog(const char *message) {
     char stamp[32] = {0};
     strftime(stamp, sizeof(stamp), "%H:%M:%S", &brokenDown);
     char line[768] = {0};
-    snprintf(line, sizeof(line), "[%d][%s.%03d] %s\n", getpid(), stamp,
+    static uint64_t processStartToken;
+    if (processStartToken == 0) {
+        processStartToken = VCAMProcessStartToken(getpid());
+    }
+    snprintf(line, sizeof(line), "[%d][start=%llu][%s.%03d] %s\n", getpid(),
+             (unsigned long long)processStartToken, stamp,
              (int)(value.tv_usec / 1000), message != NULL ? message : "(null)");
     int descriptor = open("/var/tmp/vcam-ref-msd.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (descriptor >= 0) {
-        (void)write(descriptor, line, strlen(line));
+        if (flock(descriptor, LOCK_EX) == 0) {
+            struct stat metadata = {0};
+            if (fstat(descriptor, &metadata) == 0 &&
+                metadata.st_size > 4 * 1024 * 1024) {
+                (void)ftruncate(descriptor, 0);
+            }
+            (void)write(descriptor, line, strlen(line));
+            (void)flock(descriptor, LOCK_UN);
+        }
         close(descriptor);
     }
 }
@@ -287,7 +303,7 @@ void loadReplacementMedia(void) {
         VCAMContext = device != nil
             ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
             : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
-        VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_709);
         VCAMReaderLock = [NSLock new];
         VCAMPixelTransferLock = [NSLock new];
         CVReturn result = VCAMCreateStagingPool(
@@ -457,7 +473,7 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
         VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) return NO;
 
     CVBufferRemoveAllAttachments(stagingBuffer);
-    // The shared canvas is standard-range sRGB/Rec.709 content. Reusing the
+    // The compositor explicitly converts shared content to Rec.709. Reusing the
     // physical camera's HDR/headroom tags makes saved virtual photos visibly
     // darker and over-contrasted.
     VCAMSetStandardColorAttachments(stagingBuffer);
@@ -491,12 +507,8 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                VCAMFramePresentation presentation,
-                               CVPixelBufferRef *replacementBufferOut,
-                               BOOL *stillPhotoRequiresRightOrientationOut) {
+                               CVPixelBufferRef *replacementBufferOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
-    if (stillPhotoRequiresRightOrientationOut != NULL) {
-        *stillPhotoRequiresRightOrientationOut = NO;
-    }
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
         VCAMScratchPool == NULL) return NO;
 
@@ -692,18 +704,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         if (webKitLandscapeStorage && sourceIsPortrait &&
             targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
-        }
-        // iOS still-photo buffers use the sensor's landscape storage basis.
-        // Only a canonical portrait source is turned into that basis; the
-        // caller then marks the final sample Orientation=Right so Photos shows
-        // a portrait 3:4 image. Realtime consumers and landscape sources keep
-        // their canonical basis unchanged.
-        if (!realtimeCompensation && sourceIsPortrait &&
-            targetWidth > targetHeight) {
-            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
-            if (stillPhotoRequiresRightOrientationOut != NULL) {
-                *stillPhotoRequiresRightOrientationOut = YES;
-            }
         }
         // The producer publishes canonical visual orientation. The real
         // camera graph remains the negotiation shell: target dimensions,

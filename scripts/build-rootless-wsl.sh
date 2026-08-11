@@ -31,15 +31,23 @@ bash ./scripts/build-ffmpeg-ios-linux.sh
 
 BUILD_ROOT="$(mktemp -d /tmp/vcam-rootless-build.XXXXXX)"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
-cp -a "$PROJECT_ROOT/." "$BUILD_ROOT/"
+# Historical artifacts make a blind workspace copy both slow and ambiguous.
+# Stage only build inputs; the git database, previous packages and compiler
+# cache are never inputs to a clean verification build.
+tar --exclude='./.git' --exclude='./.theos' --exclude='./packages' \
+    --exclude='./dist' -C "$PROJECT_ROOT" -cf - . | tar -C "$BUILD_ROOT" -xf -
 chmod -R a+rX,go-w "$BUILD_ROOT"
 chmod 755 "$BUILD_ROOT/layout/DEBIAN"
 case "$BUILD_ROOT" in
   /tmp/vcam-rootless-build.*) ;;
   *) echo "Unexpected build root: $BUILD_ROOT" >&2; exit 1 ;;
 esac
-rm -rf "$BUILD_ROOT/.theos" "$BUILD_ROOT/packages"
 cd "$BUILD_ROOT"
+if [[ "${VCAM_COMPILE_ONLY:-0}" == "1" ]]; then
+  make clean all FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+  echo "Rootless compile check passed (no package produced)"
+  exit 0
+fi
 make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
 mapfile -t PACKAGES < <(find "$BUILD_ROOT/packages" -maxdepth 1 -type f -name '*.deb' -print)

@@ -1,6 +1,6 @@
 # VCAM Media Bridge 项目介绍与学习文档
 
-> 适用范围：`D:\work\IOSVCAN-DS\vcam`。提交号与包版本以 `git rev-parse HEAD` 和 `control` 为准，不在文档中写死。
+> 适用范围：`D:\work\IOSVCAN-DS\vcam`。架构原理以本文为准；最新固定版本、提交、CI、DEB 哈希和真机证据统一记录在 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)，避免散落在多个章节中产生冲突。
 > 本文件只描述媒体管线，不包含 SSH 密码、GitHub Token 等敏感信息；敏感信息见 `PROJECT-INFO-SECRETS.md`（已被 `.gitignore` 忽略，严禁推送到公开仓库）。
 
 ## 1. 项目是什么
@@ -109,7 +109,7 @@ SpringBoard 使用系统 `AVPlayer` 处理分片、时间线和码率切换，�
 - 工具链：Theos，部署目标 iOS 16.0 且包依赖限制为 `< 16.6`；`vendor/ffmpeg` 由 CI 内 `scripts/build-ffmpeg-ios.sh` 构建。
 - 本地 WSL 构建只是编译检查；可安装产物只来自私有 macOS CI。
 - CI workflow：`Build rootless package`，响应 `codex/ios16-media-bridge` 分支 push，运行全部主机测试 → Theos 构建 → 校验单一 DEB、arm64/arm64e、Objective-C stub sections、entitlement 与废弃 dylib → 上传 `vcam-rootless` artifact。
-- 仓库规则：当前发布 remote 为私有 `newaccount`；`origin`（wordgege/iPhone-VCAM）是公开上游，**严禁推送**。推送前必须用 `git remote -v` 再确认目标；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore。
+- 仓库规则：当前发布 remote 为私有 `current`（`cuentaripionose-prog/iphone-vcam-ios16-private`）；`origin`（wordgege/iPhone-VCAM）是公开上游，**严禁推送**。推送前必须用 `git remote -v` 再确认目标；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore。
 - 发布校验：同一 run 独立下载两份 artifact，核对 DEB SHA-256 一致，再上传设备核对一次 SHA 后 `dpkg -i`。
 
 ### GitHub 外部浏览器授权
@@ -189,7 +189,7 @@ python -m unittest discover -s tests -v
 
 ### 旋转/方向、拍照黑边、二维码识别
 
-源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转进入其横向存储基准，再按真实相机行为一次性居中裁剪并填满浏览器已经协商的目标缓冲区；Camera 预览保持完整画面适配，录像保持满幅。VCAM 不伪造浏览器能力表，也不固定 640×480/720p/1080p，目标尺寸、帧率、像素格式、时间戳和附件仍由真实相机图决定；不得用目标宽高猜浏览器。目标缓冲区不会再次缩放或重建，因此没有第二次 VCAM 放大；源与目标比例不同时，消除黑边必然裁掉边缘像素。拍照走 `still-photo` 独立路由：竖向规范源仅在 `Meteor Headroom` 末端转换到横向传感器存储并写入 EXIF `Orientation=Right`，横向源不变，使保存比例跟随源而不是手机姿态。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
+源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转进入其横向存储基准，再按真实相机行为一次性居中裁剪并填满浏览器已经协商的目标缓冲区；Camera 预览保持完整画面适配，录像保持满幅。VCAM 不伪造浏览器能力表，也不固定 640×480/720p/1080p，目标尺寸、帧率、像素格式、时间戳和附件仍由真实相机图决定；不得用目标宽高猜浏览器。目标缓冲区不会再次缩放或重建，因此没有第二次 VCAM 放大；源与目标比例不同时，消除黑边必然裁掉边缘像素。拍照走 `still-photo` 独立路由，只对系统已协商的目标做等比裁剪/缩放；VCAM 不再按手机或源姿态旋转像素，也不改写系统 sample 的方向 metadata，保存方向和比例继续由系统相机图决定。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
 
 ## 10. 学习路线（建议阅读顺序）
 
@@ -220,7 +220,7 @@ python -m unittest discover -s tests -v
 
 ## 12. 当前状态与下一步
 
-- 发布状态不得写死在本文。每次交付都必须重新执行 `git rev-parse HEAD`、`gh run list`、下载 CI artifact、核对 SHA-256，并把同一 DEB 安装到目标设备；WSL 包只作编译检查。
+- 当前发布基线见 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)。每次交付都必须重新执行 `git rev-parse HEAD`、`gh run list`、下载 CI artifact、核对 SHA-256，并把同一 DEB 安装到目标设备；WSL 包只作编译检查。
 - HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、保留 iOS 16.1 必需的自动续播并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
 - 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。相册/文件选择现在保留原始 representation 且每次生成新路径；仍必须用新 CI 包重复选择同一类型资源验证切换和长期显示。
 - 静态照片必须在每个新 CI 包重新验收。私有 `pf20` StillImage 源不得被直接抑制，应先在 mediaserverd 内进入可替换的 420f `Meteor Headroom` 终点；普通照片与 Live Photo 都要确认主图、缩略图和配对视频完整且不含真实帧。

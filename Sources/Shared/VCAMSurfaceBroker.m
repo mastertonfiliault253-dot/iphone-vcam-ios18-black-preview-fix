@@ -28,7 +28,9 @@ extern void xpc_connection_send_message(xpc_connection_t connection,
                                         xpc_object_t message);
 extern void xpc_connection_send_message_with_reply(
     xpc_connection_t connection, xpc_object_t message,
-    dispatch_queue_t replyQueue, void (^handler)(xpc_object_t reply));
+                                        dispatch_queue_t replyQueue, void (^handler)(xpc_object_t reply));
+extern xpc_object_t xpc_connection_send_message_with_reply_sync(
+    xpc_connection_t connection, xpc_object_t message);
 extern xpc_type_t xpc_get_type(xpc_object_t object);
 extern xpc_object_t xpc_dictionary_create(
     const char *const _Nullable *keys,
@@ -258,4 +260,47 @@ const char *VCAMSurfaceBrokerSubscriberStatus(void) {
         case VCAMSubscriberStatusSurfaceMiss: return "surface-id-miss";
         default: return "waiting-for-reply";
     }
+}
+
+bool VCAMSurfaceBrokerCopyConfigurationToken(uint64_t *high, uint64_t *low) {
+    if (high == NULL || low == NULL) return false;
+    *high = 0;
+    *low = 0;
+    xpc_connection_t connection = VCAMSurfaceBrokerPublisherConnection();
+    if (connection == NULL) return false;
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "command", "config-auth");
+    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(
+        connection, request);
+    VCAMXPCRelease(request);
+    if (reply == NULL || xpc_get_type(reply) != VCAMXPCTypeDictionary() ||
+        strcmp(xpc_dictionary_get_string(reply, "command") ?: "",
+               "config-auth") != 0) {
+        if (reply != NULL) VCAMXPCRelease(reply);
+        return false;
+    }
+    *high = xpc_dictionary_get_uint64(reply, "tokenHigh");
+    *low = xpc_dictionary_get_uint64(reply, "tokenLow");
+    VCAMXPCRelease(reply);
+    return *high != 0 && *low != 0;
+}
+
+bool VCAMSurfaceBrokerValidateConfigurationToken(uint64_t high, uint64_t low) {
+    if (high == 0 || low == 0) return false;
+    xpc_connection_t connection = VCAMSurfaceBrokerPublisherConnection();
+    if (connection == NULL) return false;
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "command", "config-auth-consume");
+    xpc_dictionary_set_uint64(request, "tokenHigh", high);
+    xpc_dictionary_set_uint64(request, "tokenLow", low);
+    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(
+        connection, request);
+    VCAMXPCRelease(request);
+    bool accepted = reply != NULL &&
+        xpc_get_type(reply) == VCAMXPCTypeDictionary() &&
+        strcmp(xpc_dictionary_get_string(reply, "command") ?: "",
+               "config-auth-consume") == 0 &&
+        xpc_dictionary_get_uint64(reply, "accepted") == 1;
+    if (reply != NULL) VCAMXPCRelease(reply);
+    return accepted;
 }

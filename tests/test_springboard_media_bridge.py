@@ -40,6 +40,10 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("AVPlayerItemStatusReadyToPlay", source)
         self.assertIn("springboard HLS stalled", source)
         self.assertIn("scheduleReconnectForItem:item reason:", source)
+        self.assertIn("localVideoReachedEnd", source)
+        self.assertIn("springboard local video reached end; holding last frame", source)
+        no_frame = source.split("if (!hasNewFrame)", 1)[1].split("CMTime displayTime", 1)[0]
+        self.assertIn("if (self.localVideoReachedEnd) return", no_frame)
 
     def test_hls_prefers_live_edge_over_large_forward_buffer(self) -> None:
         source = (
@@ -156,14 +160,18 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("IOSurfaceCreateXPCObject", broker)
         self.assertIn("IOSurfaceLookupFromXPCObject", broker)
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', server)
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', server)
+        self.assertIn("VCAMSurfaceBrokerPeerIdentitySpringBoard", server)
+        self.assertIn("VCAMSurfaceBrokerPeerIdentityMediaServer", server)
         self.assertIn("com.codex.vcam.surface", launchd)
 
     def test_static_surface_renders_in_springboard_single_shared_buffer(self) -> None:
         bridge = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
         ).read_text(encoding="utf-8")
+        bootstrap = bridge.split("- (BOOL)publishStaticBootstrap", 1)[1].split(
+            "- (BOOL)startStaticImage", 1
+        )[0]
+        self.assertIn("VCAMSetRGBColorAttachments(bootstrap)", bootstrap)
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
             encoding="utf-8"
         )
@@ -177,6 +185,11 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("render:image toCVPixelBuffer:destination", static_path)
         self.assertIn("VCAMSharedSurfaceWriterPublish", static_path)
         self.assertIn("VCAMSharedSurfaceWriterRefreshLatest", bridge)
+        self.assertIn("VCAMStaticImageMaximumStartRetries = 20", bridge)
+        self.assertIn("scheduleStaticImageStartRetryForConfiguration", bridge)
+        self.assertIn("self.staticImageStartRetryable = YES;", static_path)
+        self.assertIn("static bootstrap deferred until refresh", static_path)
+        self.assertNotIn("!surfacePublished || !bootstrapPublished", static_path)
         self.assertIn("BOOL transportCurrent = !self.staticImage", bridge)
         self.assertIn("if (!VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter))", bridge)
         self.assertIn("/var/tmp/vcam-local-image-legacy-vcamd.enable", bridge)

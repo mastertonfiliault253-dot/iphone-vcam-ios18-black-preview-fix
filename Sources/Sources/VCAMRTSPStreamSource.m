@@ -146,6 +146,9 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
 @property(nonatomic) BOOL usesRTSPTransport;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
 @property(nonatomic) BOOL softwareFallbackActive;
+- (BOOL)decodeOneFFmpegSessionUsingHardware:(BOOL)useHardware
+                                    stalled:(BOOL *)stalledOut
+                           hardwareRejected:(BOOL *)hardwareRejectedOut;
 @end
 
 @implementation VCAMRTSPStreamSource
@@ -559,7 +562,8 @@ cleanup:
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"%@ hardware decode disabled; using software decode", self.streamName]];
         self.softwareFallbackActive = YES;
-        return [self decodeOneFFmpegSessionUsingHardware:NO];
+        return [self decodeOneFFmpegSessionUsingHardware:NO stalled:NULL
+                                          hardwareRejected:NULL];
     }
     if (self.softwareFallbackActive) {
         // A decoder instance represents one concrete source configuration.
@@ -567,28 +571,51 @@ cleanup:
         // software session until the user changes/reloads the source. The old
         // 30-second retry repeatedly tore down a healthy session and produced
         // a visible cadence pause without changing any decoder inputs.
-        return [self decodeOneFFmpegSessionUsingHardware:NO];
+        return [self decodeOneFFmpegSessionUsingHardware:NO stalled:NULL
+                                          hardwareRejected:NULL];
     }
     // FFmpeg owns RTSP/RTP depayloading, codec extradata, access-unit
     // normalization, timestamps, reordering, and VideoToolbox integration.
     // The former hand-built CMSampleBuffer/VT path remains only as inert
     // rollback code until this upstream path passes device acceptance.
-    BOOL produced = [self decodeOneFFmpegSessionUsingHardware:YES];
-    if (produced || !self.running) {
+    BOOL stalled = NO;
+    BOOL hardwareRejected = NO;
+    BOOL produced = [self decodeOneFFmpegSessionUsingHardware:YES
+                                                      stalled:&stalled
+                                             hardwareRejected:&hardwareRejected];
+    if (!stalled && (produced || !self.running)) {
         self.softwareFallbackActive = NO;
         return produced;
     }
+    if (!stalled && !hardwareRejected) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ transport unavailable before hardware verdict; retrying hardware",
+            self.streamName]];
+        return NO;
+    }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"%@ hardware decode produced no frames; software fallback active",
-        self.streamName]];
+        @"%@ hardware decode %@; software fallback active",
+        self.streamName, stalled ? @"stalled" : @"produced no frames"]];
     self.softwareFallbackActive = YES;
-    return [self decodeOneFFmpegSessionUsingHardware:NO];
+    return [self decodeOneFFmpegSessionUsingHardware:NO stalled:NULL
+                                      hardwareRejected:NULL];
 }
 
 - (BOOL)consumeFFmpegFrame:(AVFrame *)decodedFrame
              usingHardware:(BOOL)useHardware
         loggedSoftwareFrame:(BOOL *)loggedSoftwareFrame
          loggedCorruptFrame:(BOOL *)loggedCorruptFrame {
+    // CoreVideo exposes BT.2020 NCL metadata but no distinct constant-luminance
+    // transport contract. Publishing CL as NCL changes the decoded colors, so
+    // fail this frame instead of silently claiming a faithful conversion.
+    if (decodedFrame->colorspace == AVCOL_SPC_BT2020_CL) {
+        static dispatch_once_t unsupportedColorToken;
+        dispatch_once(&unsupportedColorToken, ^{
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ BT.2020 constant-luminance frame rejected", self.streamName]];
+        });
+        return NO;
+    }
     if ((decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) != 0 ||
         decodedFrame->decode_error_flags != 0) {
         if (loggedCorruptFrame != NULL && !*loggedCorruptFrame) {
@@ -616,7 +643,11 @@ cleanup:
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
 
-- (BOOL)decodeOneFFmpegSessionUsingHardware:(BOOL)useHardware {
+- (BOOL)decodeOneFFmpegSessionUsingHardware:(BOOL)useHardware
+                                    stalled:(BOOL *)stalledOut
+                           hardwareRejected:(BOOL *)hardwareRejectedOut {
+    if (stalledOut != NULL) *stalledOut = NO;
+    if (hardwareRejectedOut != NULL) *hardwareRejectedOut = NO;
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
     AVBufferRef *hardwareDevice = NULL;
@@ -676,6 +707,7 @@ cleanup:
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                 @"%@ FFmpeg decoder has no VideoToolbox hardware config codec=%s",
                 self.streamName, decoder->name ?: "(unknown)"]];
+            if (hardwareRejectedOut != NULL) *hardwareRejectedOut = YES;
             goto cleanup;
         }
     }
@@ -699,11 +731,20 @@ cleanup:
         codecContext->opaque = &hardwareState;
         codecContext->get_format = VCAMSelectHardwarePixelFormat;
         if (av_hwdevice_ctx_create(&hardwareDevice, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                                   NULL, NULL, 0) < 0) goto cleanup;
+                                   NULL, NULL, 0) < 0) {
+            if (hardwareRejectedOut != NULL) *hardwareRejectedOut = YES;
+            goto cleanup;
+        }
         codecContext->hw_device_ctx = av_buffer_ref(hardwareDevice);
-        if (codecContext->hw_device_ctx == NULL) goto cleanup;
+        if (codecContext->hw_device_ctx == NULL) {
+            if (hardwareRejectedOut != NULL) *hardwareRejectedOut = YES;
+            goto cleanup;
+        }
     }
-    if (avcodec_open2(codecContext, decoder, NULL) < 0) goto cleanup;
+    if (avcodec_open2(codecContext, decoder, NULL) < 0) {
+        if (useHardware && hardwareRejectedOut != NULL) *hardwareRejectedOut = YES;
+        goto cleanup;
+    }
 
     packet = av_packet_alloc();
     frame = av_frame_alloc();
@@ -789,10 +830,12 @@ cleanup:
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ decoder stalled hardware=%d packets=300; reconnecting",
                     self.streamName, useHardware]];
+                if (stalledOut != NULL) *stalledOut = YES;
                 av_packet_unref(packet);
                 break;
             }
             if (restartSession) {
+                if (useHardware && stalledOut != NULL) *stalledOut = YES;
                 av_packet_unref(packet);
                 break;
             }
@@ -819,7 +862,8 @@ cleanup:
         }
         OSType format = CVPixelBufferGetPixelFormatType(_latestPixelBuffer);
         if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
-            format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NULL;
+            format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
+            format != kCVPixelFormatType_32BGRA) return NULL;
         pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
     }
     return pixelBuffer;

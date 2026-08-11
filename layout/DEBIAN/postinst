@@ -18,12 +18,11 @@ fi
 
 daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcamd.plist
 if [ -e "$daemon_plist" ]; then
-    launchctl bootout user/foreground/com.codex.vcamd >/dev/null 2>&1 || \
-        launchctl bootout system/com.codex.vcamd >/dev/null 2>&1 || true
+    launchctl bootout system/com.codex.vcamd >/dev/null 2>&1 || true
     for attempt in 1 2 3 4 5; do
         launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || true
-        if launchctl print user/foreground/com.codex.vcamd >/dev/null 2>&1; then
-            launchctl kickstart -k user/foreground/com.codex.vcamd >/dev/null 2>&1 || true
+        if launchctl print system/com.codex.vcamd >/dev/null 2>&1; then
+            launchctl kickstart -k system/com.codex.vcamd >/dev/null 2>&1 || true
             break
         fi
         sleep 1
@@ -109,6 +108,8 @@ vcam_best_effort_inject() {
 # A loaded dylib cannot be replaced in place. Upgrades used to inject the new
 # client into the existing process, leaving the old Objective-C classes alive
 # and producing duplicate UI/broker behavior. Respawn both exact hosts first.
+: > /var/tmp/vcam-springboard-client.log 2>/dev/null || true
+: > /var/tmp/vcam-ref-msd.log 2>/dev/null || true
 killall -9 SpringBoard mediaserverd >/dev/null 2>&1 || true
 sleep 1
 

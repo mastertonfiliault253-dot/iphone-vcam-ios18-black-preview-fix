@@ -15,6 +15,8 @@
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
 static const NSInteger VCAMFloatingDotTag = 0x5643414D;
+static const int64_t VCAMOnlineMediaMaximumBytes = 2LL * 1024LL * 1024LL * 1024LL;
+static const int64_t VCAMOnlineMediaReserveBytes = 256LL * 1024LL * 1024LL;
 static const void *VCAMGestureTagKey = &VCAMGestureTagKey;
 static const void *VCAMFloatingButtonKey = &VCAMFloatingButtonKey;
 static const void *VCAMStatusIndicatorKey = &VCAMStatusIndicatorKey;
@@ -81,6 +83,13 @@ static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
         containsObject:path.pathExtension.lowercaseString ?: @""];
 }
 
+static int64_t VCAMAvailableImportantStorageBytes(void) {
+    NSNumber *available = nil;
+    [[NSURL fileURLWithPath:NSTemporaryDirectory()] getResourceValue:&available
+        forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+    return available.longLongValue;
+}
+
 static NSString *VCAMConcreteProviderTypeIdentifier(NSItemProvider *provider, UTType *mediaKind) {
     NSString *fallbackIdentifier = nil;
     NSString *supportedIdentifier = nil;
@@ -122,6 +131,7 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 
 @interface VCAMMediaPickerController () <PHPickerViewControllerDelegate,
                                           UIDocumentPickerDelegate,
+                                          NSURLSessionDownloadDelegate,
                                           VCAMControlPanelDelegate,
                                           UIGestureRecognizerDelegate>
 @property(nonatomic, strong, nullable) UIButton *button;
@@ -132,6 +142,11 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(nonatomic) BOOL started;
 @property(nonatomic) BOOL lastKnownLockedState;
 @property(nonatomic) BOOL hostResignedActive;
+@property(nonatomic) NSUInteger mediaSelectionGeneration;
+@property(atomic, strong, nullable) NSURLSession *onlineDownloadSession;
+@property(atomic, strong, nullable) NSURLSessionDownloadTask *onlineDownloadTask;
+@property(atomic) NSUInteger onlineDownloadGeneration;
+@property(atomic, copy, nullable) NSString *onlineDownloadLimitError;
 - (void)installButtonWhenWindowIsReady;
 @end
 
@@ -679,12 +694,12 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     if (enabled && [source isEqualToString:@"local"]) {
         NSString *file = [values[@"mediaPath"] lastPathComponent] ?: @"本地媒体";
         sourceTitle = [NSString stringWithFormat:@"本地图片/视频：%@", file];
-        detail = @"vcamd 按需解码并发布最新帧";
+        detail = @"SpringBoard 原生媒体管线发布最新帧";
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"OBS WebSocket 已启用";
         detail = values[@"obsWebSocketURL"] ?: @"未设置地址";
     } else if (enabled && [source isEqualToString:@"hls"]) {
-        sourceTitle = @"HLS 硬件解码流已启用";
+        sourceTitle = @"HLS 原生播放已启用（硬件状态待验收）";
         detail = values[@"hlsURL"] ?: @"未配置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";
@@ -900,7 +915,13 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)controller;
     NSURL *url = urls.firstObject;
-    if (url != nil) [self installMediaFromTemporaryURL:url suggestedName:url.lastPathComponent];
+    if (url == nil) return;
+    NSUInteger generation = [self beginMediaSelection];
+    NSString *suggestedName = url.lastPathComponent;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [self importMediaFromURL:url suggestedName:suggestedName
+                     generation:generation];
+    });
 }
 
 - (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
@@ -916,14 +937,22 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         [self showMessage:@"无法读取所选图片或视频" error:YES];
         return;
     }
+    NSUInteger generation = [self beginMediaSelection];
     NSString *suggestedName = provider.suggestedName;
     [provider loadFileRepresentationForTypeIdentifier:mediaType completionHandler:^(NSURL *url, NSError *error) {
         if (url == nil || error != nil) {
-            [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation == self.mediaSelectionGeneration) {
+                    [self showMessage:error.localizedDescription ?: @"读取相册媒体失败" error:YES];
+                }
+            });
             return;
         }
         NSString *normalizedName = VCAMNormalizedMediaName(suggestedName, url, mediaType);
-        [self installMediaFromTemporaryURL:url suggestedName:normalizedName];
+        // The item-provider URL expires when this callback returns. Import it
+        // synchronously here, then commit UI/configuration on the main queue.
+        [self importMediaFromURL:url suggestedName:normalizedName
+                     generation:generation];
     }];
 }
 
@@ -949,29 +978,82 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 }
 
 - (void)downloadOnlineVideo:(NSURL *)url {
+    NSAssert(NSThread.isMainThread, @"online media selection requires main thread");
+    NSUInteger generation = [self beginMediaSelection];
+    self.button.enabled = NO;
+    self.button.alpha = 0.62;
+    [self.button setImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"] forState:UIControlStateNormal];
+    self.button.accessibilityLabel = @"VCAM 正在下载在线视频";
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, @"开始下载在线视频");
+    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    configuration.timeoutIntervalForRequest = 30.0;
+    configuration.timeoutIntervalForResource = 600.0;
+    self.onlineDownloadGeneration = generation;
+    self.onlineDownloadLimitError = nil;
+    self.onlineDownloadSession = [NSURLSession sessionWithConfiguration:configuration
+                                                               delegate:self
+                                                          delegateQueue:nil];
+    self.onlineDownloadTask = [self.onlineDownloadSession downloadTaskWithURL:url];
+    [self.onlineDownloadTask resume];
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+      didWriteData:(int64_t)bytesWritten
+ totalBytesWritten:(int64_t)totalBytesWritten
+totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+    (void)bytesWritten;
+    if (session != self.onlineDownloadSession ||
+        downloadTask != self.onlineDownloadTask) return;
+    int64_t available = VCAMAvailableImportantStorageBytes();
+    BOOL sizeExceeded = totalBytesWritten > VCAMOnlineMediaMaximumBytes ||
+        totalBytesExpectedToWrite > VCAMOnlineMediaMaximumBytes;
+    int64_t remaining = !sizeExceeded &&
+        totalBytesExpectedToWrite > totalBytesWritten
+        ? totalBytesExpectedToWrite - totalBytesWritten : 0;
+    BOOL storageExceeded = available <= 0 ||
+        available < VCAMOnlineMediaReserveBytes + remaining;
+    if (!sizeExceeded && !storageExceeded) return;
+    self.onlineDownloadLimitError = sizeExceeded
+        ? @"在线媒体超过 2 GiB 上限"
+        : @"设备剩余空间不足，下载已停止";
+    [downloadTask cancel];
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+didFinishDownloadingToURL:(NSURL *)location {
+    if (session != self.onlineDownloadSession ||
+        downloadTask != self.onlineDownloadTask) return;
+    NSUInteger generation = self.onlineDownloadGeneration;
+    NSString *name = downloadTask.response.suggestedFilename ?:
+        downloadTask.originalRequest.URL.lastPathComponent;
+    // The temporary download URL expires after this callback.
+    [self importMediaFromURL:location suggestedName:name generation:generation];
+}
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+didCompleteWithError:(NSError *)error {
+    if (session != self.onlineDownloadSession || task != self.onlineDownloadTask) return;
+    NSUInteger generation = self.onlineDownloadGeneration;
+    NSString *limitError = self.onlineDownloadLimitError;
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.button.enabled = NO;
-        self.button.alpha = 0.62;
-        [self.button setImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"] forState:UIControlStateNormal];
-        self.button.accessibilityLabel = @"VCAM 正在下载在线视频";
-        UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, @"开始下载在线视频");
-    });
-    NSURLSessionDownloadTask *task = [NSURLSession.sharedSession downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.button.enabled = YES;
-            self.button.alpha = 1.0;
-            [self.button setImage:[UIImage systemImageNamed:@"video.fill"] forState:UIControlStateNormal];
-            self.button.accessibilityLabel = @"打开 VCAM 控制面板";
-        });
-        if (location == nil || error != nil) {
-            [self showMessage:error.localizedDescription ?: @"在线源下载失败" error:YES];
-            return;
+        if (generation != self.mediaSelectionGeneration) return;
+        self.button.enabled = YES;
+        self.button.alpha = 1.0;
+        [self.button setImage:[UIImage systemImageNamed:@"video.fill"]
+                     forState:UIControlStateNormal];
+        self.button.accessibilityLabel = @"打开 VCAM 控制面板";
+        if (error != nil) {
+            [self showMessage:limitError ?: error.localizedDescription ?: @"在线源下载失败"
+                        error:YES];
         }
-        NSString *name = response.suggestedFilename ?: url.lastPathComponent;
-        [self installMediaFromTemporaryURL:location suggestedName:name];
-    }];
-    [task resume];
+        self.onlineDownloadTask = nil;
+        [self.onlineDownloadSession finishTasksAndInvalidate];
+        self.onlineDownloadSession = nil;
+        self.onlineDownloadLimitError = nil;
+    });
 }
 
 - (void)promptForLiveStream {
@@ -995,6 +1077,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
             [self showMessage:@"直播流地址必须以 ws://、wss://、rtsp:// 或 http(s):// 开头" error:YES];
             return;
         }
+        [self beginMediaSelection];
         NSMutableDictionary *updates = [@{
             @"enabled": @YES,
             @"rotationDegrees": @0,
@@ -1020,21 +1103,61 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)installMediaFromTemporaryURL:(NSURL *)temporaryURL suggestedName:(nullable NSString *)suggestedName {
+- (NSUInteger)beginMediaSelection {
+    NSAssert(NSThread.isMainThread, @"media selection generation requires main thread");
+    [self.onlineDownloadTask cancel];
+    [self.onlineDownloadSession invalidateAndCancel];
+    self.onlineDownloadTask = nil;
+    self.onlineDownloadSession = nil;
+    self.onlineDownloadLimitError = nil;
+    self.mediaSelectionGeneration += 1;
+    if (self.mediaSelectionGeneration == 0) self.mediaSelectionGeneration = 1;
+    // Superseding an in-flight online download must not leave the shared dot
+    // disabled when that stale completion is intentionally ignored.
+    self.button.enabled = YES;
+    self.button.alpha = 1.0;
+    [self.button setImage:[UIImage systemImageNamed:@"video.fill"]
+                 forState:UIControlStateNormal];
+    self.button.accessibilityLabel = @"打开 VCAM 控制面板";
+    return self.mediaSelectionGeneration;
+}
+
+- (NSInteger)preferredFramesPerSecondForMediaPath:(NSString *)path {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path]
+                                            options:nil];
+    AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+    float nominalFrameRate = videoTrack.nominalFrameRate;
+    return nominalFrameRate >= 50.0f ? 60 :
+        (nominalFrameRate >= 28.0f ? 30 : (nominalFrameRate >= 20.0f ? 24 : 30));
+}
+
+- (void)importMediaFromURL:(NSURL *)temporaryURL
+             suggestedName:(nullable NSString *)suggestedName
+                generation:(NSUInteger)generation {
     NSError *error = nil;
     NSString *destinationPath = [VCAMConfiguration importMediaAtURL:temporaryURL
                                                       suggestedName:suggestedName
                                                               error:&error];
-    if (destinationPath.length == 0) {
-        [self showMessage:error.localizedDescription error:YES];
-        return;
-    }
+    NSInteger preferredFramesPerSecond = destinationPath.length > 0
+        ? [self preferredFramesPerSecondForMediaPath:destinationPath] : 30;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (generation != self.mediaSelectionGeneration) return;
+        if (destinationPath.length == 0) {
+            [self showMessage:error.localizedDescription error:YES];
+            return;
+        }
+        [self activateImportedMediaAtPath:destinationPath
+                 preferredFramesPerSecond:preferredFramesPerSecond
+                              generation:generation];
+    });
+}
+
+- (void)activateImportedMediaAtPath:(NSString *)destinationPath
+           preferredFramesPerSecond:(NSInteger)preferredFramesPerSecond
+                        generation:(NSUInteger)generation {
+    NSAssert(NSThread.isMainThread, @"media activation requires main thread");
+    if (generation != self.mediaSelectionGeneration) return;
     NSURL *destinationURL = [NSURL fileURLWithPath:destinationPath];
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:destinationURL options:nil];
-    AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
-    float nominalFrameRate = videoTrack.nominalFrameRate;
-    NSInteger preferredFramesPerSecond = nominalFrameRate >= 50.0f ? 60 :
-        (nominalFrameRate >= 28.0f ? 30 : (nominalFrameRate >= 20.0f ? 24 : 30));
     if (![self updatePreferences:@{@"source": @"local", @"enabled": @YES,
                                   @"mediaPath": destinationURL.path, @"loopMedia": @YES,
                                   @"replaceAudio": @NO,

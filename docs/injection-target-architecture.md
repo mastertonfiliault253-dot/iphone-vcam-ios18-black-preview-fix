@@ -76,12 +76,10 @@ rotation from a target buffer's width and height. The explicit iOS 16 WebKit
 for a portrait source only, it pre-rotates pixels left into WebKit's landscape
 storage basis while Camera preview and recording remain canonical. WebKit and
 recording/still-photo terminals use full-bleed center crop; Camera preview alone
-aspect-fits the complete source. The other
-exception is the verified landscape sensor-storage contract at the `Meteor Headroom` still
-terminal: a canonical portrait source is turned left into sensor storage and
-marked EXIF `Orientation=Right`, while a landscape source is unchanged. Thus
-the final portrait/landscape presentation follows the selected source rather
-than the phone posture.
+aspect-fits the complete source. At the `Meteor Headroom` still terminal VCAM
+only composes into the already-negotiated target: it neither rotates pixels from
+source/phone posture nor writes or replaces orientation metadata. The original
+system sample remains the sole authority for saved-photo orientation and aspect.
 The real camera graph remains the browser negotiation shell. VCAM does not
 replace its capability table or force a fixed profile: WebKit keeps the target
 width, height, frame rate, pixel format, `CMFormatDescription`, timing and
@@ -117,14 +115,22 @@ the original sample, and either construction path remains fail-closed.
 
 - Photos and document picker imports copy the provider's current original
   representation, preserve the selected extension and bytes, and assign a new
-  broker path on every selection. PNG, JPEG and HEIF use the ImageIO static
-  decoder. The rendered static sample is cached and retimed per camera callback.
+  broker path on every selection. Paths are canonical and confined below
+  `/var/mobile/Media/VCAM`; the authenticated broker has no arbitrary file-fetch
+  command. Imports are capped at 2 GiB with a 256 MiB free-space reserve; online
+  downloads enforce these limits while receiving bytes. A dedicated serial
+  import queue keeps configuration/read/restore requests responsive during large
+  transfers, and pruning always protects the persisted active path. PNG,
+  JPEG and HEIF use the ImageIO static decoder. The rendered static sample is
+  cached and retimed per camera callback.
 - Production local video uses SpringBoard `AVPlayerItemVideoOutput` and the same
   NV12/Metal/IOSurface pipeline as HLS. It loops by seeking to zero at item end.
   Creating `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained
   incremental `AVAssetReader`/FFmpeg daemon path for diagnostics only.
 - Production static images use SpringBoard ImageIO orientation normalization and
-  publish once into a source-sized one-slot BGRA IOSurface. Creating
+  publish once into a source-sized one-slot BGRA IOSurface. The decoded BGRA
+  allocation is capped at 64 MiB; a larger source is rejected rather than
+  silently downscaled. Creating
   `/var/tmp/vcam-local-image-legacy-vcamd.enable` restores the retained daemon
   static-image publisher for diagnostics only.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
@@ -136,7 +142,8 @@ the original sample, and either construction path remains fail-closed.
   NV12 and published by IOSurface without BGRA conversion; an explicit user
   rotation/mirror is rendered once into a source-sized three-slot BGRA
   IOSurface instead of falling back permanently to the fixed mmap. HLS uses
-  SpringBoard's system `AVPlayer`; the old daemon
+  SpringBoard's system `AVPlayer`; sustained live-edge lag triggers a native seek
+  to the current seekable edge. The old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,

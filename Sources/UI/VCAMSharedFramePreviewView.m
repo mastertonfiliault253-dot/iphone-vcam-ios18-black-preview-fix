@@ -89,6 +89,9 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     static double measuredFPS;
     static BOOL lastWasSurface;
     static BOOL hasMeasurement;
+    static NSDictionary<NSString *, id> *brokerMetadata;
+    static BOOL brokerStatusFetchInFlight;
+    static uint64_t lastBrokerStatusFetchNanoseconds;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         frameReader = VCAMSharedFrameReaderCreate();
@@ -100,10 +103,26 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     BOOL hasMetadata = VCAMPreviewGetLatestMetadata(
         frameReader, surfaceReader, maximumAge, &metadata, &frameWasSurface);
     if (!hasMetadata) {
-        NSDictionary<NSString *, id> *brokerSnapshot =
-            [VCAMConfiguration copyPreviewSnapshotFromBroker];
         hasMetadata = VCAMPreviewGetBrokerMetadata(
-            brokerSnapshot, &metadata, &frameWasSurface);
+            brokerMetadata, &metadata, &frameWasSurface);
+        uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+        BOOL retryDue = lastBrokerStatusFetchNanoseconds == 0 || now == 0 ||
+            now - lastBrokerStatusFetchNanoseconds >= 250000000ULL;
+        if (!brokerStatusFetchInFlight && retryDue) {
+            brokerStatusFetchInFlight = YES;
+            lastBrokerStatusFetchNanoseconds = now;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                NSDictionary<NSString *, id> *snapshot =
+                    [VCAMConfiguration copyPreviewSnapshotFromBroker];
+                NSMutableDictionary<NSString *, id> *metadataOnly =
+                    [snapshot mutableCopy];
+                [metadataOnly removeObjectForKey:@"jpegData"];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    brokerMetadata = metadataOnly;
+                    brokerStatusFetchInFlight = NO;
+                });
+            });
+        }
     }
     uint64_t timestamp = hasMetadata
         ? metadata.monotonicTimestampNanoseconds : 0;

@@ -39,8 +39,8 @@
       "bundleIds": [],
       "executables": ["vcamd"],
       "injected": false,
-      "sources": ["local-image", "obs-websocket", "rtsp-ffmpeg-videotoolbox"],
-      "rollbackSources": ["local-video-avassetreader", "hls-ffmpeg-videotoolbox"]
+      "sources": ["obs-websocket", "rtsp-ffmpeg-videotoolbox"],
+      "rollbackSources": ["local-image-imageio", "local-video-avassetreader", "hls-ffmpeg-videotoolbox"]
     },
     {
       "name": "vcaminjectd",

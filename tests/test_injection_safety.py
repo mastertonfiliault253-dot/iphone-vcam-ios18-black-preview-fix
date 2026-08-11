@@ -122,7 +122,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMLastVirtualFrame", implementation)
         self.assertIn("virtual frame stale; rendering black instead of frozen frame", implementation)
         self.assertIn("VCAMVirtualModeIsEnabled", implementation)
-        self.assertIn("VCAMConfiguredMode = -1", implementation)
+        self.assertIn("VCAMConfiguredMode = 0", implementation)
         self.assertIn("[enabledValue isKindOfClass:NSNumber.class]", implementation)
         self.assertIn("VCAMConfiguredMode != 0", implementation)
         self.assertIn("VCAMSharedFrameReaderGetActiveState", implementation)
@@ -201,7 +201,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
 
-    def test_consumer_orientation_is_source_driven_except_for_still_storage(self) -> None:
+    def test_consumer_orientation_preserves_system_still_metadata(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
@@ -209,8 +209,8 @@ class InjectionSafetyTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertIn("!realtimeCompensation && sourceIsPortrait", render)
-        self.assertIn("targetWidth > targetHeight", render)
+        self.assertNotIn("!realtimeCompensation && sourceIsPortrait", render)
+        self.assertNotIn("stillPhotoRequiresRightOrientationOut", implementation)
         self.assertNotIn("interfaceOrientation", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
 

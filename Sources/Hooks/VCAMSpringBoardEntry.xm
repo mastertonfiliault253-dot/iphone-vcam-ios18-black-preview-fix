@@ -1,6 +1,7 @@
 #import "../Core/VCAMConfiguration.h"
 #import "../SpringBoard/VCAMSpringBoardMediaBridge.h"
 #import "../UI/VCAMMediaPickerController.h"
+#import "../Shared/VCAMProcessIdentity.h"
 
 #include <fcntl.h>
 #include <string.h>
@@ -17,7 +18,8 @@ static void VCAMAppendClientProof(const char *line) {
 
 static void VCAMWriteClientProof(void) {
     char line[128] = {0};
-    snprintf(line, sizeof(line), "pid=%d ctor\n", (int)getpid());
+    snprintf(line, sizeof(line), "pid=%d start=%llu ctor\n", (int)getpid(),
+             (unsigned long long)VCAMProcessStartToken(getpid()));
     VCAMAppendClientProof(line);
 }
 

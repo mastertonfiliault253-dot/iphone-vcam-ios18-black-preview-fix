@@ -21,37 +21,17 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn(fill_scale, self.adapter)
         self.assertIn("MIN((CGFloat)renderWidth", self.adapter)
         self.assertIn("MAX((CGFloat)renderWidth", self.adapter)
-        self.assertIn("!realtimeCompensation && sourceIsPortrait", self.adapter)
+        self.assertNotIn("!realtimeCompensation && sourceIsPortrait", self.adapter)
         self.assertNotIn("interfaceOrientation", self.adapter)
         self.assertIn("imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)", self.adapter)
 
-    def test_portrait_still_uses_sensor_storage_and_exif_orientation(self) -> None:
-        # iOS encodes still pixels in the sensor's landscape storage. A
-        # canonical portrait VCAM source must be turned into that storage
-        # basis and marked Orientation=Right so Photos presents a 3:4 image.
-        self.assertIn("sourceIsPortrait", self.adapter)
-        self.assertIn("!realtimeCompensation", self.adapter)
-        self.assertIn("targetWidth > targetHeight", self.adapter)
-        still_adapter = self.adapter.split(
-            "if (!realtimeCompensation && sourceIsPortrait", 1
-        )[1].split("// The producer publishes", 1)[0]
-        self.assertIn(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationLeft",
-            still_adapter,
-        )
-        self.assertNotIn("kCGImagePropertyOrientationUpMirrored", still_adapter)
-        self.assertIn("stillPhotoRequiresRightOrientationOut", self.adapter)
-
+    def test_still_route_does_not_override_system_orientation(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
-        still_path = entry.split("replacementSucceeded = drawReplacementOntoBuffer", 1)[1]
-        self.assertIn("VCAMReplacementRouteStillPhoto", still_path)
-        self.assertIn("VCAMSetStillPhotoDisplayOrientation", still_path)
-        self.assertIn("kCGImagePropertyOrientationRight", entry)
-        self.assertIn("CMSetAttachment", entry)
-        self.assertIn("CVBufferSetAttachment", entry)
-        self.assertNotIn("interfaceOrientation", still_path)
+        self.assertNotIn("stillPhotoRequiresRightOrientation", self.adapter)
+        self.assertNotIn("VCAMSetStillPhotoDisplayOrientation", entry)
+        self.assertNotIn("kCGImagePropertyOrientationRight", entry)
 
     def test_webkit_terminal_alone_uses_landscape_storage_compensation(self) -> None:
         # Device A/B: the same canonical portrait source is upright in Camera
@@ -63,7 +43,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         )
         webkit_adapter = self.adapter.split(
             "if (webKitLandscapeStorage && sourceIsPortrait", 1
-        )[1].split("// iOS still-photo buffers", 1)[0]
+        )[1].split("// The producer publishes", 1)[0]
         self.assertIn(
             "imageByApplyingOrientation:kCGImagePropertyOrientationLeft",
             webkit_adapter,

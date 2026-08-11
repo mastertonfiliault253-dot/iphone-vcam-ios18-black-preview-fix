@@ -1,5 +1,7 @@
 # Architecture
 
+The fixed version, CI artifact hash, current device evidence and unresolved acceptance gates are recorded in [`docs/CURRENT-RELEASE-STATUS-ZH.md`](docs/CURRENT-RELEASE-STATUS-ZH.md). This file describes the architecture contract and should not be read as proof that every runtime path has passed device acceptance.
+
 VCAM separates media production, camera replacement and control UI:
 
 - `vcamd` owns OBS and RTSP decoding. RTSP publishes native 8-bit
@@ -40,11 +42,11 @@ landscape storage basis, then center-crops once into the already-negotiated
 target, matching the real camera's full-bleed behavior without stretching or a
 second VCAM scale. Camera preview keeps its existing whole-frame fit and
 recording remains full-bleed.
-At the still-photo terminal,
-only a canonical portrait source is converted into the sensor's landscape
-storage basis and marked EXIF `Orientation=Right`; a landscape source remains
-unmodified. This makes the saved aspect follow the selected source rather than
-the phone posture. Audio is never replaced.
+At the still-photo terminal, VCAM only aspect-fills the system-negotiated target.
+It does not rotate pixels according to the source or phone posture and does not
+replace the sample's orientation metadata; the existing system camera graph
+remains the sole owner of saved-photo orientation and aspect metadata. Audio is
+never replaced.
 
 The physical camera graph is the browser negotiation shell. VCAM does not
 advertise a synthetic capability table or force a fixed resolution: Safari and
@@ -59,9 +61,16 @@ uncompressed NV12 pixels into source-sized three-slot IOSurface rings. Static
 images use one source-sized uncompressed BGRA IOSurface; OBS and transformed
 RTSP use source-sized three-slot BGRA IOSurfaces. Fallback publication alone
 uses raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
-HEVC or source-container payload is sent to mediaserverd. The vcamd
-launchd Mach service relays one or three IOSurface XPC rights from SpringBoard
-or `vcamd` to mediaserverd and verifies exact peer process names; frame bytes never pass
+HEVC or source-container payload is sent to mediaserverd. RTSP software fallback
+keeps the decoded source dimensions; a 256 MiB worst-case whole-pipeline budget
+accounts for the decoded frame, conversion work buffers and three publication
+slots, rejecting larger frames instead of silently downscaling them. The vcamd
+worker requests a 384 MB jetsam limit before decoder startup, leaving 128 MB
+above that pipeline budget for FFmpeg and framework bookkeeping; the effective
+limit is logged and remains a device-acceptance check. The vcamd launchd Mach
+service relays one or three IOSurface XPC rights from SpringBoard
+or `vcamd` to mediaserverd and verifies peer start time, executable path and
+code-signing identity; frame bytes never pass
 through the daemon. mediaserverd retains the selected surface while rendering
 so SpringBoard never overwrites an in-use slot. UI previews are passive
 observers and do not alter that ownership handshake. The previous three-slot
@@ -74,6 +83,20 @@ restores the retained daemon HLS decoder for rollback. The equivalent local
 video rollback marker is `/var/tmp/vcam-local-video-legacy-vcamd.enable`.
 `/var/tmp/vcam-local-image-legacy-vcamd.enable` restores the retained daemon
 static-image publisher.
+
+The loopback configuration broker is not authenticated by a compiled password.
+Each request first obtains a 10-second, single-use random token from an XPC
+allowlist that binds the peer PID, process start time, exact executable path,
+code-signing identifier and, for third-party browsers, expected team ID. Selected
+media paths are canonicalized and
+must remain below `/var/mobile/Media/VCAM`; the broker has no arbitrary file-fetch
+command. Imports are capped at 2 GiB and retain a 256 MiB free-space reserve;
+HTTP(S) downloads enforce both limits while bytes arrive, before import. Media
+transfer runs on a dedicated serial queue so read/update/restore requests remain
+responsive during a large copy. Pruning protects the persisted active path and
+the newly received path rather than guessing activity from file timestamps.
+Source-sized static BGRA publication is capped at 64 MiB and rejects a larger
+image instead of silently downscaling it.
 
 Once virtual mode is enabled, capture is fail-closed: a missing, stale or
 unrenderable source may retain the last virtual frame, emit black or suppress a

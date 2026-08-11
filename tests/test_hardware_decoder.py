@@ -23,6 +23,10 @@ class HardwareDecoderTests(unittest.TestCase):
 
         self.assertIn("VCAMCopyNV12FromAVFrame", converter)
         self.assertIn("copyNativePixelBufferForSurface", stream)
+        native_copy = stream.split("- (CVPixelBufferRef)copyNativePixelBufferForSurface", 1)[1].split(
+            "- (CMSampleBufferRef)copyDirectPreviewSample", 1
+        )[0]
+        self.assertIn("kCVPixelFormatType_32BGRA", native_copy)
         self.assertIn("copyNativePixelBufferForSurface", producer)
         self.assertIn("needsTransform", producer)
         self.assertIn("copyVideoSampleForTemplate:template", producer)
@@ -40,12 +44,12 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("header->pixelFormat", shared)
         self.assertIn("consumerHeartbeatNanoseconds", shared)
         self.assertIn("kill((pid_t)processID, 0)", shared)
-        self.assertIn("VCAMProcessIsAlive(consumerPID)", shared)
+        self.assertIn("VCAMProcessMatches(consumerPID, consumerStartToken)", shared)
         self.assertIn("now - heartbeat <= 2000000000ULL", shared)
         self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
         self.assertIn("producerPID", shared)
         self.assertIn("VCAMSharedSurfaceWriterIsCurrent", shared)
-        self.assertIn("VCAMProcessIsAlive(activeProducer)", shared)
+        self.assertIn("VCAMProcessMatches(activeProducer, activeProducerStartToken)", shared)
         self.assertIn("!VCAMSharedSurfaceWriterIsCurrent(VCAMSurfaceWriter)", daemon)
 
     def test_software_nv12_intermediate_does_not_require_iosurface(self) -> None:
@@ -86,25 +90,34 @@ class HardwareDecoderTests(unittest.TestCase):
         client = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "vcamd")', broker)
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', broker)
-        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', broker)
+        self.assertIn("VCAMSurfaceBrokerIdentityForPeer", broker)
+        self.assertIn("VCAMProcessStartToken(pid)", broker)
+        self.assertIn("proc_pidpath(pid, pathBuffer", broker)
+        self.assertIn('dlsym(RTLD_DEFAULT, "csops")', broker)
+        self.assertIn("VCAMCSOpsIdentity", broker)
+        self.assertIn("VCAMCSOpsTeamID", broker)
+        self.assertIn("VCAMCSPlatformBinary", broker)
+        self.assertIn("bundle.executablePath isEqualToString:path", broker)
+        self.assertIn("VCAMRootOwnedDaemonPathIsSafe", broker)
+        self.assertGreaterEqual(broker.count("VCAMProcessStartToken(pid) == startToken"), 5)
+        self.assertIn('@"/usr/sbin/mediaserverd"', broker)
+        self.assertIn('@"/usr/libexec/vcamd"', broker)
+        self.assertIn('@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"', broker)
+        self.assertIn('@"com.apple.springboard"', broker)
         self.assertIn("VCAMSurfaceBrokerPeerCanSubscribe", broker)
         subscriber = broker.split("static bool VCAMSurfaceBrokerPeerCanSubscribe", 1)[1].split(
             "static xpc_object_t VCAMBrokerRegistry", 1
         )[0]
-        for process_name in (
-            "mediaserverd",
-            "SpringBoard",
-            "Camera",
-            "MobileSafari",
-            "Google Chrome",
-            "Microsoft Edge",
-            "Firefox",
+        for bundle_identifier in (
+            "com.apple.camera",
+            "com.apple.mobilesafari",
+            "com.google.chrome.ios",
+            "com.microsoft.msedge",
+            "org.mozilla.ios.Firefox",
         ):
-            self.assertIn(
-                f'VCAMSurfaceBrokerPeerIs(peer, "{process_name}")', subscriber
-            )
+            self.assertIn(f'@"{bundle_identifier}"', broker)
+        for team_id in ("EQHXZ8M8AV", "UBF8T346G9", "43AQ936H96"):
+            self.assertIn(f'@"{team_id}"', broker)
         self.assertIn('xpc_dictionary_set_uint64(message, "slotCount", count)', client)
         self.assertIn('xpc_dictionary_get_uint64(reply, "slotCount")', client)
         self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", broker)
@@ -118,11 +131,37 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("VCAMITU709Matrix", converter)
-        self.assertIn("VCAMYpCbCrMatrixForDimensions", converter)
+        self.assertIn("VCAMYpCbCrMatrix", converter)
         self.assertIn("MAX(width, height) >= 1280", converter)
+        self.assertIn("VCAMITU2020Matrix", converter)
+        self.assertIn("frame->colorspace", converter)
+        self.assertIn("p010 ? 8 : 0", converter)
+        self.assertIn("VCAMDownsample10BitTo8Bit", converter)
+        self.assertIn("width, height, p010 ? 8 : 2", converter)
+        self.assertIn("width, uvHeight, 8", converter)
+        self.assertIn("AVCOL_SPC_BT2020_CL) return NULL", converter)
+        matrix_selector = converter.split("static const vImage_YpCbCrToARGBMatrix", 1)[1].split(
+            "static void VCAMSetAVFrameColorAttachments", 1
+        )[0]
+        self.assertNotIn("AVCOL_SPC_BT2020_CL", matrix_selector)
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("BT.2020 constant-luminance frame rejected", rtsp)
     def test_vcamd_has_hardware_decoder_entitlement(self) -> None:
         entitlements = (ROOT / "vcamd.entitlements").read_text(encoding="utf-8")
         self.assertIn("com.apple.videotoolbox.hardwarevideodecoder", entitlements)
+
+    def test_rtsp_color_metadata_tracks_the_decoded_avframe(self) -> None:
+        converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMSetAVFrameColorAttachments", converter)
+        self.assertIn("AVCOL_PRI_BT2020", converter)
+        self.assertIn("AVCOL_TRC_SMPTE2084", converter)
+        self.assertIn("AVCOL_TRC_ARIB_STD_B67", converter)
+        self.assertIn("AVCOL_SPC_BT470BG", converter)
+        self.assertIn("kCVImageBufferYCbCrMatrix_ITU_R_601_4", converter)
 
     def test_video_toolbox_session_uses_ios_default_decoder(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
@@ -187,6 +226,18 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("H264 annexB psets sps=%d pps=%d status=%d", decoder)
         self.assertIn("HEVC annexB psets vps=%d sps=%d pps=%d status=%d", decoder)
 
+    def test_hvcc_fallback_allocates_every_array_header_and_rejects_oversize_nals(self) -> None:
+        decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
+            encoding="utf-8"
+        )
+        hvcc = decoder.split("static CFDataRef VCAMBuildHVCCRecord", 1)[1].split(
+            "static CFDictionaryRef VCAMDecoderSpecificationCreate", 1
+        )[0]
+        self.assertIn("total += 5 + setSizes[arrayIndex];", hvcc)
+        self.assertIn("setSizes[arrayIndex] > UINT16_MAX", hvcc)
+        self.assertIn("total > SIZE_MAX - 5 - setSizes[arrayIndex]", hvcc)
+        self.assertNotIn("size_t total = 22 + 3;", hvcc)
+
     def test_packet_memory_uses_verified_block_buffer_pattern(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
@@ -222,7 +273,7 @@ class HardwareDecoderTests(unittest.TestCase):
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        loop = stream.split("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
+        loop = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
             "cleanup:", 1
         )[0]
         self.assertIn("avcodec_parameters_to_context(codecContext, stream->codecpar)", loop)
@@ -235,7 +286,7 @@ class HardwareDecoderTests(unittest.TestCase):
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        session = stream.split("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
+        session = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
             "cleanup:", 1
         )[0]
 
@@ -245,6 +296,32 @@ class HardwareDecoderTests(unittest.TestCase):
             session,
         )
         self.assertIn("decoder stalled hardware=%d packets=300; reconnecting", session)
+        self.assertIn("if (stalledOut != NULL) *stalledOut = YES", session)
+        self.assertIn("if (useHardware && stalledOut != NULL) *stalledOut = YES", session)
+        self.assertIn("stalled ? @\"stalled\"", stream)
+
+    def test_rtsp_transport_failure_retries_hardware_before_software_fallback(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        session = stream.split("- (BOOL)decodeOneSession", 1)[1].split(
+            "- (BOOL)consumeFFmpegFrame", 1
+        )[0]
+        self.assertIn("BOOL hardwareRejected = NO", session)
+        self.assertIn("hardwareRejected:&hardwareRejected", session)
+        self.assertIn("if (!stalled && !hardwareRejected)", session)
+        self.assertIn("transport unavailable before hardware verdict; retrying hardware", session)
+        hardware_decision = session.split("BOOL hardwareRejected = NO", 1)[1]
+        self.assertLess(
+            hardware_decision.index("if (!stalled && !hardwareRejected)"),
+            hardware_decision.index("self.softwareFallbackActive = YES"),
+        )
+        decoder = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1]
+        self.assertIn("hardwareRejected:(BOOL *)hardwareRejectedOut", decoder)
+        self.assertIn("if (hardwareRejectedOut != NULL) *hardwareRejectedOut = NO", decoder)
+        self.assertNotIn("hardwareRejectedOut", decoder.split("int openResult", 1)[1].split(
+            "int streamInfoResult", 1
+        )[0])
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
@@ -270,7 +347,8 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("hardwareRetryDeadline", stream)
         self.assertNotIn("software retry window elapsed; retrying hardware", stream)
         self.assertIn("if (self.softwareFallbackActive)", stream)
-        self.assertIn("return [self decodeOneFFmpegSessionUsingHardware:NO];", stream)
+        self.assertIn("decodeOneFFmpegSessionUsingHardware:NO stalled:NULL", stream)
+        self.assertIn("hardwareRejected:NULL", stream)
         self.assertNotIn("static volatile int consecutiveSendFailures", stream)
         self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)

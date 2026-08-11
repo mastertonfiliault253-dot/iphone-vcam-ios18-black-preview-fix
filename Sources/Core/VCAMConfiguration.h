@@ -61,6 +61,7 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 + (void)startWriteBroker;
 + (NSString *)configurationPath;
 + (NSString *)mediaDirectoryPath;
++ (NSString *)storageDirectoryPath;
 
 @end
 

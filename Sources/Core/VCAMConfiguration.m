@@ -1,10 +1,14 @@
 #import "VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSurfaceBroker.h"
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <limits.h>
+#import <poll.h>
 #import <sys/stat.h>
+#import <sys/file.h>
 #import <sys/socket.h>
 #import <unistd.h>
 #if VCAM_WITH_CONTROL_UI
@@ -17,7 +21,6 @@ static const NSUInteger VCAMConfigurationMaximumRequestBytes = 1024 * 1024;
 static const uint8_t VCAMConfigurationBrokerUpdateCommand = 1;
 static const uint8_t VCAMConfigurationBrokerReadCommand = 2;
 static const uint8_t VCAMConfigurationBrokerLegacyImportCommand = 3;
-static const uint8_t VCAMConfigurationBrokerFetchMediaCommand = 4;
 static const uint8_t VCAMConfigurationBrokerImportCommand = 5;
 static const uint8_t VCAMConfigurationBrokerPreviewCommand = 6;
 static const NSUInteger VCAMConfigurationMaximumPreviewBytes = 2 * 1024 * 1024;
@@ -25,6 +28,34 @@ static const NSUInteger VCAMConfigurationMaximumPreviewBytes = 2 * 1024 * 1024;
 static BOOL VCAMReadAll(int descriptor, void *bytes, size_t length) {
     uint8_t *cursor = bytes;
     while (length > 0) {
+        ssize_t count = read(descriptor, cursor, length);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return NO;
+        cursor += count;
+        length -= (size_t)count;
+    }
+    return YES;
+}
+
+static uint64_t VCAMMonotonicMilliseconds(void) {
+    struct timespec value = {0};
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
+    return (uint64_t)value.tv_sec * 1000ULL + (uint64_t)value.tv_nsec / 1000000ULL;
+}
+
+static BOOL VCAMReadAllBeforeDeadline(int descriptor, void *bytes, size_t length,
+                                      uint64_t deadlineMilliseconds) {
+    uint8_t *cursor = bytes;
+    while (length > 0) {
+        uint64_t now = VCAMMonotonicMilliseconds();
+        if (now == 0 || now >= deadlineMilliseconds) return NO;
+        uint64_t remaining = deadlineMilliseconds - now;
+        struct pollfd event = {.fd = descriptor, .events = POLLIN};
+        int pollResult = poll(&event, 1, (int)MIN(remaining, (uint64_t)INT_MAX));
+        if (pollResult < 0 && errno == EINTR) continue;
+        if (pollResult <= 0 || (event.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            return NO;
+        }
         ssize_t count = read(descriptor, cursor, length);
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return NO;
@@ -46,33 +77,104 @@ static BOOL VCAMWriteAll(int descriptor, const void *bytes, size_t length) {
     return YES;
 }
 
+static void VCAMAppendBoundedLine(NSString *path, NSData *line) {
+    if (path.length == 0 || line.length == 0) return;
+    int descriptor = open(path.fileSystemRepresentation,
+                          O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (descriptor < 0) return;
+    if (flock(descriptor, LOCK_EX) == 0) {
+        struct stat metadata = {0};
+        // ponytail: one bounded active log is enough; add archived rotations
+        // only if a concrete support case needs older diagnostics.
+        if (fstat(descriptor, &metadata) == 0 && metadata.st_size > 4 * 1024 * 1024) {
+            (void)ftruncate(descriptor, 0);
+        }
+        (void)VCAMWriteAll(descriptor, line.bytes, line.length);
+        (void)flock(descriptor, LOCK_UN);
+    }
+    close(descriptor);
+}
+
 static NSError *VCAMConfigurationError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"com.codex.vcam.configuration" code:code
                            userInfo:@{NSLocalizedDescriptionKey: message ?: @"VCAM operation failed"}];
 }
 
+static BOOL VCAMMediaPathIsAllowed(NSString *path) {
+    if (![path isKindOfClass:NSString.class] || path.length == 0) return NO;
+    NSString *root = [@"/var/mobile/Media/VCAM" stringByResolvingSymlinksInPath];
+    NSString *resolved = [[path stringByStandardizingPath]
+        stringByResolvingSymlinksInPath];
+    return [resolved hasPrefix:[root stringByAppendingString:@"/"]];
+}
+
+static BOOL VCAMConfigurationValueIsValid(NSString *key, id value) {
+    if (![key isKindOfClass:NSString.class] || value == nil) return NO;
+    if ([@[@"enabled", @"loopMedia", @"mirrorHorizontally", @"replaceAudio"]
+            containsObject:key]) {
+        return [value isKindOfClass:NSNumber.class];
+    }
+    if ([@[@"preferredFramesPerSecond", @"rotationDegrees"] containsObject:key]) {
+        if (![value isKindOfClass:NSNumber.class]) return NO;
+        NSInteger number = [value integerValue];
+        return [key isEqualToString:@"preferredFramesPerSecond"]
+            ? number >= 1 && number <= 60
+            : number >= -359 && number <= 359;
+    }
+    if ([key isEqualToString:@"source"]) {
+        return [value isKindOfClass:NSString.class] &&
+            [@[@"camera", @"local", @"obs", @"rtsp", @"hls"]
+                containsObject:[value lowercaseString]];
+    }
+    if ([key isEqualToString:@"contentMode"]) {
+        return [value isKindOfClass:NSString.class] &&
+            [@[@"fit", @"fill", @"stretch"] containsObject:[value lowercaseString]];
+    }
+    if ([key isEqualToString:@"localDecoderMode"]) {
+        return [value isKindOfClass:NSString.class] &&
+            [@[@"single", @"upstream"] containsObject:[value lowercaseString]];
+    }
+    if ([key isEqualToString:@"mediaPath"]) {
+        return [value isKindOfClass:NSString.class] &&
+            ([(NSString *)value length] == 0 || VCAMMediaPathIsAllowed(value));
+    }
+    if ([@[@"obsWebSocketURL", @"rtspURL", @"hlsURL", @"depthImagePath",
+           @"livePhotoStillPath", @"livePhotoMoviePath"]
+            containsObject:key]) {
+        return [value isKindOfClass:NSString.class] &&
+            [(NSString *)value length] <= 4096;
+    }
+    if ([@[@"photoMetadata", @"floatingButtonPositions",
+           @"floatingButtonVisibility"] containsObject:key]) {
+        return [value isKindOfClass:NSDictionary.class] &&
+            [NSJSONSerialization isValidJSONObject:value];
+    }
+    return NO;
+}
+
+static NSDictionary<NSString *, id> *VCAMSanitizedConfigurationValues(
+    NSDictionary<NSString *, id> *values) {
+    if (![values isKindOfClass:NSDictionary.class]) return @{};
+    NSMutableDictionary<NSString *, id> *sanitized = [NSMutableDictionary dictionary];
+    [values enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        (void)stop;
+        if (VCAMConfigurationValueIsValid(key, value)) sanitized[key] = value;
+    }];
+    return sanitized;
+}
+
 static void VCAMPruneImportedMediaFiles(NSFileManager *manager,
                                         NSString *directory,
-                                        NSString *currentPath) {
+                                        NSString *currentPath,
+                                        NSString *activePath) {
     NSArray<NSString *> *names = [manager contentsOfDirectoryAtPath:directory error:nil];
-    NSMutableArray<NSDictionary<NSString *, id> *> *imports = [NSMutableArray array];
     for (NSString *name in names) {
         if (![name hasPrefix:@"selected-"]) continue;
         NSString *path = [directory stringByAppendingPathComponent:name];
-        if ([path isEqualToString:currentPath]) continue;
+        if ([path isEqualToString:currentPath] || [path isEqualToString:activePath]) continue;
         NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
         if (attributes == nil || [attributes[NSFileType] isEqual:NSFileTypeRegular] == NO) continue;
-        [imports addObject:@{
-            @"path": path,
-            @"date": attributes[NSFileModificationDate] ?: NSDate.distantPast,
-        }];
-    }
-    [imports sortUsingDescriptors:@[
-        [NSSortDescriptor sortDescriptorWithKey:@"date" ascending:NO]
-    ]];
-    // currentPath plus the newest predecessor is the bounded two-file set.
-    for (NSUInteger index = 1; index < imports.count; index++) {
-        [manager removeItemAtPath:imports[index][@"path"] error:nil];
+        [manager removeItemAtPath:path error:nil];
     }
 }
 
@@ -89,23 +191,12 @@ static void VCAMAppendDiagnostics(NSString *message) {
     NSDateFormatter *formatter = [NSDateFormatter new];
     formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [formatter stringFromDate:NSDate.date], message];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:VCAMDiagnosticsLogPath()];
-    if (handle == nil) {
-        [line writeToFile:VCAMDiagnosticsLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        return;
-    }
-    @try {
-        [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-    } @catch (NSException *exception) {
-        (void)exception;
-        [line writeToFile:VCAMDiagnosticsLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-    [handle closeFile];
+    VCAMAppendBoundedLine(VCAMDiagnosticsLogPath(),
+                          [line dataUsingEncoding:NSUTF8StringEncoding]);
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.80+webkit-camera-fill-contract";
+    return "com.codex.vcam/0.8.81+ios16-source-pipeline-audit";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -142,14 +233,31 @@ static BOOL VCAMDrainBrokerPayload(int descriptor, unsigned long long length) {
     return YES;
 }
 
+static BOOL VCAMPersistedConfigurationExists(void) {
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSArray<NSString *> *paths = @[
+        VCAMConfiguration.configurationPath,
+        @"/var/mobile/Library/Preferences/com.codex.vcam.plist",
+        [[VCAMConfiguration storageDirectoryPath]
+            stringByAppendingPathComponent:@"com.codex.vcam.plist"],
+    ];
+    for (NSString *path in paths) {
+        if ([manager fileExistsAtPath:path]) return YES;
+    }
+    return NO;
+}
+
 static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *values,
-                                                NSError **error) {
+                                                 NSError **error) {
     id enabledValue = values[@"enabled"];
     if (![enabledValue isKindOfClass:NSNumber.class]) {
-        // Missing or unreadable configuration stays fail-closed. Never turn an
-        // unknown value into an explicit request to expose the real camera.
-        VCAMAppendDiagnostics(@"shared requested mode retained: no persisted enabled value");
-        return YES;
+        // A true first install must expose the real camera. If a persisted file
+        // exists but is temporarily unreadable, retain the last shared request.
+        if (VCAMPersistedConfigurationExists()) {
+            VCAMAppendDiagnostics(@"shared requested mode retained: persisted enabled value unreadable");
+            return YES;
+        }
+        enabledValue = @NO;
     }
     BOOL enabled = [enabledValue boolValue];
     BOOL written = VCAMSharedFrameSetRequestedActive(enabled);
@@ -320,19 +428,8 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     NSDateFormatter *formatter = [NSDateFormatter new];
     formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
     NSString *line = [NSString stringWithFormat:@"[%@][DEBUG-vcamapp] %@\n", [formatter stringFromDate:NSDate.date], message];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:[self processLogPath]];
-    if (handle == nil) {
-        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        return;
-    }
-    @try {
-        [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-    } @catch (NSException *exception) {
-        (void)exception;
-        [line writeToFile:[self processLogPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-    [handle closeFile];
+    VCAMAppendBoundedLine([self processLogPath],
+                          [line dataUsingEncoding:NSUTF8StringEncoding]);
 }
 
 
@@ -383,9 +480,13 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 
 + (NSDictionary<NSString *, id> *)readValuesFromDisk {
     NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:self.configurationPath];
-    if ([values isKindOfClass:NSDictionary.class]) return values;
+    if ([values isKindOfClass:NSDictionary.class]) {
+        return VCAMSanitizedConfigurationValues(values);
+    }
     values = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.codex.vcam.plist"];
-    if ([values isKindOfClass:NSDictionary.class]) return values;
+    if ([values isKindOfClass:NSDictionary.class]) {
+        return VCAMSanitizedConfigurationValues(values);
+    }
     NSString *legacyPath = [[self storageDirectoryPath]
         stringByAppendingPathComponent:@"com.codex.vcam.plist"];
     values = [NSDictionary dictionaryWithContentsOfFile:legacyPath];
@@ -393,12 +494,14 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
         VCAMAppendDiagnostics([NSString stringWithFormat:
             @"readValuesFromDisk used legacy path %@ keys=%lu",
             legacyPath, (unsigned long)values.count]);
-        return values;
+        return VCAMSanitizedConfigurationValues(values);
     }
     return @{};
 }
 
 + (int)connectedBrokerSocket {
+    uint64_t token[2] = {0};
+    if (!VCAMSurfaceBrokerCopyConfigurationToken(&token[0], &token[1])) return -1;
     int descriptor = socket(AF_INET, SOCK_STREAM, 0);
     if (descriptor < 0) return -1;
     int noSignal = 1;
@@ -412,6 +515,10 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     address.sin_port = htons(VCAMConfigurationBrokerPort);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(descriptor, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(descriptor);
+        return -1;
+    }
+    if (!VCAMWriteAll(descriptor, token, sizeof(token))) {
         close(descriptor);
         return -1;
     }
@@ -512,6 +619,11 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                                                            code:2 userInfo:@{NSLocalizedDescriptionKey: @"配置包含未允许的键"}];
             return NO;
         }
+        if (!VCAMConfigurationValueIsValid(key, changes[key])) {
+            if (error != NULL) *error = [NSError errorWithDomain:@"com.codex.vcam.configuration"
+                                                           code:3 userInfo:@{NSLocalizedDescriptionKey: @"配置值类型或范围无效"}];
+            return NO;
+        }
     }
     if (![NSJSONSerialization isValidJSONObject:changes]) {
         if (error != NULL) *error = [NSError errorWithDomain:@"com.codex.vcam.configuration"
@@ -542,6 +654,18 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
             @"writeValuesDirectly mkdir failed path=%@ errno=%d", path, errno]);
         return NO;
     }
+    BOOL previousFileExisted = [manager fileExistsAtPath:path];
+    NSData *previousData = previousFileExisted
+        ? [NSData dataWithContentsOfFile:path options:0 error:nil] : nil;
+    if (previousFileExisted && previousData == nil) {
+        if (error != NULL) {
+            *error = VCAMConfigurationError(
+                4, @"Unable to preserve the existing VCAM configuration");
+        }
+        VCAMAppendDiagnostics(@"writeValuesDirectly refused: existing config backup unreadable");
+        return NO;
+    }
+    NSDictionary *previousValues = [NSDictionary dictionaryWithContentsOfFile:path];
     NSMutableDictionary<NSString *, id> *merged = [[self currentValues] mutableCopy];
     if (merged == nil) merged = [NSMutableDictionary dictionary];
     [merged addEntriesFromDictionary:changes];
@@ -565,11 +689,26 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
         @"writeValuesDirectly path=%@ written=%d mergedCount=%lu fileExists=%d keys=%@",
         path, written ? 1 : 0, (unsigned long)merged.count,
         [manager fileExistsAtPath:path] ? 1 : 0, changes.allKeys]);
-    BOOL notifyConfigurationChanged = written;
     if (written && !VCAMSynchronizeSharedRequestedState(readBack, error)) {
         written = NO;
     }
-    if (notifyConfigurationChanged) {
+    if (!written) {
+        BOOL restored = previousFileExisted && previousData != nil
+            ? [previousData writeToFile:path options:NSDataWritingAtomic error:nil]
+            : ![manager fileExistsAtPath:path] || [manager removeItemAtPath:path error:nil];
+        if (restored && previousFileExisted) {
+            [manager setAttributes:@{NSFileOwnerAccountName: @"mobile",
+                                     NSFileGroupOwnerAccountName: @"mobile",
+                                     NSFilePosixPermissions: @0644}
+                      ofItemAtPath:path error:nil];
+        }
+        if (restored && previousValues != nil) {
+            (void)VCAMSynchronizeSharedRequestedState(previousValues, NULL);
+        }
+        VCAMAppendDiagnostics([NSString stringWithFormat:
+            @"writeValuesDirectly rolled back restored=%d previousFile=%d",
+            restored, previousFileExisted]);
+    } else {
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.codex.vcam/preferences.changed"),
                                              NULL, NULL, true);
@@ -633,7 +772,7 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
         return nil;
     }
     unsigned long long fileSize = [fileSizeValue unsignedLongLongValue];
-    if (fileSize == 0 || fileSize > 16ULL * 1024ULL * 1024ULL * 1024ULL) {
+    if (fileSize == 0 || fileSize > 2ULL * 1024ULL * 1024ULL * 1024ULL) {
         if (error != NULL) *error = VCAMConfigurationError(20, @"Invalid media file size");
         return nil;
     }
@@ -652,6 +791,18 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     }
     if (normalizedName.length == 0) {
         if (error != NULL) *error = VCAMConfigurationError(27, @"Unsupported image or video type");
+        return nil;
+    }
+    NSFileManager *manager = NSFileManager.defaultManager;
+    (void)[manager createDirectoryAtPath:self.mediaDirectoryPath
+              withIntermediateDirectories:YES attributes:nil error:nil];
+    NSDictionary *fileSystem = [manager attributesOfFileSystemForPath:
+        self.mediaDirectoryPath error:nil];
+    unsigned long long freeBytes = [fileSystem[NSFileSystemFreeSize]
+        unsignedLongLongValue];
+    if (freeBytes == 0 || freeBytes < fileSize + 256ULL * 1024ULL * 1024ULL) {
+        if (error != NULL) *error = VCAMConfigurationError(
+            20, @"Not enough free space for the selected media");
         return nil;
     }
     return @{ @"fileSize": @(fileSize), @"suggestedName": normalizedName };
@@ -734,10 +885,18 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
                              NSFilePosixPermissions: @0644}
               ofItemAtPath:destination error:nil];
-    // Keep the active import and one predecessor. The predecessor may still
-    // have an open AVPlayer/ImageIO reader until the configuration notification
-    // tears the old graph down.
-    VCAMPruneImportedMediaFiles(manager, directory, destination);
+    NSDictionary *persisted = [NSDictionary dictionaryWithContentsOfFile:
+        VCAMConfiguration.configurationPath];
+    NSString *activePath = [persisted[@"mediaPath"] isKindOfClass:NSString.class]
+        ? persisted[@"mediaPath"] : nil;
+    // A received file is not active until the later configuration transaction
+    // commits. Protect both that current active path and this destination; never
+    // infer activity from mtime when imports overlap or activation fails.
+    if ([persisted isKindOfClass:NSDictionary.class]) {
+        VCAMPruneImportedMediaFiles(manager, directory, destination, activePath);
+    } else {
+        VCAMAppendDiagnostics(@"broker import prune skipped: active configuration unreadable");
+    }
     return destination;
 }
 
@@ -817,98 +976,20 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 }
 
 + (nullable NSString *)resolvedMediaPathForSharedPath:(NSString *)sharedPath
-                                                error:(NSError **)error {
-    if (![sharedPath isKindOfClass:NSString.class] || sharedPath.length == 0) {
+                                                 error:(NSError **)error {
+    if (!VCAMMediaPathIsAllowed(sharedPath)) {
         if (error != NULL) *error = VCAMConfigurationError(30, @"No shared media path configured");
         return nil;
     }
-    static NSMutableDictionary<NSString *, NSString *> *resolvedCache;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ resolvedCache = [NSMutableDictionary dictionary]; });
-    @synchronized (resolvedCache) {
-        NSString *cached = resolvedCache[sharedPath];
-        if (cached.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:cached]) {
-            return cached;
-        }
-    }
-
     if (self.isWriteBrokerHost || self.isMediaWorkerHost) {
         int probe = open(sharedPath.fileSystemRepresentation, O_RDONLY);
-        if (probe >= 0) {
-            close(probe);
-            return sharedPath;
+        if (probe < 0) {
+            if (error != NULL) *error = VCAMConfigurationError(31, @"Shared media is unreadable");
+            return nil;
         }
+        close(probe);
     }
-
-    int descriptor = [self connectedBrokerSocket];
-    if (descriptor < 0) {
-        if (error != NULL) *error = VCAMConfigurationError(31, @"VCAM broker unavailable for media fetch");
-        return nil;
-    }
-    uint8_t command = VCAMConfigurationBrokerFetchMediaCommand;
-    uint32_t zeroLength = 0;
-    BOOL success = VCAMWriteAll(descriptor, &command, sizeof(command)) &&
-                   VCAMWriteAll(descriptor, &zeroLength, sizeof(zeroLength));
-    uint8_t status = 0;
-    if (success) success = VCAMReadAll(descriptor, &status, sizeof(status)) && status == 1;
-    uint32_t networkHeaderLength = 0;
-    if (success) success = VCAMReadAll(descriptor, &networkHeaderLength, sizeof(networkHeaderLength));
-    NSUInteger headerLength = ntohl(networkHeaderLength);
-    success = success && headerLength > 0 && headerLength <= 4096;
-    NSMutableData *headerData = success ? [NSMutableData dataWithLength:headerLength] : nil;
-    if (success) success = VCAMReadAll(descriptor, headerData.mutableBytes, headerLength);
-    id decodedResponseHeader = success
-        ? [NSJSONSerialization JSONObjectWithData:headerData options:0 error:nil] : nil;
-    NSDictionary<NSString *, id> *responseHeader =
-        [decodedResponseHeader isKindOfClass:NSDictionary.class] ? decodedResponseHeader : nil;
-    id fileSizeValue = responseHeader[@"fileSize"];
-    success = success && [fileSizeValue isKindOfClass:NSNumber.class];
-    unsigned long long fileSize = success ? [fileSizeValue unsignedLongLongValue] : 0;
-    success = success && fileSize > 0 && fileSize <= 16ULL * 1024ULL * 1024ULL * 1024ULL;
-
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSString *directory = [[self storageDirectoryPath] stringByAppendingPathComponent:@"VCAM-media"];
-    NSString *suggestedName = [responseHeader[@"suggestedName"] isKindOfClass:NSString.class]
-        ? responseHeader[@"suggestedName"] : @"selected.mov";
-    NSString *extension = suggestedName.pathExtension.lowercaseString;
-    NSSet<NSString *> *allowedExtensions = [NSSet setWithArray:
-        @[@"mov", @"mp4", @"m4v", @"png", @"jpg", @"jpeg", @"heic", @"heif"]];
-    if (![allowedExtensions containsObject:extension]) success = NO;
-    NSString *destination = [directory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"selected.%@", extension]];
-    success = success && [manager createDirectoryAtPath:directory withIntermediateDirectories:YES
-                                              attributes:nil error:nil];
-    int output = success ? open(destination.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600) : -1;
-    if (output < 0) success = NO;
-    const size_t bufferSize = 256 * 1024;
-    void *buffer = malloc(bufferSize);
-    if (success && buffer == NULL) success = NO;
-    unsigned long long remaining = fileSize;
-    while (success && remaining > 0) {
-        size_t requested = (size_t)MIN((unsigned long long)bufferSize, remaining);
-        success = VCAMReadAll(descriptor, buffer, requested) && VCAMWriteAll(output, buffer, requested);
-        remaining -= requested;
-    }
-    free(buffer);
-    if (output >= 0) {
-        fsync(output);
-        close(output);
-    }
-    close(descriptor);
-    if (!success) {
-        [manager removeItemAtPath:destination error:nil];
-        if (error != NULL) *error = VCAMConfigurationError(32, @"Media fetch from SpringBoard failed");
-        return nil;
-    }
-    [manager setAttributes:@{NSFileOwnerAccountName: @"mobile", NSFileGroupOwnerAccountName: @"mobile",
-                             NSFilePosixPermissions: @0600}
-              ofItemAtPath:destination error:nil];
-    @synchronized (resolvedCache) {
-        resolvedCache[sharedPath] = destination;
-    }
-    VCAMAppendDiagnostics([NSString stringWithFormat:
-        @"resolvedMediaPath shared=%@ local=%@ size=%llu", sharedPath, destination, fileSize]);
-    return destination;
+    return [sharedPath stringByResolvingSymlinksInPath];
 }
 
 + (void)startWriteBroker {
@@ -927,6 +1008,8 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
             @"broker starting pid=%d tag=%s configPath=%@ mediaDir=%@",
             (int)getpid(), VCAMBuildTag(), self.configurationPath, self.mediaDirectoryPath]);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            dispatch_queue_t importQueue = dispatch_queue_create(
+                "com.codex.vcam.configuration.import", DISPATCH_QUEUE_SERIAL);
             int server = socket(AF_INET, SOCK_STREAM, 0);
             if (server < 0) return;
             int reuse = 1;
@@ -945,12 +1028,28 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                 if (client < 0) continue;
                 int noSignal = 1;
                 setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
-                struct timeval clientTimeout = {.tv_sec = 120, .tv_usec = 0};
+                // A client must send its command/header promptly. Large media
+                // transfers opt into a longer bounded timeout only after their
+                // header has passed validation, so an idle socket cannot stall
+                // the serial broker for two minutes.
+                struct timeval clientTimeout = {.tv_sec = 2, .tv_usec = 0};
                 setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &clientTimeout, sizeof(clientTimeout));
                 setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &clientTimeout, sizeof(clientTimeout));
                 @autoreleasepool {
+                    uint64_t handshakeDeadline = VCAMMonotonicMilliseconds() + 2000ULL;
+                    uint64_t presentedToken[2] = {0};
+                    BOOL authenticated = VCAMReadAllBeforeDeadline(
+                        client, presentedToken, sizeof(presentedToken), handshakeDeadline) &&
+                        VCAMSurfaceBrokerValidateConfigurationToken(
+                            presentedToken[0], presentedToken[1]);
+                    if (!authenticated) {
+                        VCAMAppendDiagnostics(@"broker rejected unauthenticated loopback client");
+                        close(client);
+                        continue;
+                    }
                     uint8_t command = 0;
-                    BOOL success = VCAMReadAll(client, &command, sizeof(command));
+                    BOOL success = VCAMReadAllBeforeDeadline(
+                        client, &command, sizeof(command), handshakeDeadline);
                     if (success && command == VCAMConfigurationBrokerReadCommand) {
                         NSDictionary *values = [self readValuesFromDisk];
                         NSData *data = [NSJSONSerialization dataWithJSONObject:values options:0 error:nil];
@@ -997,11 +1096,13 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                     if (importCommand) {
                         BOOL preflightRequired = command == VCAMConfigurationBrokerImportCommand;
                         uint32_t networkLength = 0;
-                        success = VCAMReadAll(client, &networkLength, sizeof(networkLength));
+                        success = VCAMReadAllBeforeDeadline(
+                            client, &networkLength, sizeof(networkLength), handshakeDeadline);
                         NSUInteger length = ntohl(networkLength);
                         success = success && length > 0 && length <= 4096;
                         NSMutableData *data = success ? [NSMutableData dataWithLength:length] : nil;
-                        if (success) success = VCAMReadAll(client, data.mutableBytes, length);
+                        if (success) success = VCAMReadAllBeforeDeadline(
+                            client, data.mutableBytes, length, handshakeDeadline);
                         id decodedHeader = success
                             ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
                         NSDictionary<NSString *, id> *headerDictionary =
@@ -1030,58 +1131,42 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                             close(client);
                             continue;
                         }
-                        NSString *destination = [self receiveImportedMediaFromClient:client
-                                                                                header:validatedHeader
-                                                                                 error:&importError];
-                        BOOL finalWritten = VCAMWriteBrokerMessage(
-                            client, destination != nil, destination ?: importError.localizedDescription);
-                        VCAMAppendDiagnostics([NSString stringWithFormat:
-                            @"broker import complete success=%d written=%d destination=%@ error=%@",
-                            destination != nil, finalWritten, destination ?: @"(none)",
-                            importError.localizedDescription ?: @"(none)"]);
-                        close(client);
-                        continue;
-                    }
-                    if (success && command == VCAMConfigurationBrokerFetchMediaCommand) {
-                        uint32_t requestLength = 0;
-                        success = VCAMReadAll(client, &requestLength, sizeof(requestLength));
-                        NSUInteger headerSize = ntohl(requestLength);
-                        success = success && headerSize <= 4096;
-                        NSMutableData *requestData = success && headerSize > 0
-                            ? [NSMutableData dataWithLength:headerSize] : nil;
-                        if (success && headerSize > 0) {
-                            success = VCAMReadAll(client, requestData.mutableBytes, headerSize);
-                        }
-                        NSString *sharedPath = [self readValuesFromDisk][@"mediaPath"];
-                        NSString *mediaPath = [sharedPath isKindOfClass:NSString.class] ? sharedPath : nil;
-                        NSData *media = mediaPath.length > 0
-                            ? [NSData dataWithContentsOfFile:mediaPath options:NSDataReadingMappedIfSafe error:nil] : nil;
-                        uint8_t status = media.length > 0 ? 1 : 0;
-                        VCAMWriteAll(client, &status, sizeof(status));
-                        if (media.length > 0) {
-                            NSDictionary *responseHeader = @{
-                                @"fileSize": @(media.length),
-                                @"suggestedName": mediaPath.lastPathComponent ?: @"selected.mov",
-                            };
-                            NSData *headerData = [NSJSONSerialization dataWithJSONObject:responseHeader options:0 error:nil];
-                            uint32_t responseHeaderLength = htonl((uint32_t)headerData.length);
-                            VCAMWriteAll(client, &responseHeaderLength, sizeof(responseHeaderLength));
-                            VCAMWriteAll(client, headerData.bytes, headerData.length);
-                            VCAMWriteAll(client, media.bytes, media.length);
-                        }
-                        VCAMAppendDiagnostics([NSString stringWithFormat:
-                            @"broker fetch media path=%@ size=%lu", mediaPath ?: @"(none)",
-                            (unsigned long)media.length]);
-                        close(client);
+                        clientTimeout.tv_sec = 30;
+                        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                                   &clientTimeout, sizeof(clientTimeout));
+                        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
+                                   &clientTimeout, sizeof(clientTimeout));
+                        int importClient = client;
+                        NSDictionary<NSString *, id> *importHeader = [validatedHeader copy];
+                        dispatch_async(importQueue, ^{
+                            @autoreleasepool {
+                                NSError *queuedImportError = nil;
+                                NSString *destination =
+                                    [self receiveImportedMediaFromClient:importClient
+                                                                  header:importHeader
+                                                                   error:&queuedImportError];
+                                BOOL finalWritten = VCAMWriteBrokerMessage(
+                                    importClient, destination != nil,
+                                    destination ?: queuedImportError.localizedDescription);
+                                VCAMAppendDiagnostics([NSString stringWithFormat:
+                                    @"broker import complete success=%d written=%d destination=%@ error=%@",
+                                    destination != nil, finalWritten,
+                                    destination ?: @"(none)",
+                                    queuedImportError.localizedDescription ?: @"(none)"]);
+                                close(importClient);
+                            }
+                        });
                         continue;
                     }
                     uint32_t networkLength = 0;
                     success = success && command == VCAMConfigurationBrokerUpdateCommand &&
-                              VCAMReadAll(client, &networkLength, sizeof(networkLength));
+                              VCAMReadAllBeforeDeadline(
+                                  client, &networkLength, sizeof(networkLength), handshakeDeadline);
                     NSUInteger length = ntohl(networkLength);
                     success = success && length > 0 && length <= VCAMConfigurationMaximumRequestBytes;
                     NSMutableData *data = success ? [NSMutableData dataWithLength:length] : nil;
-                    if (success) success = VCAMReadAll(client, data.mutableBytes, length);
+                    if (success) success = VCAMReadAllBeforeDeadline(
+                        client, data.mutableBytes, length, handshakeDeadline);
                     NSDictionary *changes = success
                         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
                     if (success) success = [self writeValuesDirectly:changes error:nil];
