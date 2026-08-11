@@ -101,7 +101,7 @@ static VCAMFramePresentation VCAMPresentationForReplacementRoute(
     VCAMReplacementRoute route) {
     switch (route) {
         case VCAMReplacementRouteVideoConverter:
-            return VCAMFramePresentationWebKitFit;
+            return VCAMFramePresentationWebKitFill;
         case VCAMReplacementRouteCameraPreview:
             return VCAMFramePresentationCameraPreviewFit;
         case VCAMReplacementRouteStillPhoto:

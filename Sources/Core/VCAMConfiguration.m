@@ -105,7 +105,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.79+webkit-camera-contract";
+    return "com.codex.vcam/0.8.80+webkit-camera-fill-contract";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

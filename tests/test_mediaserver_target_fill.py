@@ -85,7 +85,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertRegex(
             presentation,
             r"case VCAMReplacementRouteVideoConverter:\s*"
-            r"return VCAMFramePresentationWebKitFit;",
+            r"return VCAMFramePresentationWebKitFill;",
         )
         self.assertNotIn(
             "replacementRoute == VCAMReplacementRouteCameraPreview\n"
@@ -93,7 +93,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             render_call,
         )
 
-    def test_webkit_keeps_the_negotiated_profile_without_cropping_the_source(self) -> None:
+    def test_webkit_uses_one_camera_style_crop_in_the_negotiated_profile(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
@@ -102,34 +102,56 @@ class MediaServerTargetFillTests(unittest.TestCase):
         )[1].split(");", 1)[0]
 
         # WebKit still owns the target profile (480p/720p/1080p), pixel format
-        # and timing. VCAM must only fit the canonical source into that already
-        # negotiated buffer; aspect-fill crops a 16:9 source by 25% when the
-        # browser requests the common 640x480 profile and appears as zoom.
+        # and timing. VCAM performs exactly one camera-style center crop while
+        # composing into that target. WebKit receives the original target size,
+        # so there is no second VCAM scale or format renegotiation.
         self.assertIn(
             "VCAMPresentationForReplacementRoute(replacementRoute)", render_call
         )
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
-        self.assertRegex(
-            implementation,
-            r"presentation\s*==\s*VCAMFramePresentationCameraPreviewFit\s*\|\|"
-            r"\s*presentation\s*==\s*VCAMFramePresentationWebKitFit",
+        aspect_fit_assignment = implementation.split("BOOL aspectFit =", 1)[1].split(
+            ";", 1
+        )[0]
+        self.assertEqual(
+            "".join(aspect_fit_assignment.split()),
+            "presentation==VCAMFramePresentationCameraPreviewFit",
+        )
+        self.assertEqual(
+            self.adapter.count(
+                "imageByApplyingTransform:CGAffineTransformMakeScale"
+            ),
+            1,
+        )
+        self.assertIn(
+            "CGFloat x = ((CGFloat)renderWidth - CGRectGetWidth(image.extent)) * 0.5",
+            self.adapter,
+        )
+        self.assertIn(
+            "CGFloat y = ((CGFloat)renderHeight - CGRectGetHeight(image.extent)) * 0.5",
+            self.adapter,
         )
 
         source_width, source_height = 3840, 2160
         for target_width, target_height in ((640, 480), (1280, 720), (1920, 1080)):
             with self.subTest(target=(target_width, target_height)):
-                scale = min(
+                scale = max(
                     target_width / source_width,
                     target_height / source_height,
                 )
-                self.assertLessEqual(source_width * scale, target_width)
-                self.assertLessEqual(source_height * scale, target_height)
+                scaled_width = source_width * scale
+                scaled_height = source_height * scale
+                self.assertGreaterEqual(scaled_width, target_width)
+                self.assertGreaterEqual(scaled_height, target_height)
+                self.assertTrue(
+                    abs(scaled_width - target_width) < 1e-9
+                    or abs(scaled_height - target_height) < 1e-9
+                )
 
     def test_full_bleed_modes_cover_still_and_recording_targets(self) -> None:
-        # Recording and still-photo keep full-bleed camera behavior. Camera
-        # preview and WebKit use the separately tested whole-frame fit modes.
+        # WebKit, recording and still-photo use camera-style full bleed. Camera
+        # preview alone retains the separately tested whole-frame fit mode.
         cases = (
             ((1080, 1920), (4224, 3024)),  # Camera still-photo sensor buffer
             ((1080, 1920), (1920, 1080)),  # Camera movie recording buffer

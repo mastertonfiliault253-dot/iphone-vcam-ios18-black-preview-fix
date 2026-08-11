@@ -506,10 +506,9 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     BOOL realtimeCompensation =
         presentation != VCAMFramePresentationStillPhotoFill;
     BOOL aspectFit =
-        presentation == VCAMFramePresentationCameraPreviewFit ||
-        presentation == VCAMFramePresentationWebKitFit;
+        presentation == VCAMFramePresentationCameraPreviewFit;
     BOOL webKitLandscapeStorage =
-        presentation == VCAMFramePresentationWebKitFit;
+        presentation == VCAMFramePresentationWebKitFill;
     BOOL compressedTarget = VCAMFormatIsCompressedVideoRange(targetFormat);
     if (compressedTarget && replacementBufferOut == NULL) return NO;
     CVPixelBufferRef scratch = NULL;
@@ -709,8 +708,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // The producer publishes canonical visual orientation. The real
         // camera graph remains the negotiation shell: target dimensions,
         // pixel format, timing and graph attachments are left untouched.
-        // WebKit and Camera preview fit the whole canonical frame; recording
-        // and still-photo terminals retain their full-bleed camera behavior.
+        // WebKit, recording and still-photo terminals use the camera graph's
+        // full-bleed center crop. Camera preview alone retains whole-frame fit.
+        // This is the only scale operation: the negotiated target dimensions,
+        // format, timing and attachments remain unchanged downstream.
         CGFloat scale = aspectFit
             ? MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent))

@@ -36,9 +36,10 @@ reference: local video applies the asset's complete `preferredTransform` once
 to decoded track pixels; UI preview adds no transform; consumers never infer
 orientation from target dimensions. The explicit iOS 16 WebKit
 `video-converter` terminal alone pre-rotates a portrait source left into its
-landscape storage basis, then aspect-fits the whole source into the target so a
-4:3 WebRTC profile does not crop and visually enlarge a 16:9 source. Camera
-preview keeps its existing whole-frame fit and recording remains full-bleed.
+landscape storage basis, then center-crops once into the already-negotiated
+target, matching the real camera's full-bleed behavior without stretching or a
+second VCAM scale. Camera preview keeps its existing whole-frame fit and
+recording remains full-bleed.
 At the still-photo terminal,
 only a canonical portrait source is converted into the sensor's landscape
 storage basis and marked EXIF `Orientation=Right`; a landscape source remains

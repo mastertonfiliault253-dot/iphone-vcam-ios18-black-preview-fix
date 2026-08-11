@@ -189,7 +189,7 @@ python -m unittest discover -s tests -v
 
 ### 旋转/方向、拍照黑边、二维码识别
 
-源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转进入其横向存储基准，并将完整源画面等比放入浏览器已经协商的目标缓冲区；Camera 预览保持完整画面适配，录像保持满幅。VCAM 不伪造浏览器能力表，也不固定 640×480/720p/1080p，目标尺寸、帧率、像素格式、时间戳和附件仍由真实相机图决定；不得用目标宽高猜浏览器。拍照走 `still-photo` 独立路由：竖向规范源仅在 `Meteor Headroom` 末端转换到横向传感器存储并写入 EXIF `Orientation=Right`，横向源不变，使保存比例跟随源而不是手机姿态。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
+源变换由 `VCAMFrameRenderer` + `rotationDegrees` 处理，正常基线必须是 `0°` 且不镜像。iOS 16 的 WebKit `video-converter` 是唯一的实时方向适配例外：仅竖向源左转进入其横向存储基准，再按真实相机行为一次性居中裁剪并填满浏览器已经协商的目标缓冲区；Camera 预览保持完整画面适配，录像保持满幅。VCAM 不伪造浏览器能力表，也不固定 640×480/720p/1080p，目标尺寸、帧率、像素格式、时间戳和附件仍由真实相机图决定；不得用目标宽高猜浏览器。目标缓冲区不会再次缩放或重建，因此没有第二次 VCAM 放大；源与目标比例不同时，消除黑边必然裁掉边缘像素。拍照走 `still-photo` 独立路由：竖向规范源仅在 `Meteor Headroom` 末端转换到横向传感器存储并写入 EXIF `Orientation=Right`，横向源不变，使保存比例跟随源而不是手机姿态。二维码分析走 SmartCam/`camera-source-video` 上游，不能只靠 RemoteQueueSink 末端解决。
 
 ## 10. 学习路线（建议阅读顺序）
 

@@ -16,7 +16,7 @@ typedef enum VCAMFramePresentation {
     // composed into that already-negotiated target.
     VCAMFramePresentationRealtimeFill = 0,
     VCAMFramePresentationCameraPreviewFit,
-    VCAMFramePresentationWebKitFit,
+    VCAMFramePresentationWebKitFill,
     VCAMFramePresentationStillPhotoFill,
 } VCAMFramePresentation;
 
