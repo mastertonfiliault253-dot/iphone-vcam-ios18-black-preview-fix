@@ -28,7 +28,8 @@ targeted. Audio is not replaced.
 The compatibility frame region in `/var/tmp/com.codex.vcam.frames` is fixed at
 1080×1920 BGRA. Its surface metadata can instead describe 420v/420f IOSurface
 slots of the same canvas size. Publication uses atomic slot and sequence
-metadata. Consumers copy without
+metadata; neither transport contains JPEG, H.264 or another encoded payload.
+Consumers copy without
 waiting. SpringBoard is the sole writer of the requested enable/restore state;
 `vcamd` publishes pixels only and cannot overwrite that state after a delayed
 configuration reload. Shared-header initialization and requested-state updates
@@ -37,10 +38,13 @@ use an interprocess file lock so startup order cannot replace a newer choice.
 `mediaserverd` recognizes the exact upstream
 `BWMultiStreamCameraSourceNode / VideoCapture` role before preview, recording
 and Smart Camera analysis split. A successful upstream replacement carries a
-versioned, propagating full-PTS marker. The three exact downstream pixel-transfer
-roles (browser/WebRTC conversion, Camera preview and movie recording) skip a
+versioned, propagating full-PTS marker. Camera preview and movie recording skip a
 duplicate render only when their own sample or image buffer retains that marker
-with the same numeric PTS; otherwise they render again and remain fail-closed.
+with the same numeric PTS. Browser/WebRTC conversion deliberately renders again
+from the canonical unencoded shared frame into its terminal 420f buffer, so the
+browser does not inherit pixels that traversed the camera source's private
+compressed surface. Unmarked downstream samples also render again and remain
+fail-closed.
 Fan-out and inference nodes are never matched directly. Unsupported private
 `StillImage` source frames remain inside the mediaserverd graph so the verified
 standard 420f `Meteor Headroom` still-photo boundary can replace them; they are

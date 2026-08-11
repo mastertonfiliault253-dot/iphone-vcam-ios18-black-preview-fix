@@ -316,6 +316,16 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ),
         )
 
+    def test_webkit_terminal_rerenders_from_uncompressed_shared_frame(self) -> None:
+        route_helper = _between(
+            self.entry,
+            "static BOOL VCAMRouteUsesPropagationMarker",
+            "static BOOL VCAMWritePropagationMarker",
+        )
+        self.assertNotIn("VCAMReplacementRouteVideoConverter", route_helper)
+        self.assertIn("VCAMReplacementRouteCameraPreview", route_helper)
+        self.assertIn("VCAMReplacementRouteVideoRecording", route_helper)
+
     def test_marked_recording_frame_reaches_system_encoder_without_second_guard(self) -> None:
         fast_path = _between(
             self.hook,

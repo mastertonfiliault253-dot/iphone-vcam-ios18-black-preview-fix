@@ -1,6 +1,5 @@
 #import "VCAMMediaServerRefImageUtils.h"
 #import <Foundation/Foundation.h>
-#import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdio.h>
@@ -31,34 +30,6 @@ static id VCAMSafeObjectResult(id object, SEL selector) {
     } @catch (__unused NSException *exception) {
         return nil;
     }
-}
-
-static void VCAMLogStillOrientationAttachments(CMSampleBufferRef sampleBuffer,
-                                                CVPixelBufferRef imageBuffer) {
-    static volatile int loggedSamples = 0;
-    int count = __sync_add_and_fetch(&loggedSamples, 1);
-    if (count > 4) return;
-
-    CMAttachmentMode sampleMode = kCMAttachmentMode_ShouldNotPropagate;
-    CFTypeRef sampleOrientation = CMGetAttachment(
-        sampleBuffer, kCGImagePropertyOrientation, &sampleMode);
-    CVAttachmentMode imageMode = kCVAttachmentMode_ShouldNotPropagate;
-    CFTypeRef imageOrientation = CVBufferGetAttachment(
-        imageBuffer, kCGImagePropertyOrientation, &imageMode);
-    CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
-    CFTypeRef formatOrientation = format == NULL ? NULL
-        : CMFormatDescriptionGetExtension(format, kCGImagePropertyOrientation);
-    id sampleOrientationObject = sampleOrientation == NULL
-        ? @"nil" : (__bridge id)sampleOrientation;
-    id imageOrientationObject = imageOrientation == NULL
-        ? @"nil" : (__bridge id)imageOrientation;
-    id formatOrientationObject = formatOrientation == NULL
-        ? @"nil" : (__bridge id)formatOrientation;
-    NSString *message = [NSString stringWithFormat:
-        @"[DEBUG-STILL-ORIENTATION] count=%d sample=%@ sampleMode=%d image=%@ imageMode=%d format=%@",
-        count, sampleOrientationObject, sampleMode,
-        imageOrientationObject, imageMode, formatOrientationObject];
-    VCAMRefLog(message.UTF8String);
 }
 
 static NSString *VCAMSafeStringValue(id value) {
@@ -251,8 +222,10 @@ static CFStringRef const VCAMPropagationMarkerKey =
     CFSTR("com.codex.vcam.virtual-frame.v1");
 
 static BOOL VCAMRouteUsesPropagationMarker(VCAMReplacementRoute route) {
-    return route == VCAMReplacementRouteVideoConverter ||
-        route == VCAMReplacementRouteCameraPreview ||
+    // WebKit's terminal converter must redraw from the canonical shared frame.
+    // Passing the upstream marker would preserve pixels that already traversed
+    // the camera source's private compressed buffer.
+    return route == VCAMReplacementRouteCameraPreview ||
         route == VCAMReplacementRouteVideoRecording;
 }
 
@@ -540,10 +513,6 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
     BOOL replacementAllowed = replacementRoute != VCAMReplacementRouteNone;
     VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementRoute);
-    if (replacementRoute == VCAMReplacementRouteStillPhoto &&
-        originalImageBuffer != NULL) {
-        VCAMLogStillOrientationAttachments(sampleBuffer, originalImageBuffer);
-    }
     if (originalImageBuffer == NULL) {
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
