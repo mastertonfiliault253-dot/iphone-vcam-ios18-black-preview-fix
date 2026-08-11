@@ -156,7 +156,13 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("VCAMResetRecordingFrameOutcomes", entry)
         self.assertIn("VCAMReplacementRouteCameraSourceVideo", entry)
         self.assertIn('@"BWMultiStreamCameraSourceNode"', entry)
-        self.assertIn('@"VideoCapture"', entry)
+        route_function = entry.split(
+            "static VCAMReplacementRoute VCAMReplacementRouteForOutput", 1
+        )[1].split("static void VCAMLogOutputSignature", 1)[0]
+        self.assertNotIn('@"VideoCapture"', route_function)
+        self.assertNotIn(
+            "return VCAMReplacementRouteCameraSourceVideo;", route_function
+        )
         self.assertNotIn("VCAMReplacementRouteGenericPixelTransfer", entry)
         self.assertNotIn("VCAMReplacementRouteLegacyPreview", entry)
         self.assertNotIn("width == 750 && height == 1334", entry)

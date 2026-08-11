@@ -5,6 +5,7 @@
 
 #include <libavutil/intreadwrite.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -356,11 +357,27 @@ CVPixelBufferRef VCAMCopyNV12FromAVFrame(AVFrame *frame) {
         ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
     CVPixelBufferRef pixelBuffer = NULL;
-    if (CVPixelBufferCreate(kCFAllocatorDefault, (size_t)frame->width,
-                            (size_t)frame->height, pixelFormat,
-                            NULL,
-                            &pixelBuffer) != kCVReturnSuccess) return NULL;
-    if (CVPixelBufferLockBaseAddress(pixelBuffer, 0) != kCVReturnSuccess) {
+    CVReturn createStatus = CVPixelBufferCreate(
+        kCFAllocatorDefault, (size_t)frame->width, (size_t)frame->height,
+        pixelFormat, NULL, &pixelBuffer);
+    if (createStatus != kCVReturnSuccess) {
+        static dispatch_once_t createFailureToken;
+        dispatch_once(&createFailureToken, ^{
+            fprintf(stderr,
+                    "vcamd NV12 intermediate create failed status=%d size=%dx%d\n",
+                    createStatus, frame->width, frame->height);
+            fflush(stderr);
+        });
+        return NULL;
+    }
+    CVReturn lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    if (lockStatus != kCVReturnSuccess) {
+        static dispatch_once_t lockFailureToken;
+        dispatch_once(&lockFailureToken, ^{
+            fprintf(stderr, "vcamd NV12 intermediate lock failed status=%d\n",
+                    lockStatus);
+            fflush(stderr);
+        });
         CVPixelBufferRelease(pixelBuffer);
         return NULL;
     }

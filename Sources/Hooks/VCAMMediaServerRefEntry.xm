@@ -322,14 +322,11 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     NSString *outputName = VCAMSafeObjectResult(output, sel_registerName("name"));
     NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
 
-    // This is the device-observed raw VideoCapture branch feeding SmartCam and
-    // other camera analysis consumers. Route by the exact output role, not by
-    // buffer format support: a recognized source role must fail closed when a
-    // future format cannot be rendered instead of exposing the physical frame.
-    if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
-        VCAMStringMatches(outputName, @"VideoCapture")) {
-        return VCAMReplacementRouteCameraSourceVideo;
-    }
+    // Do not inject canonical shared pixels into the raw VideoCapture sensor
+    // branch. Camera preview and WebKit apply different physical-camera
+    // transforms after this node; replacing here rotated an already-oriented
+    // Photos/RTSP frame a second time. The exact terminal routes below are the
+    // fail-closed app boundaries and render the canonical pixels directly.
     // iOS 16 emits the raw still source as private pf20 on the target device.
     // That surface cannot be rendered safely, and suppressing it prevents the
     // verified downstream 420f Meteor Headroom stage from producing a photo.

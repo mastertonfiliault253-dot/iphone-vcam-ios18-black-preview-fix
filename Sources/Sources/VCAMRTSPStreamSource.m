@@ -130,6 +130,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     NSUInteger _diagnosticFrames;
     NSUInteger _diagnosticHardwareFrames;
     BOOL _loggedFirstHardwareFrame;
+    BOOL _loggedFirstSoftwareFrame;
     double _diagnosticFrameIntervals[256];
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
@@ -318,6 +319,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
     BOOL logFirstHardwareFrame = NO;
+    BOOL logFirstSoftwareFrame = NO;
     uint64_t firstHardwareSequence = 0;
     @synchronized (self) {
         if (!self.running) {
@@ -336,6 +338,9 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
                 logFirstHardwareFrame = YES;
                 firstHardwareSequence = _latestFrameSequence;
             }
+        } else if (!_loggedFirstSoftwareFrame) {
+            _loggedFirstSoftwareFrame = YES;
+            logFirstSoftwareFrame = YES;
         }
         if (_diagnosticLastFrameTime > 0 && _diagnosticFrameIntervalCount < 256) {
             _diagnosticFrameIntervals[_diagnosticFrameIntervalCount++] =
@@ -375,6 +380,13 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             CVPixelBufferGetHeight(pixelBuffer),
             (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
             (unsigned long long)firstHardwareSequence]];
+    }
+    if (logFirstSoftwareFrame) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ first software pixel buffer format=%08x size=%zux%zu",
+            self.streamName,
+            (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
+            CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)]];
     }
     if (snapshot != nil) VCAMPublishRTSPPerformance(snapshot);
 }

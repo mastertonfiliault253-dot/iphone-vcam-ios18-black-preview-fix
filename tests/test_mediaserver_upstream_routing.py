@@ -26,16 +26,12 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         )
         self.hook = _between(self.entry, "%hook BWNodeOutput", "%end")
 
-    def test_only_observed_capture_outputs_of_multistream_source_route_upstream(self) -> None:
-        self.assertIn("VCAMReplacementRouteCameraSourceVideo", self.entry)
-        self.assertRegex(
-            self.route_function,
-            re.compile(
-                r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
-                r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"VideoCapture"\)'
-                r'\s*\)\s*\{\s*return VCAMReplacementRouteCameraSourceVideo;',
-                re.DOTALL,
-            ),
+    def test_raw_camera_video_stays_internal_until_observed_terminal_routes(self) -> None:
+        # Shared pixels are already in the source's presentation orientation.
+        # Injecting them into the raw sensor branch makes Camera and WebKit apply
+        # their different physical-camera transforms a second time.
+        self.assertNotIn(
+            "return VCAMReplacementRouteCameraSourceVideo;", self.route_function
         )
         self.assertNotIn('@"Preview"', self.route_function)
         self.assertRegex(
@@ -58,16 +54,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn('VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode")', self.route_function)
         self.assertIn('VCAMStringMatches(nodeName, @"Meteor Headroom")', self.route_function)
 
-    def test_source_route_is_selected_before_buffer_support_is_considered(self) -> None:
-        source_match = re.search(
-            r'if\s*\(VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
-            r'.*?return VCAMReplacementRouteCameraSourceVideo;\s*\}',
-            self.route_function,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(source_match)
-        self.assertNotIn("targetSupported", source_match.group(0))
-
+    def test_terminal_routes_remain_fail_closed_for_missing_buffers(self) -> None:
         null_buffer_path = _between(
             self.hook,
             "if (originalImageBuffer == NULL) {",

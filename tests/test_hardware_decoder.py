@@ -58,7 +58,8 @@ class HardwareDecoderTests(unittest.TestCase):
         # diverts RTSP back to the fixed BGRA mmap canvas.
         self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", nv12)
         self.assertNotIn("kCVPixelBufferMetalCompatibilityKey", nv12)
-        self.assertIn("pixelFormat,\n                            NULL,", nv12)
+        self.assertIn("pixelFormat, NULL, &pixelBuffer", nv12)
+        self.assertIn("NV12 intermediate create failed status=", nv12)
 
     def test_rtsp_receiver_matches_the_mediamtx_tcp_client_contract(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
@@ -84,6 +85,12 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "vcamd")', broker)
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', broker)
         self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', broker)
+        self.assertIn("VCAMSurfaceBrokerPeerCanSubscribe", broker)
+        subscriber = broker.split("static bool VCAMSurfaceBrokerPeerCanSubscribe", 1)[1].split(
+            "static xpc_object_t VCAMBrokerRegistry", 1
+        )[0]
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "SpringBoard")', subscriber)
+        self.assertIn('VCAMSurfaceBrokerPeerIs(peer, "mediaserverd")', subscriber)
         self.assertIn('xpc_dictionary_set_uint64(message, "slotCount", count)', client)
         self.assertIn('xpc_dictionary_get_uint64(reply, "slotCount")', client)
         self.assertNotIn("SlotCountIsValid((uint32_t)slotCount)", broker)

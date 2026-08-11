@@ -116,6 +116,14 @@ static bool VCAMSurfaceBrokerPeerCanPublish(xpc_connection_t peer) {
         VCAMSurfaceBrokerPeerIs(peer, "vcamd");
 }
 
+static bool VCAMSurfaceBrokerPeerCanSubscribe(xpc_connection_t peer) {
+    // mediaserverd replaces camera frames; SpringBoard owns the in-process
+    // preview and native local-video/HLS producer. Both need read-only access
+    // to the current IOSurface registry.
+    return VCAMSurfaceBrokerPeerIs(peer, "mediaserverd") ||
+        VCAMSurfaceBrokerPeerIs(peer, "SpringBoard");
+}
+
 static xpc_object_t VCAMBrokerRegistry;
 static _Atomic(uint32_t) VCAMBrokerGetDiagnostics;
 
@@ -151,7 +159,7 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
     pid_t peerPID = VCAMXPCConnectionGetPID(peer);
     char peerName[64] = {0};
     if (peerPID > 0) proc_name(peerPID, peerName, sizeof(peerName));
-    bool accepted = VCAMSurfaceBrokerPeerIs(peer, "mediaserverd");
+    bool accepted = VCAMSurfaceBrokerPeerCanSubscribe(peer);
     uint32_t diagnostic = atomic_fetch_add_explicit(
         &VCAMBrokerGetDiagnostics, 1, memory_order_relaxed);
     if (diagnostic < 6) {
