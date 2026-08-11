@@ -18,9 +18,6 @@
 // CoreVideo but does not ship IOSurface framework headers. Keep the narrow
 // cross-process ABI local instead of copying the private framework header.
 extern uint32_t IOSurfaceGetID(IOSurfaceRef surface);
-extern IOSurfaceRef _Nullable IOSurfaceCreate(CFDictionaryRef properties)
-    CF_RETURNS_RETAINED;
-extern size_t IOSurfaceAlignProperty(CFStringRef property, size_t value);
 extern IOSurfaceRef _Nullable IOSurfaceLookup(uint32_t surfaceID)
     CF_RETURNS_RETAINED;
 extern void IOSurfaceIncrementUseCount(IOSurfaceRef surface);
@@ -597,69 +594,23 @@ uint64_t VCAMSharedSurfaceWriterGeneration(VCAMSharedSurfaceWriter *writer) {
 
 static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
     uint32_t width, uint32_t height, OSType pixelFormat) {
-    if (pixelFormat != kCVPixelFormatType_32BGRA) {
-        NSDictionary *attributes = @{
-            (id)kCVPixelBufferIOSurfacePropertiesKey: @{@"IOSurfaceIsGlobal": @YES},
-            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-        };
-        CVPixelBufferRef pixelBuffer = NULL;
-        CVReturn status = CVPixelBufferCreate(
-            kCFAllocatorDefault, width, height,
-            pixelFormat, (__bridge CFDictionaryRef)attributes, &pixelBuffer);
-        if (status != kCVReturnSuccess) {
-            static dispatch_once_t createFailureToken;
-            dispatch_once(&createFailureToken, ^{
-                fprintf(stderr,
-                        "vcam shared NV12 IOSurface create failed status=%d size=%ux%u pixel=%08x\n",
-                        status, width, height, pixelFormat);
-                fflush(stderr);
-            });
-        }
-        return status == kCVReturnSuccess ? pixelBuffer : NULL;
-    }
-    size_t bytesPerRow = IOSurfaceAlignProperty(
-        CFSTR("IOSurfaceBytesPerRow"), (size_t)width * 4);
-    if (bytesPerRow == 0 || (size_t)height > SIZE_MAX / bytesPerRow) return NULL;
-    size_t allocationSize = IOSurfaceAlignProperty(
-        CFSTR("IOSurfaceAllocSize"), bytesPerRow * height);
-    NSDictionary *surfaceProperties = @{
-        @"IOSurfaceWidth": @(width),
-        @"IOSurfaceHeight": @(height),
-        @"IOSurfaceBytesPerElement": @4,
-        @"IOSurfaceBytesPerRow": @(bytesPerRow),
-        @"IOSurfaceAllocSize": @(allocationSize),
-        @"IOSurfacePixelFormat": @(kCVPixelFormatType_32BGRA),
-        @"IOSurfaceIsGlobal": @YES,
-    };
-    IOSurfaceRef surface = IOSurfaceCreate(
-        (__bridge CFDictionaryRef)surfaceProperties);
-    if (surface == NULL) {
-        static dispatch_once_t surfaceCreateFailureToken;
-        dispatch_once(&surfaceCreateFailureToken, ^{
-            fprintf(stderr,
-                    "vcam shared BGRA IOSurfaceCreate failed size=%ux%u bytesPerRow=%zu allocation=%zu\n",
-                    width, height, bytesPerRow, allocationSize);
-            fflush(stderr);
-        });
-        return NULL;
-    }
-    CVPixelBufferRef pixelBuffer = NULL;
     NSDictionary *attributes = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
         (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
-    CVReturn status = CVPixelBufferCreateWithIOSurface(
-        kCFAllocatorDefault, surface, (__bridge CFDictionaryRef)attributes,
-        &pixelBuffer);
+    CVPixelBufferRef pixelBuffer = NULL;
+    CVReturn status = CVPixelBufferCreate(
+        kCFAllocatorDefault, width, height, pixelFormat,
+        (__bridge CFDictionaryRef)attributes, &pixelBuffer);
     if (status != kCVReturnSuccess) {
-        static dispatch_once_t pixelBufferCreateFailureToken;
-        dispatch_once(&pixelBufferCreateFailureToken, ^{
+        static dispatch_once_t createFailureToken;
+        dispatch_once(&createFailureToken, ^{
             fprintf(stderr,
-                    "vcam shared BGRA CVPixelBufferCreateWithIOSurface failed status=%d size=%ux%u\n",
-                    status, width, height);
+                    "vcam shared IOSurface pixel buffer create failed status=%d size=%ux%u pixel=%08x\n",
+                    status, width, height, pixelFormat);
             fflush(stderr);
         });
     }
-    CFRelease(surface);
     return status == kCVReturnSuccess ? pixelBuffer : NULL;
 }
 

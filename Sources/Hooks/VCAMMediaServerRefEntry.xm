@@ -99,6 +99,31 @@ static void VCAMCopyAttachmentMode(CMAttachmentBearerRef source,
     CFRelease(attachments);
 }
 
+static void VCAMLogOrientationAttachments(const char *stage,
+                                          CMSampleBufferRef sampleBuffer,
+                                          CVPixelBufferRef imageBuffer) {
+    if (stage == NULL || sampleBuffer == NULL) return;
+    NSString *stageName = [NSString stringWithUTF8String:stage];
+    static NSMutableSet<NSString *> *loggedStages;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ loggedStages = [NSMutableSet set]; });
+    @synchronized (loggedStages) {
+        if ([loggedStages containsObject:stageName]) return;
+        [loggedStages addObject:stageName];
+    }
+    NSDictionary *propagate = CFBridgingRelease(CMCopyDictionaryOfAttachments(
+        kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldPropagate));
+    NSDictionary *local = CFBridgingRelease(CMCopyDictionaryOfAttachments(
+        kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldNotPropagate));
+    NSDictionary *image = imageBuffer == NULL ? nil : CFBridgingRelease(
+        CVBufferCopyAttachments(imageBuffer, kCVAttachmentMode_ShouldPropagate));
+    NSString *description = [NSString stringWithFormat:
+        @"[DEBUG-orient-7f31] stage=%@ samplePropagate=%@ sampleLocal=%@ image=%@",
+        stageName, propagate ?: @{}, local ?: @{}, image ?: @{}];
+    if (description.length > 3000) description = [description substringToIndex:3000];
+    VCAMRefLog(description.UTF8String);
+}
+
 static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     CMSampleBufferRef originalSampleBuffer,
     CVPixelBufferRef replacementImageBuffer,
@@ -454,6 +479,7 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         int sampleCount = __sync_add_and_fetch(&remoteVideoSamples, 1);
         if (sampleCount <= 12 || sampleCount % 300 == 0) {
             CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+            VCAMLogOrientationAttachments("remote-queue", sampleBuffer, imageBuffer);
             OSType subtype = CMFormatDescriptionGetMediaSubType(description);
             OSType pixelFormat = imageBuffer == NULL ? 0
                 : CVPixelBufferGetPixelFormatType(imageBuffer);
@@ -523,6 +549,13 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
     BOOL replacementAllowed = replacementRoute != VCAMReplacementRouteNone;
     VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementRoute);
+    if (replacementRoute == VCAMReplacementRouteStillPhoto) {
+        VCAMLogOrientationAttachments("still-original", sampleBuffer,
+                                      originalImageBuffer);
+    } else if (replacementRoute == VCAMReplacementRouteVideoConverter) {
+        VCAMLogOrientationAttachments("web-converter-original", sampleBuffer,
+                                      originalImageBuffer);
+    }
     if (originalImageBuffer == NULL) {
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
@@ -586,6 +619,17 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
+                if (replacementSucceeded &&
+                    replacementRoute == VCAMReplacementRouteStillPhoto) {
+                    VCAMLogOrientationAttachments("still-replacement",
+                                                  replacementSampleBuffer,
+                                                  replacementImageBuffer);
+                } else if (replacementSucceeded &&
+                           replacementRoute == VCAMReplacementRouteVideoConverter) {
+                    VCAMLogOrientationAttachments("web-converter-replacement",
+                                                  replacementSampleBuffer,
+                                                  replacementImageBuffer);
+                }
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteVideoConverter) {

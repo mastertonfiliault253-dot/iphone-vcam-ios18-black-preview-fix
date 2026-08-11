@@ -35,11 +35,8 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("vcamd native IOSurface consumer accepted", daemon)
         self.assertIn("BGRA fallback active", daemon)
         self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", shared)
-        self.assertIn("shared NV12 IOSurface create failed status=", shared)
-        self.assertIn("shared BGRA IOSurfaceCreate failed", shared)
-        self.assertIn(
-            "shared BGRA CVPixelBufferCreateWithIOSurface failed status=", shared
-        )
+        self.assertIn("shared IOSurface pixel buffer create failed status=", shared)
+        self.assertNotIn("shared BGRA IOSurfaceCreate failed", shared)
         self.assertIn("header->pixelFormat", shared)
         self.assertIn("consumerHeartbeatNanoseconds", shared)
         self.assertIn("kill((pid_t)processID, 0)", shared)

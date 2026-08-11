@@ -686,9 +686,9 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
     NSString *mode = [values[@"contentMode"] lowercaseString] ?: @"fill";
     NSDictionary *modeNames = @{@"fit": @"完整显示", @"fill": @"裁切填满", @"stretch": @"拉伸"};
-    detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 输出：%@fps", (long)rotation,
-              values[@"preferredFramesPerSecond"] ?: @30];
     NSDictionary *streamStatus = [VCAMSharedFramePreviewView streamingStatus];
+    detail = [detail stringByAppendingFormat:@"\n旋转：%ld° · 实测：%.1f fps", (long)rotation,
+              [streamStatus[@"fps"] doubleValue]];
     NSString *streamText = nil;
     if ([streamStatus[@"receiving"] boolValue]) {
         streamText = [NSString stringWithFormat:@"已收到推流（%.0f ms 前）",

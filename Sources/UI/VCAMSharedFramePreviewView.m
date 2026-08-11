@@ -19,9 +19,6 @@
 @property(nonatomic) BOOL lastFrameWasSurface;
 @end
 
-static NSUInteger VCAMPreviewWindowFrames;
-static CFTimeInterval VCAMPreviewWindowStart;
-
 static BOOL VCAMPreviewGetLatestMetadata(
     VCAMSharedFrameReader *frameReader,
     VCAMSharedSurfaceReader *surfaceReader,
@@ -53,6 +50,12 @@ static BOOL VCAMPreviewGetLatestMetadata(
     NSAssert(NSThread.isMainThread, @"VCAM stream health requires main thread");
     static VCAMSharedFrameReader *frameReader;
     static VCAMSharedSurfaceReader *surfaceReader;
+    static uint64_t lastSequence;
+    static uint64_t lastSurfaceGeneration;
+    static uint64_t lastMeasurementNanoseconds;
+    static double measuredFPS;
+    static BOOL lastWasSurface;
+    static BOOL hasMeasurement;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         frameReader = VCAMSharedFrameReaderCreate();
@@ -60,27 +63,44 @@ static BOOL VCAMPreviewGetLatestMetadata(
     });
     const uint64_t maximumAge = 2000000000ULL;
     VCAMSharedFrameMetadata metadata = {0};
+    BOOL frameWasSurface = NO;
     BOOL hasMetadata = VCAMPreviewGetLatestMetadata(
-        frameReader, surfaceReader, maximumAge, &metadata, NULL);
+        frameReader, surfaceReader, maximumAge, &metadata, &frameWasSurface);
     uint64_t timestamp = hasMetadata
         ? metadata.monotonicTimestampNanoseconds : 0;
     uint64_t monotonicNow = VCAMSharedFrameMonotonicNanoseconds();
     BOOL receiving = timestamp > 0 && monotonicNow >= timestamp &&
         monotonicNow - timestamp <= maximumAge;
-    CFTimeInterval now = CACurrentMediaTime();
     double ageMilliseconds = receiving
         ? (double)(monotonicNow - timestamp) / 1000000.0 : 0;
-    double fps = 0;
-    if (VCAMPreviewWindowStart > 0) {
-        CFTimeInterval elapsed = now - VCAMPreviewWindowStart;
-        if (elapsed >= 0.9) {
-            fps = (double)VCAMPreviewWindowFrames / elapsed;
+    if (!receiving) {
+        hasMeasurement = NO;
+        measuredFPS = 0;
+    } else {
+        BOOL producerChanged = !hasMeasurement ||
+            frameWasSurface != lastWasSurface ||
+            metadata.surfaceGeneration != lastSurfaceGeneration ||
+            metadata.sequence < lastSequence;
+        if (producerChanged) {
+            lastSequence = metadata.sequence;
+            lastSurfaceGeneration = metadata.surfaceGeneration;
+            lastMeasurementNanoseconds = monotonicNow;
+            lastWasSurface = frameWasSurface;
+            hasMeasurement = YES;
+            measuredFPS = 0;
+        } else if (metadata.sequence > lastSequence &&
+                   monotonicNow - lastMeasurementNanoseconds >= 500000000ULL) {
+            uint64_t elapsed = monotonicNow - lastMeasurementNanoseconds;
+            measuredFPS = (double)(metadata.sequence - lastSequence) *
+                1000000000.0 / (double)elapsed;
+            lastSequence = metadata.sequence;
+            lastMeasurementNanoseconds = monotonicNow;
         }
     }
     return @{
         @"receiving": @(receiving),
         @"ageMs": @(ageMilliseconds),
-        @"fps": @(fps),
+        @"fps": @(measuredFPS),
     };
 }
 
@@ -203,13 +223,6 @@ static BOOL VCAMPreviewGetLatestMetadata(
     }
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) [layer flush];
     [layer enqueueSampleBuffer:sample];
-    CFTimeInterval now = CACurrentMediaTime();
-    VCAMPreviewWindowFrames += 1;
-    if (VCAMPreviewWindowStart == 0) VCAMPreviewWindowStart = now;
-    if (now - VCAMPreviewWindowStart >= 1.0) {
-        VCAMPreviewWindowStart = now;
-        VCAMPreviewWindowFrames = 0;
-    }
     self.lastSequence = metadata.sequence;
     self.lastSurfaceGeneration = metadata.surfaceGeneration;
     self.hasLastFrame = YES;

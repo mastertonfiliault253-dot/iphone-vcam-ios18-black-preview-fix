@@ -120,10 +120,14 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         consumer = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
+        create_pixel_buffer = shared.split(
+            "static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer", 1
+        )[1].split("VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreate", 1)[0]
         self.assertIn("VCAMSharedFrameSlotCount", shared)
-        self.assertIn("IOSurfaceCreate", shared)
-        self.assertIn("CVPixelBufferCreateWithIOSurface", shared)
-        self.assertIn('@"IOSurfaceIsGlobal"', shared)
+        self.assertIn("CVPixelBufferCreate", create_pixel_buffer)
+        self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", create_pixel_buffer)
+        self.assertNotIn("IOSurfaceCreate(", create_pixel_buffer)
+        self.assertNotIn("CVPixelBufferCreateWithIOSurface", create_pixel_buffer)
         self.assertIn("consumerUseState", shared)
         self.assertIn("VCAMSharedSurfaceAcquireUse", shared)
         self.assertIn("VCAMSharedSurfaceReleaseUse", shared)

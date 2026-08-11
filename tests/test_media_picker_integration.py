@@ -232,7 +232,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(header->slotCount)", shared)
         self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(slotCount)", shared)
         self.assertNotIn("header->width > 8192", shared)
-        self.assertIn("SIZE_MAX / bytesPerRow", shared)
+        self.assertIn("kCFAllocatorDefault, width, height, pixelFormat", shared)
         self.assertIn("metadata->width = width", shared)
         self.assertIn("frame->metadata = surfaceMetadata", shared)
         self.assertIn("metadata->surfaceGeneration = generation", shared)
@@ -733,6 +733,27 @@ class MediaPickerIntegrationTests(unittest.TestCase):
             "void VCAMSharedSurfaceReaderDestroy", 1
         )[0]
         self.assertLess(clear_ready.index("(int32_t)getpid()"), clear_ready.index("consumerReady, 0"))
+
+    def test_status_reports_measured_source_fps_instead_of_configured_fps(self) -> None:
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        streaming_status = preview.split(
+            "+ (NSDictionary<NSString *, id> *)streamingStatus", 1
+        )[1].split("+ (Class)layerClass", 1)[0]
+        current_status = picker.split(
+            "- (NSDictionary<NSString *, NSString *> *)currentStatus", 1
+        )[1].split("- (void)showSourceMenu:", 1)[0]
+
+        self.assertIn("metadata.sequence - lastSequence", streaming_status)
+        self.assertIn("surfaceGeneration != lastSurfaceGeneration", streaming_status)
+        self.assertIn('@"fps": @(measuredFPS)', streaming_status)
+        self.assertIn('streamStatus[@"fps"]', current_status)
+        self.assertNotIn('values[@"preferredFramesPerSecond"]', current_status)
+        self.assertNotIn("VCAMPreviewWindowFrames", preview)
 
     def test_ui_only_notifications_do_not_reconnect_an_unchanged_rtsp_source(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
