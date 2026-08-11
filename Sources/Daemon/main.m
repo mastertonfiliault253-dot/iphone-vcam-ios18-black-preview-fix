@@ -196,13 +196,21 @@ static void VCAMPublishTick(void) {
             uint32_t height = (uint32_t)MAX(0.0, round(size.height));
             OSType pixelFormat = kCVPixelFormatType_32BGRA;
             if (width > 0 && height > 0) {
+                VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
+                if (VCAMSurfaceWriter == NULL) {
+                    pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+                    fprintf(stderr,
+                            "[DEBUG-static-nv12-4c2d] BGRA surface unavailable size=%ux%u; retrying uncompressed NV12\n",
+                            width, height);
+                    fflush(stderr);
+                    VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
+                }
                 if (!VCAMLoggedNativeTransportReceived) {
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                         @"vcamd native transport received size=%ux%u pixel=%08x slots=1",
                         width, height, pixelFormat]];
                     VCAMLoggedNativeTransportReceived = YES;
                 }
-                VCAMEnsureSurfaceWriter(width, height, pixelFormat, 1);
                 destination = VCAMSurfaceWriter == NULL ? NULL
                     : VCAMSharedSurfaceWriterCopyNextPixelBuffer(VCAMSurfaceWriter);
                 published = destination != NULL &&

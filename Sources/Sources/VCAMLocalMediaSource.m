@@ -4,6 +4,7 @@
 #import "../Daemon/VCAMPixelConverter.h"
 #import <ImageIO/ImageIO.h>
 #import <QuartzCore/QuartzCore.h>
+#import <VideoToolbox/VideoToolbox.h>
 #import <libavcodec/avcodec.h>
 #import <libavformat/avformat.h>
 #import <libavutil/hwcontext.h>
@@ -1278,10 +1279,45 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
 - (BOOL)renderStillImageIntoPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     @synchronized (self) {
         if (!self.running || _stillImage == NULL || pixelBuffer == NULL) return NO;
-        return [self.renderer renderCGImage:_stillImage
-                            sourceTransform:CGAffineTransformIdentity
-                         intoPixelBuffer:pixelBuffer
-                              configuration:self.configuration];
+        OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+        if (pixelFormat == kCVPixelFormatType_32BGRA) {
+            return [self.renderer renderCGImage:_stillImage
+                                sourceTransform:CGAffineTransformIdentity
+                             intoPixelBuffer:pixelBuffer
+                                  configuration:self.configuration];
+        }
+        if (pixelFormat != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
+
+        NSDictionary *attributes = @{
+            (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+            (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
+        };
+        CVPixelBufferRef scratch = NULL;
+        CVReturn createStatus = CVPixelBufferCreate(
+            kCFAllocatorDefault, CVPixelBufferGetWidth(pixelBuffer),
+            CVPixelBufferGetHeight(pixelBuffer), kCVPixelFormatType_32BGRA,
+            (__bridge CFDictionaryRef)attributes, &scratch);
+        if (createStatus != kCVReturnSuccess || scratch == NULL) return NO;
+        BOOL rendered = [self.renderer renderCGImage:_stillImage
+                                      sourceTransform:CGAffineTransformIdentity
+                                   intoPixelBuffer:scratch
+                                        configuration:self.configuration];
+        VTPixelTransferSessionRef transferSession = NULL;
+        OSStatus transferStatus = rendered
+            ? VTPixelTransferSessionCreate(kCFAllocatorDefault, &transferSession)
+            : kCVReturnInvalidArgument;
+        if (transferStatus == noErr && transferSession != NULL) {
+            transferStatus = VTPixelTransferSessionTransferImage(
+                transferSession, scratch, pixelBuffer);
+        }
+        fprintf(stderr,
+                "[DEBUG-static-nv12-4c2d] transfer status=%d size=%zux%zu\n",
+                (int)transferStatus, CVPixelBufferGetWidth(pixelBuffer),
+                CVPixelBufferGetHeight(pixelBuffer));
+        fflush(stderr);
+        if (transferSession != NULL) CFRelease(transferSession);
+        CVPixelBufferRelease(scratch);
+        return transferStatus == noErr;
     }
 }
 
