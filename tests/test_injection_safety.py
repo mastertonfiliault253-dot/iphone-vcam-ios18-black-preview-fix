@@ -201,7 +201,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("audioTapped", panel)
         self.assertNotIn("替换声音", panel)
 
-    def test_consumer_does_not_guess_orientation_from_target_dimensions(self) -> None:
+    def test_consumer_orientation_is_source_driven_except_for_still_storage(self) -> None:
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
@@ -209,8 +209,9 @@ class InjectionSafetyTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertNotIn("targetWidth > targetHeight", render)
-        self.assertNotIn("imageByApplyingOrientation", render)
+        self.assertIn("!realtimeCompensation && sourceIsPortrait", render)
+        self.assertIn("targetWidth > targetHeight", render)
+        self.assertNotIn("interfaceOrientation", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
 
 

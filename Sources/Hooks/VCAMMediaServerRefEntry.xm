@@ -1,5 +1,6 @@
 #import "VCAMMediaServerRefImageUtils.h"
 #import <Foundation/Foundation.h>
+#import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdio.h>
@@ -29,6 +30,24 @@ static id VCAMSafeObjectResult(id object, SEL selector) {
         return ((id (*)(id, SEL))objc_msgSend)(object, selector);
     } @catch (__unused NSException *exception) {
         return nil;
+    }
+}
+
+static void VCAMSetStillPhotoDisplayOrientation(
+    CMSampleBufferRef sampleBuffer,
+    CVPixelBufferRef imageBuffer,
+    BOOL requiresRightOrientation) {
+    if (!requiresRightOrientation) return;
+    NSNumber *orientation = @(kCGImagePropertyOrientationRight);
+    if (sampleBuffer != NULL) {
+        CMSetAttachment(sampleBuffer, kCGImagePropertyOrientation,
+                        (__bridge CFTypeRef)orientation,
+                        kCMAttachmentMode_ShouldPropagate);
+    }
+    if (imageBuffer != NULL) {
+        CVBufferSetAttachment(imageBuffer, kCGImagePropertyOrientation,
+                              (__bridge CFTypeRef)orientation,
+                              kCVAttachmentMode_ShouldPropagate);
     }
 }
 
@@ -97,32 +116,6 @@ static void VCAMCopyAttachmentMode(CMAttachmentBearerRef source,
     if (attachments == NULL) return;
     CMSetAttachments(destination, attachments, mode);
     CFRelease(attachments);
-}
-
-static void VCAMLogOrientationAttachments(const char *stage,
-                                          CMSampleBufferRef sampleBuffer,
-                                          CVPixelBufferRef imageBuffer) {
-    if (stage == NULL || sampleBuffer == NULL) return;
-    NSString *stageName = [NSString stringWithUTF8String:stage];
-    static NSMutableSet<NSString *> *loggedStages;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ loggedStages = [NSMutableSet set]; });
-    @synchronized (loggedStages) {
-        if ([loggedStages containsObject:stageName]) return;
-        [loggedStages addObject:stageName];
-    }
-    NSDictionary *propagate = CFBridgingRelease(CMCopyDictionaryOfAttachments(
-        kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldPropagate));
-    NSDictionary *local = CFBridgingRelease(CMCopyDictionaryOfAttachments(
-        kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldNotPropagate));
-    NSDictionary *image = imageBuffer == NULL ? nil : CFBridgingRelease(
-        CVBufferCopyAttachments(imageBuffer, kCVAttachmentMode_ShouldPropagate));
-    NSString *description = [NSString stringWithFormat:
-        @"[DEBUG-orient-7f31] stage=%@ samplePropagate=%@ sampleLocal=%@ image=%@",
-        stageName, propagate ?: @{}, local ?: @{}, image ?: @{}];
-    description = [description stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    if (description.length > 12000) description = [description substringToIndex:12000];
-    VCAMRefLog(description.UTF8String);
 }
 
 static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
@@ -480,7 +473,6 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         int sampleCount = __sync_add_and_fetch(&remoteVideoSamples, 1);
         if (sampleCount <= 12 || sampleCount % 300 == 0) {
             CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-            VCAMLogOrientationAttachments("remote-queue", sampleBuffer, imageBuffer);
             OSType subtype = CMFormatDescriptionGetMediaSubType(description);
             OSType pixelFormat = imageBuffer == NULL ? 0
                 : CVPixelBufferGetPixelFormatType(imageBuffer);
@@ -550,13 +542,6 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
     BOOL replacementAllowed = replacementRoute != VCAMReplacementRouteNone;
     VCAMLogOutputSignature(self, sampleBuffer, originalImageBuffer, replacementRoute);
-    if (replacementRoute == VCAMReplacementRouteStillPhoto) {
-        VCAMLogOrientationAttachments("still-original", sampleBuffer,
-                                      originalImageBuffer);
-    } else if (replacementRoute == VCAMReplacementRouteVideoConverter) {
-        VCAMLogOrientationAttachments("web-converter-original", sampleBuffer,
-                                      originalImageBuffer);
-    }
     if (originalImageBuffer == NULL) {
         static volatile int nullBuffers = 0;
         int nullBufferCount = __sync_add_and_fetch(&nullBuffers, 1);
@@ -606,6 +591,7 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
 
     CVPixelBufferRef replacementImageBuffer = NULL;
     CMSampleBufferRef replacementSampleBuffer = NULL;
+    BOOL stillPhotoRequiresRightOrientation = NO;
     BOOL replacementSucceeded = NO;
     @autoreleasepool {
         @try {
@@ -613,24 +599,26 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                 originalImageBuffer,
                 replacementRoute != VCAMReplacementRouteStillPhoto,
                 replacementRoute == VCAMReplacementRouteCameraPreview,
-                &replacementImageBuffer);
+                replacementRoute == VCAMReplacementRouteVideoConverter,
+                &replacementImageBuffer,
+                replacementRoute == VCAMReplacementRouteStillPhoto
+                    ? &stillPhotoRequiresRightOrientation : NULL);
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
                     sampleBuffer, replacementImageBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
-                if (replacementSucceeded &&
-                    replacementRoute == VCAMReplacementRouteStillPhoto) {
-                    VCAMLogOrientationAttachments("still-replacement",
-                                                  replacementSampleBuffer,
-                                                  replacementImageBuffer);
-                } else if (replacementSucceeded &&
-                           replacementRoute == VCAMReplacementRouteVideoConverter) {
-                    VCAMLogOrientationAttachments("web-converter-replacement",
-                                                  replacementSampleBuffer,
-                                                  replacementImageBuffer);
-                }
+            }
+            if (replacementSucceeded &&
+                replacementRoute == VCAMReplacementRouteStillPhoto) {
+                CMSampleBufferRef finalSample = replacementSampleBuffer != NULL
+                    ? replacementSampleBuffer : sampleBuffer;
+                CVPixelBufferRef finalImage = replacementImageBuffer != NULL
+                    ? replacementImageBuffer : originalImageBuffer;
+                VCAMSetStillPhotoDisplayOrientation(
+                    finalSample, finalImage,
+                    stillPhotoRequiresRightOrientation);
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteVideoConverter) {

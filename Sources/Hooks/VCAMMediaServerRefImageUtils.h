@@ -11,7 +11,9 @@ BOOL VCAMVirtualModeIsEnabled(void);
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer);
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                BOOL realtimeCompensation, BOOL aspectFit,
-                               CVPixelBufferRef *replacementBufferOut);
+                               BOOL webKitLandscapeStorage,
+                               CVPixelBufferRef *replacementBufferOut,
+                               BOOL *stillPhotoRequiresRightOrientationOut);
 
 #ifdef __cplusplus
 }

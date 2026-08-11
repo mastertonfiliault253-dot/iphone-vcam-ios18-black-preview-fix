@@ -491,8 +491,13 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                BOOL realtimeCompensation, BOOL aspectFit,
-                               CVPixelBufferRef *replacementBufferOut) {
+                               BOOL webKitLandscapeStorage,
+                               CVPixelBufferRef *replacementBufferOut,
+                               BOOL *stillPhotoRequiresRightOrientationOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
+    if (stillPhotoRequiresRightOrientationOut != NULL) {
+        *stillPhotoRequiresRightOrientationOut = NO;
+    }
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
         VCAMScratchPool == NULL) return NO;
 
@@ -671,12 +676,33 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         }
 
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
-        // Realtime consumers use the device-observed graph compensation.
-        // Still capture intentionally preserves the shared pixels unchanged;
-        // the system camera alone owns the final file orientation metadata.
-        // The producer publishes canonical visual orientation. Target buffer
-        // dimensions describe allocation, not camera orientation; guessing a
-        // rotation here made WebKit differ from Camera for the same source.
+        BOOL sourceIsPortrait = CGRectGetHeight(image.extent) >
+            CGRectGetWidth(image.extent);
+        // Safari's iOS 16 getUserMedia terminal consumes a landscape 640x480
+        // pixel basis and then applies the camera graph's portrait display
+        // transform. Device A/B showed that canonical portrait pixels which
+        // are already upright in Camera therefore appear 90 degrees clockwise
+        // in WebKit. Pre-rotate only that explicit terminal route; target
+        // dimensions alone are never used to identify a browser consumer.
+        if (webKitLandscapeStorage && sourceIsPortrait &&
+            targetWidth > targetHeight) {
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationUpMirrored];
+        }
+        // iOS still-photo buffers use the sensor's landscape storage basis.
+        // Only a canonical portrait source is turned into that basis; the
+        // caller then marks the final sample Orientation=Right so Photos shows
+        // a portrait 3:4 image. Realtime consumers and landscape sources keep
+        // their canonical basis unchanged.
+        if (!realtimeCompensation && sourceIsPortrait &&
+            targetWidth > targetHeight) {
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+            if (stillPhotoRequiresRightOrientationOut != NULL) {
+                *stillPhotoRequiresRightOrientationOut = YES;
+            }
+        }
+        // The producer publishes canonical visual orientation. Other target
+        // buffer dimensions describe allocation, not camera orientation.
         // The producer has already resolved source metadata and user
         // transforms. This consumer stage only scales the uncompressed source
         // pixels into each heterogeneous camera target (preview, still photo,
