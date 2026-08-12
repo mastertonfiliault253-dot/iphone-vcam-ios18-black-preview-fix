@@ -67,13 +67,6 @@
     [header addArrangedSubview:close];
     [stack addArrangedSubview:header];
 
-    UILabel *notice = [self labelWithText:@"仅用于已授权的软件测试；当前版本采用安全进程白名单。"
-                                      size:13
-                                    weight:UIFontWeightRegular
-                                     color:[UIColor colorWithWhite:0.72 alpha:1.0]];
-    notice.numberOfLines = 0;
-    [stack addArrangedSubview:notice];
-
     UIView *statusCard = [self statusCard];
     [stack addArrangedSubview:statusCard];
     VCAMSharedFramePreviewView *preview = [[VCAMSharedFramePreviewView alloc] initWithFrame:CGRectZero];

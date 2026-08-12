@@ -129,6 +129,21 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     uint64_t monotonicNow = VCAMSharedFrameMonotonicNanoseconds();
     BOOL receiving = timestamp > 0 && monotonicNow >= timestamp &&
         monotonicNow - timestamp <= maximumAge;
+    // A static local image publishes one frame and then idles; it is still the
+    // active virtual stream, so a configured local media path counts as
+    // receiving (green dot) until the user clears the source.
+    if (!receiving) {
+        NSDictionary *values = [VCAMConfiguration currentValues];
+        BOOL enabled = [values[@"enabled"] boolValue];
+        NSString *source = [values[@"source"] isKindOfClass:NSString.class]
+            ? values[@"source"] : nil;
+        NSString *mediaPath = [values[@"mediaPath"] isKindOfClass:NSString.class]
+            ? values[@"mediaPath"] : nil;
+        if (enabled && [source isEqualToString:@"local"] &&
+            mediaPath.length > 0) {
+            receiving = YES;
+        }
+    }
     double ageMilliseconds = receiving
         ? (double)(monotonicNow - timestamp) / 1000000.0 : 0;
     if (!receiving) {

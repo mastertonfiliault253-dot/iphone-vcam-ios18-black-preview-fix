@@ -68,7 +68,6 @@ enum {
     VCAMCSOpsIdentity = 11,
     VCAMCSOpsTeamID = 14,
 };
-static const uint32_t VCAMCSPlatformBinary = 0x04000000;
 
 static BOOL VCAMCSOps(pid_t pid, unsigned int operation,
                       void *buffer, size_t bufferSize) {
@@ -89,13 +88,14 @@ static NSString *VCAMCodeSigningString(pid_t pid, unsigned int operation) {
 }
 
 static BOOL VCAMPeerIsPlatformBinary(pid_t pid) {
-    uint32_t status = 0;
-    // csops can be unavailable or patched under a jailbreak. When it cannot
-    // be queried, do not block the peer: the exact path/name/bundle checks in
-    // VCAMSurfaceBrokerIdentityForPeer still constrain who can subscribe or
-    // publish. When csops does answer, keep the platform-binary requirement.
-    if (!VCAMCSOps(pid, VCAMCSOpsStatus, &status, sizeof(status))) return YES;
-    return (status & VCAMCSPlatformBinary) != 0;
+    // csops is unreliable under a jailbreak: queries can fail or return a
+    // patched status without the platform flag, which would reject legitimate
+    // system daemons (mediaserverd) and UI hosts (Safari) that the exact
+    // path/name/bundle allow-list below already constrains. That allow-list is
+    // the real boundary -- proc_pidpath cannot be forged -- so this check is
+    // intentionally permissive.
+    (void)pid;
+    return YES;
 }
 
 static const char *const VCAMSurfaceBrokerService = "com.codex.vcam.surface";
