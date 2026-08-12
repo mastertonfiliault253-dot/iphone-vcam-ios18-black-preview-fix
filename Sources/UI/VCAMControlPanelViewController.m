@@ -270,15 +270,15 @@
     button.titleLabel.adjustsFontSizeToFitWidth = YES;
     button.accessibilityLabel = title;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [button.heightAnchor constraintGreaterThanOrEqualToConstant:48].active = YES;
+    [button.heightAnchor constraintGreaterThanOrEqualToConstant:40].active = YES;
     return button;
 }
 
 - (void)closeTapped { [self.delegate controlPanelDidRequestClose:self]; }
-- (void)photoLibraryTapped { [self.delegate controlPanelDidRequestPhotoLibrary:self]; }
-- (void)documentTapped { [self.delegate controlPanelDidRequestDocument:self]; }
-- (void)onlineTapped { [self.delegate controlPanelDidRequestOnlineVideo:self]; }
-- (void)streamTapped { [self.delegate controlPanelDidRequestLiveStream:self]; }
+- (void)photoLibraryTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestPhotoLibrary:self]; }
+- (void)documentTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestDocument:self]; }
+- (void)onlineTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestOnlineVideo:self]; }
+- (void)streamTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestLiveStream:self]; }
 - (void)clockwiseTapped { [self.delegate controlPanelDidRequestClockwiseRotation:self]; }
 - (void)counterClockwiseTapped { [self.delegate controlPanelDidRequestCounterClockwiseRotation:self]; }
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
