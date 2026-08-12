@@ -390,10 +390,10 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     button.tag = VCAMFloatingDotTag;
     button.accessibilityLabel = @"打开 VCAM 控制面板";
     button.backgroundColor = UIColor.clearColor;
-    UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(3.0, 3.0, 33.0, 33.0)];
+    UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
     dot.userInteractionEnabled = NO;
     dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.5];
-    dot.layer.cornerRadius = 16.5;
+    dot.layer.cornerRadius = 22.0;
     dot.layer.borderWidth = 1.0;
     dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
     dot.layer.shadowColor = UIColor.blackColor.CGColor;
