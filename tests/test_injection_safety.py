@@ -221,14 +221,11 @@ class InjectionSafetyTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-        # Documented scheme (IOS16-WEB-CAMERA-PHOTO-OFFICIAL-AND-TESTS.md):
-        # still pixels are not rotated and system photo orientation metadata is
-        # not overridden; the system camera graph owns saved-photo orientation.
-        self.assertNotIn("!realtimeCompensation && sourceIsPortrait", render)
-        self.assertNotIn("stillPhotoRequiresRightOrientationOut", implementation)
-        self.assertNotIn("VCAMSetStillPhotoDisplayOrientation", entry)
-        self.assertNotIn("kCGImagePropertyOrientationRight", entry)
-        # WebKit landscape-storage pre-rotation stays; preview is never rotated
+        self.assertIn("!realtimeCompensation && sourceIsPortrait", render)
+        self.assertIn("stillPhotoRequiresRightOrientationOut", implementation)
+        self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
+        self.assertIn("kCGImagePropertyOrientationRight", entry)
+        # preview path is never rotated; only still-photo fill triggers it
         self.assertIn("webKitLandscapeStorage && sourceIsPortrait", render)
         self.assertNotIn("aspectFit && sourceIsPortrait", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)

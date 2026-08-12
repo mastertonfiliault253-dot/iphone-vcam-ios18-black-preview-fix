@@ -21,24 +21,26 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn(fill_scale, self.adapter)
         self.assertIn("MIN((CGFloat)renderWidth", self.adapter)
         self.assertIn("MAX((CGFloat)renderWidth", self.adapter)
-        # Documented scheme: still pixels are never rotated; only the explicit
-        # WebKit landscape-storage terminal pre-rotates, and preview (aspectFit)
-        # never guesses device orientation.
-        self.assertNotIn("!realtimeCompensation && sourceIsPortrait", self.adapter)
+        # Still-photo fill rotates canonical portrait pixels into the system's
+        # landscape still basis; preview (aspectFit) and other routes never
+        # guess device orientation.
+        self.assertIn("!realtimeCompensation && sourceIsPortrait", self.adapter)
         self.assertNotIn("aspectFit && sourceIsPortrait", self.adapter)
         self.assertNotIn("interfaceOrientation", self.adapter)
         self.assertIn("imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)", self.adapter)
 
-    def test_still_route_does_not_override_system_orientation(self) -> None:
-        # Documented scheme: still pixels are not rotated and the system camera
-        # graph owns saved-photo orientation metadata (the rotate+mark scheme
-        # failed device acceptance at 0.8.58 and was revoked).
+    def test_still_route_marks_orientation_for_landscape_still_basis(self) -> None:
+        # The system still-photo basis is landscape (4224x3024); Photos shows
+        # portrait via the Orientation attachment. VCAM renders canonical
+        # portrait pixels there and marks the final sample Orientation=Right
+        # (0.8.80 behavior). The 0.8.81 audit removed the mark and saved
+        # photos came out landscape on device.
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("stillPhotoRequiresRightOrientation", self.adapter)
-        self.assertNotIn("VCAMSetStillPhotoDisplayOrientation", entry)
-        self.assertNotIn("kCGImagePropertyOrientationRight", entry)
+        self.assertIn("stillPhotoRequiresRightOrientation", self.adapter)
+        self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
+        self.assertIn("kCGImagePropertyOrientationRight", entry)
 
     def test_webkit_terminal_alone_uses_landscape_storage_compensation(self) -> None:
         # Device A/B: the same canonical portrait source is upright in Camera

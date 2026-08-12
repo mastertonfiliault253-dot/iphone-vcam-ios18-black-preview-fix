@@ -509,8 +509,12 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                VCAMFramePresentation presentation,
-                               CVPixelBufferRef *replacementBufferOut) {
+                               CVPixelBufferRef *replacementBufferOut,
+                               BOOL *stillPhotoRequiresRightOrientationOut) {
     if (replacementBufferOut != NULL) *replacementBufferOut = NULL;
+    if (stillPhotoRequiresRightOrientationOut != NULL) {
+        *stillPhotoRequiresRightOrientationOut = NO;
+    }
     if (!VCAMTargetBufferIsSupported(targetBuffer) || VCAMReader == NULL || VCAMContext == nil ||
         VCAMScratchPool == NULL) return NO;
 
@@ -719,6 +723,16 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         if (webKitLandscapeStorage && sourceIsPortrait &&
             targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+        }
+        // Still-photo fill renders the landscape camera basis with canonical
+        // portrait pixels: rotate left in place and let the caller mark the
+        // final sample Orientation=Right so Photos shows a portrait 3:4 image.
+        if (!realtimeCompensation && sourceIsPortrait &&
+            targetWidth > targetHeight) {
+            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+            if (stillPhotoRequiresRightOrientationOut != NULL) {
+                *stillPhotoRequiresRightOrientationOut = YES;
+            }
         }
         // The producer publishes canonical visual orientation. The real
         // camera graph remains the negotiation shell: target dimensions,
