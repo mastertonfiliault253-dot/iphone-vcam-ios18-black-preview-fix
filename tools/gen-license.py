@@ -19,7 +19,18 @@ def gen_license(udid, expiry_date="2099-12-31"):
         "sig": base64.b64encode(sig).decode(),
     }
 
+
+def print_license(lic):
+    import io, base64
+    bdata = io.BytesIO()
+    plistlib.dump(lic, bdata, fmt=plistlib.FMT_BINARY)
+    b64 = base64.b64encode(bdata.getvalue()).decode()
+    print('=== Paste this into the device dialog ===')
+    print(b64)
+    print('=== END ===')
+
 if __name__ == "__main__":
+
     if len(sys.argv) < 2:
         print("Usage: python gen-license.py <UDID> [expiry_date YYYY-MM-DD]")
         print("  Expiry defaults to 2099-12-31 (never)")
@@ -28,6 +39,6 @@ if __name__ == "__main__":
     expiry = sys.argv[2] if len(sys.argv) > 2 else "2099-12-31"
     lic = gen_license(udid, expiry)
     out = sys.argv[3] if len(sys.argv) > 3 else "license.plist"
-    plistlib.dump(lic, open(out, "wb"), fmt=plistlib.FMT_BINARY)
-    print(f"license.plist written for UDID={udid}, expires={expiry}")
-    print(f"Install: scp {out} root@<device>:/var/mobile/Media/VCAM/license.plist")
+    bdata = io.BytesIO(); plistlib.dump(lic, bdata, fmt=plistlib.FMT_BINARY); open(out, "wb").write(bdata.getvalue())
+    print_license(lic)
+    

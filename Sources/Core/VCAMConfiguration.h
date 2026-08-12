@@ -50,6 +50,8 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 
 /// YES when a valid license.plist is present at /var/mobile/Media/VCAM/license.plist.
 + (BOOL)isLicensed;
+/// Direct validation — reads license.plist every call (no dispatch_once).
++ (BOOL)validateLicenseFile;
 + (nullable NSString *)importMediaAtURL:(NSURL *)sourceURL
                           suggestedName:(nullable NSString *)suggestedName
                                   error:(NSError **)error;

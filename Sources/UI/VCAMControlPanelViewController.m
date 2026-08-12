@@ -275,10 +275,10 @@
 }
 
 - (void)closeTapped { [self.delegate controlPanelDidRequestClose:self]; }
-- (void)photoLibraryTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestPhotoLibrary:self]; }
-- (void)documentTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestDocument:self]; }
-- (void)onlineTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestOnlineVideo:self]; }
-- (void)streamTapped { if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestLiveStream:self]; }
+- (void)photoLibraryTapped { if (![VCAMConfiguration validateLicenseFile]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestPhotoLibrary:self]; }
+- (void)documentTapped { if (![VCAMConfiguration validateLicenseFile]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestDocument:self]; }
+- (void)onlineTapped { if (![VCAMConfiguration validateLicenseFile]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestOnlineVideo:self]; }
+- (void)streamTapped { if (![VCAMConfiguration validateLicenseFile]) { [self showLicenseAlert]; return; } [self.delegate controlPanelDidRequestLiveStream:self]; }
 - (void)clockwiseTapped { [self.delegate controlPanelDidRequestClockwiseRotation:self]; }
 - (void)counterClockwiseTapped { [self.delegate controlPanelDidRequestCounterClockwiseRotation:self]; }
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
@@ -321,7 +321,7 @@
             [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
             [licData writeToFile:[dir stringByAppendingPathComponent:@"license.plist"] atomically:YES];
             // Show result
-            BOOL ok = [VCAMConfiguration isLicensed];
+            BOOL ok = [VCAMConfiguration validateLicenseFile];
             UIAlertController *r = [UIAlertController alertControllerWithTitle:ok ? @"授权成功" : @"授权验证失败"
                 message:ok ? @"授权已生效，现在可以使用虚拟相机了。" : @"请检查授权码是否完整且未过期。"
                 preferredStyle:UIAlertControllerStyleAlert];
@@ -340,7 +340,7 @@
     [self presentViewController:a animated:YES completion:nil];
 }
 - (void)enableTapped {
-    if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; }
+    if (![VCAMConfiguration validateLicenseFile]) { [self showLicenseAlert]; return; }
     [self.delegate controlPanelDidRequestEnableVirtualCamera:self];
 }
 - (void)restoreTapped { [self.delegate controlPanelDidRequestRestoreCamera:self]; }
