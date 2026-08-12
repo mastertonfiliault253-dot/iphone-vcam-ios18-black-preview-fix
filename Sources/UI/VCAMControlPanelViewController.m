@@ -89,13 +89,6 @@
         [r2 addArrangedSubview:[self actionButton:@"输入直播流" symbol:@"dot.radiowaves.left.and.right" color:[UIColor colorWithRed:0.82 green:0.12 blue:0.42 alpha:1] action:@selector(streamTapped)]];
         [stack addArrangedSubview:r2];
     }
-    [stack addArrangedSubview:[self sectionLabel:@"授权管理"]];
-    {
-        UIStackView *r3 = [UIStackView new]; r3.axis = UILayoutConstraintAxisHorizontal; r3.distribution = UIStackViewDistributionFillEqually; r3.spacing = 8.0;
-        [r3 addArrangedSubview:[self actionButton:@"复制设备ID" symbol:@"doc.on.doc" color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1] action:@selector(copyDeviceIDTapped)]];
-        [r3 addArrangedSubview:[self actionButton:@"输入授权码" symbol:@"key" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(enterLicenseTapped)]];
-        [stack addArrangedSubview:r3];
-    }
 
     [stack addArrangedSubview:[self sectionLabel:@"画面调整"]];
     {
@@ -125,9 +118,18 @@
         [cr addArrangedSubview:[self actionButton:@"恢复真实相机" symbol:@"camera" color:[UIColor colorWithRed:0.88 green:0.20 blue:0.24 alpha:1] action:@selector(restoreTapped)]];
         [stack addArrangedSubview:cr];
     }
+    [stack addArrangedSubview:[self sectionLabel:@"授权管理"]];
+    {
+        UIStackView *r3 = [UIStackView new]; r3.axis = UILayoutConstraintAxisHorizontal; r3.distribution = UIStackViewDistributionFillEqually; r3.spacing = 8.0;
+        [r3 addArrangedSubview:[self actionButton:@"复制设备ID" symbol:@"doc.on.doc" color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1] action:@selector(copyDeviceIDTapped)]];
+        [r3 addArrangedSubview:[self actionButton:@"输入授权码" symbol:@"key" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(enterLicenseTapped)]];
+        [stack addArrangedSubview:r3];
+    }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
-    NSLayoutConstraint *preferredCardWidth = [card.widthAnchor constraintEqualToConstant:285];
+    CGFloat screenWidth = MIN(UIScreen.mainScreen.bounds.size.width, UIScreen.mainScreen.bounds.size.height);
+    CGFloat cardWidth = MIN(285.0, screenWidth * 0.88);
+    NSLayoutConstraint *preferredCardWidth = [card.widthAnchor constraintEqualToConstant:cardWidth];
     preferredCardWidth.priority = UILayoutPriorityDefaultHigh;
     preferredCardWidth.active = YES;
     [NSLayoutConstraint activateConstraints:@[
