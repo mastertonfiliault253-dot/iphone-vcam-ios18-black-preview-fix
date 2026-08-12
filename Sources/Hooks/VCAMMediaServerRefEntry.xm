@@ -33,6 +33,24 @@ static id VCAMSafeObjectResult(id object, SEL selector) {
     }
 }
 
+static void VCAMSetStillPhotoDisplayOrientation(
+    CMSampleBufferRef sampleBuffer,
+    CVPixelBufferRef imageBuffer,
+    BOOL requiresRightOrientation) {
+    if (!requiresRightOrientation) return;
+    NSNumber *orientation = @(kCGImagePropertyOrientationRight);
+    if (sampleBuffer != NULL) {
+        CMSetAttachment(sampleBuffer, kCGImagePropertyOrientation,
+                        (__bridge CFTypeRef)orientation,
+                        kCMAttachmentMode_ShouldPropagate);
+    }
+    if (imageBuffer != NULL) {
+        CVBufferSetAttachment(imageBuffer, kCGImagePropertyOrientation,
+                              (__bridge CFTypeRef)orientation,
+                              kCVAttachmentMode_ShouldPropagate);
+    }
+}
+
 static NSString *VCAMSafeStringValue(id value) {
     return [value isKindOfClass:NSString.class] ? value : @"(none)";
 }
@@ -144,14 +162,15 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     OSStatus derivedFormatStatus = noErr;
     BOOL attemptedDerivedFormat = NO;
     BOOL derivedFormatMatchesSource = NO;
-    BOOL privateCompressedCameraFormat =
-        sourceSubtype == (OSType)0x5b387630 || // observed '[8v0'
-        sourceSubtype == (OSType)0x7d387630 || // observed '}8v0'
-        sourceSubtype == (OSType)0x26786630 || // iOS 16.1 StillImage '&xf0'
-        sourceSubtype == (OSType)0x26787630 || // SDK '&xv0' lossless 10-bit
-        sourceSubtype == (OSType)0x2d787630;   // SDK '-xv0' lossy 10-bit
-    if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&
-        createStatus == kCMSampleBufferError_InvalidMediaFormat) {
+    // The replacement buffer is a clone of the consumer's own target buffer
+    // (same format, dimensions and creation attributes), so a format
+    // description derived from it always matches the pixels. Source format
+    // descriptions -- especially 10-bit p420 and private compressed formats --
+    // can carry extension contracts that an otherwise compatible clone does
+    // not satisfy, which makes CMSampleBufferCreateReadyWithImageBuffer fail
+    // with InvalidMediaFormat and starves recording/preview consumers.
+    (void)allowPrivateCameraFormatFallback;
+    if (createStatus == kCMSampleBufferError_InvalidMediaFormat) {
         // Some private camera formats carry format-description extensions
         // that do not match an otherwise compatible clone created from the
         // source buffer's own pixel attributes. Derive the retry description
@@ -171,9 +190,7 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
                 CMVideoFormatDescriptionGetDimensions(derivedFormat);
             derivedFormatMatchesSource =
                 derivedDimensions.width == dimensions.width &&
-                derivedDimensions.height == dimensions.height &&
-                CMFormatDescriptionGetMediaSubType(derivedFormat) ==
-                    sourceSubtype;
+                derivedDimensions.height == dimensions.height;
             if (derivedFormatMatchesSource) {
                 createStatus = CMSampleBufferCreateReadyWithImageBuffer(
                     kCFAllocatorDefault, replacementImageBuffer, derivedFormat,
@@ -590,19 +607,32 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
 
     CVPixelBufferRef replacementImageBuffer = NULL;
     CMSampleBufferRef replacementSampleBuffer = NULL;
+    BOOL stillPhotoRequiresRightOrientation = NO;
     BOOL replacementSucceeded = NO;
     @autoreleasepool {
         @try {
             replacementSucceeded = drawReplacementOntoBuffer(
                 originalImageBuffer,
                 VCAMPresentationForReplacementRoute(replacementRoute),
-                &replacementImageBuffer);
+                &replacementImageBuffer,
+                replacementRoute == VCAMReplacementRouteStillPhoto
+                    ? &stillPhotoRequiresRightOrientation : NULL);
             if (replacementSucceeded && replacementImageBuffer != NULL) {
                 replacementSampleBuffer = VCAMCreateSampleBufferWithReplacementImage(
                     sampleBuffer, replacementImageBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
+            }
+            if (replacementSucceeded &&
+                replacementRoute == VCAMReplacementRouteStillPhoto) {
+                CMSampleBufferRef finalSample = replacementSampleBuffer != NULL
+                    ? replacementSampleBuffer : sampleBuffer;
+                CVPixelBufferRef finalImage = replacementImageBuffer != NULL
+                    ? replacementImageBuffer : originalImageBuffer;
+                VCAMSetStillPhotoDisplayOrientation(
+                    finalSample, finalImage,
+                    stillPhotoRequiresRightOrientation);
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteVideoConverter) {
