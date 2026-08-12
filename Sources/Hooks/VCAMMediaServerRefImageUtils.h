@@ -22,8 +22,7 @@ typedef enum VCAMFramePresentation {
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                VCAMFramePresentation presentation,
-                               CVPixelBufferRef *replacementBufferOut,
-                               BOOL *stillPhotoRequiresRightOrientationOut);
+                               CVPixelBufferRef *replacementBufferOut);
 
 #ifdef __cplusplus
 }
