@@ -694,7 +694,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     if (enabled && [source isEqualToString:@"local"]) {
         NSString *file = [values[@"mediaPath"] lastPathComponent] ?: @"本地媒体";
         sourceTitle = [NSString stringWithFormat:@"本地图片/视频：%@", file];
-        detail = @"SpringBoard 原生媒体管线发布最新帧";
+        detail = @"";
     } else if (enabled && [source isEqualToString:@"obs"]) {
         sourceTitle = @"OBS WebSocket 已启用";
         detail = values[@"obsWebSocketURL"] ?: @"未设置地址";

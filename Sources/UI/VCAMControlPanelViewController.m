@@ -204,7 +204,7 @@
     NSString *stream = status[@"stream"];
     if (stream.length > 0) {
         self.streamLabel.text = [NSString stringWithFormat:@"推流状态：%@", stream];
-        self.streamLabel.textColor = [stream hasPrefix:@"已收到"]
+        self.streamLabel.textColor = [stream hasPrefix:@"已收到"] || [stream hasPrefix:@"已加载"]
             ? [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1]
             : [UIColor colorWithRed:0.95 green:0.32 blue:0.30 alpha:1];
     }
