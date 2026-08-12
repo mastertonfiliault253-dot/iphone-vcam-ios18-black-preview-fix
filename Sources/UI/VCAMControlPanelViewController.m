@@ -118,12 +118,9 @@
     }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
-    NSLayoutConstraint *preferredCardWidth = [card.widthAnchor constraintEqualToConstant:380];
+    NSLayoutConstraint *preferredCardWidth = [card.widthAnchor constraintEqualToConstant:285];
     preferredCardWidth.priority = UILayoutPriorityDefaultHigh;
     preferredCardWidth.active = YES;
-NSLayoutConstraint *cardMinHeight = [card.heightAnchor constraintGreaterThanOrEqualToConstant:200];
-    cardMinHeight.priority = UILayoutPriorityDefaultLow;
-    cardMinHeight.active = YES;
     [NSLayoutConstraint activateConstraints:@[
         [scrim.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [scrim.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -134,7 +131,7 @@ NSLayoutConstraint *cardMinHeight = [card.heightAnchor constraintGreaterThanOrEq
         [card.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:12],
         [card.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-12],
         [card.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor constant:-24],
-        [card.heightAnchor constraintLessThanOrEqualToAnchor:safe.heightAnchor multiplier:0.7 constant:0],
+        [card.heightAnchor constraintEqualToConstant:570],
         [scrollView.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
         [scrollView.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
         [scrollView.topAnchor constraintEqualToAnchor:card.topAnchor],
