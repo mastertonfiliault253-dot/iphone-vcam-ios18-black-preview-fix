@@ -1,3 +1,4 @@
+#import "../Core/VCAMConfiguration.h"
 #import "VCAMControlPanelViewController.h"
 #import "VCAMSharedFramePreviewView.h"
 
