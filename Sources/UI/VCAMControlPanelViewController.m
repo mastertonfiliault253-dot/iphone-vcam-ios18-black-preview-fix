@@ -1,4 +1,5 @@
 #import "../Core/VCAMConfiguration.h"
+#include <sys/sysctl.h>
 #import "VCAMControlPanelViewController.h"
 #import "VCAMSharedFramePreviewView.h"
 
@@ -87,6 +88,13 @@
         [r2 addArrangedSubview:[self actionButton:@"在线源下载" symbol:@"arrow.down.circle" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(onlineTapped)]];
         [r2 addArrangedSubview:[self actionButton:@"输入直播流" symbol:@"dot.radiowaves.left.and.right" color:[UIColor colorWithRed:0.82 green:0.12 blue:0.42 alpha:1] action:@selector(streamTapped)]];
         [stack addArrangedSubview:r2];
+    }
+    [stack addArrangedSubview:[self sectionLabel:@"授权管理"]];
+    {
+        UIStackView *r3 = [UIStackView new]; r3.axis = UILayoutConstraintAxisHorizontal; r3.distribution = UIStackViewDistributionFillEqually; r3.spacing = 8.0;
+        [r3 addArrangedSubview:[self actionButton:@"复制设备ID" symbol:@"doc.on.doc" color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1] action:@selector(copyDeviceIDTapped)]];
+        [r3 addArrangedSubview:[self actionButton:@"输入授权码" symbol:@"key" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(enterLicenseTapped)]];
+        [stack addArrangedSubview:r3];
     }
 
     [stack addArrangedSubview:[self sectionLabel:@"画面调整"]];
@@ -274,9 +282,57 @@
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
+- (void)copyDeviceIDTapped {
+    char buf[64] = {0}; size_t len = sizeof(buf);
+    NSString *udid = @"请在终端执行: sysctl -n kern.uuid";
+    if (sysctlbyname("kern.uuid", buf, &len, NULL, 0) == 0) {
+        udid = [NSString stringWithUTF8String:buf];
+    }
+    UIPasteboard.generalPasteboard.string = udid.length > 4 ? udid : [NSString stringWithFormat:@"unknown-iphone-%lu", (unsigned long)NSDate.date.timeIntervalSince1970];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"设备ID已复制"
+        message:[NSString stringWithFormat:@"%@\n\n已复制到剪贴板，请发送给管理员。", UIPasteboard.generalPasteboard.string]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)enterLicenseTapped {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"输入授权码"
+        message:@"请输入管理员提供的完整授权码（包括 ---BEGIN/END 标记）"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"粘贴授权码...";
+        tf.font = [UIFont systemFontOfSize:11];
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"验证" style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+        NSString *input = a.textFields.firstObject.text;
+        if (input.length < 20) return;
+        // Try base64 decode and write license.plist
+        NSData *licData = [[NSData alloc] initWithBase64EncodedString:input options:NSDataBase64DecodingIgnoreUnknownCharacters];
+        if (licData == nil) {
+            // Try as raw plist XML
+            licData = [input dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        if (licData.length > 20) {
+            NSString *dir = @"/var/mobile/Media/VCAM";
+            [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+            [licData writeToFile:[dir stringByAppendingPathComponent:@"license.plist"] atomically:YES];
+            // Show result
+            BOOL ok = [VCAMConfiguration isLicensed];
+            UIAlertController *r = [UIAlertController alertControllerWithTitle:ok ? @"授权成功" : @"授权验证失败"
+                message:ok ? @"授权已生效，现在可以使用虚拟相机了。" : @"请检查授权码是否完整且未过期。"
+                preferredStyle:UIAlertControllerStyleAlert];
+            [r addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:r animated:YES completion:nil];
+        }
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)showLicenseAlert {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"需要授权"
-        message:@"设备 UDID 已用于生成授权文件。\n\n授权文件路径:\n/var/mobile/Media/VCAM/license.plist"
+        message:@"请使用「输入授权码」按钮导入授权文件，或联系管理员获取授权。"
         preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
