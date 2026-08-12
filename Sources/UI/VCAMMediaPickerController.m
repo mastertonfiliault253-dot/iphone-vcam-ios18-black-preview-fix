@@ -392,7 +392,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     button.backgroundColor = UIColor.clearColor;
     UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(4.0, 4.0, 44.0, 44.0)];
     dot.userInteractionEnabled = NO;
-    dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.88];
+    dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.7];
     dot.layer.cornerRadius = 22.0;
     dot.layer.borderWidth = 1.0;
     dot.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:0.45].CGColor;
@@ -405,7 +405,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     statusIndicator.layer.cornerRadius = 5.0;
     statusIndicator.layer.borderWidth = 1.0;
     statusIndicator.layer.borderColor = UIColor.whiteColor.CGColor;
-    statusIndicator.backgroundColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    statusIndicator.backgroundColor = [UIColor colorWithWhite:0.55 alpha:0.7];
     statusIndicator.userInteractionEnabled = NO;
     statusIndicator.accessibilityIdentifier = @"com.codex.vcam.streamIndicator";
     [button addSubview:statusIndicator];
