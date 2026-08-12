@@ -24,7 +24,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         # Still-photo fill rotates canonical portrait pixels into the system's
         # landscape still basis; preview (aspectFit) and other routes never
         # guess device orientation.
-        self.assertIn("!realtimeCompensation && sourceIsPortrait", self.adapter)
+        self.assertIn("!realtimeCompensation && /* sourceIsPortrait always YES */ YES", self.adapter)
         self.assertNotIn("aspectFit && sourceIsPortrait", self.adapter)
         self.assertNotIn("interfaceOrientation", self.adapter)
         self.assertIn("imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)", self.adapter)

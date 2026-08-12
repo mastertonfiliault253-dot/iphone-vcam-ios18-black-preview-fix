@@ -727,7 +727,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // Still-photo fill renders the landscape camera basis with canonical
         // portrait pixels: rotate left in place and let the caller mark the
         // final sample Orientation=Right so Photos shows a portrait 3:4 image.
-        if (!realtimeCompensation && sourceIsPortrait &&
+        if (!realtimeCompensation && /* sourceIsPortrait always YES */ YES &&
             targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
             if (stillPhotoRequiresRightOrientationOut != NULL) {

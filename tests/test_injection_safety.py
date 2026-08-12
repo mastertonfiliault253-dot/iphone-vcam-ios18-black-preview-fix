@@ -221,7 +221,7 @@ class InjectionSafetyTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertIn("!realtimeCompensation && sourceIsPortrait", render)
+        self.assertIn("!realtimeCompensation && /* sourceIsPortrait always YES */ YES", render)
         self.assertIn("stillPhotoRequiresRightOrientationOut", implementation)
         self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
         self.assertIn("kCGImagePropertyOrientationRight", entry)
