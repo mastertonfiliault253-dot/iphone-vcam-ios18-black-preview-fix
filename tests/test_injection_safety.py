@@ -123,7 +123,10 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("virtual frame stale; rendering black instead of frozen frame", implementation)
         self.assertIn("VCAMVirtualModeIsEnabled", implementation)
         self.assertIn("VCAMConfiguredMode = 0", implementation)
-        self.assertIn("[enabledValue isKindOfClass:NSNumber.class]", implementation)
+        # <true/> deserializes as CFBoolean (not NSNumber); enabled must be
+        # read via boolValue so the persisted virtual mode is not lost.
+        self.assertIn("enabledValue != nil", implementation)
+        self.assertIn("[enabledValue boolValue]", implementation)
         self.assertIn("VCAMConfiguredMode != 0", implementation)
         self.assertIn("VCAMSharedFrameReaderGetActiveState", implementation)
         self.assertNotIn("VCAMRequestedModeOverride", implementation)

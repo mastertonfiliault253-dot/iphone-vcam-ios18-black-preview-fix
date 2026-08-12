@@ -241,8 +241,10 @@ static void VCAMReloadConfiguredMode(void) {
     @autoreleasepool {
         NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:
             @"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
+        // <true/> deserializes as CFBoolean, which is not an NSNumber but does
+        // answer boolValue; only a missing key is truly unreadable.
         id enabledValue = values[@"enabled"];
-        if ([enabledValue isKindOfClass:NSNumber.class]) {
+        if (enabledValue != nil) {
             (void)__sync_lock_test_and_set(
                 &VCAMConfiguredMode,
                 [enabledValue boolValue] ? 1 : 0);
@@ -540,6 +542,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         readerLocked = YES;
         BOOL virtualModeEnabled = VCAMEffectiveVirtualModeIsEnabledLocked();
         if (!virtualModeEnabled) {
+            static volatile int disabledLogs = 0;
+            int disabledCount = __sync_add_and_fetch(&disabledLogs, 1);
+            if (disabledCount <= 6) {
+                VCAMRefLog("virtual mode disabled; passing real frame");
+            }
             if (VCAMLastVirtualFrame != NULL) {
                 CVPixelBufferRelease(VCAMLastVirtualFrame);
                 VCAMLastVirtualFrame = NULL;
