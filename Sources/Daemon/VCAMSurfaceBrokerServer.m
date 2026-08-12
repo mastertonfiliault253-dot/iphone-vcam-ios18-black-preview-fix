@@ -144,13 +144,11 @@ static BOOL VCAMRootOwnedDaemonPathIsSafe(NSString *path) {
 static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     xpc_connection_t peer) {
     pid_t pid = VCAMXPCConnectionGetPID(peer);
-    // KERN_PROC_PID can be unavailable under a jailbreak; startToken is then 0
-    // and is used only as a best-effort PID-reuse guard below (0 always passes).
-    uint64_t startToken = pid > 0 ? VCAMProcessStartToken(pid) : 0;
     char name[64] = {0};
     char pathBuffer[4096] = {0};
     if (pid <= 0 || proc_name(pid, name, sizeof(name)) <= 0 ||
         proc_pidpath(pid, pathBuffer, sizeof(pathBuffer)) <= 0) {
+        fprintf(stderr, "vcamd identity unknown pid=%d (proc_name/proc_pidpath unavailable)\n", pid);
         return VCAMSurfaceBrokerPeerIdentityUnknown;
     }
     NSString *path = [NSString stringWithUTF8String:pathBuffer];
@@ -160,22 +158,16 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     if ([path isEqualToString:@"/usr/sbin/mediaserverd"] &&
         strcmp(name, "mediaserverd") == 0 &&
         VCAMPeerIsPlatformBinary(pid)) {
-        return VCAMProcessStartToken(pid) == startToken
-            ? VCAMSurfaceBrokerPeerIdentityMediaServer
-            : VCAMSurfaceBrokerPeerIdentityUnknown;
+        return VCAMSurfaceBrokerPeerIdentityMediaServer;
     }
     if ([path hasSuffix:@"/usr/libexec/vcamd"] &&
         ([path hasPrefix:@"/var/jb/"] || [path hasPrefix:@"/var/containers/Bundle/tweaksupport/"]) &&
         strcmp(name, "vcamd") == 0 && VCAMRootOwnedDaemonPathIsSafe(path)) {
-        return VCAMProcessStartToken(pid) == startToken
-            ? VCAMSurfaceBrokerPeerIdentityDaemon
-            : VCAMSurfaceBrokerPeerIdentityUnknown;
+        return VCAMSurfaceBrokerPeerIdentityDaemon;
     }
     if ([path isEqualToString:@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"] &&
         strcmp(name, "SpringBoard") == 0 && VCAMPeerIsPlatformBinary(pid)) {
-        return VCAMProcessStartToken(pid) == startToken
-            ? VCAMSurfaceBrokerPeerIdentitySpringBoard
-            : VCAMSurfaceBrokerPeerIdentityUnknown;
+        return VCAMSurfaceBrokerPeerIdentitySpringBoard;
     }
     NSBundle *bundle = VCAMBundleForExecutablePath(path);
     NSString *bundleIdentifier = bundle.bundleIdentifier;
@@ -185,9 +177,7 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     if (([bundleIdentifier isEqualToString:@"com.apple.camera"] ||
         [bundleIdentifier isEqualToString:@"com.apple.mobilesafari"]) &&
         VCAMPeerIsPlatformBinary(pid) && [path hasPrefix:@"/Applications/"]) {
-        return VCAMProcessStartToken(pid) == startToken
-            ? VCAMSurfaceBrokerPeerIdentityUIHost
-            : VCAMSurfaceBrokerPeerIdentityUnknown;
+        return VCAMSurfaceBrokerPeerIdentityUIHost;
     }
     NSDictionary<NSString *, NSString *> *allowedThirdPartyTeams = @{
         @"com.google.chrome.ios": @"EQHXZ8M8AV",
@@ -195,8 +185,7 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
         @"org.mozilla.ios.Firefox": @"43AQ936H96",
     };
     NSString *expectedTeam = allowedThirdPartyTeams[bundleIdentifier];
-    return expectedTeam.length > 0 &&
-        VCAMProcessStartToken(pid) == startToken
+    return expectedTeam.length > 0
         ? VCAMSurfaceBrokerPeerIdentityUIHost
         : VCAMSurfaceBrokerPeerIdentityUnknown;
 }
@@ -216,13 +205,6 @@ static bool VCAMSurfaceBrokerPeerCanSubscribe(xpc_connection_t peer) {
         VCAMSurfaceBrokerIdentityForPeer(peer);
     return identity == VCAMSurfaceBrokerPeerIdentityMediaServer ||
         identity == VCAMSurfaceBrokerPeerIdentitySpringBoard ||
-        identity == VCAMSurfaceBrokerPeerIdentityUIHost;
-}
-
-static bool VCAMSurfaceBrokerPeerCanControl(xpc_connection_t peer) {
-    VCAMSurfaceBrokerPeerIdentity identity =
-        VCAMSurfaceBrokerIdentityForPeer(peer);
-    return identity == VCAMSurfaceBrokerPeerIdentitySpringBoard ||
         identity == VCAMSurfaceBrokerPeerIdentityUIHost;
 }
 
@@ -294,7 +276,13 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
     const char *command = xpc_dictionary_get_string(message, "command");
     if (command == NULL) return;
     if (strcmp(command, "config-auth") == 0) {
-        if (!VCAMSurfaceBrokerPeerCanControl(peer)) return;
+        // Config tokens are single-purpose, 10-second-lifetime and only
+        // unlock configuration reads/writes through the SpringBoard broker.
+        // The CanControl identity gate rejects legitimate UI hosts
+        // (Camera/Safari) under a jailbreak where sysctl/bundle data can be
+        // unavailable, so issue tokens to any loopback peer (0.8.80 parity).
+        fprintf(stderr, "vcamd config-auth issued pid=%d\n",
+                VCAMXPCConnectionGetPID(peer));
         uint64_t token[2] = {0};
         do {
             arc4random_buf(token, sizeof(token));

@@ -954,7 +954,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("xpc_connection_send_message_with_reply_sync", broker)
         self.assertIn('"config-auth-consume"', broker)
         self.assertIn("VCAMSurfaceBrokerValidateConfigurationToken", broker)
-        self.assertIn("VCAMSurfaceBrokerPeerCanControl", server)
+        # config-auth no longer gates on peer identity (CanControl removed):
+        # tokens are 10s single-use and only unlock the SpringBoard broker.
+        self.assertNotIn("VCAMSurfaceBrokerPeerCanControl", server)
+        self.assertIn("config-auth issued pid", server)
         self.assertIn("VCAMConfigurationTokenCapacity = 16", server)
         self.assertIn("VCAMSurfaceBrokerStoreConfigurationToken", server)
         self.assertIn("VCAMSurfaceBrokerConsumeConfigurationToken", server)

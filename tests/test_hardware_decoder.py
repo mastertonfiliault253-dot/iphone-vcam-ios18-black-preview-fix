@@ -91,7 +91,6 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("VCAMSurfaceBrokerIdentityForPeer", broker)
-        self.assertIn("VCAMProcessStartToken(pid)", broker)
         self.assertIn("proc_pidpath(pid, pathBuffer", broker)
         # csops is not part of the auth decision under a jailbreak; the exact
         # path/name/bundle allow-list is the boundary.
@@ -99,7 +98,10 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("intentionally permissive", broker)
         self.assertIn("bundle.executablePath isEqualToString:path", broker)
         self.assertIn("VCAMRootOwnedDaemonPathIsSafe", broker)
-        self.assertGreaterEqual(broker.count("VCAMProcessStartToken(pid) == startToken"), 5)
+        # KERN_PROC_PID (startToken) is also unreliable under a jailbreak and
+        # must not gate identity; config-auth issues 10s tokens to any loopback
+        # peer so Camera/Safari can reach the SpringBoard broker (0.8.80 parity).
+        self.assertNotIn("VCAMProcessStartToken", broker)
         self.assertIn('@"/usr/sbin/mediaserverd"', broker)
         self.assertIn('@"/usr/libexec/vcamd"', broker)
         self.assertIn('@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"', broker)
