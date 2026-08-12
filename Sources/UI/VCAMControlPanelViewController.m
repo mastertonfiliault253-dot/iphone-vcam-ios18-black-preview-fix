@@ -25,7 +25,8 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.7];
+    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];
+self.view.transform = CGAffineTransformMakeScale(0.75, 0.75);
     [self startStatusRefresh];
 
     UIControl *scrim = [UIControl new];
@@ -36,7 +37,7 @@
 
     UIView *card = [UIView new];
     card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.backgroundColor = [UIColor colorWithRed:0.06 green:0.09 blue:0.15 alpha:0.7];
+    card.backgroundColor = [UIColor colorWithRed:0.06 green:0.09 blue:0.15 alpha:0.5];
     card.layer.cornerRadius = 24.0;
     card.layer.borderWidth = 1.0;
     card.layer.borderColor = [UIColor colorWithRed:0.28 green:0.35 blue:0.45 alpha:0.85].CGColor;
@@ -162,7 +163,7 @@
 
 - (UIView *)statusCard {
     UIView *card = [UIView new];
-    card.backgroundColor = [UIColor colorWithRed:0.10 green:0.15 blue:0.23 alpha:0.7];
+    card.backgroundColor = [UIColor colorWithRed:0.10 green:0.15 blue:0.23 alpha:0.5];
     card.layer.cornerRadius = 16.0;
     UIStackView *stack = [[UIStackView alloc] init];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
