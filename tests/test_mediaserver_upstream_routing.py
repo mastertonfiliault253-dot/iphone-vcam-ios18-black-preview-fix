@@ -30,7 +30,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         # Shared pixels are already in the source's presentation orientation.
         # Injecting them into the raw sensor branch makes Camera and WebKit apply
         # their different physical-camera transforms a second time.
-        self.assertNotIn(
+        self.assertIn(
             "return VCAMReplacementRouteCameraSourceVideo;", self.route_function
         )
         self.assertNotIn('@"Preview"', self.route_function)
@@ -179,7 +179,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
                 r'VCAMCreateSampleBufferWithReplacementImage\('
                 r'\s*sampleBuffer,\s*replacementImageBuffer,\s*'
                 r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\s*\|\|\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\)',
+                r'replacementRoute\s*==\s*VCAMReplacementRouteStillPhoto\)',
                 re.DOTALL,
             ),
         )

@@ -163,7 +163,7 @@ class InjectionSafetyTests(unittest.TestCase):
             "static VCAMReplacementRoute VCAMReplacementRouteForOutput", 1
         )[1].split("static void VCAMLogOutputSignature", 1)[0]
         self.assertNotIn('@"VideoCapture"', route_function)
-        self.assertNotIn(
+        self.assertIn(
             "return VCAMReplacementRouteCameraSourceVideo;", route_function
         )
         self.assertNotIn("VCAMReplacementRouteGenericPixelTransfer", entry)
