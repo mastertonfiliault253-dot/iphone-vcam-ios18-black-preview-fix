@@ -393,18 +393,6 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
             return VCAMReplacementRouteVideoConverter;
         }
         if (VCAMStringMatches(nodeName, @"Video Data Converter/Zoomer")) {
-            // The still-photo pipeline also passes through this Zoomer
-            // with the sensor native resolution (e.g. 4032x3024). The
-            // video preview path is binned (e.g. 2304x1296). Route
-            // sensor-size frames as still-photo so the downstream
-            // orientation rotation + EXIF mark are applied.
-            if (pixelBuffer != NULL) {
-                size_t w = CVPixelBufferGetWidth(pixelBuffer);
-                size_t h = CVPixelBufferGetHeight(pixelBuffer);
-                if (w >= 3000 && w >= h && VCAMTargetBufferIsSupported(pixelBuffer)) {
-                    return VCAMReplacementRouteStillPhoto;
-                }
-            }
             return VCAMReplacementRouteVideoConverter;
         }
         if (VCAMStringMatches(nodeName, @"Preview Scaler")) {
