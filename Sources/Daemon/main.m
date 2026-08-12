@@ -286,7 +286,7 @@ static void VCAMPublishTick(void) {
 }
 
 static void VCAMScheduleTimer(void) {
-    NSInteger fps = [VCAMProducer preferredFramesPerSecond];
+    NSInteger fps = [VCAMProducer isEnabled] ? [VCAMProducer preferredFramesPerSecond] : 1;  // 1 Hz when idle
     uint64_t interval = NSEC_PER_SEC / (uint64_t)MAX(1, MIN(60, fps));
     if (VCAMTimer == nil) {
         VCAMTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,

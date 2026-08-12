@@ -560,6 +560,13 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     // same initialization instead of racing a partially published context.
     loadReplacementMedia();
 
+    // Heat reduction: when virtual mode is off, skip all routing,
+    // signature logging and rendering -- just pass the real frame.
+    if (!VCAMVirtualModeIsEnabled()) {
+        %orig(sampleBuffer);
+        return;
+    }
+
     CVPixelBufferRef originalImageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     VCAMReplacementRoute replacementRoute =
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
