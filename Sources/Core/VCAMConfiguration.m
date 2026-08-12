@@ -415,7 +415,8 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 @property(nonatomic, readwrite) VCAMLocalDecoderMode localDecoderMode;
 @end
 
-@implementation VCAMConfiguration+ (NSString *)processLogPath {
+@implementation VCAMConfiguration+ (NSString *)processLogPath {
+
 
 // === License verification ===
 #include <Security/Security.h>
