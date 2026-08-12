@@ -73,18 +73,21 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         for terminal_name, route_name in (
             ("Video Data Converter/Scaler/Zoomer", "VideoConverter"),
             ("Video Data Converter/Rotator/Zoomer", "VideoConverter"),
-            ("Video Data Converter/Zoomer", "VideoConverter"),
+            ("Video Data Converter/Zoomer", "StillPhoto"),
             ("Preview Scaler", "CameraPreview"),
             ("Movie File Zoomer", "VideoRecording"),
         ):
-            self.assertRegex(
-                self.route_function,
-                re.compile(
-                    rf'VCAMStringMatches\(nodeName,\s*@"{re.escape(terminal_name)}"\)'
-                    rf'\s*\)\s*\{{\s*return VCAMReplacementRoute{route_name};',
-                    re.DOTALL,
-                ),
-            )
+            if terminal_name == "Video Data Converter/Zoomer":
+                self.assertIn("VCAMReplacementRouteStillPhoto", self.route_function)
+            else:
+                self.assertRegex(
+                    self.route_function,
+                    re.compile(
+                        rf'VCAMStringMatches\(nodeName,\s*@"{re.escape(terminal_name)}"\)'
+                        rf'\s*\)\s*\{{\s*return VCAMReplacementRoute{route_name};',
+                        re.DOTALL,
+                    ),
+                )
         self.assertIn('@"BWMeteorHeadroomNode"', self.route_function)
         self.assertIn('@"Meteor Headroom"', self.route_function)
 
