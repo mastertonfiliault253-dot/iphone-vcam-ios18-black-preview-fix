@@ -273,7 +273,17 @@
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
-- (void)enableTapped { [self.delegate controlPanelDidRequestEnableVirtualCamera:self]; }
+- (void)showLicenseAlert {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"需要授权"
+        message:@"设备 UDID 已用于生成授权文件。\n\n授权文件路径:\n/var/mobile/Media/VCAM/license.plist"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+- (void)enableTapped {
+    if (![VCAMConfiguration isLicensed]) { [self showLicenseAlert]; return; }
+    [self.delegate controlPanelDidRequestEnableVirtualCamera:self];
+}
 - (void)restoreTapped { [self.delegate controlPanelDidRequestRestoreCamera:self]; }
 
 @end
