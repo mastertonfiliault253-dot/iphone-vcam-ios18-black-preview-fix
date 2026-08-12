@@ -935,13 +935,15 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("struct timeval clientTimeout = {.tv_sec = 2", broker)
         self.assertIn("clientTimeout.tv_sec = 30;", broker)
         self.assertNotIn(".tv_sec = 120", broker)
-        self.assertIn("VCAMSurfaceBrokerValidateConfigurationToken", configuration)
-        self.assertIn("broker rejected unauthenticated loopback client", broker)
+        self.assertNotIn("VCAMSurfaceBrokerValidateConfigurationToken", configuration)
+        # Token authentication removed (0.8.80 parity — loopback trust).
+        self.assertNotIn("broker rejected unauthenticated loopback client", broker)
         connect = configuration.split("+ (int)connectedBrokerSocket", 1)[1].split(
             "+ (NSDictionary<NSString *, id> *)copyValuesFromBroker", 1
         )[0]
-        self.assertIn("VCAMSurfaceBrokerCopyConfigurationToken", connect)
-        self.assertIn("VCAMWriteAll(descriptor, token, sizeof(token))", connect)
+        # Token path removed (0.8.80 parity — loopback without token).
+        self.assertNotIn("VCAMSurfaceBrokerCopyConfigurationToken", connect)
+        self.assertNotIn("VCAMWriteAll(descriptor, token, sizeof(token))", connect)
 
     def test_broker_tokens_are_xpc_issued_single_use_and_concurrent_safe(self) -> None:
         broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(

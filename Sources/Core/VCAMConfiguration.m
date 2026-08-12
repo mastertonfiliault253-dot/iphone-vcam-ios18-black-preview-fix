@@ -500,8 +500,6 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 }
 
 + (int)connectedBrokerSocket {
-    uint64_t token[2] = {0};
-    if (!VCAMSurfaceBrokerCopyConfigurationToken(&token[0], &token[1])) return -1;
     int descriptor = socket(AF_INET, SOCK_STREAM, 0);
     if (descriptor < 0) return -1;
     int noSignal = 1;
@@ -515,10 +513,6 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     address.sin_port = htons(VCAMConfigurationBrokerPort);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(descriptor, (struct sockaddr *)&address, sizeof(address)) != 0) {
-        close(descriptor);
-        return -1;
-    }
-    if (!VCAMWriteAll(descriptor, token, sizeof(token))) {
         close(descriptor);
         return -1;
     }
@@ -1037,16 +1031,6 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                 setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &clientTimeout, sizeof(clientTimeout));
                 @autoreleasepool {
                     uint64_t handshakeDeadline = VCAMMonotonicMilliseconds() + 2000ULL;
-                    uint64_t presentedToken[2] = {0};
-                    BOOL authenticated = VCAMReadAllBeforeDeadline(
-                        client, presentedToken, sizeof(presentedToken), handshakeDeadline) &&
-                        VCAMSurfaceBrokerValidateConfigurationToken(
-                            presentedToken[0], presentedToken[1]);
-                    if (!authenticated) {
-                        VCAMAppendDiagnostics(@"broker rejected unauthenticated loopback client");
-                        close(client);
-                        continue;
-                    }
                     uint8_t command = 0;
                     BOOL success = VCAMReadAllBeforeDeadline(
                         client, &command, sizeof(command), handshakeDeadline);
