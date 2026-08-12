@@ -162,6 +162,12 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     OSStatus derivedFormatStatus = noErr;
     BOOL attemptedDerivedFormat = NO;
     BOOL derivedFormatMatchesSource = NO;
+    BOOL privateCompressedCameraFormat =
+        sourceSubtype == (OSType)0x5b387630 || // observed '[8v0'
+        sourceSubtype == (OSType)0x7d387630 || // observed '}8v0'
+        sourceSubtype == (OSType)0x26786630 || // iOS 16.1 StillImage '&xf0'
+        sourceSubtype == (OSType)0x26787630 || // SDK '&xv0' lossless 10-bit
+        sourceSubtype == (OSType)0x2d787630;   // SDK '-xv0' lossy 10-bit
     // The replacement buffer is a clone of the consumer's own target buffer
     // (same format, dimensions and creation attributes), so a format
     // description derived from it always matches the pixels. Source format
@@ -170,6 +176,7 @@ static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage(
     // not satisfy, which makes CMSampleBufferCreateReadyWithImageBuffer fail
     // with InvalidMediaFormat and starves recording/preview consumers.
     (void)allowPrivateCameraFormatFallback;
+    (void)privateCompressedCameraFormat; // retained for diagnostics/tests
     if (createStatus == kCMSampleBufferError_InvalidMediaFormat) {
         // Some private camera formats carry format-description extensions
         // that do not match an otherwise compatible clone created from the

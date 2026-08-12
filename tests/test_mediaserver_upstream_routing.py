@@ -158,7 +158,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         derived_create = "CMVideoFormatDescriptionCreateForImageBuffer("
         retry_region = _between(
             sample_builder,
-            "if (allowPrivateCameraFormatFallback && privateCompressedCameraFormat &&",
+            "if (createStatus == kCMSampleBufferError_InvalidMediaFormat) {",
             "if (createStatus != noErr || replacementSampleBuffer == NULL)",
         )
 
@@ -185,7 +185,11 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn("derivedFormatMatchesSource", sample_builder)
         self.assertIn("derivedDimensions.width == dimensions.width", sample_builder)
         self.assertIn("derivedDimensions.height == dimensions.height", sample_builder)
-        self.assertIn(
+        # The derived description is accepted on matching dimensions only: it is
+        # created from the replacement buffer itself, so its subtype always
+        # matches the pixels even when the source description (e.g. 10-bit
+        # p420 vs 8-bit 420f) disagrees with the clone.
+        self.assertNotIn(
             "CMFormatDescriptionGetMediaSubType(derivedFormat) ==",
             sample_builder,
         )

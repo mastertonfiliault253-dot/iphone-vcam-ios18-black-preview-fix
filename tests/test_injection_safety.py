@@ -202,16 +202,29 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertNotIn("替换声音", panel)
 
     def test_consumer_orientation_preserves_system_still_metadata(self) -> None:
+        # The system still-photo basis is landscape (4224x3024 on the test
+        # device) and Photos shows portrait via the Orientation attachment.
+        # VCAM must render canonical portrait pixels into that landscape basis
+        # and mark the final sample Orientation=Right (0.8.80 behavior); the
+        # 0.8.81 audit removed the mark and saved photos came out landscape.
+        # Camera preview (aspectFit) and browsers are never rotated here.
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        entry = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
         render = implementation.split("CIImage *image =", 1)[1].split(
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertNotIn("!realtimeCompensation && sourceIsPortrait", render)
-        self.assertNotIn("stillPhotoRequiresRightOrientationOut", implementation)
-        self.assertNotIn("interfaceOrientation", render)
+        self.assertIn("!realtimeCompensation && sourceIsPortrait", render)
+        self.assertIn("stillPhotoRequiresRightOrientationOut", implementation)
+        self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
+        self.assertIn("kCGImagePropertyOrientationRight", entry)
+        # preview path is never rotated; only still-photo fill triggers it
+        self.assertIn("webKitLandscapeStorage && sourceIsPortrait", render)
+        self.assertNotIn("aspectFit && sourceIsPortrait", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
 
 
