@@ -31,7 +31,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         # Injecting them into the raw sensor branch makes Camera and WebKit apply
         # their different physical-camera transforms a second time.
         self.assertIn(
-            "return VCAMReplacementRouteCameraSourceVideo;", self.route_function
+            "return VCAMReplacementRouteNone;", self.route_function
         )
         self.assertNotIn('@"Preview"', self.route_function)
         self.assertRegex(
@@ -40,7 +40,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
                 r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
                 r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
                 r'\s*&&\s*VCAMTargetBufferIsSupported\(pixelBuffer\)'
-                r'\s*\)\s*\{\s*return VCAMReplacementRouteCameraSourceVideo;',
+                r'\s*\)\s*\{\s*return VCAMReplacementRouteNone;',
                 re.DOTALL,
             ),
         )

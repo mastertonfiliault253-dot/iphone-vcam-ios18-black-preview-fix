@@ -377,7 +377,7 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
         VCAMStringMatches(outputName, @"StillImage") &&
         VCAMTargetBufferIsSupported(pixelBuffer)) {
-        return VCAMReplacementRouteCameraSourceVideo;
+        return VCAMReplacementRouteNone;
     }
 
     // These are the terminal conversion roles observed for Safari getUserMedia
