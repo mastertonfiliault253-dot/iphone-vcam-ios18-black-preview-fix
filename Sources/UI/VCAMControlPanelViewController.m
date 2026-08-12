@@ -53,8 +53,8 @@ self.view.transform = CGAffineTransformMakeScale(0.75, 0.75);
     UIStackView *stack = [[UIStackView alloc] init];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 12.0;
-    stack.layoutMargins = UIEdgeInsetsMake(20, 18, 24, 18);
+    stack.spacing = 5.0;
+    stack.layoutMargins = UIEdgeInsetsMake(8, 12, 12, 12);
     stack.layoutMarginsRelativeArrangement = YES;
     [scrollView addSubview:stack];
 
@@ -74,16 +74,16 @@ self.view.transform = CGAffineTransformMakeScale(0.75, 0.75);
     preview.translatesAutoresizingMaskIntoConstraints = NO;
     preview.accessibilityLabel = @"当前虚拟摄像头画面预览";
     [stack addArrangedSubview:preview];
-    [preview.heightAnchor constraintEqualToConstant:210].active = YES;
+    [preview.heightAnchor constraintEqualToConstant:140].active = YES;
     [stack addArrangedSubview:[self sectionLabel:@"导入资源"]];
     {
-        UIStackView *r1 = [UIStackView new]; r1.axis=UILayoutConstraintAxisHorizontal; r1.distribution=UIStackViewDistributionFillEqually; r1.spacing=8.0;
+        UIStackView *r1 = [UIStackView new]; r1.axis=UILayoutConstraintAxisHorizontal; r1.distribution=UIStackViewDistributionFillEqually; r1.spacing=5.0;
         [r1 addArrangedSubview:[self actionButton:@"从相册选择" symbol:@"photo.on.rectangle" color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1] action:@selector(photoLibraryTapped)]];
         [r1 addArrangedSubview:[self actionButton:@"从文件选择" symbol:@"folder" color:[UIColor colorWithRed:0.02 green:0.68 blue:0.82 alpha:1] action:@selector(documentTapped)]];
         [stack addArrangedSubview:r1];
     }
     {
-        UIStackView *r2 = [UIStackView new]; r2.axis=UILayoutConstraintAxisHorizontal; r2.distribution=UIStackViewDistributionFillEqually; r2.spacing=8.0;
+        UIStackView *r2 = [UIStackView new]; r2.axis=UILayoutConstraintAxisHorizontal; r2.distribution=UIStackViewDistributionFillEqually; r2.spacing=5.0;
         [r2 addArrangedSubview:[self actionButton:@"在线源下载" symbol:@"arrow.down.circle" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(onlineTapped)]];
         [r2 addArrangedSubview:[self actionButton:@"输入直播流" symbol:@"dot.radiowaves.left.and.right" color:[UIColor colorWithRed:0.82 green:0.12 blue:0.42 alpha:1] action:@selector(streamTapped)]];
         [stack addArrangedSubview:r2];
@@ -91,13 +91,13 @@ self.view.transform = CGAffineTransformMakeScale(0.75, 0.75);
 
     [stack addArrangedSubview:[self sectionLabel:@"画面调整"]];
     {
-        UIStackView *rr = [UIStackView new]; rr.axis=UILayoutConstraintAxisHorizontal; rr.distribution=UIStackViewDistributionFillEqually; rr.spacing=8.0;
+        UIStackView *rr = [UIStackView new]; rr.axis=UILayoutConstraintAxisHorizontal; rr.distribution=UIStackViewDistributionFillEqually; rr.spacing=5.0;
         [rr addArrangedSubview:[self actionButton:@"逆时针旋转" symbol:@"rotate.left" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(counterClockwiseTapped)]];
         [rr addArrangedSubview:[self actionButton:@"顺时针旋转" symbol:@"rotate.right" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(clockwiseTapped)]];
         [stack addArrangedSubview:rr];
     }
     {
-        UIStackView *ar = [UIStackView new]; ar.axis=UILayoutConstraintAxisHorizontal; ar.distribution=UIStackViewDistributionFillEqually; ar.spacing=8.0;
+        UIStackView *ar = [UIStackView new]; ar.axis=UILayoutConstraintAxisHorizontal; ar.distribution=UIStackViewDistributionFillEqually; ar.spacing=5.0;
         UIButton *mirrorButton = [self actionButton:[NSString stringWithFormat:@"镜像：%@", self.status[@"mirror"] ?: @"关闭"] symbol:@"arrow.left.and.right.righttriangle.left.righttriangle.right" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(mirrorTapped)];
         [ar addArrangedSubview:mirrorButton]; self.mirrorButton = mirrorButton;
         UIButton *contentModeButton = [self actionButton:[NSString stringWithFormat:@"填充方式：%@", self.status[@"contentMode"] ?: @"裁切填满"] symbol:@"rectangle.inset.filled" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(contentModeTapped)];
@@ -105,14 +105,14 @@ self.view.transform = CGAffineTransformMakeScale(0.75, 0.75);
         [stack addArrangedSubview:ar];
     }
     {
-        UIStackView *br = [UIStackView new]; br.axis=UILayoutConstraintAxisHorizontal; br.distribution=UIStackViewDistributionFillEqually; br.spacing=8.0;
+        UIStackView *br = [UIStackView new]; br.axis=UILayoutConstraintAxisHorizontal; br.distribution=UIStackViewDistributionFillEqually; br.spacing=5.0;
         UIButton *loopButton = [self actionButton:[NSString stringWithFormat:@"视频循环：%@", self.status[@"loop"] ?: @"开启"] symbol:@"repeat" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(loopTapped)];
         [br addArrangedSubview:loopButton]; self.loopButton = loopButton;
         [stack addArrangedSubview:br];
     }
     [stack addArrangedSubview:[self sectionLabel:@"相机切换"]];
     {
-        UIStackView *cr = [UIStackView new]; cr.axis=UILayoutConstraintAxisHorizontal; cr.distribution=UIStackViewDistributionFillEqually; cr.spacing=8.0;
+        UIStackView *cr = [UIStackView new]; cr.axis=UILayoutConstraintAxisHorizontal; cr.distribution=UIStackViewDistributionFillEqually; cr.spacing=5.0;
         [cr addArrangedSubview:[self actionButton:@"启用虚拟相机" symbol:@"video.fill" color:[UIColor colorWithRed:0.12 green:0.68 blue:0.34 alpha:1] action:@selector(enableTapped)]];
         [cr addArrangedSubview:[self actionButton:@"恢复真实相机" symbol:@"camera" color:[UIColor colorWithRed:0.88 green:0.20 blue:0.24 alpha:1] action:@selector(restoreTapped)]];
         [stack addArrangedSubview:cr];
