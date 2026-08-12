@@ -47,6 +47,8 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
 + (NSDictionary<NSString *, id> *)currentValues;
 + (BOOL)updateValues:(NSDictionary<NSString *, id> *)changes;
 + (BOOL)updateValues:(NSDictionary<NSString *, id> *)changes error:(NSError **)error;
+n/// YES when a valid license.plist is present at /var/mobile/Media/VCAM/license.plist.
++ (BOOL)isLicensed;
 + (nullable NSString *)importMediaAtURL:(NSURL *)sourceURL
                           suggestedName:(nullable NSString *)suggestedName
                                   error:(NSError **)error;
