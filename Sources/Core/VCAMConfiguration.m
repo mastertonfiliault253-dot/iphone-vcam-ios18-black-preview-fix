@@ -415,8 +415,7 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 @property(nonatomic, readwrite) VCAMLocalDecoderMode localDecoderMode;
 @end
 
-@implementation VCAMConfiguration+ (NSString *)processLogPath {
-
+@implementation VCAMConfiguration
 
 // === License verification ===
 #include <Security/Security.h>
@@ -471,6 +470,8 @@ static NSData *VCAMLicensePublicKey(void) {
     });
     return licensed;
 }
+
++ (NSString *)processLogPath {
     return [[self storageDirectoryPath] stringByAppendingPathComponent:@"vcam-app.log"];
 }
 
