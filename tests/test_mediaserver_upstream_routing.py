@@ -40,7 +40,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
                 r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
                 r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
                 r'\s*&&\s*VCAMTargetBufferIsSupported\(pixelBuffer\)'
-                r'\s*\)\s*\{\s*return VCAMReplacementRouteStillPhoto;',
+                r'\s*\)\s*\{\s*return VCAMReplacementRouteCameraSourceVideo;',
                 re.DOTALL,
             ),
         )
@@ -78,7 +78,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ("Movie File Zoomer", "VideoRecording"),
         ):
             if terminal_name == "Video Data Converter/Zoomer":
-                self.assertIn("VCAMReplacementRouteStillPhoto", self.route_function)
+                self.assertIn("VCAMReplacementRouteCameraSourceVideo", self.route_function)
             else:
                 self.assertRegex(
                     self.route_function,
@@ -179,7 +179,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
                 r'VCAMCreateSampleBufferWithReplacementImage\('
                 r'\s*sampleBuffer,\s*replacementImageBuffer,\s*'
                 r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\s*\|\|\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteStillPhoto\)',
+                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\)',
                 re.DOTALL,
             ),
         )
@@ -300,7 +300,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "static BOOL VCAMRouteUsesPropagationMarker",
             "static BOOL VCAMWritePropagationMarker",
         )
-        self.assertNotIn("VCAMReplacementRouteStillPhoto", route_helper)
+        self.assertNotIn("VCAMReplacementRouteCameraSourceVideo", route_helper)
         self.assertRegex(
             self.hook,
             re.compile(

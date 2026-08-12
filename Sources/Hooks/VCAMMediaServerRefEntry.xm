@@ -377,7 +377,7 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
         VCAMStringMatches(outputName, @"StillImage") &&
         VCAMTargetBufferIsSupported(pixelBuffer)) {
-        return VCAMReplacementRouteStillPhoto;
+        return VCAMReplacementRouteCameraSourceVideo;
     }
 
     // These are the terminal conversion roles observed for Safari getUserMedia
@@ -418,7 +418,7 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     // in the hook rather than reaching the encoder as a real frame.
     if (VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode") &&
         VCAMStringMatches(nodeName, @"Meteor Headroom") && pixelBuffer != NULL) {
-        return VCAMReplacementRouteStillPhoto;
+        return VCAMReplacementRouteCameraSourceVideo;
     }
 
     return VCAMReplacementRouteNone;
