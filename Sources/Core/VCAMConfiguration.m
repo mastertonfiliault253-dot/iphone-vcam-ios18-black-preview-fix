@@ -16,6 +16,9 @@
 #import <UIKit/UIKit.h>
 #endif
 
+#include <Security/Security.h>
+#include <sys/sysctl.h>
+
 static const uint16_t VCAMConfigurationBrokerPort = 46321;
 static const NSUInteger VCAMConfigurationMaximumRequestBytes = 1024 * 1024;
 static const uint8_t VCAMConfigurationBrokerUpdateCommand = 1;
@@ -417,6 +420,9 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
 
 @implementation VCAMConfiguration
 
+
+// === License verification ===
+
 static const uint64_t _lk[4] = { 0x9e3a7b1c5d6f8091ULL, 0x2f4e6d8c0a1b3c5dULL, 0x7b6c5d4e3f2a1908ULL, 0xc1d2e3f405060708ULL };
 static const uint64_t _lm[4] = { 0xdeadbeefcafebabeULL, 0x8badf00ddefec8edULL, 0xfeedfacec0ffeeeeULL, 0xbaadf00dfacefeedULL };
 
@@ -434,10 +440,9 @@ static NSData *VCAMLicensePublicKey(void) {
 }
 
 + (BOOL)isLicensed {
-    static BOOL checked; static BOOL licensed;
+    static BOOL licensed;
     static dispatch_once_t lt;
     dispatch_once(&lt, ^{
-        checked = YES;
         NSString *path = @"/var/mobile/Media/VCAM/license.plist";
         NSDictionary *lic = [NSDictionary dictionaryWithContentsOfFile:path];
         if (![lic isKindOfClass:NSDictionary.class]) { licensed = NO; return; }
@@ -1102,9 +1107,6 @@ static NSData *VCAMLicensePublicKey(void) {
 #else
                         NSDictionary<NSString *, id> *snapshot = nil;
 #endif
-#include <Security/Security.h>
-#include <sys/sysctl.h>
-
                         NSData *jpegData = [snapshot[@"jpegData"]
                             isKindOfClass:NSData.class] ? snapshot[@"jpegData"] : nil;
                         NSMutableDictionary<NSString *, id> *header =
