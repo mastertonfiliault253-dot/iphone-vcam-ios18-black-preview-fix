@@ -440,36 +440,7 @@ static NSData *VCAMLicensePublicKey(void) {
 }
 
 + (BOOL)isLicensed {
-    static BOOL licensed;
-    static dispatch_once_t lt;
-    dispatch_once(&lt, ^{
-        NSString *path = @"/var/mobile/Media/VCAM/license.plist";
-        NSDictionary *lic = [NSDictionary dictionaryWithContentsOfFile:path];
-        if (![lic isKindOfClass:NSDictionary.class]) { licensed = NO; return; }
-        NSString *udid = lic[@"udid"];
-        NSString *expiry = lic[@"expiry"];
-        NSData *sig = [[NSData alloc] initWithBase64EncodedString:lic[@"sig"] options:0];
-        if (!udid.length || !sig.length) { licensed = NO; return; }
-        if (expiry.length > 0) {
-            NSDateFormatter *df = [NSDateFormatter new];
-            df.dateFormat = @"yyyy-MM-dd";
-            NSDate *exp = [df dateFromString:expiry];
-            if (exp != nil && [exp timeIntervalSinceNow] < 0) { licensed = NO; return; }
-        }
-        NSString *payload = [NSString stringWithFormat:@"%@|%@", udid, expiry ?: @"2099-12-31"];
-        NSData *payloadData = [payload dataUsingEncoding:NSUTF8StringEncoding];
-        NSData *pubKey = VCAMLicensePublicKey();
-        CFErrorRef error = NULL;
-        SecKeyRef secKey = SecKeyCreateWithData((__bridge CFDataRef)pubKey,
-            (__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,
-                                         (id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic},
-            &error);
-        if (secKey == NULL) { licensed = NO; return; }
-        licensed = SecKeyVerifySignature(secKey, kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256,
-            (__bridge CFDataRef)payloadData, (__bridge CFDataRef)sig, &error) ? YES : NO;
-        CFRelease(secKey);
-    });
-    return licensed;
+    return [self validateLicenseFile];
 }
 + (BOOL)validateLicenseFile {
     NSString *path = @"/var/mobile/Media/VCAM/license.plist";
