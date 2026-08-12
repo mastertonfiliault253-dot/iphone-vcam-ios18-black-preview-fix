@@ -175,7 +175,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES", main)
         self.assertIn("memlimit_active = VCAMWorkerMemoryLimitMB", main)
         self.assertIn("memlimit_inactive = VCAMWorkerMemoryLimitMB", main)
-        self.assertIn("VCAMWorkerMemoryLimitMB = 384", main)
+        self.assertIn("VCAMWorkerMemoryLimitMB = 256", main)
         for unsafe_escalation in (
             "JETSAM_PRIORITY_CRITICAL",
             "MEMORYSTATUS_CMD_SET_PRIORITY_PROPERTIES",

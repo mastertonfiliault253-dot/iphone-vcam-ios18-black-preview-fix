@@ -44,8 +44,8 @@ enum {
     MEMORYSTATUS_CMD_SET_MEMLIMIT_PROPERTIES = 7,
     MEMORYSTATUS_CMD_GET_MEMLIMIT_PROPERTIES = 8,
     // The source-sized software pipeline is capped at 256 MiB. Keep a
-    // separate 128 MB process margin for FFmpeg and framework bookkeeping.
-    VCAMWorkerMemoryLimitMB = 384,
+    // 0.8.80 parity: keep vcamd tight so VNC survives still-photo renders.
+    VCAMWorkerMemoryLimitMB = 256,
 };
 
 typedef struct {
