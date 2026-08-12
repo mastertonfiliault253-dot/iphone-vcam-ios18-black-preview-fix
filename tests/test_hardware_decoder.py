@@ -93,9 +93,8 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMSurfaceBrokerIdentityForPeer", broker)
         self.assertIn("VCAMProcessStartToken(pid)", broker)
         self.assertIn("proc_pidpath(pid, pathBuffer", broker)
-        self.assertIn('dlsym(RTLD_DEFAULT, "csops")', broker)
-        self.assertIn("VCAMCSOpsIdentity", broker)
-        self.assertIn("VCAMCSOpsTeamID", broker)
+        # csops is not part of the auth decision under a jailbreak; the exact
+        # path/name/bundle allow-list is the boundary.
         self.assertIn("VCAMPeerIsPlatformBinary", broker)
         self.assertIn("intentionally permissive", broker)
         self.assertIn("bundle.executablePath isEqualToString:path", broker)
@@ -104,7 +103,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('@"/usr/sbin/mediaserverd"', broker)
         self.assertIn('@"/usr/libexec/vcamd"', broker)
         self.assertIn('@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"', broker)
-        self.assertIn('@"com.apple.springboard"', broker)
+        self.assertIn("Signing-identity gates (csops) are intentionally not used", broker)
         self.assertIn("VCAMSurfaceBrokerPeerCanSubscribe", broker)
         subscriber = broker.split("static bool VCAMSurfaceBrokerPeerCanSubscribe", 1)[1].split(
             "static xpc_object_t VCAMBrokerRegistry", 1

@@ -60,33 +60,6 @@ extern const struct _xpc_type_s _xpc_type_dictionary;
 extern int proc_name(int pid, void *buffer, uint32_t bufferSize);
 extern int proc_pidpath(int pid, void *buffer, uint32_t bufferSize);
 
-typedef int (*VCAMCSOpsFunction)(pid_t pid, unsigned int operation,
-                                 void *buffer, size_t bufferSize);
-
-enum {
-    VCAMCSOpsStatus = 0,
-    VCAMCSOpsIdentity = 11,
-    VCAMCSOpsTeamID = 14,
-};
-
-static BOOL VCAMCSOps(pid_t pid, unsigned int operation,
-                      void *buffer, size_t bufferSize) {
-    static VCAMCSOpsFunction function;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        void *symbol = dlsym(RTLD_DEFAULT, "csops");
-        memcpy(&function, &symbol, sizeof(function));
-    });
-    return function != NULL && function(pid, operation, buffer, bufferSize) == 0;
-}
-
-static NSString *VCAMCodeSigningString(pid_t pid, unsigned int operation) {
-    char value[256] = {0};
-    if (!VCAMCSOps(pid, operation, value, sizeof(value))) return nil;
-    value[sizeof(value) - 1] = '\0';
-    return value[0] != '\0' ? [NSString stringWithUTF8String:value] : nil;
-}
-
 static BOOL VCAMPeerIsPlatformBinary(pid_t pid) {
     // csops is unreliable under a jailbreak: queries can fail or return a
     // patched status without the platform flag, which would reject legitimate
@@ -181,12 +154,12 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
         return VCAMSurfaceBrokerPeerIdentityUnknown;
     }
     NSString *path = [NSString stringWithUTF8String:pathBuffer];
-    NSString *signingIdentifier = VCAMCodeSigningString(pid, VCAMCSOpsIdentity);
+    // Signing-identity gates (csops) are intentionally not used: under a
+    // jailbreak they are unreliable and rejected legitimate peers that the
+    // exact path/name/bundle allow-list below already constrains.
     if ([path isEqualToString:@"/usr/sbin/mediaserverd"] &&
         strcmp(name, "mediaserverd") == 0 &&
-        VCAMPeerIsPlatformBinary(pid) &&
-        (signingIdentifier.length == 0 ||
-         [signingIdentifier isEqualToString:@"com.apple.mediaserverd"])) {
+        VCAMPeerIsPlatformBinary(pid)) {
         return VCAMProcessStartToken(pid) == startToken
             ? VCAMSurfaceBrokerPeerIdentityMediaServer
             : VCAMSurfaceBrokerPeerIdentityUnknown;
@@ -199,9 +172,7 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
             : VCAMSurfaceBrokerPeerIdentityUnknown;
     }
     if ([path isEqualToString:@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"] &&
-        strcmp(name, "SpringBoard") == 0 && VCAMPeerIsPlatformBinary(pid) &&
-        (signingIdentifier.length == 0 ||
-         [signingIdentifier isEqualToString:@"com.apple.springboard"])) {
+        strcmp(name, "SpringBoard") == 0 && VCAMPeerIsPlatformBinary(pid)) {
         return VCAMProcessStartToken(pid) == startToken
             ? VCAMSurfaceBrokerPeerIdentitySpringBoard
             : VCAMSurfaceBrokerPeerIdentityUnknown;
@@ -209,12 +180,6 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     NSBundle *bundle = VCAMBundleForExecutablePath(path);
     NSString *bundleIdentifier = bundle.bundleIdentifier;
     if (bundleIdentifier.length == 0) {
-        return VCAMSurfaceBrokerPeerIdentityUnknown;
-    }
-    // A readable signing identity must match the bundle; when csops cannot
-    // provide one (jailbreak), the exact path/bundle checks stand on their own.
-    if (signingIdentifier.length > 0 &&
-        ![signingIdentifier isEqualToString:bundleIdentifier]) {
         return VCAMSurfaceBrokerPeerIdentityUnknown;
     }
     if (([bundleIdentifier isEqualToString:@"com.apple.camera"] ||
@@ -230,9 +195,7 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
         @"org.mozilla.ios.Firefox": @"43AQ936H96",
     };
     NSString *expectedTeam = allowedThirdPartyTeams[bundleIdentifier];
-    NSString *actualTeam = VCAMCodeSigningString(pid, VCAMCSOpsTeamID);
     return expectedTeam.length > 0 &&
-        (actualTeam.length == 0 || [actualTeam isEqualToString:expectedTeam]) &&
         VCAMProcessStartToken(pid) == startToken
         ? VCAMSurfaceBrokerPeerIdentityUIHost
         : VCAMSurfaceBrokerPeerIdentityUnknown;
