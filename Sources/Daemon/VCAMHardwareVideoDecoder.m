@@ -41,55 +41,94 @@ static size_t VCAMTrimAnnexBTrailingZeroBytes(const uint8_t *bytes,
     return payloadEnd;
 }
 
-// On iOS 16.1 VideoToolbox wants the full access unit in-band: a sample
-// with only slice NALs is rejected with kVTVideoDecoderBadDataErr (-12909)
-// and a sample starting with SEI NALs is rejected with
-// kVTVideoDecoderReferenceMissingErr (-12780) — the format description
-// alone is not enough for this OS build. Convert Annex-B access units into
-// length-prefixed (avcC) samples while KEEPING every NAL, including
-// SPS/PPS/SEI. Already length-prefixed input passes through untouched.
-// Returns NULL when the caller can keep using the original bytes (avcC
-// input) or when no NALs were found.
+// Device evidence (iOS 16.1): a sample starting with SEI NALs is rejected
+// with kVTVideoDecoderReferenceMissingErr (-12780), and a sample carrying
+// in-band SPS/PPS is rejected with kVTVideoDecoderBadDataErr (-12909).
+// Parameter sets live only in the CMVideoFormatDescription (avcC record);
+// SEI carries no decode information and must not lead the sample. Convert
+// Annex-B input into a length-prefixed (avcC) sample containing only slice
+// NALs. Returns NULL when the caller can keep using the original bytes (no
+// omittable NALs in a length-prefixed packet) or when the packet has no
+// slice NALs.
+static BOOL VCAMIsOmittableNAL(const uint8_t *payload, size_t payloadLength,
+                               BOOL hevc) {
+    if (payload == NULL || payloadLength < 1) return NO;
+    int type = hevc ? ((payload[0] >> 1) & 0x3F) : (payload[0] & 0x1F);
+    if (hevc) {
+        return type == 32 || type == 33 || type == 34 ||
+            type == 39 || type == 40;
+    }
+    return type == 6 || type == 7 || type == 8;
+}
+
 static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
                                                   size_t length,
                                                   size_t *outLength,
-                                                  BOOL *convertedAny) {
+                                                  BOOL *strippedAny,
+                                                  BOOL hevc) {
     if (outLength == NULL || bytes == NULL || length < 4) return NULL;
     *outLength = 0;
-    if (convertedAny != NULL) *convertedAny = NO;
-    if (!VCAMIsAnnexBStartCode(bytes, length, 0, NULL)) {
-        // Already length-prefixed (avcC): keep the original bytes.
-        *outLength = length;
-        return NULL;
-    }
+    if (strippedAny != NULL) *strippedAny = NO;
+    BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
     size_t payloadStarts[1024] = {0};
     size_t payloadSizes[1024] = {0};
     size_t nalCount = 0;
+    BOOL sawOmittable = NO;
     size_t total = 0;
-    size_t scan = 0;
-    while (scan < length && nalCount < 1024) {
-        size_t startCodeLength = 0;
-        if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
-            if (bytes[scan] == 0) {
-                scan += 1;
-                continue;
+    if (annexB) {
+        size_t scan = 0;
+        while (scan < length && nalCount < 1024) {
+            size_t startCodeLength = 0;
+            if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
+                if (bytes[scan] == 0) {
+                    scan += 1;
+                    continue;
+                }
+                break;
             }
-            break;
+            size_t payloadStart = scan + startCodeLength;
+            size_t next = payloadStart;
+            while (next < length &&
+                   !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
+                next += 1;
+            }
+            size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+                bytes, payloadStart, next);
+            size_t payloadLength = payloadEnd - payloadStart;
+            if (VCAMIsOmittableNAL(bytes + payloadStart, payloadLength, hevc)) {
+                sawOmittable = YES;
+            } else {
+                payloadStarts[nalCount] = payloadStart;
+                payloadSizes[nalCount] = payloadLength;
+                nalCount += 1;
+                total += payloadLength + 4;
+            }
+            scan = next;
         }
-        size_t payloadStart = scan + startCodeLength;
-        size_t next = payloadStart;
-        while (next < length &&
-               !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
-            next += 1;
+    } else {
+        size_t scan = 0;
+        while (scan + 4 <= length && nalCount < 1024) {
+            uint32_t nalSize =
+                ((uint32_t)bytes[scan] << 24) | ((uint32_t)bytes[scan + 1] << 16) |
+                ((uint32_t)bytes[scan + 2] << 8) | (uint32_t)bytes[scan + 3];
+            if (nalSize == 0 || nalSize > length - scan - 4) break;
+            size_t payloadStart = scan + 4;
+            if (VCAMIsOmittableNAL(bytes + payloadStart, nalSize, hevc)) {
+                sawOmittable = YES;
+            } else {
+                payloadStarts[nalCount] = payloadStart;
+                payloadSizes[nalCount] = nalSize;
+                nalCount += 1;
+                total += nalSize + 4;
+            }
+            scan = payloadStart + nalSize;
         }
-        size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
-            bytes, payloadStart, next);
-        size_t payloadLength = payloadEnd - payloadStart;
-        payloadStarts[nalCount] = payloadStart;
-        payloadSizes[nalCount] = payloadLength;
-        nalCount += 1;
-        total += payloadLength + 4;
-        scan = next;
+    }
+    if (strippedAny != NULL) *strippedAny = sawOmittable;
+    if (!sawOmittable && !annexB) {
+        // Length-prefixed input without omittable NALs: keep original bytes.
+        *outLength = length;
+        return NULL;
     }
     if (nalCount == 0 || total == 0) return NULL;
     uint8_t *output = malloc(total);
@@ -105,7 +144,6 @@ static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
         cursor += nalSize + 4;
     }
     *outLength = cursor;
-    if (convertedAny != NULL) *convertedAny = YES;
     return output;
 }
 
@@ -288,10 +326,42 @@ static OSStatus VCAMCreateVideoFormatDescription(
     }
     if (parameterSetCount == 0) return -1;
 
-    // Apple's canonical format-description construction is the reliable path
-    // for hardware H.264/HEVC on iOS. The avcC/hvcC SampleDescriptionExtension
-    // route is kept only as a fallback.
-    OSStatus status = hevc
+    // The avcC/hvcC SampleDescriptionExtensionAtoms record is the canonical
+    // VideoToolbox contract on iOS: slice-only samples are matched against
+    // the record's parameter sets. The CreateFrom*ParameterSets route is
+    // kept as a fallback for streams whose parameter sets cannot be encoded
+    // into a record.
+    CFDataRef record = NULL;
+    if (hevc) {
+        record = VCAMBuildHVCCRecord(vpsPointers, vpsSizes, vpsCount,
+                                     spsPointers, spsSizes, spsCount,
+                                     ppsPointers, ppsSizes, ppsCount);
+    } else {
+        record = VCAMBuildAVCCRecord(spsPointers, spsSizes, spsCount,
+                                     ppsPointers, ppsSizes, ppsCount);
+    }
+    OSStatus status = record == NULL ? -1 : noErr;
+    if (record != NULL) {
+        CFDictionaryRef specification = VCAMDecoderSpecificationCreate(
+            hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, record);
+        CFRelease(record);
+        if (specification != NULL) {
+            status = CMVideoFormatDescriptionCreate(
+                kCFAllocatorDefault,
+                hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+                width, height, specification, formatDescriptionOut);
+            if (status == noErr && *formatDescriptionOut != NULL) {
+                *decoderSpecificationOut = specification;
+                return noErr;
+            }
+            CFRelease(specification);
+        }
+    }
+    if (*formatDescriptionOut != NULL) {
+        CFRelease(*formatDescriptionOut);
+        *formatDescriptionOut = NULL;
+    }
+    status = hevc
         ? CMVideoFormatDescriptionCreateFromHEVCParameterSets(
               kCFAllocatorDefault, (size_t)parameterSetCount,
               parameterSets, parameterSetSizes,
@@ -305,34 +375,6 @@ static OSStatus VCAMCreateVideoFormatDescription(
             hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264);
         return noErr;
     }
-    if (*formatDescriptionOut != NULL) {
-        CFRelease(*formatDescriptionOut);
-        *formatDescriptionOut = NULL;
-    }
-
-    CFDataRef record = NULL;
-    if (hevc) {
-        record = VCAMBuildHVCCRecord(vpsPointers, vpsSizes, vpsCount,
-                                     spsPointers, spsSizes, spsCount,
-                                     ppsPointers, ppsSizes, ppsCount);
-    } else {
-        record = VCAMBuildAVCCRecord(spsPointers, spsSizes, spsCount,
-                                     ppsPointers, ppsSizes, ppsCount);
-    }
-    if (record == NULL) return status;
-    CFDictionaryRef specification = VCAMDecoderSpecificationCreate(
-        hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, record);
-    CFRelease(record);
-    if (specification == NULL) return status;
-    status = CMVideoFormatDescriptionCreate(
-        kCFAllocatorDefault,
-        hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
-        width, height, specification, formatDescriptionOut);
-    if (status == noErr && *formatDescriptionOut != NULL) {
-        *decoderSpecificationOut = specification;
-        return noErr;
-    }
-    CFRelease(specification);
     if (*formatDescriptionOut != NULL) {
         CFRelease(*formatDescriptionOut);
         *formatDescriptionOut = NULL;
@@ -734,14 +776,14 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     size_t feedLength = length;
     const uint8_t *feedBytes = bytes;
     uint8_t *filtered = NULL;
-    BOOL convertedAnnexB = NO;
+    BOOL stripped = NO;
     BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
     filtered = VCAMConvertAnnexBToLengthPrefixed(
-        bytes, length, &feedLength, &convertedAnnexB);
+        bytes, length, &feedLength, &stripped, _isHEVC);
     if (filtered != NULL) {
         feedBytes = filtered;
     } else if (feedLength == 0) {
-        // No NALs found (trailing garbage); nothing to decode.
+        // Parameter-set/SEI-only packet: nothing to decode.
         return YES;
     } else if (annexB) {
         static volatile int annexBFailures = 0;
@@ -751,12 +793,12 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
         return NO;
     }
-    if (convertedAnnexB) {
-        static volatile int convertedCount = 0;
-        int count = __sync_add_and_fetch(&convertedCount, 1);
+    if (stripped) {
+        static volatile int strippedCount = 0;
+        int count = __sync_add_and_fetch(&strippedCount, 1);
         if (count <= 4) {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"[DEBUG-vtpack] annexB converted input=%zu output=%zu",
+                @"[DEBUG-vtpack] stripped param/SEI NALs input=%zu output=%zu",
                 length, feedLength]];
         }
     }
@@ -864,8 +906,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     }
     if (packetDiagnostic <= 4) {
         NSString *packetLine = [NSString stringWithFormat:
-            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d converted=%d input=%zu output=%zu nals=%d,%d,%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
-            packetDiagnostic, isKeyFrame, annexB, convertedAnnexB, length, feedLength,
+            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu nals=%d,%d,%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
+            packetDiagnostic, isKeyFrame, annexB, stripped, length, feedLength,
             firstNAL, secondNAL, thirdNAL, (int)status,
             presentationTime.value, presentationTime.timescale,
             decodeTime.value, decodeTime.timescale];
