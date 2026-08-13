@@ -41,93 +41,55 @@ static size_t VCAMTrimAnnexBTrailingZeroBytes(const uint8_t *bytes,
     return payloadEnd;
 }
 
-// iOS VideoToolbox rejects samples that carry SPS/PPS NALs with
-// kVTVideoDecoderBadDataErr (-12909), and on iOS 16.1 a sample that starts
-// with SEI NALs (pic_timing/buffering_period, which this pipeline's streams
-// emit before every IDR) makes the first IDR fail with
-// kVTVideoDecoderReferenceMissingErr (-12780). Parameter sets must live only
-// in the CMVideoFormatDescription (avcC/hvcC record) and SEI carries no
-// decode information, so both are dropped here. This helper converts either
-// Annex-B or length-prefixed input into a length-prefixed sample containing
-// only slice NALs. It returns NULL when the caller can keep using the
-// original bytes (no omittable NALs found in a length-prefixed packet) or
-// when the packet contains no slice NALs.
-static BOOL VCAMIsOmittableNAL(const uint8_t *payload, size_t payloadLength,
-                               BOOL hevc) {
-    if (payload == NULL || payloadLength < 1) return NO;
-    int type = hevc ? ((payload[0] >> 1) & 0x3F) : (payload[0] & 0x1F);
-    if (hevc) {
-        return type == 32 || type == 33 || type == 34 ||
-            type == 39 || type == 40;
-    }
-    return type == 6 || type == 7 || type == 8;
-}
-
-static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
-                                           size_t *outLength, BOOL hevc,
-                                           BOOL *strippedAny) {
+// On iOS 16.1 VideoToolbox wants the full access unit in-band: a sample
+// with only slice NALs is rejected with kVTVideoDecoderBadDataErr (-12909)
+// and a sample starting with SEI NALs is rejected with
+// kVTVideoDecoderReferenceMissingErr (-12780) — the format description
+// alone is not enough for this OS build. Convert Annex-B access units into
+// length-prefixed (avcC) samples while KEEPING every NAL, including
+// SPS/PPS/SEI. Already length-prefixed input passes through untouched.
+// Returns NULL when the caller can keep using the original bytes (avcC
+// input) or when no NALs were found.
+static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
+                                                  size_t length,
+                                                  size_t *outLength,
+                                                  BOOL *convertedAny) {
     if (outLength == NULL || bytes == NULL || length < 4) return NULL;
     *outLength = 0;
-    if (strippedAny != NULL) *strippedAny = NO;
-    BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
+    if (convertedAny != NULL) *convertedAny = NO;
+    if (!VCAMIsAnnexBStartCode(bytes, length, 0, NULL)) {
+        // Already length-prefixed (avcC): keep the original bytes.
+        *outLength = length;
+        return NULL;
+    }
     size_t payloadStarts[1024] = {0};
     size_t payloadSizes[1024] = {0};
     size_t nalCount = 0;
-    BOOL sawParameterSet = NO;
     size_t total = 0;
-    if (annexB) {
-        size_t scan = 0;
-        while (scan < length && nalCount < 1024) {
-            size_t startCodeLength = 0;
-            if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
-                if (bytes[scan] == 0) {
-                    scan += 1;
-                    continue;
-                }
-                break;
+    size_t scan = 0;
+    while (scan < length && nalCount < 1024) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
+            if (bytes[scan] == 0) {
+                scan += 1;
+                continue;
             }
-            size_t payloadStart = scan + startCodeLength;
-            size_t next = payloadStart;
-            while (next < length &&
-                   !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
-                next += 1;
-            }
-            size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
-                bytes, payloadStart, next);
-            size_t payloadLength = payloadEnd - payloadStart;
-            if (VCAMIsOmittableNAL(bytes + payloadStart, payloadLength, hevc)) {
-                sawParameterSet = YES;
-            } else {
-                payloadStarts[nalCount] = payloadStart;
-                payloadSizes[nalCount] = payloadLength;
-                nalCount += 1;
-                total += payloadLength + 4;
-            }
-            scan = next;
+            break;
         }
-    } else {
-        size_t scan = 0;
-        while (scan + 4 <= length && nalCount < 1024) {
-            uint32_t nalSize =
-                ((uint32_t)bytes[scan] << 24) | ((uint32_t)bytes[scan + 1] << 16) |
-                ((uint32_t)bytes[scan + 2] << 8) | (uint32_t)bytes[scan + 3];
-            if (nalSize == 0 || nalSize > length - scan - 4) break;
-            size_t payloadStart = scan + 4;
-            if (VCAMIsOmittableNAL(bytes + payloadStart, nalSize, hevc)) {
-                sawParameterSet = YES;
-            } else {
-                payloadStarts[nalCount] = payloadStart;
-                payloadSizes[nalCount] = nalSize;
-                nalCount += 1;
-                total += nalSize + 4;
-            }
-            scan = payloadStart + nalSize;
+        size_t payloadStart = scan + startCodeLength;
+        size_t next = payloadStart;
+        while (next < length &&
+               !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
+            next += 1;
         }
-    }
-    if (strippedAny != NULL) *strippedAny = sawParameterSet;
-    if (!sawParameterSet && !annexB) {
-        *outLength = length;
-        return NULL;
+        size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+            bytes, payloadStart, next);
+        size_t payloadLength = payloadEnd - payloadStart;
+        payloadStarts[nalCount] = payloadStart;
+        payloadSizes[nalCount] = payloadLength;
+        nalCount += 1;
+        total += payloadLength + 4;
+        scan = next;
     }
     if (nalCount == 0 || total == 0) return NULL;
     uint8_t *output = malloc(total);
@@ -143,6 +105,7 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
         cursor += nalSize + 4;
     }
     *outLength = cursor;
+    if (convertedAny != NULL) *convertedAny = YES;
     return output;
 }
 
@@ -771,14 +734,14 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     size_t feedLength = length;
     const uint8_t *feedBytes = bytes;
     uint8_t *filtered = NULL;
-    BOOL stripped = NO;
+    BOOL convertedAnnexB = NO;
     BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
-    filtered = VCAMFilterParameterSetNALs(bytes, length, &feedLength, _isHEVC, &stripped);
+    filtered = VCAMConvertAnnexBToLengthPrefixed(
+        bytes, length, &feedLength, &convertedAnnexB);
     if (filtered != NULL) {
         feedBytes = filtered;
     } else if (feedLength == 0) {
-        // Parameter-set-only packet (SPS/PPS arrive separately on RTP). The
-        // format description already carries them; nothing to decode.
+        // No NALs found (trailing garbage); nothing to decode.
         return YES;
     } else if (annexB) {
         static volatile int annexBFailures = 0;
@@ -788,12 +751,12 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
         return NO;
     }
-    if (stripped) {
-        static volatile int strippedCount = 0;
-        int count = __sync_add_and_fetch(&strippedCount, 1);
+    if (convertedAnnexB) {
+        static volatile int convertedCount = 0;
+        int count = __sync_add_and_fetch(&convertedCount, 1);
         if (count <= 4) {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"[DEBUG-vtpack] stripped param/SEI NALs input=%zu output=%zu",
+                @"[DEBUG-vtpack] annexB converted input=%zu output=%zu",
                 length, feedLength]];
         }
     }
@@ -901,8 +864,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     }
     if (packetDiagnostic <= 4) {
         NSString *packetLine = [NSString stringWithFormat:
-            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu nals=%d,%d,%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
-            packetDiagnostic, isKeyFrame, annexB, stripped, length, feedLength,
+            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d converted=%d input=%zu output=%zu nals=%d,%d,%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
+            packetDiagnostic, isKeyFrame, annexB, convertedAnnexB, length, feedLength,
             firstNAL, secondNAL, thirdNAL, (int)status,
             presentationTime.value, presentationTime.timescale,
             decodeTime.value, decodeTime.timescale];

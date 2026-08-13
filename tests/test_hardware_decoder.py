@@ -194,21 +194,24 @@ class HardwareDecoderTests(unittest.TestCase):
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("VCAMFilterParameterSetNALs", decoder)
+        self.assertIn("VCAMConvertAnnexBToLengthPrefixed", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
         self.assertIn("annexB conversion failed", decoder)
-        self.assertIn("VCAMIsOmittableNAL", decoder)
+        # Full-AU conversion: iOS 16.1 VT wants SPS/PPS in-band, so no NAL
+        # (parameter sets or SEI) may be stripped.
+        self.assertNotIn("VCAMIsOmittableNAL", decoder)
 
     def test_length_prefixed_slice_without_parameter_sets_keeps_original_length(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
 
-        passthrough = decoder.split("if (!sawParameterSet && !annexB)", 1)[1].split(
-            "if (nalCount == 0", 1
-        )[0]
+        passthrough = decoder.split(
+            "if (!VCAMIsAnnexBStartCode(bytes, length, 0, NULL)) {", 1
+        )[1].split("size_t payloadStarts", 1)[0]
         self.assertIn("*outLength = length;", passthrough)
         self.assertIn("return NULL;", passthrough)
+        self.assertIn("Already length-prefixed (avcC)", passthrough)
 
     def test_annex_b_parser_excludes_trailing_zero_bytes_from_nals(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
