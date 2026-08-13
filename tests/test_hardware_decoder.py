@@ -197,7 +197,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMFilterParameterSetNALs", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
         self.assertIn("annexB conversion failed", decoder)
-        self.assertIn("VCAMIsParameterSetNAL", decoder)
+        self.assertIn("VCAMIsOmittableNAL", decoder)
 
     def test_length_prefixed_slice_without_parameter_sets_keeps_original_length(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(

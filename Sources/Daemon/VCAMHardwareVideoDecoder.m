@@ -41,19 +41,26 @@ static size_t VCAMTrimAnnexBTrailingZeroBytes(const uint8_t *bytes,
     return payloadEnd;
 }
 
-// VideoToolbox on iOS rejects samples that carry SPS/PPS NALs with
-// kVTVideoDecoderBadDataErr (-12909), even though macOS tolerates them.
-// Parameter sets must live only in the CMVideoFormatDescription (avcC/hvcC
-// record). This helper converts either Annex-B or length-prefixed input into
-// a length-prefixed sample containing only slice NALs. It returns NULL when
-// the caller can keep using the original bytes (no parameter sets found in a
-// length-prefixed packet) or when the packet is parameter-set-only.
-static BOOL VCAMIsParameterSetNAL(const uint8_t *payload, size_t payloadLength,
-                                  BOOL hevc) {
+// iOS VideoToolbox rejects samples that carry SPS/PPS NALs with
+// kVTVideoDecoderBadDataErr (-12909), and on iOS 16.1 a sample that starts
+// with SEI NALs (pic_timing/buffering_period, which this pipeline's streams
+// emit before every IDR) makes the first IDR fail with
+// kVTVideoDecoderReferenceMissingErr (-12780). Parameter sets must live only
+// in the CMVideoFormatDescription (avcC/hvcC record) and SEI carries no
+// decode information, so both are dropped here. This helper converts either
+// Annex-B or length-prefixed input into a length-prefixed sample containing
+// only slice NALs. It returns NULL when the caller can keep using the
+// original bytes (no omittable NALs found in a length-prefixed packet) or
+// when the packet contains no slice NALs.
+static BOOL VCAMIsOmittableNAL(const uint8_t *payload, size_t payloadLength,
+                               BOOL hevc) {
     if (payload == NULL || payloadLength < 1) return NO;
     int type = hevc ? ((payload[0] >> 1) & 0x3F) : (payload[0] & 0x1F);
-    if (hevc) return type == 32 || type == 33 || type == 34;
-    return type == 7 || type == 8;
+    if (hevc) {
+        return type == 32 || type == 33 || type == 34 ||
+            type == 39 || type == 40;
+    }
+    return type == 6 || type == 7 || type == 8;
 }
 
 static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
@@ -88,7 +95,7 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
             size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
                 bytes, payloadStart, next);
             size_t payloadLength = payloadEnd - payloadStart;
-            if (VCAMIsParameterSetNAL(bytes + payloadStart, payloadLength, hevc)) {
+            if (VCAMIsOmittableNAL(bytes + payloadStart, payloadLength, hevc)) {
                 sawParameterSet = YES;
             } else {
                 payloadStarts[nalCount] = payloadStart;
@@ -106,7 +113,7 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
                 ((uint32_t)bytes[scan + 2] << 8) | (uint32_t)bytes[scan + 3];
             if (nalSize == 0 || nalSize > length - scan - 4) break;
             size_t payloadStart = scan + 4;
-            if (VCAMIsParameterSetNAL(bytes + payloadStart, nalSize, hevc)) {
+            if (VCAMIsOmittableNAL(bytes + payloadStart, nalSize, hevc)) {
                 sawParameterSet = YES;
             } else {
                 payloadStarts[nalCount] = payloadStart;
@@ -786,7 +793,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         int count = __sync_add_and_fetch(&strippedCount, 1);
         if (count <= 4) {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"[DEBUG-vtpack] stripped parameter sets input=%zu output=%zu",
+                @"[DEBUG-vtpack] stripped param/SEI NALs input=%zu output=%zu",
                 length, feedLength]];
         }
     }
