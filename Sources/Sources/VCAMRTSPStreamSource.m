@@ -425,6 +425,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     BOOL producedFrame = NO;
     BOOL firstFrameProduced = NO;
     CFAbsoluteTime sessionStart = 0;
+    BOOL receivedKeyPacket = NO;
     VCAMHardwareVideoDecoder *decoder = nil;
     NSError *decoderError = nil;
     AVPacket *packet = NULL;
@@ -474,33 +475,47 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             @"%@ direct-VT waiting for in-band parameter sets codec=%s", self.streamName,
             avcodec_get_name(stream->codecpar->codec_id)]];
     }
-    // 0.8.28 feeding contract: no IDR gating, no timeline rebasing, invalid
-    // duration. This exact shape produced frames on the iOS 16.5 device.
+    // Wait for the first IDR before feeding (a mid-GOP join only poisons
+    // VideoToolbox with -12909 noise), with a 10 s budget. The stream uses a
+    // ~20 s GOP, so the session usually falls back to the FFmpeg software
+    // path after the budget and the latch keeps it there.
     sessionStart = CFAbsoluteTimeGetCurrent();
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
             CMTime pts = VCAMPacketTime(packet, stream);
             BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
-            if (decoder == nil && isKeyFrame) {
-                // HLS without extradata: bootstrap the decoder from the
-                // in-band parameter sets carried by the first key packet.
-                AVCodecParameters *inBandParameters =
-                    VCAMCopyCodecParametersWithPacketExtradata(stream->codecpar, packet);
-                decoder = [[VCAMHardwareVideoDecoder alloc]
-                    initWithCodecParameters:inBandParameters];
-                avcodec_parameters_free(&inBandParameters);
-                if (decoder == nil || ![decoder start:&decoderError]) {
+            if (!receivedKeyPacket && !isKeyFrame) {
+                if (CFAbsoluteTimeGetCurrent() - sessionStart > 10.0) {
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"%@ direct-VT in-band parameter setup failed codec=%s packet=%d error=%@",
-                        self.streamName, avcodec_get_name(stream->codecpar->codec_id),
-                        packet->size,
-                        decoderError.localizedDescription ?: @"(init failed)"]];
+                        @"%@ direct-VT key frame timed out; falling back to FFmpeg hwaccel",
+                        self.streamName]];
                     av_packet_unref(packet);
                     break;
                 }
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"%@ direct-VT using in-band parameter sets packet=%d", self.streamName,
-                    packet->size]];
+                av_packet_unref(packet);
+                continue;
+            }
+            if (isKeyFrame && !receivedKeyPacket) {
+                if (decoder == nil) {
+                    AVCodecParameters *inBandParameters =
+                        VCAMCopyCodecParametersWithPacketExtradata(stream->codecpar, packet);
+                    decoder = [[VCAMHardwareVideoDecoder alloc]
+                        initWithCodecParameters:inBandParameters];
+                    avcodec_parameters_free(&inBandParameters);
+                    if (decoder == nil || ![decoder start:&decoderError]) {
+                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                            @"%@ direct-VT in-band parameter setup failed codec=%s packet=%d error=%@",
+                            self.streamName, avcodec_get_name(stream->codecpar->codec_id),
+                            packet->size,
+                            decoderError.localizedDescription ?: @"(init failed)"]];
+                        av_packet_unref(packet);
+                        break;
+                    }
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"%@ direct-VT using in-band parameter sets packet=%d", self.streamName,
+                        packet->size]];
+                }
+                receivedKeyPacket = YES;
             }
             if (decoder == nil) {
                 av_packet_unref(packet);
@@ -525,9 +540,8 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             // sets). Give it a bounded first-frame window, then let the
             // FFmpeg hwaccel fallback take over.
             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            // The 2.181 stream uses a ~20 s GOP. Give the session enough
-            // time to reach the next IDR before falling back.
-            BOOL keyFrameDecodeTimedOut = now - sessionStart > 30.0;
+            BOOL keyFrameDecodeTimedOut = receivedKeyPacket &&
+                now - sessionStart > 10.0;
             if (!firstFrameProduced && keyFrameDecodeTimedOut) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ direct-VT first frame timed out; falling back to FFmpeg hwaccel",
