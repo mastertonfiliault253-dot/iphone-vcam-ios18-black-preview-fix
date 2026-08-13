@@ -746,21 +746,26 @@ cleanup:
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
-    BOOL dumpedFirstPacket = NO;
+    int dumpedPacketCount = 0;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
-            if (!dumpedFirstPacket) {
-                dumpedFirstPacket = YES;
-                fprintf(stderr, "vcam first packet size=%d hex=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-                        packet->size,
-                        packet->size > 0 ? packet->data[0] : 0,
-                        packet->size > 1 ? packet->data[1] : 0,
-                        packet->size > 2 ? packet->data[2] : 0,
-                        packet->size > 3 ? packet->data[3] : 0,
-                        packet->size > 4 ? packet->data[4] : 0,
-                        packet->size > 5 ? packet->data[5] : 0,
-                        packet->size > 6 ? packet->data[6] : 0,
-                        packet->size > 7 ? packet->data[7] : 0);
+            if (dumpedPacketCount < 8) {
+                dumpedPacketCount += 1;
+                char nalList[96] = {0};
+                int nalLen = 0;
+                for (int i = 0; i + 3 < packet->size && nalLen < 88; i++) {
+                    if (packet->data[i] == 0 && packet->data[i + 1] == 0 &&
+                        (packet->data[i + 2] == 1 ||
+                         (packet->data[i + 2] == 0 && packet->data[i + 3] == 1))) {
+                        int sc = packet->data[i + 2] == 1 ? 3 : 4;
+                        if (i + sc < packet->size) {
+                            int t = packet->data[i + sc] & 0x1F;
+                            nalLen += snprintf(nalList + nalLen, sizeof(nalList) - (size_t)nalLen, "%d,", t);
+                        }
+                    }
+                }
+                fprintf(stderr, "vcam packet#%d size=%d nals=[%s]\n",
+                        dumpedPacketCount, packet->size, nalList);
                 fflush(stderr);
             }
             videoPacketsWithoutFrame += 1;
