@@ -17,6 +17,7 @@ void VCAMSpringBoardRTSPIgnoreLog(void *context, int level, const char *format,
     (void)arguments;
 }
 
+__attribute__((unused))
 static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
     if (packet == NULL || stream == NULL) return kCMTimeInvalid;
     if (packet->pts == AV_NOPTS_VALUE) return kCMTimeInvalid;
