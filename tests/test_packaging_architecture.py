@@ -38,12 +38,12 @@ class PackagingArchitectureTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
             encoding="utf-8"
         )
-        # SpringBoard client is arm64-only now (vendored FFmpeg ships one slice);
-        # a single-arch dylib cannot be lipo-thinned, so the CI checks the
-        # ObjC stub sections on the file directly.
-        self.assertIn('lipo "$springboard_client" -verify_arch arm64', workflow)
-        self.assertNotIn('-thin arm64', workflow)
-        self.assertIn('otool -l "$springboard_client"', workflow)
+        # FFmpeg is built as arm64+arm64e fat static libraries so the injected
+        # SpringBoard client ships both slices and CI thins arm64e for the
+        # ObjC stub section checks.
+        self.assertIn('lipo "$springboard_client" -verify_arch arm64 arm64e', workflow)
+        self.assertIn('lipo "$springboard_client" -thin arm64e', workflow)
+        self.assertIn('otool -l /tmp/VCAMSpringBoardClient-arm64e.dylib', workflow)
         self.assertIn("sectname __objc_stubs", workflow)
         self.assertIn("sectname __objc_intobj", workflow)
 
