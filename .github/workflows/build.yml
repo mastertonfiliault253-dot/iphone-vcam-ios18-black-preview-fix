@@ -81,7 +81,7 @@ jobs:
           let gen = AVAssetImageGenerator(asset: asset)
           gen.appliesPreferredTrackTransform = true
           do {
-              let (img, _) = try gen.copyCGImage(at: CMTime(seconds: 2, preferredTimescale: 600), actualTime: nil)
+              let img = try gen.copyCGImage(at: CMTime(seconds: 2, preferredTimescale: 600), actualTime: nil)
               print("VT decoded frame ok: \(img.width)x\(img.height)")
           } catch {
               print("VT decode FAILED: \(error)")
