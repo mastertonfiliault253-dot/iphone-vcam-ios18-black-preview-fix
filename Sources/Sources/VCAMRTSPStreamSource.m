@@ -538,11 +538,17 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             }
             if (CMTIME_IS_NUMERIC(pts) && CMTIME_IS_NUMERIC(timelineOrigin)) {
                 pts = CMTimeSubtract(pts, timelineOrigin);
+                // iOS VideoToolbox treats a zero presentation timestamp on
+                // the first sample as invalid and rejects the IDR with
+                // kVTVideoDecoderReferenceMissingErr (-12780). Offset the
+                // timeline so the first frame carries a nonzero PTS.
+                pts = CMTimeAdd(pts, CMTimeMake(
+                    1, MAX((int32_t)1, pts.timescale)));
             }
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
                  presentationTime:pts
-                       decodeTime:pts
+                       decodeTime:kCMTimeInvalid
                          duration:VCAMPacketDuration(packet, stream)
                        isKeyFrame:isKeyFrame];
             CVPixelBufferRef output = NULL;
