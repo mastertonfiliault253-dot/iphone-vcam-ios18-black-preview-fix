@@ -200,12 +200,13 @@
                 // Preserve the decoder-class tag across the vImage BGRA
                 // conversion so hardware-decoded sources keep reporting
                 // hardware decode upstream.
-                CFTypeRef decodeHardware = CVBufferGetAttachment(
+                CFTypeRef decodeHardware = CVBufferCopyAttachment(
                     pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"), NULL);
                 if (decodeHardware != NULL) {
                     CVBufferSetAttachment(
                         output, CFSTR("com.codex.vcam.decodeHardware"),
                         decodeHardware, kCVAttachmentMode_ShouldPropagate);
+                    CFRelease(decodeHardware);
                 }
                 CMSampleBufferRef sample =
                     [self copySampleWrappingPixelBuffer:output

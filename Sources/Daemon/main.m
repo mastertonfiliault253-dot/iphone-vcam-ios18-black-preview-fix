@@ -275,9 +275,10 @@ static void VCAMPublishTick(void) {
         }
         BOOL nativeHardwareDecode = NO;
         if (native != NULL) {
-            nativeHardwareDecode = CVBufferGetAttachment(
-                native, CFSTR("com.codex.vcam.decodeHardware"), NULL) ==
-                kCFBooleanTrue;
+            CFBooleanRef nativeHardware = CVBufferCopyAttachment(
+                native, CFSTR("com.codex.vcam.decodeHardware"), NULL);
+            nativeHardwareDecode = nativeHardware == kCFBooleanTrue;
+            if (nativeHardware != NULL) CFRelease(nativeHardware);
             CVPixelBufferRelease(native);
         }
         if (nativeConsumed) return;

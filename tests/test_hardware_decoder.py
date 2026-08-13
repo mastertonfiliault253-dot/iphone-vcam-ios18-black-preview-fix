@@ -473,7 +473,7 @@ class HardwareDecoderTests(unittest.TestCase):
             "copySampleWrappingPixelBuffer:output", 1
         )[0]
         self.assertIn("com.codex.vcam.decodeHardware", converted)
-        self.assertIn("CVBufferGetAttachment", converted)
+        self.assertIn("CVBufferCopyAttachment", converted)
         self.assertIn("CVBufferSetAttachment", converted)
 
     def test_broker_preview_snapshot_carries_decode_hardware(self) -> None:
