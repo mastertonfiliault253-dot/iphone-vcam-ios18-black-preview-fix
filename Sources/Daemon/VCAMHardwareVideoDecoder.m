@@ -506,7 +506,15 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         }
         return;
     }
-    if (imageBuffer == NULL || decoder == nil) return;
+    if (imageBuffer == NULL || decoder == nil) {
+        static volatile int nullImageCount = 0;
+        int count = __sync_add_and_fetch(&nullImageCount, 1);
+        if (count <= 4) {
+            fprintf(stderr, "vcam VT callback status=0 but imageBuffer=NULL count=%d\n", count);
+            fflush(stderr);
+        }
+        return;
+    }
     static volatile int outputFrames = 0;
     int outputCount = __sync_add_and_fetch(&outputFrames, 1);
     if (outputCount <= 5) {
@@ -712,7 +720,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     if (_active) return YES;
     NSDictionary *destinationAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
     };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = VCAMHardwareDecoderCallback,

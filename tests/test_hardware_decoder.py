@@ -177,7 +177,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("_decoderSpecification", create)
         self.assertIn("destinationAttributes", create)
-        self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
+        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
         self.assertNotIn("UsingHardwareAcceleratedVideoDecoder", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
