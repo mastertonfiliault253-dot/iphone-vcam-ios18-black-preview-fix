@@ -130,11 +130,12 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
             "static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer", 1
         )[1].split("VCAMSharedSurfaceWriter *VCAMSharedSurfaceWriterCreate", 1)[0]
         self.assertIn("VCAMSharedFrameSlotCount", shared)
-        self.assertNotIn("CVPixelBufferCreate(", create_pixel_buffer)
-        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", create_pixel_buffer)
+        self.assertIn("CVPixelBufferCreate(", create_pixel_buffer)
+        self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", create_pixel_buffer)
         self.assertIn("IOSurfaceCreate(", create_pixel_buffer)
         self.assertIn('@"IOSurfaceIsGlobal": @YES', create_pixel_buffer)
         self.assertIn("CVPixelBufferCreateWithIOSurface", create_pixel_buffer)
+        self.assertIn("kIOSurfacePixelFormat: @(pixelFormat)", create_pixel_buffer)
         self.assertIn("pixelFormat == kCVPixelFormatType_32BGRA", create_pixel_buffer)
         self.assertNotIn("kCVPixelBufferMetalCompatibilityKey", create_pixel_buffer)
         self.assertIn("consumerUseState", shared)
