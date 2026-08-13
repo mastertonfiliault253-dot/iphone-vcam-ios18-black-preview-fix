@@ -263,6 +263,9 @@ static BOOL VCAMSynchronizeSharedRequestedState(NSDictionary<NSString *, id> *va
         enabledValue = @NO;
     }
     BOOL enabled = [enabledValue boolValue];
+    if (enabled && ![VCAMConfiguration isLicensed]) {
+        enabled = NO;
+    }
     BOOL written = VCAMSharedFrameSetRequestedActive(enabled);
     VCAMAppendDiagnostics([NSString stringWithFormat:
         @"shared requested mode enabled=%d written=%d", enabled, written]);
@@ -948,6 +951,10 @@ static NSData *VCAMLicensePublicKey(void) {
 + (nullable NSString *)importMediaAtURL:(NSURL *)sourceURL
                           suggestedName:(nullable NSString *)suggestedName
                                   error:(NSError **)error {
+    if (![self isLicensed]) {
+        if (error != NULL) *error = VCAMConfigurationError(28, @"VCAM is not licensed");
+        return nil;
+    }
     int input = open(sourceURL.fileSystemRepresentation, O_RDONLY);
     struct stat metadata = {0};
     if (input < 0 || fstat(input, &metadata) != 0 || metadata.st_size <= 0) {
@@ -1233,7 +1240,7 @@ static NSData *VCAMLicensePublicKey(void) {
         NSProcessInfo.processInfo.processName ?: @"(unknown)"]];
     if (values.count == 0) { configuration.enabled = NO; return configuration; }
 
-    configuration.enabled = [values[@"enabled"] boolValue];
+    configuration.enabled = [values[@"enabled"] boolValue] && [self isLicensed];
     configuration.replaceAudio = NO;
     configuration.loopMedia = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     configuration.mirrorHorizontally = [values[@"mirrorHorizontally"] boolValue];
