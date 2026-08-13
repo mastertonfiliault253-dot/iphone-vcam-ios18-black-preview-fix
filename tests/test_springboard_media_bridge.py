@@ -265,5 +265,26 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
 
 
+    def test_hls_frames_tag_hardware_decode_after_ci_render_and_on_bootstrap(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        # The destination tag must survive the CIContext render, so it is set
+        # after rendering, not before.
+        segment = source.split(
+            "VCAMSetVideoColorAttachments(destination);", 1
+        )[1].split("if (useSurfaceDestination) {", 1)[0]
+        self.assertLess(
+            segment.index("render:renderImage"),
+            segment.index("com.codex.vcam.decodeHardware"),
+        )
+        self.assertIn("kCFBooleanTrue", segment)
+        # The mmap bootstrap frame carries the same tag so the compatibility
+        # path reports hardware decode too.
+        bootstrap = source.split("render:bootstrapImage", 1)[1].split(
+            "compatibilityPublished =", 1
+        )[0]
+        self.assertIn("com.codex.vcam.decodeHardware", bootstrap)
+
 if __name__ == "__main__":
     unittest.main()

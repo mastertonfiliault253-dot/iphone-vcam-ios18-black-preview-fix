@@ -799,13 +799,14 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             CIImage *renderImage = useSurfaceDestination ? image
                 : [self legacyCanvasImageFromOrientedImage:image];
             VCAMSetVideoColorAttachments(destination);
-            // AVPlayer decodes HLS and local video through VideoToolbox; tag
-            // the frame so the shared-frame metadata reports hardware decode
-            // instead of the default "software decode".
-            CVBufferSetAttachment(destination, CFSTR("com.codex.vcam.decodeHardware"),
-                                  kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
             [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
+            // AVPlayer decodes HLS and local video through VideoToolbox; tag
+            // the frame after the CIContext render (which rewrites color
+            // attachments) so the shared-frame metadata reports hardware
+            // decode instead of the default "software decode".
+            CVBufferSetAttachment(destination, CFSTR("com.codex.vcam.decodeHardware"),
+                                  kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
             if (useSurfaceDestination) {
                 BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
                     self.surfaceWriter, destination);
@@ -827,6 +828,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                         [self.context render:bootstrapImage
                              toCVPixelBuffer:bootstrap bounds:bootstrapTarget
                                   colorSpace:self.colorSpace];
+                        CVBufferSetAttachment(bootstrap,
+                            CFSTR("com.codex.vcam.decodeHardware"),
+                            kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
                         compatibilityPublished =
                             VCAMSharedFrameWriterPublishForSurfaceGeneration(
                                 self.writer, bootstrap,

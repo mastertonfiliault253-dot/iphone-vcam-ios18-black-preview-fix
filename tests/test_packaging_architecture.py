@@ -213,7 +213,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("slotSequence[slot], 0", implementation)
         self.assertIn("maximumAgeNanoseconds", implementation)
         self.assertIn("active", implementation)
-        self.assertIn("VCAMSharedFrameVersion = 3", implementation)
+        self.assertIn("VCAMSharedFrameVersion = 4", implementation)
         self.assertIn("_Atomic(uint64_t) requestedState", implementation)
         self.assertIn("atomic_compare_exchange_weak_explicit", implementation)
         self.assertIn("VCAMSharedFrameSetRequestedActive", header)

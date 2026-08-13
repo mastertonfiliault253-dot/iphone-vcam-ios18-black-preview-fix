@@ -396,6 +396,9 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
         @"width": @(width),
         @"height": @(height),
         @"surface": @(useSurface),
+        @"decodeHardware": @(
+            ((copiedMetadata.transferFunction & VCAMSharedFrameDecodeHardwareMask) >>
+             VCAMSharedFrameDecodeHardwareShift) == 1),
     };
     return cachedSnapshot;
 }

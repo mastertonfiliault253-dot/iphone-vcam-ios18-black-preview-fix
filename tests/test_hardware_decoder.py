@@ -426,5 +426,70 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("VCAMCaptureFFmpegHardwareLogs", stream)  # diagnostics always on
 
 
+    def test_mmap_compatibility_path_propagates_decode_hardware(self) -> None:
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        # The mmap header mirrors the surface header's color slots so the
+        # compatibility path reports the same decode class.
+        self.assertIn("VCAMSharedFrameWriteSlotMetadata", shared)
+        frame_header = shared.split("} VCAMSharedFrameHeader;", 1)[0]
+        self.assertIn("slotColorPrimaries", frame_header)
+        self.assertIn("slotTransferFunction", frame_header)
+        self.assertIn("slotYCbCrMatrix", frame_header)
+        # Both transports write through the shared metadata writer.
+        self.assertEqual(
+            shared.count(
+                "VCAMSharedFrameWriteSlotMetadata(\n"
+                "        writer->header->slotColorPrimaries,"
+            ),
+            2,
+        )
+        # The mmap reader fills the same fields as the surface reader.
+        mmap_read = shared.split(
+            "static bool VCAMSharedFrameReaderGetSnapshot", 1
+        )[1].split("bool VCAMSharedFrameReaderGetLatestMetadata", 1)[0]
+        self.assertIn("metadata->colorPrimaries", mmap_read)
+        self.assertIn("metadata->transferFunction", mmap_read)
+        self.assertIn("metadata->yCbCrMatrix", mmap_read)
+
+    def test_vcamd_native_transport_propagates_decode_hardware_attachments(self) -> None:
+        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CVBufferPropagateAttachments(source, destination)", daemon)
+        self.assertIn("nativeHardwareDecode", daemon)
+        fallback = daemon.split("nativeHardwareDecode = NO;", 1)[1].split(
+            "VCAMSharedFrameWriterPublishForSurfaceGeneration(", 1
+        )[0]
+        self.assertIn("com.codex.vcam.decodeHardware", fallback)
+        self.assertIn("nativeHardwareDecode", fallback)
+
+    def test_renderer_preserves_decode_hardware_tag_across_bgra_conversion(self) -> None:
+        renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(
+            encoding="utf-8"
+        )
+        converted = renderer.split("if (converted) {", 1)[1].split(
+            "copySampleWrappingPixelBuffer:output", 1
+        )[0]
+        self.assertIn("com.codex.vcam.decodeHardware", converted)
+        self.assertIn("CVBufferGetAttachment", converted)
+        self.assertIn("CVBufferSetAttachment", converted)
+
+    def test_broker_preview_snapshot_carries_decode_hardware(self) -> None:
+        config = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('@"decodeHardware": @(', config)
+        self.assertIn("VCAMSharedFrameDecodeHardwareMask", config)
+        broker_read = preview.split("VCAMPreviewGetBrokerMetadata", 1)[1].split(
+            "@implementation", 1
+        )[0]
+        self.assertIn("decodeHardware", broker_read)
+        self.assertIn("VCAMSharedFrameDecodeHardwareShift", broker_read)
+
 if __name__ == "__main__":
     unittest.main()

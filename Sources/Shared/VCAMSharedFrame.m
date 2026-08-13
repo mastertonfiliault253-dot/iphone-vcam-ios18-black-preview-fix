@@ -31,7 +31,7 @@ extern const CFStringRef kIOSurfaceBytesPerElement;
 extern const CFStringRef kIOSurfacePixelFormat;
 
 static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
-static const uint32_t VCAMSharedFrameVersion = 3;
+static const uint32_t VCAMSharedFrameVersion = 4;
 static const char *const VCAMSharedFramePath = "/var/tmp/com.codex.vcam.frames";
 static const uint32_t VCAMSharedSurfaceMagic = 0x56435346;
 static const uint32_t VCAMSharedSurfaceVersion = 8;
@@ -60,6 +60,12 @@ typedef struct {
     /// Zero for legacy-only publication; otherwise binds a bootstrap frame to
     /// exactly one IOSurface writer generation.
     _Atomic(uint64_t) slotSurfaceGeneration[VCAMSharedFrameSlotCount];
+    /// Color metadata mirrors the surface header so the mmap compatibility
+    /// path reports the same decode class. High 8 bits of slotTransferFunction
+    /// carry the decoder class (1 = VideoToolbox hardware, 0 = software).
+    _Atomic(uint32_t) slotColorPrimaries[VCAMSharedFrameSlotCount];
+    _Atomic(uint32_t) slotTransferFunction[VCAMSharedFrameSlotCount];
+    _Atomic(uint32_t) slotYCbCrMatrix[VCAMSharedFrameSlotCount];
 } VCAMSharedFrameHeader;
 
 struct VCAMSharedFrameWriter {
@@ -156,6 +162,41 @@ static uint32_t VCAMYCbCrMatrixCode(CFTypeRef value) {
     if (CFEqual(value, kCVImageBufferYCbCrMatrix_ITU_R_601_4)) return VCAMMatrix601;
     if (CFEqual(value, kCVImageBufferYCbCrMatrix_SMPTE_240M_1995)) return VCAMMatrixSMPTE240M;
     return VCAMColorUnknown;
+}
+
+// Shared by the mmap and IOSurface writers so both transports fold the same
+// color metadata (and the decode-hardware class encoded in the high 8 bits
+// of the transfer function) into the published slot.
+static void VCAMSharedFrameWriteSlotMetadata(
+    _Atomic(uint32_t) *slotColorPrimaries,
+    _Atomic(uint32_t) *slotTransferFunction,
+    _Atomic(uint32_t) *slotYCbCrMatrix,
+    uint32_t slot, CVPixelBufferRef pixelBuffer) {
+    CFTypeRef primariesValue = CVBufferCopyAttachment(
+        pixelBuffer, kCVImageBufferColorPrimariesKey, NULL);
+    CFTypeRef transferValue = CVBufferCopyAttachment(
+        pixelBuffer, kCVImageBufferTransferFunctionKey, NULL);
+    CFTypeRef matrixValue = CVBufferCopyAttachment(
+        pixelBuffer, kCVImageBufferYCbCrMatrixKey, NULL);
+    uint32_t primaries = VCAMColorPrimariesCode(primariesValue);
+    uint32_t transfer = VCAMTransferFunctionCode(transferValue);
+    uint32_t matrix = VCAMYCbCrMatrixCode(matrixValue);
+    CFBooleanRef decodeHardware = CVBufferCopyAttachment(
+        pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"), NULL);
+    if (decodeHardware == kCFBooleanTrue) {
+        transfer = (transfer & VCAMSharedFrameTransferFunctionMask) |
+            (1U << VCAMSharedFrameDecodeHardwareShift);
+    }
+    if (decodeHardware != NULL) CFRelease(decodeHardware);
+    if (primariesValue != NULL) CFRelease(primariesValue);
+    if (transferValue != NULL) CFRelease(transferValue);
+    if (matrixValue != NULL) CFRelease(matrixValue);
+    atomic_store_explicit(&slotColorPrimaries[slot], primaries,
+                          memory_order_relaxed);
+    atomic_store_explicit(&slotTransferFunction[slot], transfer,
+                          memory_order_relaxed);
+    atomic_store_explicit(&slotYCbCrMatrix[slot], matrix,
+                          memory_order_relaxed);
 }
 
 static CFStringRef VCAMColorPrimariesValue(uint32_t code) {
@@ -396,6 +437,11 @@ bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
                VCAMSharedFrameBytesPerRow);
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    VCAMSharedFrameWriteSlotMetadata(
+        writer->header->slotColorPrimaries,
+        writer->header->slotTransferFunction,
+        writer->header->slotYCbCrMatrix,
+        slot, pixelBuffer);
 
     uint64_t timestamp = VCAMSharedFrameMonotonicNanoseconds();
     atomic_store_explicit(&writer->header->slotSurfaceGeneration[slot],
@@ -585,6 +631,15 @@ static bool VCAMSharedFrameReaderGetSnapshot(
             return false;
         }
         metadata->surfaceGeneration = generation;
+        metadata->colorPrimaries = atomic_load_explicit(
+            &reader->header->slotColorPrimaries[snapshot->slot],
+            memory_order_relaxed);
+        metadata->transferFunction = atomic_load_explicit(
+            &reader->header->slotTransferFunction[snapshot->slot],
+            memory_order_relaxed);
+        metadata->yCbCrMatrix = atomic_load_explicit(
+            &reader->header->slotYCbCrMatrix[snapshot->slot],
+            memory_order_relaxed);
     }
     return success;
 }
@@ -639,6 +694,12 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
         metadata->pixelFormat = kCVPixelFormatType_32BGRA;
         metadata->surfaceID = 0;
         metadata->surfaceGeneration = surfaceGeneration;
+        metadata->colorPrimaries = atomic_load_explicit(
+            &reader->header->slotColorPrimaries[slot], memory_order_relaxed);
+        metadata->transferFunction = atomic_load_explicit(
+            &reader->header->slotTransferFunction[slot], memory_order_relaxed);
+        metadata->yCbCrMatrix = atomic_load_explicit(
+            &reader->header->slotYCbCrMatrix[slot], memory_order_relaxed);
     }
     return true;
 }
@@ -969,31 +1030,11 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
     uint32_t slot = writer->pendingSlot;
     uint64_t sequence = writer->pendingSequence;
     uint64_t timestamp = VCAMSharedFrameMonotonicNanoseconds();
-    CFTypeRef primariesValue = CVBufferCopyAttachment(
-        pixelBuffer, kCVImageBufferColorPrimariesKey, NULL);
-    CFTypeRef transferValue = CVBufferCopyAttachment(
-        pixelBuffer, kCVImageBufferTransferFunctionKey, NULL);
-    CFTypeRef matrixValue = CVBufferCopyAttachment(
-        pixelBuffer, kCVImageBufferYCbCrMatrixKey, NULL);
-    uint32_t primaries = VCAMColorPrimariesCode(primariesValue);
-    uint32_t transfer = VCAMTransferFunctionCode(transferValue);
-    uint32_t matrix = VCAMYCbCrMatrixCode(matrixValue);
-    CFBooleanRef decodeHardware = CVBufferCopyAttachment(
-        pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"), NULL);
-    if (decodeHardware == kCFBooleanTrue) {
-        transfer = (transfer & VCAMSharedFrameTransferFunctionMask) |
-            (1U << VCAMSharedFrameDecodeHardwareShift);
-    }
-    if (decodeHardware != NULL) CFRelease(decodeHardware);
-    if (primariesValue != NULL) CFRelease(primariesValue);
-    if (transferValue != NULL) CFRelease(transferValue);
-    if (matrixValue != NULL) CFRelease(matrixValue);
-    atomic_store_explicit(&writer->header->slotColorPrimaries[slot], primaries,
-                          memory_order_relaxed);
-    atomic_store_explicit(&writer->header->slotTransferFunction[slot], transfer,
-                          memory_order_relaxed);
-    atomic_store_explicit(&writer->header->slotYCbCrMatrix[slot], matrix,
-                          memory_order_relaxed);
+    VCAMSharedFrameWriteSlotMetadata(
+        writer->header->slotColorPrimaries,
+        writer->header->slotTransferFunction,
+        writer->header->slotYCbCrMatrix,
+        slot, pixelBuffer);
     atomic_store_explicit(&writer->header->slotSequence[slot], sequence,
                           memory_order_release);
     atomic_store_explicit(&writer->header->publishedTimestampNanoseconds,

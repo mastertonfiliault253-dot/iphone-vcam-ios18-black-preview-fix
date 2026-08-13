@@ -197,6 +197,16 @@
                     pixelBuffer, output, (int)(quarterTurns * 90), mirror,
                     (int)configuration.contentMode);
             if (converted) {
+                // Preserve the decoder-class tag across the vImage BGRA
+                // conversion so hardware-decoded sources keep reporting
+                // hardware decode upstream.
+                CFTypeRef decodeHardware = CVBufferGetAttachment(
+                    pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"), NULL);
+                if (decodeHardware != NULL) {
+                    CVBufferSetAttachment(
+                        output, CFSTR("com.codex.vcam.decodeHardware"),
+                        decodeHardware, kCVAttachmentMode_ShouldPropagate);
+                }
                 CMSampleBufferRef sample =
                     [self copySampleWrappingPixelBuffer:output
                                                template:templateBuffer];

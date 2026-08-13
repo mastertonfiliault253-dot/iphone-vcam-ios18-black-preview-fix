@@ -273,7 +273,13 @@ static void VCAMPublishTick(void) {
             [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface consumer accepted"];
             VCAMLoggedNativeSurfaceConsumed = YES;
         }
-        if (native != NULL) CVPixelBufferRelease(native);
+        BOOL nativeHardwareDecode = NO;
+        if (native != NULL) {
+            nativeHardwareDecode = CVBufferGetAttachment(
+                native, CFSTR("com.codex.vcam.decodeHardware"), NULL) ==
+                kCFBooleanTrue;
+            CVPixelBufferRelease(native);
+        }
         if (nativeConsumed) return;
         if (nativeTransport && !VCAMLoggedLegacyFallback) {
             [VCAMConfiguration appendProcessLog:@"vcamd native IOSurface awaiting consumer; BGRA fallback active"];
@@ -283,6 +289,11 @@ static void VCAMPublishTick(void) {
             CGSizeMake(VCAMSharedFrameWidth, VCAMSharedFrameHeight)];
         CVPixelBufferRef pixelBuffer = sample == NULL ? NULL : CMSampleBufferGetImageBuffer(sample);
         if (pixelBuffer != NULL) {
+            if (nativeHardwareDecode) {
+                CVBufferSetAttachment(pixelBuffer,
+                    CFSTR("com.codex.vcam.decodeHardware"),
+                    kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
+            }
             uint64_t surfaceGeneration =
                 VCAMSharedSurfaceWriterGeneration(VCAMSurfaceWriter);
             if (surfaceGeneration != 0) {

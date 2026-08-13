@@ -72,6 +72,10 @@ static BOOL VCAMPreviewGetBrokerMetadata(
         metadataOut->height = height.unsignedIntValue;
         metadataOut->surfaceGeneration =
             [snapshot[@"surfaceGeneration"] unsignedLongLongValue];
+        if ([snapshot[@"decodeHardware"] boolValue]) {
+            metadataOut->transferFunction =
+                1U << VCAMSharedFrameDecodeHardwareShift;
+        }
     }
     if (surfaceOut != NULL) *surfaceOut = [snapshot[@"surface"] boolValue];
     return YES;
