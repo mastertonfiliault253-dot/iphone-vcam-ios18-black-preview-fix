@@ -324,12 +324,20 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
+    fprintf(stderr, "vcamd boot step=jetsam-start\n");
     VCAMRaiseJetsamMemoryLimit();
+    fprintf(stderr, "vcamd boot step=jetsam-done\n");
     @autoreleasepool {
+        fprintf(stderr, "vcamd boot step=broker-server-start\n");
         VCAMSurfaceBrokerStartServer();
+        fprintf(stderr, "vcamd boot step=broker-server-done\n");
+        fprintf(stderr, "vcamd boot step=frame-writer-create-start\n");
         VCAMWriter = VCAMSharedFrameWriterCreate();
+        fprintf(stderr, "vcamd boot step=frame-writer-create-done writer=%p\n", VCAMWriter);
         if (VCAMWriter == NULL) return 2;
+        fprintf(stderr, "vcamd boot step=producer-new-start\n");
         VCAMProducer = [VCAMFrameProducer new];
+        fprintf(stderr, "vcamd boot step=producer-new-done\n");
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL, VCAMConfigurationChanged,
                                         CFSTR("com.codex.vcam/preferences.changed"),
@@ -337,6 +345,7 @@ int main(int argc, char *argv[]) {
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         VCAMScheduleTimer();
         [VCAMConfiguration appendProcessLog:@"vcamd started"];
+        fprintf(stderr, "vcamd boot step=runloop\n");
         CFRunLoopRun();
         VCAMDestroySurfaceWriter();
         VCAMSharedFrameWriterDestroy(VCAMWriter);
