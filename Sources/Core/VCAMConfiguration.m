@@ -459,7 +459,7 @@ static NSData *VCAMLicensePublicKey(void) {
                                      (id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic},
         &error);
     if (!secKey) return NO;
-    BOOL ok = SecKeyVerifySignature(secKey, kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256,
+    BOOL ok = SecKeyVerifySignature(secKey, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,
         (__bridge CFDataRef)payloadData, (__bridge CFDataRef)sig, &error);
     CFRelease(secKey);
     return ok;
