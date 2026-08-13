@@ -137,7 +137,7 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
         return NO;
     }
     VCAMHardwareVideoDecoder *decoder = nil;
-    NSError *decoderError = nil;
+    BOOL isolationDemuxOnly = YES;
     int64_t sessionStart = av_gettime_relative();
     BOOL decodedAny = NO;
     while (self.running && av_read_frame(format, packet) >= 0) {
@@ -145,7 +145,6 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
             av_packet_unref(packet);
             continue;
         }
-        CMTime pts = VCAMRTSPSourcePacketTime(packet, stream);
         BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
         if (decoder == nil && !isKeyFrame) {
             if (av_gettime_relative() - sessionStart > 10000000LL) {
@@ -159,8 +158,16 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
             continue;
         }
         if (decoder == nil) {
+            // ISOLATION-EXPERIMENT B: demux only, no VideoToolbox session.
+            if (isolationDemuxOnly) {
+                [VCAMConfiguration appendProcessLog:
+                    @"springboard RTSP isolation: decoder skipped (demux only)"];
+                av_packet_unref(packet);
+                break;
+            }
             decoder = [[VCAMHardwareVideoDecoder alloc]
                 initWithCodecParameters:codecParameters];
+            NSError *decoderError = nil;
             if (decoder == nil || ![decoder start:&decoderError]) {
                 self.lastError = decoderError.localizedDescription ?: @"decoder init failed";
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
@@ -171,12 +178,6 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
             [VCAMConfiguration appendProcessLog:
                 @"springboard RTSP decoder started (direct VideoToolbox)"];
         }
-        [decoder decodePacket:packet->data
-                       length:(size_t)packet->size
-             presentationTime:pts
-                   decodeTime:kCMTimeInvalid
-                     duration:kCMTimeInvalid
-                   isKeyFrame:isKeyFrame];
         av_packet_unref(packet);
         // Drain decoded frames to the bridge on the main queue.
         CVPixelBufferRef frame = NULL;
