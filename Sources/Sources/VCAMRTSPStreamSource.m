@@ -16,7 +16,6 @@
 #include <libavutil/mem.h>
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
-static volatile int VCAMCaptureFFmpegHardwareLogs;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
