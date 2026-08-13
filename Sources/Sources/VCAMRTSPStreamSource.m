@@ -21,7 +21,7 @@ static volatile int VCAMCaptureFFmpegHardwareLogs;
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
     (void)context;
-    if (!VCAMCaptureFFmpegHardwareLogs || level > AV_LOG_WARNING) return;
+    if (level > AV_LOG_WARNING) return;
     char message[1024] = {0};
     vsnprintf(message, sizeof(message), format, arguments);
     size_t length = strlen(message);
@@ -78,6 +78,19 @@ static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
     double seconds = (double)packet->duration * av_q2d(timeBase);
     return isfinite(seconds) && seconds > 0
         ? CMTimeMakeWithSeconds(seconds, 600) : kCMTimeInvalid;
+}
+
+static enum AVPixelFormat VCAMRequestVideoToolboxFormat(AVCodecContext *context,
+                                                           const enum AVPixelFormat *formats) {
+    (void)context;
+    // Prefer the internal videotoolbox hwaccel output. Choosing this format
+    // makes libavcodec activate the hwaccel automatically (INTERNAL method,
+    // no hw_device_ctx required on iOS). Fall back to the first offered
+    // software format so decoding still works when VideoToolbox refuses.
+    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
+        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
+    }
+    return *formats;
 }
 
 static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
@@ -647,10 +660,16 @@ cleanup:
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
     codecContext->err_recognition = AV_EF_CAREFUL;
-    // Automatic hardware acceleration: libavcodec's h264/hevc decoders
-    // auto-activate the videotoolbox hwaccel (enabled in build-ffmpeg-ios.sh)
-    // without a manual hw_device_ctx. Hardware frames arrive as
-    // AV_PIX_FMT_VIDEOTOOLBOX with a CVPixelBufferRef in data[3].
+    // Automatic hardware acceleration: requesting AV_PIX_FMT_VIDEOTOOLBOX in
+    // get_format makes libavcodec activate the internal videotoolbox hwaccel
+    // (enabled in build-ffmpeg-ios.sh) without a manual hw_device_ctx — that
+    // API fails on iOS. Hardware frames arrive as AV_PIX_FMT_VIDEOTOOLBOX
+    // with a CVPixelBufferRef in data[3]; if VideoToolbox rejects the stream
+    // (missing SPS/PPS, unsupported profile) the decoder falls back to
+    // software formats transparently.
+    codecContext->get_format = VCAMRequestVideoToolboxFormat;
+    codecContext->hwaccel_flags = AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH |
+        AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH;
     codecContext->thread_count = 1;
     if (avcodec_open2(codecContext, decoder, NULL) < 0) {
         goto cleanup;
