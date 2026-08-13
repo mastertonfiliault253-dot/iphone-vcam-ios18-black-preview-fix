@@ -204,8 +204,8 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        passthrough = decoder.split("if (!sawParameterSet && !annexB)", 1)[1].split(
-            "if (nalCount == 0", 1
+        passthrough = decoder.split("if (!annexB)", 1)[1].split(
+            "size_t payloadStarts", 1
         )[0]
         self.assertIn("*outLength = length;", passthrough)
         self.assertIn("return NULL;", passthrough)

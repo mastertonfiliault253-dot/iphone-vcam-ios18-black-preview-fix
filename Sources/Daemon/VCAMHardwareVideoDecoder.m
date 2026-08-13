@@ -59,69 +59,49 @@ static BOOL VCAMIsParameterSetNAL(const uint8_t *payload, size_t payloadLength,
 static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
                                            size_t *outLength, BOOL hevc,
                                            BOOL *strippedAny) {
+    // Convert an Annex-B access unit into a length-prefixed (avcC) sample
+    // while KEEPING every NAL, including SPS/PPS/SEI. VideoToolbox needs the
+    // full AU — stripping parameter sets leaves VT unable to decode IDR and
+    // every frame fails with kVTVideoDecoderReferenceMissingErr (-12780).
+    // avcC input is already length-prefixed: return NULL to keep the original.
     if (outLength == NULL || bytes == NULL || length < 4) return NULL;
     *outLength = 0;
     if (strippedAny != NULL) *strippedAny = NO;
     BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
-    size_t payloadStarts[1024] = {0};
-    size_t payloadSizes[1024] = {0};
-    size_t nalCount = 0;
-    BOOL sawParameterSet = NO;
-    size_t total = 0;
-    if (annexB) {
-        size_t scan = 0;
-        while (scan < length && nalCount < 1024) {
-            size_t startCodeLength = 0;
-            if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
-                if (bytes[scan] == 0) {
-                    scan += 1;
-                    continue;
-                }
-                break;
-            }
-            size_t payloadStart = scan + startCodeLength;
-            size_t next = payloadStart;
-            while (next < length &&
-                   !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
-                next += 1;
-            }
-            size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
-                bytes, payloadStart, next);
-            size_t payloadLength = payloadEnd - payloadStart;
-            if (VCAMIsParameterSetNAL(bytes + payloadStart, payloadLength, hevc)) {
-                sawParameterSet = YES;
-            } else {
-                payloadStarts[nalCount] = payloadStart;
-                payloadSizes[nalCount] = payloadLength;
-                nalCount += 1;
-                total += payloadLength + 4;
-            }
-            scan = next;
-        }
-    } else {
-        size_t scan = 0;
-        while (scan + 4 <= length && nalCount < 1024) {
-            uint32_t nalSize =
-                ((uint32_t)bytes[scan] << 24) | ((uint32_t)bytes[scan + 1] << 16) |
-                ((uint32_t)bytes[scan + 2] << 8) | (uint32_t)bytes[scan + 3];
-            if (nalSize == 0 || nalSize > length - scan - 4) break;
-            size_t payloadStart = scan + 4;
-            if (VCAMIsParameterSetNAL(bytes + payloadStart, nalSize, hevc)) {
-                sawParameterSet = YES;
-            } else {
-                payloadStarts[nalCount] = payloadStart;
-                payloadSizes[nalCount] = nalSize;
-                nalCount += 1;
-                total += nalSize + 4;
-            }
-            scan = payloadStart + nalSize;
-        }
-    }
-    if (strippedAny != NULL) *strippedAny = sawParameterSet;
-    if (!sawParameterSet && !annexB) {
+    if (!annexB) {
         *outLength = length;
         return NULL;
     }
+    size_t payloadStarts[1024] = {0};
+    size_t payloadSizes[1024] = {0};
+    size_t nalCount = 0;
+    size_t total = 0;
+    size_t scan = 0;
+    while (scan < length && nalCount < 1024) {
+        size_t startCodeLength = 0;
+        if (!VCAMIsAnnexBStartCode(bytes, length, scan, &startCodeLength)) {
+            if (bytes[scan] == 0) {
+                scan += 1;
+                continue;
+            }
+            break;
+        }
+        size_t payloadStart = scan + startCodeLength;
+        size_t next = payloadStart;
+        while (next < length &&
+               !VCAMIsAnnexBStartCode(bytes, length, next, NULL)) {
+            next += 1;
+        }
+        size_t payloadEnd = VCAMTrimAnnexBTrailingZeroBytes(
+            bytes, payloadStart, next);
+        size_t payloadLength = payloadEnd - payloadStart;
+        payloadStarts[nalCount] = payloadStart;
+        payloadSizes[nalCount] = payloadLength;
+        nalCount += 1;
+        total += payloadLength + 4;
+        scan = next;
+    }
+    if (strippedAny != NULL) *strippedAny = YES;
     if (nalCount == 0 || total == 0) return NULL;
     uint8_t *output = malloc(total);
     if (output == NULL) return NULL;
