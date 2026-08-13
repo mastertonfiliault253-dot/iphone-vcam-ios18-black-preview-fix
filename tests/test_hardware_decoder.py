@@ -185,14 +185,16 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         # The 0.8.10/0.8.28 destination contract that produced frames on the
         # iOS 16.5 device: explicit dimensions, Metal compatibility and an
-        # IOSurface backing for the 420v output. iPhoneOS 16.5 excludes the
-        # macOS-only Enable/Require/UsingHardware property keys; RealTime is
+        # IOSurface backing for the 420v output. Decoder selection is left
+        # to VideoToolbox (no Require/EnableHardware keys) and RealTime is
         # not set.
         create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
             "&_session);", 1
         )[0]
-        self.assertIn("_decoderSpecification", create)
+        self.assertIn("NULL,", create)
+        self.assertNotIn("_decoderSpecification", create)
         self.assertIn("destinationAttributes", create)
+        self.assertIn("kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder", decoder)
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
         self.assertIn("kCVPixelBufferMetalCompatibilityKey", decoder)
         self.assertIn("kCVPixelBufferWidthKey", decoder)

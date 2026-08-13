@@ -15,6 +15,10 @@
 #define kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder \
     CFSTR("RequireHardwareAcceleratedVideoDecoder")
 #endif
+#ifndef kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder
+#define kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder \
+    CFSTR("UsingHardwareAcceleratedVideoDecoder")
+#endif
 enum { VCAMHardwareMaxFrames = 16 };
 
 static BOOL VCAMIsAnnexBStartCode(const uint8_t *bytes, size_t length,
@@ -265,27 +269,22 @@ static CFDictionaryRef VCAMDecoderSpecificationCreate(CMVideoCodecType codecType
     CFDictionarySetValue(specification,
                          kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms,
                          atoms);
-    CFStringRef hardwareKey =
-        codecType == kCMVideoCodecType_HEVC
-            ? kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
-            : kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder;
-    CFDictionarySetValue(specification, hardwareKey, kCFBooleanTrue);
+    // No Require/EnableHardwareAcceleratedVideoDecoder key here: forcing
+    // hardware on a jailbroken device made every sample fail with
+    // kVTVideoDecoderReferenceMissingErr (-12780). Let VideoToolbox pick its
+    // decoder (hardware is the default on iOS 16 anyway).
     CFRelease(atoms);
     return specification;
 }
 
 static CFDictionaryRef VCAMHardwareOnlyDecoderSpecificationCreate(
     CMVideoCodecType codecType) {
-    CFMutableDictionaryRef specification = CFDictionaryCreateMutable(
-        kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks,
+    (void)codecType;
+    // Empty specification: VideoToolbox chooses the decoder itself. Forcing
+    // hardware made every sample fail with -12780 on the jailbroken device.
+    return CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks);
-    if (specification == NULL) return NULL;
-    CFStringRef hardwareKey =
-        codecType == kCMVideoCodecType_HEVC
-            ? kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
-            : kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder;
-    CFDictionarySetValue(specification, hardwareKey, kCFBooleanTrue);
-    return specification;
 }
 
 static OSStatus VCAMCreateVideoFormatDescription(
@@ -756,13 +755,28 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     OSStatus status = VTDecompressionSessionCreate(
         kCFAllocatorDefault,
         _formatDescription,
-        _decoderSpecification,
+        NULL,
         (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);
     fprintf(stderr, "vcam VTDecompressionSessionCreate status=%d fmt=%p session=%p\n",
             (int)status, (void *)_formatDescription, (void *)_session);
     fflush(stderr);
+    if (status == noErr && _session != NULL) {
+        CFTypeRef usingHardwareValue = NULL;
+        OSStatus propertyStatus = VTSessionCopyProperty(
+            _session,
+            kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+            kCFAllocatorDefault, &usingHardwareValue);
+        BOOL usingHardware = propertyStatus == noErr &&
+            usingHardwareValue != NULL &&
+            CFGetTypeID(usingHardwareValue) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue((CFBooleanRef)usingHardwareValue);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtpack] VT using hardware decoder=%d propertyStatus=%d",
+            usingHardware, (int)propertyStatus]];
+        if (usingHardwareValue != NULL) CFRelease(usingHardwareValue);
+    }
     if (status != noErr) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"VCAMHardwareVideoDecoder" code:1
