@@ -525,7 +525,9 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             // sets). Give it a bounded first-frame window, then let the
             // FFmpeg hwaccel fallback take over.
             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            BOOL keyFrameDecodeTimedOut = now - sessionStart > 3.0;
+            // The 2.181 stream uses a ~20 s GOP. Give the session enough
+            // time to reach the next IDR before falling back.
+            BOOL keyFrameDecodeTimedOut = now - sessionStart > 30.0;
             if (!firstFrameProduced && keyFrameDecodeTimedOut) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ direct-VT first frame timed out; falling back to FFmpeg hwaccel",
