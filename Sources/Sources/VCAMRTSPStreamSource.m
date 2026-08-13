@@ -17,6 +17,12 @@
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
+// On iOS 16.1 the VideoToolbox hwaccel fails every picture (direct-VT also
+// reports -12780/-12909 on this OS build). After two frameless sessions the
+// latch disables VideoToolbox so FFmpeg falls back to its software decoder
+// and the stream keeps producing frames instead of reconnecting forever.
+static volatile int gVideoToolboxDisabled = 0;
+static volatile int gFramelessSessionCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
 
@@ -112,6 +118,9 @@ static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
 static enum AVPixelFormat VCAMRequestVideoToolboxFormat(AVCodecContext *context,
                                                            const enum AVPixelFormat *formats) {
     (void)context;
+    // If a previous run proved VideoToolbox produces no frames, fall
+    // straight through to the software format.
+    if (gVideoToolboxDisabled) return *formats;
     for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
         if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
     }
@@ -892,6 +901,21 @@ cleanup:
     avcodec_free_context(&codecContext);
     av_buffer_unref(&hwDeviceRef);
     avformat_close_input(&formatContext);
+
+    if (producedFrame) {
+        gFramelessSessionCount = 0;
+    } else if (!gVideoToolboxDisabled) {
+        gFramelessSessionCount += 1;
+        if (gFramelessSessionCount >= 2) {
+            gVideoToolboxDisabled = 1;
+            fprintf(stderr, "vcam disabling VideoToolbox after %d frameless sessions; falling back to software decode\n",
+                    gFramelessSessionCount);
+            fflush(stderr);
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ VideoToolbox disabled after %d frameless sessions; software decode from now on",
+                self.streamName, gFramelessSessionCount]];
+        }
+    }
     return producedFrame;
 }
 

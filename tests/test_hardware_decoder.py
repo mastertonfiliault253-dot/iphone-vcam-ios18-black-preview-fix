@@ -343,6 +343,11 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", consume)
         self.assertIn("decodedFrame->data[3]", consume)
         self.assertIn("enqueueLatestSoftwareFrame", consume)
+        # Two frameless VideoToolbox sessions latch the decoder into software
+        # mode so the stream keeps producing frames on iOS 16.1.
+        self.assertIn("gVideoToolboxDisabled", stream)
+        self.assertIn("gFramelessSessionCount", stream)
+        self.assertIn("if (gVideoToolboxDisabled) return *formats", stream)
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
