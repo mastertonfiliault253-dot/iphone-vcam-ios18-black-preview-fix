@@ -203,17 +203,6 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("kCVPixelBufferHeightKey", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
-    def test_packet_duration_falls_back_to_frame_rate_instead_of_invalid(self) -> None:
-        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
-            encoding="utf-8"
-        )
-        duration = stream.split("static CMTime VCAMPacketDuration", 1)[1].split(
-            "static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata", 1
-        )[0]
-        self.assertIn("avg_frame_rate", duration)
-        self.assertIn("CMTimeMake(1, 30)", duration)
-        self.assertNotIn("return kCMTimeInvalid;", duration)
-
     def test_reference_missing_error_is_recoverable(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"

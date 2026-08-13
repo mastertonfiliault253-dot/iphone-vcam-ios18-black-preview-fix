@@ -107,25 +107,6 @@ static CMTime VCAMPacketTime(AVPacket *packet, AVStream *stream) {
     return CMTimeMakeWithSeconds(seconds, 600);
 }
 
-static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
-    // RTSP packets rarely carry a per-packet duration. An invalid duration
-    // makes VideoToolbox mis-time the sample and reject the IDR with
-    // kVTVideoDecoderReferenceMissingErr (-12780), so fall back to the
-    // stream frame rate (30 fps default).
-    if (packet == NULL || packet->duration <= 0) {
-        AVRational rate = stream != NULL ? stream->avg_frame_rate
-                                         : (AVRational){0, 0};
-        if (rate.num > 0 && rate.den > 0) {
-            return CMTimeMake(rate.den, (int32_t)rate.num);
-        }
-        return CMTimeMake(1, 30);
-    }
-    AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 90000};
-    double seconds = (double)packet->duration * av_q2d(timeBase);
-    return isfinite(seconds) && seconds > 0
-        ? CMTimeMakeWithSeconds(seconds, 600) : kCMTimeInvalid;
-}
-
 static enum AVPixelFormat VCAMRequestVideoToolboxFormat(AVCodecContext *context,
                                                            const enum AVPixelFormat *formats) {
     (void)context;
