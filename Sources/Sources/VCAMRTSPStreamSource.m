@@ -614,6 +614,69 @@ cleanup:
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
 
+// The RTSP demuxer can hand us Annex-B extradata (00 00 00 01 67 ...) while
+// the VideoToolbox hwaccel needs an AVCDecoderConfigurationRecord (avcC).
+// Without avcC the VT session can never be created and FFmpeg loops on
+// 'decoder needs reconfig' with -12909 on every frame.
+static void VCAMRewriteExtradataToAVCC(AVCodecContext *context) {
+    if (context == NULL || context->extradata == NULL || context->extradata_size < 8) return;
+    uint8_t *extra = context->extradata;
+    int extraSize = context->extradata_size;
+    BOOL annexB = extra[0] == 0 && extra[1] == 0 &&
+        (extra[2] == 1 || (extra[2] == 0 && extra[3] == 1));
+    if (!annexB) return;  // already avcC or unknown; leave untouched
+
+    uint8_t *sps = NULL; int spsSize = 0;
+    uint8_t *pps = NULL; int ppsSize = 0;
+    int pos = 0;
+    while (pos + 4 <= extraSize && (sps == NULL || pps == NULL)) {
+        int startCode = 0;
+        if (extra[pos] == 0 && extra[pos + 1] == 0) {
+            if (extra[pos + 2] == 1) startCode = 3;
+            else if (pos + 3 < extraSize && extra[pos + 2] == 0 && extra[pos + 3] == 1) startCode = 4;
+        }
+        if (startCode == 0) { pos++; continue; }
+        int nalStart = pos + startCode;
+        int nalEnd = extraSize;
+        for (int i = nalStart; i + 3 < extraSize; i++) {
+            if (extra[i] == 0 && extra[i + 1] == 0 &&
+                (extra[i + 2] == 1 || (extra[i + 2] == 0 && extra[i + 3] == 1))) {
+                nalEnd = i;
+                break;
+            }
+        }
+        uint8_t nalType = extra[nalStart] & 0x1F;
+        if (nalType == 7 && sps == NULL) { sps = extra + nalStart; spsSize = nalEnd - nalStart; }
+        else if (nalType == 8 && pps == NULL) { pps = extra + nalStart; ppsSize = nalEnd - nalStart; }
+        pos = nalEnd;
+    }
+    if (sps == NULL || pps == NULL || spsSize < 4 || ppsSize < 1) return;
+
+    int avccSize = 8 + spsSize + 1 + 2 + ppsSize;
+    uint8_t *avcc = av_mallocz((size_t)avccSize + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (avcc == NULL) return;
+    avcc[0] = 1;                                // configurationVersion
+    avcc[1] = sps[1];                           // AVCProfileIndication
+    avcc[2] = sps[2];                           // profile_compatibility
+    avcc[3] = sps[3];                           // AVCLevelIndication
+    avcc[4] = 0xFF;                             // lengthSizeMinusOne (4-byte)
+    avcc[5] = 0xE1;                             // numOfSequenceParameterSets
+    avcc[6] = (uint8_t)(spsSize >> 8);
+    avcc[7] = (uint8_t)(spsSize & 0xFF);
+    memcpy(avcc + 8, sps, (size_t)spsSize);
+    avcc[8 + spsSize] = 1;                      // numOfPictureParameterSets
+    avcc[9 + spsSize] = (uint8_t)(ppsSize >> 8);
+    avcc[10 + spsSize] = (uint8_t)(ppsSize & 0xFF);
+    memcpy(avcc + 11 + spsSize, pps, (size_t)ppsSize);
+
+    av_free(context->extradata);
+    context->extradata = avcc;
+    context->extradata_size = avccSize;
+    fprintf(stderr, "vcam extradata Annex-B->avcC sps=%d pps=%d total=%d\n",
+            spsSize, ppsSize, avccSize);
+    fflush(stderr);
+}
+
 - (BOOL)decodeOneFFmpegSession {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
@@ -680,6 +743,7 @@ cleanup:
     [VCAMConfiguration appendProcessLog:sessionLine];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
+    VCAMRewriteExtradataToAVCC(codecContext);
 
     codecContext->err_recognition = AV_EF_CAREFUL;
     // Automatic hardware acceleration: requesting AV_PIX_FMT_VIDEOTOOLBOX in
