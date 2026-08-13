@@ -779,13 +779,19 @@ static CVPixelBufferRef VCAMSharedSurfaceCreatePixelBuffer(
             fflush(stderr);
         });
     }
-    NSDictionary *attributes = @{
-        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    NSDictionary *surfaceProperties = @{
+        (__bridge id)kIOSurfaceWidth: @(width),
+        (__bridge id)kIOSurfaceHeight: @(height),
+        (__bridge id)kIOSurfacePixelFormat: @(pixelFormat),
+        @"IOSurfaceIsGlobal": @YES,
     };
+    IOSurfaceRef surface = IOSurfaceCreate(
+        (__bridge CFDictionaryRef)surfaceProperties);
     CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn status = CVPixelBufferCreate(
-        kCFAllocatorDefault, width, height, pixelFormat,
-        (__bridge CFDictionaryRef)attributes, &pixelBuffer);
+    CVReturn status = surface == NULL ? kCVReturnAllocationFailed
+        : CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface,
+                                           NULL, &pixelBuffer);
+    if (surface != NULL) CFRelease(surface);
     if (status != kCVReturnSuccess) {
         static dispatch_once_t createFailureToken;
         dispatch_once(&createFailureToken, ^{
