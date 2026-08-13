@@ -11,6 +11,7 @@
 @property(nonatomic, strong, nullable) UIButton *mirrorButton;
 @property(nonatomic, strong, nullable) UIButton *contentModeButton;
 @property(nonatomic, strong, nullable) UIButton *loopButton;
+@property(nonatomic, strong, nullable) UILabel *licenseStatusLabel;
 @end
 
 @implementation VCAMControlPanelViewController
@@ -124,6 +125,10 @@
         [r3 addArrangedSubview:[self actionButton:@"复制设备ID" symbol:@"doc.on.doc" color:[UIColor colorWithRed:0.05 green:0.46 blue:0.96 alpha:1] action:@selector(copyDeviceIDTapped)]];
         [r3 addArrangedSubview:[self actionButton:@"输入授权码" symbol:@"key" color:[UIColor colorWithRed:0.49 green:0.22 blue:0.93 alpha:1] action:@selector(enterLicenseTapped)]];
         [stack addArrangedSubview:r3];
+        UILabel *licenseLabel = [self labelWithText:[self licenseStatusText] size:13 weight:UIFontWeightMedium color:UIColor.lightGrayColor];
+        licenseLabel.numberOfLines = 0;
+        self.licenseStatusLabel = licenseLabel;
+        [stack addArrangedSubview:licenseLabel];
     }
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -330,6 +335,20 @@
         }
     }]];
     [self presentViewController:a animated:YES completion:nil];
+}
+
+- (NSString *)licenseStatusText {
+    BOOL licensed = [VCAMConfiguration validateLicenseFile];
+    if (!licensed) {
+        return @"授权状态：未授权（功能受限）";
+    }
+    NSString *path = @"/var/mobile/Media/VCAM/license.plist";
+    NSDictionary *lic = [NSDictionary dictionaryWithContentsOfFile:path];
+    NSString *expiry = [lic isKindOfClass:NSDictionary.class] ? lic[@"expiry"] : nil;
+    if (expiry.length > 0) {
+        return [NSString stringWithFormat:@"授权状态：已授权（有效期至 %@）", expiry];
+    }
+    return @"授权状态：已授权";
 }
 
 - (void)showLicenseAlert {
