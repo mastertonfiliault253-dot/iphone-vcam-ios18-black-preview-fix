@@ -492,7 +492,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("AV_FRAME_FLAG_CORRUPT", rtsp)
         self.assertIn("decode_error_flags", rtsp)
         self.assertIn("self.streamName", rtsp)
-        self.assertIn("receive_frame ended", rtsp)
+        self.assertIn("receive_frame error=", rtsp)
         self.assertIn("_latestPixelBuffer", rtsp)
         self.assertIn("< 3.5", rtsp)
         self.assertIn("VCAMCopyBGRAFromAVFrame", rtsp)

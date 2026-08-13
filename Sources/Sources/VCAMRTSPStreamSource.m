@@ -805,7 +805,11 @@ cleanup:
                     av_frame_unref(frame);
                     continue;
                 }
-                restartSession = YES;
+                // Decoder made no progress retrying this packet — typically a
+                // mid-GOP join before the first IDR (missing reference frame).
+                // Do not tear the session down here: keep reading and let the
+                // next IDR reset the decoder. The stall counter below handles
+                // genuinely dead sessions.
                 if (!loggedReceiveFailure) {
                     loggedReceiveFailure = YES;
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
@@ -820,11 +824,14 @@ cleanup:
                     int receiveResult = avcodec_receive_frame(codecContext, frame);
                     if (receiveResult < 0) {
                         if (receiveResult != AVERROR(EAGAIN)) {
-                            restartSession = YES;
+                            // A non-IDR frame without a reference (mid-GOP
+                            // join) fails hardware decode with INVALIDDATA.
+                            // Keep reading instead of reconnecting so the
+                            // next IDR can reset the decoder.
                             if (!loggedReceiveFailure) {
                                 loggedReceiveFailure = YES;
                                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                    @"%@ receive_frame ended error=%@; reconnecting",
+                                    @"%@ receive_frame error=%@; continuing to next IDR",
                                     self.streamName,
                                     VCAMFFmpegErrorDescription(receiveResult)]];
                             }
