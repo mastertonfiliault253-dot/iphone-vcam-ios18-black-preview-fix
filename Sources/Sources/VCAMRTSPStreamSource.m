@@ -629,6 +629,7 @@ cleanup:
     BOOL loggedCorruptFrame = NO;
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
+    NSString *sessionLine = nil;
     NSUInteger videoPacketsWithoutFrame = 0;
     NSUInteger consecutiveSendFailures = 0;
     NSString *urlString = self.streamURL.absoluteString;
@@ -667,7 +668,7 @@ cleanup:
     for (int index = 0; index < extraBytes; index++) {
         snprintf(extraHex + index * 2, 3, "%02x", stream->codecpar->extradata[index]);
     }
-    NSString *sessionLine = [NSString stringWithFormat:
+    sessionLine = [NSString stringWithFormat:
         @"%@ session decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
         self.streamName, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
         stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
