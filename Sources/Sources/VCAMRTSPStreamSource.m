@@ -17,6 +17,8 @@
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
+static volatile int gVideoToolboxDisabled = 0;
+static volatile int gFramelessSessionCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
 
@@ -112,10 +114,9 @@ static CMTime VCAMPacketDuration(AVPacket *packet, AVStream *stream) {
 static enum AVPixelFormat VCAMRequestVideoToolboxFormat(AVCodecContext *context,
                                                            const enum AVPixelFormat *formats) {
     (void)context;
-    // Prefer the internal videotoolbox hwaccel output. Choosing this format
-    // makes libavcodec activate the hwaccel automatically (INTERNAL method,
-    // no hw_device_ctx required on iOS). Fall back to the first offered
-    // software format so decoding still works when VideoToolbox refuses.
+    // If a previous run proved VideoToolbox produces no frames (e.g. -12909
+    // on iOS), fall straight through to the software format.
+    if (gVideoToolboxDisabled) return *formats;
     for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
         if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
     }
@@ -887,6 +888,18 @@ cleanup:
     avcodec_free_context(&codecContext);
     av_buffer_unref(&hwDeviceRef);
     avformat_close_input(&formatContext);
+
+    if (producedFrame) {
+        gFramelessSessionCount = 0;
+    } else if (!gVideoToolboxDisabled) {
+        gFramelessSessionCount += 1;
+        if (gFramelessSessionCount >= 2) {
+            gVideoToolboxDisabled = 1;
+            fprintf(stderr, "vcam disabling VideoToolbox after %d frameless sessions; falling back to software decode\n",
+                    gFramelessSessionCount);
+            fflush(stderr);
+        }
+    }
     return producedFrame;
 }
 
