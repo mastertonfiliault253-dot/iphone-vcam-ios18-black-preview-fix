@@ -533,7 +533,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             [decoder decodePacket:packet->data
                            length:(size_t)packet->size
                  presentationTime:pts
-                       decodeTime:kCMTimeInvalid
+                       decodeTime:pts
                          duration:VCAMPacketDuration(packet, stream)
                        isKeyFrame:isKeyFrame];
             CVPixelBufferRef output = NULL;
