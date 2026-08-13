@@ -249,7 +249,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(header->slotCount)", shared)
         self.assertIn("VCAMSurfaceBrokerSlotCountIsValid(slotCount)", shared)
         self.assertNotIn("header->width > 8192", shared)
-        self.assertIn("kCFAllocatorDefault, width, height, pixelFormat", shared)
+        self.assertIn("kIOSurfacePixelFormat: @(pixelFormat)", shared)
         self.assertIn("metadata->width = width", shared)
         self.assertIn("frame->metadata = surfaceMetadata", shared)
         self.assertIn("metadata->surfaceGeneration = generation", shared)
