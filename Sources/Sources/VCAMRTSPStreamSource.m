@@ -588,7 +588,14 @@ cleanup:
     // auto-hwaccel (which degrades to software on iOS) when direct VT cannot
     // produce frames.
     BOOL produced = [self decodeOneHardwareSession];
-    if (produced || !self.running) return produced;
+    if (produced || !self.running) {
+        fprintf(stderr, "vcam direct-VT session produced=%d running=%d\n",
+                produced, self.running);
+        fflush(stderr);
+        return produced;
+    }
+    fprintf(stderr, "vcam direct-VT session produced=0; falling back to FFmpeg hwaccel\n");
+    fflush(stderr);
     return [self decodeOneFFmpegSession];
 }
 

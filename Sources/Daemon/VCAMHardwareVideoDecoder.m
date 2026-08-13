@@ -573,9 +573,12 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                 NULL, NULL, 0,
                 4, _width, _height,
                 &_decoderSpecification, &_formatDescription);
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            NSString *annexBLine = [NSString stringWithFormat:
                 @"[DEBUG-vtpack] H264 annexB psets sps=%d pps=%d status=%d nal=4 sizes=%zu,%zu",
-                spsCount, ppsCount, (int)status, spsSizes[0], ppsSizes[0]]];
+                spsCount, ppsCount, (int)status, spsSizes[0], ppsSizes[0]];
+            fprintf(stderr, "vcam %s\n", annexBLine.UTF8String);
+            fflush(stderr);
+            [VCAMConfiguration appendProcessLog:annexBLine];
         } else {
         if (extraSize < 7) return nil;
         int nalHeaderLength = (extra[4] & 0x03) + 1;
@@ -824,16 +827,22 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     int firstNAL = feedLength >= 5 ? (_isHEVC ? ((feedBytes[4] >> 1) & 0x3f)
                                              : (feedBytes[4] & 0x1f)) : -1;
     if (packetDiagnostic <= 4) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        NSString *packetLine = [NSString stringWithFormat:
             @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu firstNAL=%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
             packetDiagnostic, isKeyFrame, annexB, stripped, length, feedLength,
             firstNAL, (int)status, presentationTime.value, presentationTime.timescale,
-            decodeTime.value, decodeTime.timescale]];
+            decodeTime.value, decodeTime.timescale];
+        fprintf(stderr, "vcam %s\n", packetLine.UTF8String);
+        fflush(stderr);
+        [VCAMConfiguration appendProcessLog:packetLine];
     }
     VTDecodeInfoFlags decodeFlags = 0;
     status = VTDecompressionSessionDecodeFrame(
         _session, sampleBuffer, 0, NULL, &decodeFlags);
     if (packetDiagnostic <= 4 || status != noErr) {
+        fprintf(stderr, "vcam [DEBUG-vtpack] decode count=%d status=%d flags=%u\n",
+                packetDiagnostic, (int)status, (unsigned)decodeFlags);
+        fflush(stderr);
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"[DEBUG-vtpack] decode count=%d status=%d flags=%u",
             packetDiagnostic, (int)status, (unsigned)decodeFlags]];
@@ -843,6 +852,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
             static volatile int decodeFailures = 0;
             int failureCount = __sync_add_and_fetch(&decodeFailures, 1);
             if (failureCount <= 4) {
+                fprintf(stderr, "vcam VCAMHardwareVideoDecoder decode failed status=%d\n", (int)status);
+                fflush(stderr);
                 NSLog(@"VCAMHardwareVideoDecoder decode failed status=%d", (int)status);
             }
         }
