@@ -476,9 +476,10 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             avcodec_get_name(stream->codecpar->codec_id)]];
     }
     // Wait for the first IDR before feeding (a mid-GOP join only poisons
-    // VideoToolbox with -12909 noise), with a 10 s budget. The stream uses a
-    // ~20 s GOP, so the session usually falls back to the FFmpeg software
-    // path after the budget and the latch keeps it there.
+    // VideoToolbox with -12909 noise). The stream uses a ~20 s GOP and
+    // VideoToolbox drops the frames right after a fresh session's first sync
+    // frame (documented Apple behavior), so allow up to 60 s for the SECOND
+    // IDR to warm the decoder before falling back.
     sessionStart = CFAbsoluteTimeGetCurrent();
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
@@ -541,7 +542,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
             // FFmpeg hwaccel fallback take over.
             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
             BOOL keyFrameDecodeTimedOut = receivedKeyPacket &&
-                now - sessionStart > 10.0;
+                now - sessionStart > 60.0;
             if (!firstFrameProduced && keyFrameDecodeTimedOut) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ direct-VT first frame timed out; falling back to FFmpeg hwaccel",
@@ -727,7 +728,8 @@ cleanup:
     codecContext->get_format = VCAMRequestVideoToolboxFormat;
     codecContext->hwaccel_flags = AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH |
         AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH;
-    codecContext->thread_count = 1;
+    codecContext->thread_count = 0;  // auto: A13 software decode of 1080p30
+                                   // needs multiple threads to keep up
     // The internal videotoolbox_vld hwaccel requires a hw_device_ctx even
     // though VideoToolbox has no selectable device; pass NULL device. Once
     // the frameless-session latch has disabled VideoToolbox, skip the device
