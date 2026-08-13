@@ -21,7 +21,7 @@ static volatile int gFFmpegDiagnosticCount = 0;
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
     (void)context;
-    if (level > AV_LOG_WARNING) return;
+    if (level > AV_LOG_VERBOSE) return;
     char message[1024] = {0};
     vsnprintf(message, sizeof(message), format, arguments);
     size_t length = strlen(message);
@@ -30,7 +30,7 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
     }
     if (length == 0) return;
     int count = __sync_add_and_fetch(&gFFmpegDiagnosticCount, 1);
-    if (count <= 120) {
+    if (count <= 500) {
         NSString *line = [NSString stringWithFormat:
             @"[DEBUG-vtff] level=%d %@", level,
             [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"];
@@ -710,8 +710,14 @@ cleanup:
         fflush(stderr);
     }
     if (avcodec_open2(codecContext, decoder, NULL) < 0) {
+        fprintf(stderr, "vcam avcodec_open2 FAILED\n");
+        fflush(stderr);
         goto cleanup;
     }
+    fprintf(stderr, "vcam hwaccel=%s pix_fmt=%d sw_pix_fmt=%d\n",
+            codecContext->hwaccel != NULL ? codecContext->hwaccel->name : "NONE",
+            codecContext->pix_fmt, codecContext->sw_pix_fmt);
+    fflush(stderr);
 
     packet = av_packet_alloc();
     frame = av_frame_alloc();

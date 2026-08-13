@@ -421,8 +421,8 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("[DEBUG-vtff]", stream)
-        self.assertIn("count <= 120", stream)
-        self.assertIn("level > AV_LOG_WARNING", stream)
+        self.assertIn("count <= 500", stream)
+        self.assertIn("level > AV_LOG_VERBOSE", stream)
         self.assertNotIn("VCAMCaptureFFmpegHardwareLogs", stream)  # diagnostics always on
 
 
