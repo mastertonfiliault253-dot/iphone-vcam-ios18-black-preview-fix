@@ -43,6 +43,9 @@ typedef struct {
     /// Compact CoreVideo color attachment identifiers. Zero means the source
     /// did not provide that attachment.
     uint32_t colorPrimaries;
+    /// High 8 bits carry the decoder class (1 = VideoToolbox hardware,
+    /// 0 = software). CoreVideo transfer IDs are < 256, so the low 24 bits
+    /// stay the real transfer function. See VCAMSharedFrameDecodeHardware.
     uint32_t transferFunction;
     uint32_t yCbCrMatrix;
 } VCAMSharedFrameMetadata;
@@ -131,6 +134,12 @@ void VCAMSharedSurfaceFrameRelease(VCAMSharedSurfaceFrame *frame);
 
 const char *VCAMSharedFrameFileSystemPath(void);
 const char *VCAMSharedSurfaceFileSystemPath(void);
+/// Decoder-class mask stored in the high 8 bits of
+/// VCAMSharedFrameMetadata.transferFunction.
+#define VCAMSharedFrameDecodeHardwareShift 24
+#define VCAMSharedFrameDecodeHardwareMask 0xFF000000U
+#define VCAMSharedFrameTransferFunctionMask 0x00FFFFFFU
+
 uint64_t VCAMSharedFrameMonotonicNanoseconds(void);
 
 NS_ASSUME_NONNULL_END

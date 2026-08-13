@@ -294,6 +294,11 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
 
 - (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer hardware:(BOOL)hardware {
     CVPixelBufferRetain(pixelBuffer);
+    // Tag the decode class so the publisher can fold it into the shared-frame
+    // metadata and the panel can display the hardware/software decoder state.
+    CVBufferSetAttachment(pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"),
+                          hardware ? kCFBooleanTrue : kCFBooleanFalse,
+                          kCVBufferPropagateAttachments);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
     BOOL logFirstHardwareFrame = NO;

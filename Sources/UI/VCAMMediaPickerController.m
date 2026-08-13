@@ -721,7 +721,9 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         streamText = @"已加载静态图片";
         if (![streamStatus[@"receiving"] boolValue]) streamText = @"静态图片未就绪";
     } else if ([streamStatus[@"receiving"] boolValue]) {
-        streamText = [NSString stringWithFormat:@"已收到推流（%.0f ms 前）",
+        BOOL decodeHardware = [streamStatus[@"decodeHardware"] boolValue];
+        streamText = [NSString stringWithFormat:@"已收到推流（%@，%.0f ms 前）",
+            decodeHardware ? @"硬件解码" : @"软件解码",
             [streamStatus[@"ageMs"] doubleValue]];
     } else {
         streamText = @"未收到推流";

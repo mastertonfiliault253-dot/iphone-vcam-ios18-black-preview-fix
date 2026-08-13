@@ -170,10 +170,13 @@ static BOOL VCAMPreviewGetBrokerMetadata(
             lastMeasurementNanoseconds = monotonicNow;
         }
     }
+    BOOL decodeHardware = ((metadata.transferFunction &
+        VCAMSharedFrameDecodeHardwareMask) >> VCAMSharedFrameDecodeHardwareShift) == 1;
     return @{
         @"receiving": @(receiving),
         @"ageMs": @(ageMilliseconds),
         @"fps": @(measuredFPS),
+        @"decodeHardware": @(decodeHardware),
     };
 }
 
