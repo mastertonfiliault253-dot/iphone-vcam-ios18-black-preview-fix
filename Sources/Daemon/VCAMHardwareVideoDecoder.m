@@ -58,11 +58,8 @@ static BOOL VCAMIsOmittableNAL(const uint8_t *payload, size_t payloadLength,
                                BOOL hevc) {
     if (payload == NULL || payloadLength < 1) return NO;
     int type = hevc ? ((payload[0] >> 1) & 0x3F) : (payload[0] & 0x1F);
-    if (hevc) {
-        return type == 32 || type == 33 || type == 34 ||
-            type == 39 || type == 40;
-    }
-    return type == 6 || type == 7 || type == 8;
+    if (hevc) return type == 32 || type == 33 || type == 34;
+    return type == 7 || type == 8;
 }
 
 static uint8_t *VCAMConvertAnnexBToLengthPrefixed(const uint8_t *bytes,
@@ -279,12 +276,16 @@ static CFDictionaryRef VCAMDecoderSpecificationCreate(CMVideoCodecType codecType
 
 static CFDictionaryRef VCAMHardwareOnlyDecoderSpecificationCreate(
     CMVideoCodecType codecType) {
-    (void)codecType;
-    // Empty specification: VideoToolbox chooses the decoder itself. Forcing
-    // hardware made every sample fail with -12780 on the jailbroken device.
-    return CFDictionaryCreateMutable(
-        kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+    CFMutableDictionaryRef specification = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks);
+    if (specification == NULL) return NULL;
+    CFStringRef hardwareKey =
+        codecType == kCMVideoCodecType_HEVC
+            ? kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
+            : kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder;
+    CFDictionarySetValue(specification, hardwareKey, kCFBooleanTrue);
+    return specification;
 }
 
 static OSStatus VCAMCreateVideoFormatDescription(
@@ -325,42 +326,8 @@ static OSStatus VCAMCreateVideoFormatDescription(
     }
     if (parameterSetCount == 0) return -1;
 
-    // The avcC/hvcC SampleDescriptionExtensionAtoms record is the canonical
-    // VideoToolbox contract on iOS: slice-only samples are matched against
-    // the record's parameter sets. The CreateFrom*ParameterSets route is
-    // kept as a fallback for streams whose parameter sets cannot be encoded
-    // into a record.
-    CFDataRef record = NULL;
-    if (hevc) {
-        record = VCAMBuildHVCCRecord(vpsPointers, vpsSizes, vpsCount,
-                                     spsPointers, spsSizes, spsCount,
-                                     ppsPointers, ppsSizes, ppsCount);
-    } else {
-        record = VCAMBuildAVCCRecord(spsPointers, spsSizes, spsCount,
-                                     ppsPointers, ppsSizes, ppsCount);
-    }
-    OSStatus status = record == NULL ? -1 : noErr;
-    if (record != NULL) {
-        CFDictionaryRef specification = VCAMDecoderSpecificationCreate(
-            hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, record);
-        CFRelease(record);
-        if (specification != NULL) {
-            status = CMVideoFormatDescriptionCreate(
-                kCFAllocatorDefault,
-                hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
-                width, height, specification, formatDescriptionOut);
-            if (status == noErr && *formatDescriptionOut != NULL) {
-                *decoderSpecificationOut = specification;
-                return noErr;
-            }
-            CFRelease(specification);
-        }
-    }
-    if (*formatDescriptionOut != NULL) {
-        CFRelease(*formatDescriptionOut);
-        *formatDescriptionOut = NULL;
-    }
-    status = hevc
+    // 0.8.28: Apple's canonical format-description construction first.
+    OSStatus status = hevc
         ? CMVideoFormatDescriptionCreateFromHEVCParameterSets(
               kCFAllocatorDefault, (size_t)parameterSetCount,
               parameterSets, parameterSetSizes,
@@ -374,6 +341,34 @@ static OSStatus VCAMCreateVideoFormatDescription(
             hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264);
         return noErr;
     }
+    if (*formatDescriptionOut != NULL) {
+        CFRelease(*formatDescriptionOut);
+        *formatDescriptionOut = NULL;
+    }
+
+    CFDataRef record = NULL;
+    if (hevc) {
+        record = VCAMBuildHVCCRecord(vpsPointers, vpsSizes, vpsCount,
+                                     spsPointers, spsSizes, spsCount,
+                                     ppsPointers, ppsSizes, ppsCount);
+    } else {
+        record = VCAMBuildAVCCRecord(spsPointers, spsSizes, spsCount,
+                                     ppsPointers, ppsSizes, ppsCount);
+    }
+    if (record == NULL) return status;
+    CFDictionaryRef specification = VCAMDecoderSpecificationCreate(
+        hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, record);
+    CFRelease(record);
+    if (specification == NULL) return status;
+    status = CMVideoFormatDescriptionCreate(
+        kCFAllocatorDefault,
+        hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+        width, height, specification, formatDescriptionOut);
+    if (status == noErr && *formatDescriptionOut != NULL) {
+        *decoderSpecificationOut = specification;
+        return noErr;
+    }
+    CFRelease(specification);
     if (*formatDescriptionOut != NULL) {
         CFRelease(*formatDescriptionOut);
         *formatDescriptionOut = NULL;
@@ -741,11 +736,8 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     // IOSurface backing for the 420v output. The bare pixel-format-only
     // variant made every sample fail with kVTVideoDecoderReferenceMissingErr
     // (-12780) on device.
-    // Experiment: request BGRA output. The 420v destination allocation
-    // failed on iOS 16 (7ed2b2a) and the failure may surface as the
-    // persistent -12780 callback error on iOS 16.1.
     NSDictionary *destinationAttributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
         (id)kCVPixelBufferWidthKey: @(_width),
         (id)kCVPixelBufferHeightKey: @(_height),
@@ -882,36 +874,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         free(filtered);
         return NO;
     }
-    // VideoToolbox relies on the per-sample sync/dependency markers to treat
-    // an IDR as a reference-free sync point, especially when the sample
-    // starts with SEI NALs instead of the slice itself. Without the markers
-    // the first IDR can be rejected with kVTVideoDecoderReferenceMissingErr
-    // (-12780) even though DecodeFrame accepts the sample.
-    CFArrayRef sampleAttachmentsArray =
-        CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
-    if (sampleAttachmentsArray != NULL &&
-        CFArrayGetCount(sampleAttachmentsArray) > 0) {
-        CFMutableDictionaryRef sampleAttachment =
-            (CFMutableDictionaryRef)CFArrayGetValueAtIndex(
-                sampleAttachmentsArray, 0);
-        if (sampleAttachment != NULL) {
-            CFDictionarySetValue(sampleAttachment,
-                                 kCMSampleAttachmentKey_NotSync,
-                                 isKeyFrame ? kCFBooleanFalse
-                                            : kCFBooleanTrue);
-            CFDictionarySetValue(sampleAttachment,
-                                 kCMSampleAttachmentKey_DependsOnOthers,
-                                 isKeyFrame ? kCFBooleanFalse
-                                            : kCFBooleanTrue);
-            if (isKeyFrame) {
-                // Ask VideoToolbox to reset the decoder at the IDR boundary;
-                // helps sessions that joined mid-GOP or restarted cleanly.
-                CFDictionarySetValue(sampleAttachment,
-                    kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding,
-                    kCFBooleanTrue);
-            }
-        }
-    }
     static volatile int packetDiagnostics = 0;
     int packetDiagnostic = __sync_add_and_fetch(&packetDiagnostics, 1);
     int firstNAL = feedLength >= 5 ? (_isHEVC ? ((feedBytes[4] >> 1) & 0x3f)
@@ -956,13 +918,6 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     VTDecodeInfoFlags decodeFlags = 0;
     status = VTDecompressionSessionDecodeFrame(
         _session, sampleBuffer, 0, NULL, &decodeFlags);
-    if (status == noErr) {
-        // The frame is delivered asynchronously to VCAMHardwareDecoderCallback
-        // on VT's own thread. Wait for it before draining the frame queue,
-        // otherwise copyNextOutputFrame runs before the callback and returns
-        // nothing (which made direct-VT look like it produced no frames).
-        status = VTDecompressionSessionWaitForAsynchronousFrames(_session);
-    }
     if (packetDiagnostic <= 4 || status != noErr) {
         fprintf(stderr, "vcam [DEBUG-vtpack] decode count=%d status=%d flags=%u\n",
                 packetDiagnostic, (int)status, (unsigned)decodeFlags);

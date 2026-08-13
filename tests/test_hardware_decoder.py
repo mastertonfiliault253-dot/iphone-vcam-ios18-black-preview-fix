@@ -169,15 +169,17 @@ class HardwareDecoderTests(unittest.TestCase):
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
+        # 0.8.28 contract: canonical parameter-sets construction first, the
+        # avcC/hvcC record route remains as fallback.
         desc = decoder.split("static OSStatus VCAMCreateVideoFormatDescription", 1)[1].split(
             "static BOOL VCAMCollectH264AnnexBParameterSets", 1
         )[0]
         self.assertLess(
-            desc.index("VCAMBuildAVCCRecord"),
             desc.index("CMVideoFormatDescriptionCreateFromH264ParameterSets"),
+            desc.index("VCAMBuildAVCCRecord"),
         )
-        self.assertIn("SampleDescriptionExtensionAtoms", desc)
         self.assertIn("VCAMDecoderSpecificationCreate", desc)
+        self.assertIn("VCAMHardwareOnlyDecoderSpecificationCreate", desc)
 
     def test_video_toolbox_session_uses_ios_default_decoder(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
@@ -228,13 +230,10 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMConvertAnnexBToLengthPrefixed", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
         self.assertIn("annexB conversion failed", decoder)
+        # 0.8.28 contract: strip only parameter sets, keep SEI.
         self.assertIn("VCAMIsOmittableNAL", decoder)
-        self.assertIn("type == 6 || type == 7 || type == 8", decoder)
-        # IDR samples ask VideoToolbox to reset the decoder at the sync
-        # point; sync/dependency markers stay explicit.
-        self.assertIn("kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding", decoder)
-        self.assertIn("kCMSampleAttachmentKey_NotSync", decoder)
-        self.assertIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
+        self.assertIn("return type == 7 || type == 8;", decoder)
+        self.assertNotIn("type == 6 || type == 7 || type == 8", decoder)
 
     def test_length_prefixed_slice_without_parameter_sets_keeps_original_length(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
