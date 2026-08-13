@@ -38,7 +38,9 @@ class PackagingArchitectureTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn('lipo "$springboard_client" -thin arm64e', workflow)
+        # SpringBoard client is arm64-only now (vendored FFmpeg ships one slice);
+        # the CI still thins it and checks the ObjC stub sections.
+        self.assertIn('lipo "$springboard_client" -thin arm64', workflow)
         self.assertIn("sectname __objc_stubs", workflow)
         self.assertIn("sectname __objc_intobj", workflow)
 
@@ -317,9 +319,12 @@ class PackagingArchitectureTests(unittest.TestCase):
 
     def test_ffmpeg_is_linked_only_to_worker(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        # vcamd (legacy rollback) and the injected SpringBoard client (production
+        # RTSP demux + direct VideoToolbox decode) are the two media workers.
+        # mediaserverd stays a shallow consumer with no FFmpeg linkage.
         self.assertIn("vcamd_LIBRARIES = avformat avcodec avutil", makefile)
+        self.assertIn("VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil", makefile)
         self.assertNotIn("VCAMMediaServerClient_LIBRARIES", makefile)
-        self.assertNotIn("VCAMSpringBoardClient_LIBRARIES", makefile)
 
     def test_wsl_release_copy_drops_path_bound_module_cache(self) -> None:
         build_script = (ROOT / "scripts" / "build-rootless-wsl.sh").read_text(

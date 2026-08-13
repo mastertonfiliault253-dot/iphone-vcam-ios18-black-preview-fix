@@ -384,6 +384,51 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.h").exists())
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
+
+    def test_springboard_owns_production_rtsp_decode_path(self) -> None:
+        """SpringBoard (app process) runs direct-VT RTSP decode; vcamd RTSP
+        decode is a marker-gated rollback only."""
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
+            encoding="utf-8"
+        )
+        source = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.m").read_text(
+            encoding="utf-8"
+        )
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        pipeline = (ROOT / "Sources" / "Core" / "VCAMFramePipeline.m").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.h").read_text(
+            encoding="utf-8"
+        )
+        # SpringBoard client links FFmpeg + VideoToolbox + both new pieces.
+        self.assertIn("Sources/SpringBoard/VCAMSpringBoardRTSPSource.m", makefile)
+        self.assertIn("Sources/Daemon/VCAMHardwareVideoDecoder.m", makefile)
+        self.assertIn("VideoToolbox", makefile.split("VCAMSpringBoardClient_FRAMEWORKS", 1)[1].split("\n", 1)[0])
+        self.assertIn("VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil", makefile)
+        # The bridge routes RTSP into the SpringBoard decoder with a
+        # marker-gated rollback to the daemon.
+        self.assertIn("VCAMLegacyRTSPDaemonMarker", bridge)
+        self.assertIn("sourceKind == VCAMSourceKindRTSP", bridge)
+        self.assertIn("publishPixelBuffer:buffer sourceName:@\"RTSP\"", bridge)
+        self.assertIn("initWithURL:next.rtspURL", bridge)
+        # The decoder is no longer vcamd-only.
+        self.assertNotIn("vcamd-only", header)
+        self.assertIn("injected SpringBoard client", header)
+        # vcamd keeps the decoder behind the marker file.
+        self.assertIn("VCAMLegacyRTSPDaemonMarker", producer)
+        self.assertIn("access(VCAMLegacyRTSPDaemonMarker, F_OK) == 0", producer)
+        self.assertIn("VCAMLegacyRTSPDaemonPipelineMarker", pipeline)
+        self.assertIn("access(VCAMLegacyRTSPDaemonPipelineMarker, F_OK) == 0", pipeline)
+        # Source-level contract: tcp transport, key-frame gate, direct VT.
+        self.assertIn('av_dict_set(&options, "rtsp_transport", "tcp", 0)', source)
+        self.assertIn("VCAMHardwareVideoDecoder alloc", source)
+        self.assertIn("copyNextOutputFrame", source)
+        self.assertIn("key frame timeout", source)
+        self.assertIn("dispatch_async(dispatch_get_main_queue()", source)
     def test_hls_direct_vt_bootstraps_in_band_parameter_sets(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"

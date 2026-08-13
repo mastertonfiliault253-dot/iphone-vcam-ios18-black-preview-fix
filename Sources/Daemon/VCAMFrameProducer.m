@@ -12,6 +12,8 @@
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
+static const char *const VCAMLegacyRTSPDaemonMarker =
+    "/var/tmp/vcam-rtsp-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalImageDaemonMarker =
@@ -111,8 +113,13 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                          renderer:self.renderer];
+                // SpringBoard owns the production RTSP path (direct VideoToolbox
+                // decode in the injected SpringBoard client). The daemon decoder
+                // remains an explicit rollback behind a marker file.
+                if (access(VCAMLegacyRTSPDaemonMarker, F_OK) == 0) {
+                    self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
+                                                                              renderer:self.renderer];
+                }
                 break;
             case VCAMSourceKindHLS:
                 // SpringBoard owns the production AVPlayer HLS path. Retain

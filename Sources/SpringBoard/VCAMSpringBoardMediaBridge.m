@@ -12,9 +12,12 @@
 
 #import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
+#import "VCAMSpringBoardRTSPSource.h"
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
+static const char *const VCAMLegacyRTSPDaemonMarker =
+    "/var/tmp/vcam-rtsp-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalImageDaemonMarker =
@@ -88,6 +91,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @interface VCAMSpringBoardMediaBridge ()
 @property(nonatomic, strong, nullable) VCAMConfiguration *configuration;
 @property(nonatomic, strong, nullable) AVPlayer *player;
+@property(nonatomic, strong, nullable) VCAMSpringBoardRTSPSource *rtspSource;
 @property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *output;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
@@ -186,6 +190,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     [retiredLayer removeFromSuperlayer];
     self.playerLayer = nil;
+    if (self.rtspSource != nil) {
+        [self.rtspSource stop];
+        self.rtspSource = nil;
+    }
     self.output = nil;
     self.player = nil;
     self.configuration = nil;
@@ -233,6 +241,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     return self.configuration.sourceKind == configuration.sourceKind &&
         ((self.configuration.hlsURL == nil && configuration.hlsURL == nil) ||
             [self.configuration.hlsURL isEqual:configuration.hlsURL]) &&
+        ((self.configuration.rtspURL == nil && configuration.rtspURL == nil) ||
+            [self.configuration.rtspURL isEqual:configuration.rtspURL]) &&
         ((self.configuration.mediaPath == nil && configuration.mediaPath == nil) ||
             [self.configuration.mediaPath isEqual:configuration.mediaPath]) &&
         self.configuration.loopMedia == configuration.loopMedia &&
@@ -463,13 +473,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     VCAMConfiguration *next = [VCAMConfiguration loadCurrent];
     BOOL hls = next.sourceKind == VCAMSourceKindHLS && next.hlsURL != nil &&
         access(VCAMLegacyHLSDaemonMarker, F_OK) != 0;
+    BOOL rtsp = next.sourceKind == VCAMSourceKindRTSP && next.rtspURL != nil &&
+        access(VCAMLegacyRTSPDaemonMarker, F_OK) != 0;
     BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
         VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;
     BOOL staticImage = next.sourceKind == VCAMSourceKindLocalMedia &&
         next.mediaPath.length > 0 && !VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalImageDaemonMarker, F_OK) != 0;
-    BOOL shouldPlay = next.enabled && (hls || localVideo || staticImage);
+    BOOL shouldPlay = next.enabled && (hls || rtsp || localVideo || staticImage);
     if (!shouldPlay) {
         [self stopPlayback];
         return;
@@ -485,6 +497,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL transportReady = self.writer != NULL && [self prepareOutputPool];
     if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
+        return;
+    }
+    if (rtsp) {
+        if (![self startRTSP:next]) {
+            [self stopPlayback];
+        }
         return;
     }
     if (staticImage) {
@@ -593,6 +611,29 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         playbackURL.absoluteString, [item.outputs containsObject:self.output],
         self.playerLayer.superlayer != nil,
         (long)self.displayLink.preferredFramesPerSecond]];
+}
+
+- (BOOL)startRTSP:(VCAMConfiguration *)next {
+    VCAMSpringBoardRTSPSource *source = [[VCAMSpringBoardRTSPSource alloc]
+        initWithURL:next.rtspURL];
+    self.rtspSource = source;
+    __weak typeof(self) weakSelf = self;
+    [source startWithFrameHandler:^(CVPixelBufferRef buffer, CMTime pts,
+                                    uint32_t width, uint32_t height) {
+        (void)pts;
+        (void)width;
+        (void)height;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.started) {
+            CVPixelBufferRelease(buffer);
+            return;
+        }
+        [strongSelf publishPixelBuffer:buffer sourceName:@"RTSP"];
+        CVPixelBufferRelease(buffer);
+    }];
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard RTSP start url=%@", next.rtspURL]];
+    return YES;
 }
 
 - (void)scheduleReconnectForItem:(AVPlayerItem *)item reason:(NSString *)reason {
@@ -743,6 +784,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             self.sourceTransform.a, self.sourceTransform.b,
             self.sourceTransform.c, self.sourceTransform.d]];
     }
+    [self publishPixelBuffer:source sourceName:(self.localVideo ? @"local video" : @"HLS")];
+    CVPixelBufferRelease(source);
+}
+
+- (BOOL)publishPixelBuffer:(CVPixelBufferRef)source sourceName:(NSString *)sourceName {
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     CIImage *image = [self imageByOrientingPixelBuffer:source];
     CGRect sourceExtent = image == nil ? CGRectZero : image.extent;
     uint32_t outputWidth = (uint32_t)MAX(2.0, ceil(CGRectGetWidth(sourceExtent)));
@@ -850,7 +897,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         }
         CVPixelBufferRelease(destination);
     }
-    CVPixelBufferRelease(source);
     if (published) {
         self.publishedFrames += 1;
         self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
@@ -858,17 +904,17 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.publishFailures += 1;
     }
     if (self.decodedFrames <= 3 || self.decodedFrames % 300 == 0) {
-        NSString *frameFormat = self.localVideo
-            ? @"springboard local video frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f"
-            : @"springboard HLS frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@ status=%ld rate=%.1f";
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:frameFormat,
-            (unsigned long)self.decodedFrames, (unsigned long)self.publishedFrames,
-            (unsigned long)self.emptyCopies, (unsigned long)self.publishFailures,
+        NSString *frameFormat = [NSString stringWithFormat:
+            @"springboard %@ frame decoded=%lu published=%lu empty=%lu failures=%lu transport=%@",
+            sourceName, (unsigned long)self.decodedFrames,
+            (unsigned long)self.publishedFrames, (unsigned long)self.emptyCopies,
+            (unsigned long)self.publishFailures,
             surfaceTransport
                 ? (surfaceConsumerReady ? @"iosurface" : @"iosurface+bootstrap-mmap")
-                : @"mmap",
-            (long)self.player.currentItem.status, self.player.rate]];
+                : @"mmap"];
+        [VCAMConfiguration appendProcessLog:frameFormat];
     }
+    return published;
 }
 
 - (NSDictionary<NSString *, id> *)healthSnapshot {

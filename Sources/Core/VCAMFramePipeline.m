@@ -9,6 +9,11 @@
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
 
+#include <unistd.h>
+
+static const char *const VCAMLegacyRTSPDaemonPipelineMarker =
+    "/var/tmp/vcam-rtsp-legacy-vcamd.enable";
+
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _previewTemplateSample;
     CGSize _previewTemplateSize;
@@ -68,8 +73,12 @@
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                          renderer:self.renderer];
+                // SpringBoard owns the production RTSP path; daemon decode is a
+                // marker-gated rollback only.
+                if (access(VCAMLegacyRTSPDaemonPipelineMarker, F_OK) == 0) {
+                    self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
+                                                                              renderer:self.renderer];
+                }
                 break;
             case VCAMSourceKindHLS:
                 self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration

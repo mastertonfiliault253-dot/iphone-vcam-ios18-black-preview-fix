@@ -7,7 +7,8 @@ typedef struct AVCodecParameters AVCodecParameters;
 
 /// Decodes H.264/HEVC Annex-B-free (AVCC/HVCC) packets with a direct
 /// VTDecompressionSession instead of FFmpeg's videotoolbox hwaccel wrapper.
-/// vcamd-only; never linked into injected clients.
+/// Linked into vcamd (legacy rollback) and the injected SpringBoard client
+/// (production RTSP path: VT hardware decode runs in an app process).
 @interface VCAMHardwareVideoDecoder : NSObject
 
 - (nullable instancetype)initWithCodecParameters:(AVCodecParameters *)parameters;
