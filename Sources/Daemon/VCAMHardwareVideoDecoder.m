@@ -483,6 +483,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     (void)sourceFrameRefCon;
     (void)presentationDuration;
     VCAMHardwareVideoDecoder *decoder = (__bridge VCAMHardwareVideoDecoder *)refcon;
+    static volatile int callbackEntry = 0;
+    int entry = __sync_add_and_fetch(&callbackEntry, 1);
+    if (entry <= 3) {
+        fprintf(stderr, "vcam VT callback ENTRY count=%d status=%d image=%d\n",
+                entry, (int)status, imageBuffer != NULL);
+        fflush(stderr);
+    }
     if (status != noErr) {
         // A missing reference frame is recoverable: the decoder will produce
         // output again once the next keyframe arrives. Treat it as noise
@@ -732,6 +739,9 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);
+    fprintf(stderr, "vcam VTDecompressionSessionCreate status=%d fmt=%p session=%p\n",
+            (int)status, (void *)_formatDescription, (void *)_session);
+    fflush(stderr);
     if (status != noErr) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"VCAMHardwareVideoDecoder" code:1
