@@ -699,7 +699,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         sourceTitle = @"OBS WebSocket 已启用";
         detail = values[@"obsWebSocketURL"] ?: @"未设置地址";
     } else if (enabled && [source isEqualToString:@"hls"]) {
-        sourceTitle = @"HLS 原生播放已启用（硬件状态待验收）";
+        sourceTitle = @"HLS 原生播放已启用";
         detail = values[@"hlsURL"] ?: @"未配置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
         sourceTitle = @"RTSP 直连已启用";

@@ -839,15 +839,65 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         free(filtered);
         return NO;
     }
+    // VideoToolbox relies on the per-sample sync/dependency markers to treat
+    // an IDR as a reference-free sync point, especially when the sample
+    // starts with SEI NALs instead of the slice itself. Without the markers
+    // the first IDR can be rejected with kVTVideoDecoderReferenceMissingErr
+    // (-12780) even though DecodeFrame accepts the sample.
+    CFArrayRef sampleAttachmentsArray =
+        CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+    if (sampleAttachmentsArray != NULL &&
+        CFArrayGetCount(sampleAttachmentsArray) > 0) {
+        CFMutableDictionaryRef sampleAttachment =
+            (CFMutableDictionaryRef)CFArrayGetValueAtIndex(
+                sampleAttachmentsArray, 0);
+        if (sampleAttachment != NULL) {
+            CFDictionarySetValue(sampleAttachment,
+                                 kCMSampleAttachmentKey_NotSync,
+                                 isKeyFrame ? kCFBooleanFalse
+                                            : kCFBooleanTrue);
+            CFDictionarySetValue(sampleAttachment,
+                                 kCMSampleAttachmentKey_DependsOnOthers,
+                                 isKeyFrame ? kCFBooleanFalse
+                                            : kCFBooleanTrue);
+        }
+    }
     static volatile int packetDiagnostics = 0;
     int packetDiagnostic = __sync_add_and_fetch(&packetDiagnostics, 1);
     int firstNAL = feedLength >= 5 ? (_isHEVC ? ((feedBytes[4] >> 1) & 0x3f)
                                              : (feedBytes[4] & 0x1f)) : -1;
+    int secondNAL = -1;
+    int thirdNAL = -1;
+    if (feedLength >= 10) {
+        size_t offset = 4;
+        size_t firstSize =
+            ((size_t)feedBytes[0] << 24) | ((size_t)feedBytes[1] << 16) |
+            ((size_t)feedBytes[2] << 8) | (size_t)feedBytes[3];
+        if (firstSize > 0 && offset + 4 + firstSize <= feedLength) {
+            offset += 4 + firstSize;
+            secondNAL = _isHEVC ? ((feedBytes[offset] >> 1) & 0x3f)
+                                : (feedBytes[offset] & 0x1f);
+            if (offset + 4 + 1 <= feedLength) {
+                size_t secondSize =
+                    ((size_t)feedBytes[offset - 4] << 24) |
+                    ((size_t)feedBytes[offset - 3] << 16) |
+                    ((size_t)feedBytes[offset - 2] << 8) |
+                    (size_t)feedBytes[offset - 1];
+                if (secondSize > 0 &&
+                    offset + 4 + secondSize <= feedLength) {
+                    thirdNAL = _isHEVC
+                        ? ((feedBytes[offset + 4 + secondSize] >> 1) & 0x3f)
+                        : (feedBytes[offset + 4 + secondSize] & 0x1f);
+                }
+            }
+        }
+    }
     if (packetDiagnostic <= 4) {
         NSString *packetLine = [NSString stringWithFormat:
-            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu firstNAL=%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
+            @"[DEBUG-vtpack] packet count=%d key=%d annexB=%d stripped=%d input=%zu output=%zu nals=%d,%d,%d sampleStatus=%d pts=%lld/%d dts=%lld/%d",
             packetDiagnostic, isKeyFrame, annexB, stripped, length, feedLength,
-            firstNAL, (int)status, presentationTime.value, presentationTime.timescale,
+            firstNAL, secondNAL, thirdNAL, (int)status,
+            presentationTime.value, presentationTime.timescale,
             decodeTime.value, decodeTime.timescale];
         fprintf(stderr, "vcam %s\n", packetLine.UTF8String);
         fflush(stderr);
