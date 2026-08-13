@@ -839,6 +839,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     VTDecodeInfoFlags decodeFlags = 0;
     status = VTDecompressionSessionDecodeFrame(
         _session, sampleBuffer, 0, NULL, &decodeFlags);
+    if (status == noErr) {
+        // The frame is delivered asynchronously to VCAMHardwareDecoderCallback
+        // on VT's own thread. Wait for it before draining the frame queue,
+        // otherwise copyNextOutputFrame runs before the callback and returns
+        // nothing (which made direct-VT look like it produced no frames).
+        status = VTDecompressionSessionWaitForAsynchronousFrames(_session);
+    }
     if (packetDiagnostic <= 4 || status != noErr) {
         fprintf(stderr, "vcam [DEBUG-vtpack] decode count=%d status=%d flags=%u\n",
                 packetDiagnostic, (int)status, (unsigned)decodeFlags);
