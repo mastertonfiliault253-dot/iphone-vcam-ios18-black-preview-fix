@@ -44,7 +44,9 @@ case "$BUILD_ROOT" in
 esac
 cd "$BUILD_ROOT"
 if [[ "${VCAM_COMPILE_ONLY:-0}" == "1" ]]; then
-  make clean all FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+  # Local WSL vendor/ffmpeg only ships arm64; build the arm64 slice for the
+  # compile check. CI builds both slices with build-ffmpeg-ios.sh.
+  make clean all FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless ARCHS=arm64
   echo "Rootless compile check passed (no package produced)"
   exit 0
 fi

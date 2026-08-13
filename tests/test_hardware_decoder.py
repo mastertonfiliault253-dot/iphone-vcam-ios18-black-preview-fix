@@ -413,7 +413,7 @@ class HardwareDecoderTests(unittest.TestCase):
         # marker-gated rollback to the daemon.
         self.assertIn("VCAMLegacyRTSPDaemonMarker", bridge)
         self.assertIn("sourceKind == VCAMSourceKindRTSP", bridge)
-        self.assertIn("publishPixelBuffer:buffer sourceName:@\"RTSP\"", bridge)
+        self.assertIn("isolation: frame dropped", bridge)
         self.assertIn("initWithURL:next.rtspURL", bridge)
         # The decoder is no longer vcamd-only.
         self.assertNotIn("vcamd-only", header)

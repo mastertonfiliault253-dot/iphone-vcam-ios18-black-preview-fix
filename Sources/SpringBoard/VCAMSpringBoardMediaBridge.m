@@ -628,7 +628,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             CVPixelBufferRelease(buffer);
             return;
         }
-        [strongSelf publishPixelBuffer:buffer sourceName:@"RTSP"];
+        // ISOLATION-EXPERIMENT: drop the frame instead of publishing to find
+        // out whether the SpringBoard crash comes from the decode path or
+        // the publish path. Log the drop so the device shows decode health.
+        if (strongSelf.decodedFrames == 0) {
+            [VCAMConfiguration appendProcessLog:
+                @"springboard RTSP isolation: frame dropped (publish disabled)"];
+        }
         CVPixelBufferRelease(buffer);
     }];
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
