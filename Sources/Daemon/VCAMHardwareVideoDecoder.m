@@ -762,6 +762,11 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     fprintf(stderr, "vcam VTDecompressionSessionCreate status=%d fmt=%p session=%p\n",
             (int)status, (void *)_formatDescription, (void *)_session);
     fflush(stderr);
+    BOOL hardwareSupported = VTIsHardwareDecodeSupported(
+        _isHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264);
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"[DEBUG-vtpack] VTIsHardwareDecodeSupported=%d codec=%@",
+        hardwareSupported, _isHEVC ? @"HEVC" : @"H264"]];
     if (status == noErr && _session != NULL) {
         CFTypeRef usingHardwareValue = NULL;
         OSStatus propertyStatus = VTSessionCopyProperty(
