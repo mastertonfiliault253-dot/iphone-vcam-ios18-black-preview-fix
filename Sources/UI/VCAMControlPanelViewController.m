@@ -312,7 +312,8 @@
         tf.font = [UIFont systemFontOfSize:11];
     }];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"验证" style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+    [a addAction:[UIAlertAction actionWithTitle:@"验证" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
         NSString *input = a.textFields.firstObject.text;
         if (input.length < 20) return;
         // Try base64 decode and write license.plist
