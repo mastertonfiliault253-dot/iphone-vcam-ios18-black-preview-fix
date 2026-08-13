@@ -48,14 +48,6 @@ static size_t VCAMTrimAnnexBTrailingZeroBytes(const uint8_t *bytes,
 // a length-prefixed sample containing only slice NALs. It returns NULL when
 // the caller can keep using the original bytes (no parameter sets found in a
 // length-prefixed packet) or when the packet is parameter-set-only.
-static BOOL VCAMIsParameterSetNAL(const uint8_t *payload, size_t payloadLength,
-                                  BOOL hevc) {
-    if (payload == NULL || payloadLength < 1) return NO;
-    int type = hevc ? ((payload[0] >> 1) & 0x3F) : (payload[0] & 0x1F);
-    if (hevc) return type == 32 || type == 33 || type == 34;
-    return type == 7 || type == 8;
-}
-
 static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
                                            size_t *outLength, BOOL hevc,
                                            BOOL *strippedAny) {
