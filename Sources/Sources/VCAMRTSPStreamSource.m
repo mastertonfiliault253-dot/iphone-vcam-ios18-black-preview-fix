@@ -146,6 +146,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
 @property(nonatomic) BOOL usesRTSPTransport;
 @property(nonatomic) BOOL hardwareDecodeEnabled;
 @property(nonatomic) BOOL softwareFallbackActive;
+@property(nonatomic) CFTimeInterval lastHardwareRetryTime;
 - (BOOL)decodeOneFFmpegSessionUsingHardware:(BOOL)useHardware
                                     stalled:(BOOL *)stalledOut
                            hardwareRejected:(BOOL *)hardwareRejectedOut;
@@ -167,6 +168,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
         _conversionQueue = dispatch_queue_create("com.codex.vcam.stream.convert", DISPATCH_QUEUE_SERIAL);
         _hardwareDecodeEnabled = YES;
         _softwareFallbackActive = NO;
+        _lastHardwareRetryTime = 0;
     }
     return self;
 }
@@ -566,13 +568,21 @@ cleanup:
                                           hardwareRejected:NULL];
     }
     if (self.softwareFallbackActive) {
-        // A decoder instance represents one concrete source configuration.
-        // Once iOS rejects VideoToolbox for that source, keep the stable
-        // software session until the user changes/reloads the source. The old
-        // 30-second retry repeatedly tore down a healthy session and produced
-        // a visible cadence pause without changing any decoder inputs.
-        return [self decodeOneFFmpegSessionUsingHardware:NO stalled:NULL
-                                          hardwareRejected:NULL];
+        // Retry hardware decode periodically. Falling back once (a transient
+        // stall, RTP burst, or mid-GOP join) must not lock the stream into
+        // 4-thread CPU decoding forever, which drives device heat. A 60 s
+        // cadence keeps session teardown rare while letting VideoToolbox
+        // recover once the stream stabilizes.
+        CFTimeInterval now = CACurrentMediaTime();
+        if (self.lastHardwareRetryTime > 0 && now - self.lastHardwareRetryTime < 60.0) {
+            return [self decodeOneFFmpegSessionUsingHardware:NO stalled:NULL
+                                              hardwareRejected:NULL];
+        }
+        self.lastHardwareRetryTime = now;
+        self.softwareFallbackActive = NO;
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ retrying hardware decode", self.streamName]];
+        // Fall through to the hardware attempt below.
     }
     // FFmpeg owns RTSP/RTP depayloading, codec extradata, access-unit
     // normalization, timestamps, reordering, and VideoToolbox integration.
@@ -726,7 +736,7 @@ cleanup:
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
     codecContext->err_recognition = AV_EF_CAREFUL;
-    codecContext->thread_count = useHardware ? 1 : 4;
+    codecContext->thread_count = useHardware ? 1 : 2;
     if (useHardware) {
         codecContext->opaque = &hardwareState;
         codecContext->get_format = VCAMSelectHardwarePixelFormat;

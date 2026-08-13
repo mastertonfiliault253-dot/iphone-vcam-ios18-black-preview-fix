@@ -27,6 +27,7 @@ static BOOL VCAMLoggedNativeSurfacePublished;
 static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
 static BOOL VCAMLoggedStaticNV12Fallback;
+static BOOL VCAMLoggedUnsupportedNativeFormat;
 
 static void VCAMDestroySurfaceWriter(void) {
     if (VCAMSurfaceWriter != NULL) {
@@ -229,6 +230,16 @@ static void VCAMPublishTick(void) {
         }
         if (native != NULL) {
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(native);
+            if (pixelFormat != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+                pixelFormat != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
+                pixelFormat != kCVPixelFormatType_32BGRA) {
+                if (!VCAMLoggedUnsupportedNativeFormat) {
+                    VCAMLoggedUnsupportedNativeFormat = YES;
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"vcamd unsupported native pixel format=%08x; skipping frame", pixelFormat]];
+                }
+                return;
+            }
             uint32_t width = (uint32_t)CVPixelBufferGetWidth(native);
             uint32_t height = (uint32_t)CVPixelBufferGetHeight(native);
             uint32_t slotCount = nativeSlotCount;
