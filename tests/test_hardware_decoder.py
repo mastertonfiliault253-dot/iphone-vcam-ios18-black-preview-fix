@@ -216,10 +216,13 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         self.assertIn("VCAMConvertAnnexBToLengthPrefixed", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
-        self.assertIn("annexB conversion failed", decoder)
-        # Device evidence: in-band SPS/PPS -> -12909, SEI-leading sample ->
-        # -12780. Parameter sets and SEI must be stripped so samples carry
-        # only slice NALs.
+        # Annex-B access units are fed to VideoToolbox raw (no conversion);
+        # the length-prefixed conversion path remains for avcC input.
+        raw = decoder.split("if (annexB) {", 1)[1].split(
+            "VCAMConvertAnnexBToLengthPrefixed", 1
+        )[0]
+        self.assertIn("feedLength = length;", raw)
+        self.assertIn("feed the raw Annex-B", raw)
         self.assertIn("VCAMIsOmittableNAL", decoder)
         self.assertIn("type == 6 || type == 7 || type == 8", decoder)
 
