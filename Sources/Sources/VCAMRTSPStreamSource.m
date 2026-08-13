@@ -17,6 +17,8 @@
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
+static char gFFmpegLastMessage[1024] = {0};
+static int gFFmpegLastMessageCount = 0;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
@@ -41,6 +43,19 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
         message[--length] = '\0';
     }
     if (length == 0) return;
+    if (strcmp(message, gFFmpegLastMessage) == 0) {
+        gFFmpegLastMessageCount += 1;
+        if (gFFmpegLastMessageCount > 5) {
+            if (gFFmpegLastMessageCount == 6) {
+                fprintf(stderr, "[DEBUG-vtff] (further identical messages suppressed)\n");
+                fflush(stderr);
+            }
+            return;
+        }
+    } else {
+        strncpy(gFFmpegLastMessage, message, sizeof(gFFmpegLastMessage) - 1);
+        gFFmpegLastMessageCount = 0;
+    }
     int count = __sync_add_and_fetch(&gFFmpegDiagnosticCount, 1);
     if (count <= 3000) {
         NSString *line = [NSString stringWithFormat:
