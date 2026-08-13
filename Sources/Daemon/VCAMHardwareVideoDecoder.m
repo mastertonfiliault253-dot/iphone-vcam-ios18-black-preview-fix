@@ -801,22 +801,20 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     uint8_t *filtered = NULL;
     BOOL stripped = NO;
     BOOL annexB = VCAMIsAnnexBStartCode(bytes, length, 0, NULL);
-    if (annexB) {
-        // Experiment: feed the raw Annex-B access unit to VideoToolbox
-        // without any conversion. Some iOS VT builds accept Annex-B samples
-        // directly when the format description carries the parameter sets,
-        // and every length-prefixed variant has failed with -12780 on
-        // iOS 16.1.
-        feedLength = length;
-    } else {
-        filtered = VCAMConvertAnnexBToLengthPrefixed(
-            bytes, length, &feedLength, &stripped, _isHEVC);
-        if (filtered != NULL) {
-            feedBytes = filtered;
-        } else if (feedLength == 0) {
-            // Parameter-set/SEI-only packet: nothing to decode.
-            return YES;
+    filtered = VCAMConvertAnnexBToLengthPrefixed(
+        bytes, length, &feedLength, &stripped, _isHEVC);
+    if (filtered != NULL) {
+        feedBytes = filtered;
+    } else if (feedLength == 0) {
+        // Parameter-set/SEI-only packet: nothing to decode.
+        return YES;
+    } else if (annexB) {
+        static volatile int annexBFailures = 0;
+        int failureCount = __sync_add_and_fetch(&annexBFailures, 1);
+        if (failureCount <= 4) {
+            NSLog(@"VCAMHardwareVideoDecoder annexB conversion failed length=%zu", length);
         }
+        return NO;
     }
     if (stripped) {
         static volatile int strippedCount = 0;
@@ -897,6 +895,13 @@ static void VCAMHardwareDecoderCallback(void *refcon,
                                  kCMSampleAttachmentKey_DependsOnOthers,
                                  isKeyFrame ? kCFBooleanFalse
                                             : kCFBooleanTrue);
+            if (isKeyFrame) {
+                // Ask VideoToolbox to reset the decoder at the IDR boundary;
+                // helps sessions that joined mid-GOP or restarted cleanly.
+                CFDictionarySetValue(sampleAttachment,
+                    kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding,
+                    kCFBooleanTrue);
+            }
         }
     }
     static volatile int packetDiagnostics = 0;

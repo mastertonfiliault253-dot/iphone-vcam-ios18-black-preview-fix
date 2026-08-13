@@ -201,6 +201,17 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("kCVPixelBufferHeightKey", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
+    def test_packet_duration_falls_back_to_frame_rate_instead_of_invalid(self) -> None:
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        duration = stream.split("static CMTime VCAMPacketDuration", 1)[1].split(
+            "static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata", 1
+        )[0]
+        self.assertIn("avg_frame_rate", duration)
+        self.assertIn("CMTimeMake(1, 30)", duration)
+        self.assertNotIn("return kCMTimeInvalid;", duration)
+
     def test_reference_missing_error_is_recoverable(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
@@ -216,15 +227,14 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         self.assertIn("VCAMConvertAnnexBToLengthPrefixed", decoder)
         self.assertIn("VCAMIsAnnexBStartCode", decoder)
-        # Annex-B access units are fed to VideoToolbox raw (no conversion);
-        # the length-prefixed conversion path remains for avcC input.
-        raw = decoder.split("if (annexB) {", 1)[1].split(
-            "VCAMConvertAnnexBToLengthPrefixed", 1
-        )[0]
-        self.assertIn("feedLength = length;", raw)
-        self.assertIn("feed the raw Annex-B", raw)
+        self.assertIn("annexB conversion failed", decoder)
         self.assertIn("VCAMIsOmittableNAL", decoder)
         self.assertIn("type == 6 || type == 7 || type == 8", decoder)
+        # IDR samples ask VideoToolbox to reset the decoder at the sync
+        # point; sync/dependency markers stay explicit.
+        self.assertIn("kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding", decoder)
+        self.assertIn("kCMSampleAttachmentKey_NotSync", decoder)
+        self.assertIn("kCMSampleAttachmentKey_DependsOnOthers", decoder)
 
     def test_length_prefixed_slice_without_parameter_sets_keeps_original_length(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
