@@ -581,12 +581,14 @@ cleanup:
 }
 
 - (BOOL)decodeOneSession {
-    // Single session with automatic hardware acceleration. libavcodec's
-    // h264/hevc decoders auto-activate the videotoolbox hwaccel enabled in
-    // scripts/build-ffmpeg-ios.sh (--enable-hwaccel=h264_videotoolbox,
-    // hevc_videotoolbox). Hardware frames arrive as AV_PIX_FMT_VIDEOTOOLBOX
-    // with a CVPixelBufferRef in data[3]; the decoder transparently falls
-    // back to software frames when VideoToolbox cannot handle the stream.
+    // Try the direct VideoToolbox session first. Its samples carry only slice
+    // NALs (parameter sets live in the CMVideoFormatDescription), which is
+    // what iOS VideoToolbox requires — feeding SPS/PPS into VT, as FFmpeg's
+    // hwaccel does, is rejected with -12909 on device. Fall back to FFmpeg's
+    // auto-hwaccel (which degrades to software on iOS) when direct VT cannot
+    // produce frames.
+    BOOL produced = [self decodeOneHardwareSession];
+    if (produced || !self.running) return produced;
     return [self decodeOneFFmpegSession];
 }
 

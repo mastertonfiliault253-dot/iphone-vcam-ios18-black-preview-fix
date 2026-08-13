@@ -261,7 +261,7 @@ class HardwareDecoderTests(unittest.TestCase):
         session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
             "- (BOOL)consumeFFmpegFrame", 1
         )[0]
-        self.assertNotIn("decodeOneHardwareSession", session)
+        self.assertIn("decodeOneHardwareSession", session)
         self.assertIn("decodeOneFFmpegSession", session)
         # Auto-hwaccel: no manual hardware device scaffolding on iOS.
         self.assertNotIn("avcodec_get_hw_config", rtsp)
@@ -305,7 +305,7 @@ class HardwareDecoderTests(unittest.TestCase):
         session = stream.split("- (BOOL)decodeOneSession", 1)[1].split(
             "- (BOOL)consumeFFmpegFrame", 1
         )[0]
-        self.assertIn("Single session with automatic hardware acceleration", session)
+        self.assertIn("direct VideoToolbox session first", session)
         self.assertIn("return [self decodeOneFFmpegSession];", session)
         # The old dual-session decision scaffolding is gone: hardware and
         # software frames now mix inside one decode loop.

@@ -478,7 +478,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
             "- (BOOL)consumeFFmpegFrame", 1
         )[0]
-        self.assertNotIn("decodeOneHardwareSession", session)
+        self.assertIn("decodeOneHardwareSession", session)
         self.assertIn("decodeOneFFmpegSession", session)
         self.assertNotIn("avcodec_get_hw_config", rtsp)
         self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
