@@ -473,7 +473,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn('"nobuffer"', rtsp)
         self.assertNotIn('"low_delay"', rtsp)
         self.assertNotIn('"reorder_queue_size"', rtsp)
-        self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
         self.assertNotIn("hardware session produced no frames; reconnecting", rtsp)
         session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
             "- (BOOL)consumeFFmpegFrame", 1

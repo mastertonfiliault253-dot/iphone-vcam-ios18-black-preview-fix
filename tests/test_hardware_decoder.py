@@ -266,7 +266,7 @@ class HardwareDecoderTests(unittest.TestCase):
         # Auto-hwaccel: no manual hardware device scaffolding on iOS.
         self.assertNotIn("avcodec_get_hw_config", rtsp)
         self.assertNotIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
-        self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
         self.assertNotIn("hardwareState.pixelFormat", rtsp)
         self.assertNotIn("codecContext->opaque", rtsp)
         # Zero-copy hardware frame contract.

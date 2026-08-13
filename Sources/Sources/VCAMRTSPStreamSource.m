@@ -630,6 +630,7 @@ cleanup:
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
     NSString *sessionLine = nil;
+    AVBufferRef *hwDeviceRef = NULL;
     NSUInteger videoPacketsWithoutFrame = 0;
     NSUInteger consecutiveSendFailures = 0;
     NSString *urlString = self.streamURL.absoluteString;
@@ -692,6 +693,22 @@ cleanup:
     codecContext->hwaccel_flags = AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH |
         AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH;
     codecContext->thread_count = 1;
+    // The internal videotoolbox_vld hwaccel requires a hw_device_ctx even
+    // though VideoToolbox has no selectable device; pass NULL device.
+    int hwResult = av_hwdevice_ctx_create(&hwDeviceRef,
+                                          AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                          NULL, NULL, 0);
+    if (hwResult >= 0 && hwDeviceRef != NULL) {
+        codecContext->hw_device_ctx = av_buffer_ref(hwDeviceRef);
+        fprintf(stderr, "vcam VIDEOTOOLBOX hw_device_ctx created\n");
+        fflush(stderr);
+    } else {
+        char hwError[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(hwResult, hwError, sizeof(hwError));
+        fprintf(stderr, "vcam VIDEOTOOLBOX hw_device_ctx failed error=%d (%s)\n",
+                hwResult, hwError);
+        fflush(stderr);
+    }
     if (avcodec_open2(codecContext, decoder, NULL) < 0) {
         goto cleanup;
     }
@@ -797,6 +814,7 @@ cleanup:
     av_packet_free(&packet);
     av_frame_free(&frame);
     avcodec_free_context(&codecContext);
+    av_buffer_unref(&hwDeviceRef);
     avformat_close_input(&formatContext);
     return producedFrame;
 }
