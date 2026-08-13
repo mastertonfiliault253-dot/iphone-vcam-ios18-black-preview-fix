@@ -626,58 +626,6 @@ cleanup:
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
 
-static AVPacket *VCAMStripSPSPPSFromAnnexB(AVPacket *packet) {
-    if (packet == NULL || packet->size < 4 || packet->data == NULL) return packet;
-    uint8_t *data = packet->data;
-    int size = packet->size;
-    BOOL annexB = data[0] == 0 && data[1] == 0 &&
-        (data[2] == 1 || (data[2] == 0 && data[3] == 1));
-    if (!annexB) return packet;
-
-    uint8_t *out = av_malloc((size_t)size + AV_INPUT_BUFFER_PADDING_SIZE);
-    if (out == NULL) return packet;
-    int outSize = 0;
-    int pos = 0;
-    BOOL removed = NO;
-    while (pos + 3 < size) {
-        int startCode = 0;
-        if (data[pos] == 0 && data[pos + 1] == 0) {
-            if (data[pos + 2] == 1) startCode = 3;
-            else if (data[pos + 2] == 0 && data[pos + 3] == 1) startCode = 4;
-        }
-        if (startCode == 0) { pos++; continue; }
-        int nalStart = pos + startCode;
-        int nalEnd = size;
-        for (int i = nalStart; i + 3 < size; i++) {
-            if (data[i] == 0 && data[i + 1] == 0 &&
-                (data[i + 2] == 1 || (data[i + 2] == 0 && data[i + 3] == 1))) {
-                nalEnd = i;
-                break;
-            }
-        }
-        uint8_t nalType = data[nalStart] & 0x1F;
-        if (nalType == 7 || nalType == 8) {
-            removed = YES;
-        } else {
-            memcpy(out + outSize, data + pos, (size_t)(nalEnd - pos));
-            outSize += nalEnd - pos;
-        }
-        pos = nalEnd;
-    }
-    if (!removed || outSize == size) {
-        av_free(out);
-        return packet;
-    }
-    AVPacket *stripped = av_packet_alloc();
-    if (stripped == NULL) {
-        av_free(out);
-        return packet;
-    }
-    av_packet_from_data(stripped, out, outSize);
-    av_packet_copy_props(stripped, packet);
-    return stripped;
-}
-
 - (BOOL)decodeOneFFmpegSession {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
