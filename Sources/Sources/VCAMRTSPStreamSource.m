@@ -20,7 +20,19 @@ static volatile int gFFmpegDiagnosticCount = 0;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
-    (void)context;
+    BOOL decoderClass = NO;
+    if (context != NULL) {
+        AVClass *cls = *(AVClass **)context;
+        if (cls != NULL && cls->class_name != NULL) {
+            const char *name = cls->class_name;
+            if (strstr(name, "videotoolbox") != NULL ||
+                strstr(name, "h264") != NULL ||
+                strstr(name, "VDA") != NULL) {
+                decoderClass = YES;
+            }
+        }
+    }
+    if (!decoderClass && level > AV_LOG_ERROR) return;
     if (level > AV_LOG_VERBOSE) return;
     char message[1024] = {0};
     vsnprintf(message, sizeof(message), format, arguments);
@@ -30,7 +42,7 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
     }
     if (length == 0) return;
     int count = __sync_add_and_fetch(&gFFmpegDiagnosticCount, 1);
-    if (count <= 500) {
+    if (count <= 3000) {
         NSString *line = [NSString stringWithFormat:
             @"[DEBUG-vtff] level=%d %@", level,
             [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"];
@@ -677,6 +689,58 @@ static void VCAMRewriteExtradataToAVCC(AVCodecContext *context) {
     fflush(stderr);
 }
 
+static AVPacket *VCAMStripSPSPPSFromAnnexB(AVPacket *packet) {
+    if (packet == NULL || packet->size < 4 || packet->data == NULL) return packet;
+    uint8_t *data = packet->data;
+    int size = packet->size;
+    BOOL annexB = data[0] == 0 && data[1] == 0 &&
+        (data[2] == 1 || (data[2] == 0 && data[3] == 1));
+    if (!annexB) return packet;
+
+    uint8_t *out = av_malloc((size_t)size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (out == NULL) return packet;
+    int outSize = 0;
+    int pos = 0;
+    BOOL removed = NO;
+    while (pos + 3 < size) {
+        int startCode = 0;
+        if (data[pos] == 0 && data[pos + 1] == 0) {
+            if (data[pos + 2] == 1) startCode = 3;
+            else if (data[pos + 2] == 0 && data[pos + 3] == 1) startCode = 4;
+        }
+        if (startCode == 0) { pos++; continue; }
+        int nalStart = pos + startCode;
+        int nalEnd = size;
+        for (int i = nalStart; i + 3 < size; i++) {
+            if (data[i] == 0 && data[i + 1] == 0 &&
+                (data[i + 2] == 1 || (data[i + 2] == 0 && data[i + 3] == 1))) {
+                nalEnd = i;
+                break;
+            }
+        }
+        uint8_t nalType = data[nalStart] & 0x1F;
+        if (nalType == 7 || nalType == 8) {
+            removed = YES;
+        } else {
+            memcpy(out + outSize, data + pos, (size_t)(nalEnd - pos));
+            outSize += nalEnd - pos;
+        }
+        pos = nalEnd;
+    }
+    if (!removed || outSize == size) {
+        av_free(out);
+        return packet;
+    }
+    AVPacket *stripped = av_packet_alloc();
+    if (stripped == NULL) {
+        av_free(out);
+        return packet;
+    }
+    av_packet_from_data(stripped, out, outSize);
+    av_packet_copy_props(stripped, packet);
+    return stripped;
+}
+
 - (BOOL)decodeOneFFmpegSession {
     AVFormatContext *formatContext = NULL;
     AVCodecContext *codecContext = NULL;
@@ -743,7 +807,17 @@ static void VCAMRewriteExtradataToAVCC(AVCodecContext *context) {
     [VCAMConfiguration appendProcessLog:sessionLine];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
-    VCAMRewriteExtradataToAVCC(codecContext);
+    fprintf(stderr, "vcam extradata first bytes: %02x %02x %02x %02x %02x %02x %02x %02x size=%d\n",
+            codecContext->extradata_size > 0 ? codecContext->extradata[0] : 0,
+            codecContext->extradata_size > 1 ? codecContext->extradata[1] : 0,
+            codecContext->extradata_size > 2 ? codecContext->extradata[2] : 0,
+            codecContext->extradata_size > 3 ? codecContext->extradata[3] : 0,
+            codecContext->extradata_size > 4 ? codecContext->extradata[4] : 0,
+            codecContext->extradata_size > 5 ? codecContext->extradata[5] : 0,
+            codecContext->extradata_size > 6 ? codecContext->extradata[6] : 0,
+            codecContext->extradata_size > 7 ? codecContext->extradata[7] : 0,
+            codecContext->extradata_size);
+    fflush(stderr);
 
     codecContext->err_recognition = AV_EF_CAREFUL;
     // Automatic hardware acceleration: requesting AV_PIX_FMT_VIDEOTOOLBOX in
@@ -787,13 +861,30 @@ static void VCAMRewriteExtradataToAVCC(AVCodecContext *context) {
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) goto cleanup;
 
+    BOOL dumpedFirstPacket = NO;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStream) {
+            if (!dumpedFirstPacket) {
+                dumpedFirstPacket = YES;
+                fprintf(stderr, "vcam first packet size=%d hex=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                        packet->size,
+                        packet->size > 0 ? packet->data[0] : 0,
+                        packet->size > 1 ? packet->data[1] : 0,
+                        packet->size > 2 ? packet->data[2] : 0,
+                        packet->size > 3 ? packet->data[3] : 0,
+                        packet->size > 4 ? packet->data[4] : 0,
+                        packet->size > 5 ? packet->data[5] : 0,
+                        packet->size > 6 ? packet->data[6] : 0,
+                        packet->size > 7 ? packet->data[7] : 0);
+                fflush(stderr);
+            }
             videoPacketsWithoutFrame += 1;
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
             while (self.running) {
-                sendResult = avcodec_send_packet(codecContext, packet);
+                AVPacket *feedPacket = VCAMStripSPSPPSFromAnnexB(packet);
+                sendResult = avcodec_send_packet(codecContext, feedPacket);
+                if (feedPacket != packet) av_packet_free(&feedPacket);
                 if (sendResult != AVERROR(EAGAIN)) break;
 
                 // EAGAIN means the decoder still owns output for an earlier

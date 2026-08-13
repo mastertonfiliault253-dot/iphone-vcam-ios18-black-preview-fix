@@ -281,7 +281,7 @@ class HardwareDecoderTests(unittest.TestCase):
             "cleanup:", 1
         )[0]
         self.assertIn("avcodec_parameters_to_context(codecContext, stream->codecpar)", loop)
-        self.assertIn("avcodec_send_packet(codecContext, packet)", loop)
+        self.assertIn("avcodec_send_packet(codecContext, feedPacket)", loop)
         self.assertIn("avcodec_receive_frame(codecContext, frame)", loop)
         self.assertNotIn("AV_PKT_FLAG_KEY", loop)
         self.assertNotIn("VCAMCopyCodecParametersWithPacketExtradata", loop)
@@ -421,7 +421,7 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("[DEBUG-vtff]", stream)
-        self.assertIn("count <= 500", stream)
+        self.assertIn("count <= 3000", stream)
         self.assertIn("level > AV_LOG_VERBOSE", stream)
         self.assertNotIn("VCAMCaptureFFmpegHardwareLogs", stream)  # diagnostics always on
 

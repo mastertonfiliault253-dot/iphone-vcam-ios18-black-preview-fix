@@ -485,7 +485,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("av_frame_clone", rtsp)
         self.assertIn("_pendingSoftwareFrame", rtsp)
         self.assertIn("conversionQueue", rtsp)
-        self.assertIn("sendResult = avcodec_send_packet(codecContext, packet)", rtsp)
+        self.assertIn("sendResult = avcodec_send_packet(codecContext, feedPacket)", rtsp)
         self.assertIn("sendResult != AVERROR(EAGAIN)", rtsp)
         self.assertIn("retry this exact packet", rtsp)
         self.assertNotIn('"discardcorrupt"', rtsp)
