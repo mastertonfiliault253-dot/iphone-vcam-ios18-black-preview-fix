@@ -819,9 +819,7 @@ static AVPacket *VCAMStripSPSPPSFromAnnexB(AVPacket *packet) {
             int sendResult = AVERROR(EAGAIN);
             BOOL restartSession = NO;
             while (self.running) {
-                AVPacket *feedPacket = VCAMStripSPSPPSFromAnnexB(packet);
-                sendResult = avcodec_send_packet(codecContext, feedPacket);
-                if (feedPacket != packet) av_packet_free(&feedPacket);
+                sendResult = avcodec_send_packet(codecContext, packet);
                 if (sendResult != AVERROR(EAGAIN)) break;
 
                 // EAGAIN means the decoder still owns output for an earlier

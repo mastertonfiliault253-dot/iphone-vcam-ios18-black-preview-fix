@@ -281,7 +281,7 @@ class HardwareDecoderTests(unittest.TestCase):
             "cleanup:", 1
         )[0]
         self.assertIn("avcodec_parameters_to_context(codecContext, stream->codecpar)", loop)
-        self.assertIn("avcodec_send_packet(codecContext, feedPacket)", loop)
+        self.assertIn("avcodec_send_packet(codecContext, packet)", loop)
         self.assertIn("avcodec_receive_frame(codecContext, frame)", loop)
         self.assertNotIn("AV_PKT_FLAG_KEY", loop)
         self.assertNotIn("VCAMCopyCodecParametersWithPacketExtradata", loop)
