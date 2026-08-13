@@ -741,8 +741,11 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     // IOSurface backing for the 420v output. The bare pixel-format-only
     // variant made every sample fail with kVTVideoDecoderReferenceMissingErr
     // (-12780) on device.
+    // Experiment: request BGRA output. The 420v destination allocation
+    // failed on iOS 16 (7ed2b2a) and the failure may surface as the
+    // persistent -12780 callback error on iOS 16.1.
     NSDictionary *destinationAttributes = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
         (id)kCVPixelBufferWidthKey: @(_width),
         (id)kCVPixelBufferHeightKey: @(_height),
