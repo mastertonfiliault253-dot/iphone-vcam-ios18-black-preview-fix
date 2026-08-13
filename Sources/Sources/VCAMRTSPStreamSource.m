@@ -16,6 +16,7 @@
 #include <libavutil/mem.h>
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
+static volatile int gFFmpegDiagnosticCount = 0;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
@@ -28,12 +29,14 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
         message[--length] = '\0';
     }
     if (length == 0) return;
-    static volatile int diagnosticCount = 0;
-    int count = __sync_add_and_fetch(&diagnosticCount, 1);
-    if (count <= 40) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+    int count = __sync_add_and_fetch(&gFFmpegDiagnosticCount, 1);
+    if (count <= 120) {
+        NSString *line = [NSString stringWithFormat:
             @"[DEBUG-vtff] level=%d %@", level,
-            [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"]];
+            [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"];
+        fprintf(stderr, "%s\n", line.UTF8String);
+        fflush(stderr);
+        [VCAMConfiguration appendProcessLog:line];
     }
 }
 
@@ -561,6 +564,7 @@ cleanup:
 
 - (BOOL)consumeFFmpegFrame:(AVFrame *)decodedFrame
         loggedSoftwareFrame:(BOOL *)loggedSoftwareFrame
+        loggedHardwareFrame:(BOOL *)loggedHardwareFrame
          loggedCorruptFrame:(BOOL *)loggedCorruptFrame {
     // CoreVideo exposes BT.2020 NCL metadata but no distinct constant-luminance
     // transport contract. Publishing CL as NCL changes the decoded colors, so
@@ -587,16 +591,25 @@ cleanup:
         decodedFrame->data[3] != NULL) {
         // Zero-copy hardware frame: data[3] is the CVPixelBufferRef owned by
         // the VideoToolbox hwaccel.
+        if (loggedHardwareFrame != NULL && !*loggedHardwareFrame) {
+            *loggedHardwareFrame = YES;
+            fprintf(stderr, "vcam HARDWARE frame size=%dx%d\n",
+                    decodedFrame->width, decodedFrame->height);
+            fflush(stderr);
+        }
         [self acceptDecodedPixelBuffer:(CVPixelBufferRef)decodedFrame->data[3]
                               hardware:YES];
         return YES;
     }
     if (loggedSoftwareFrame != NULL && !*loggedSoftwareFrame) {
         *loggedSoftwareFrame = YES;
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        NSString *line = [NSString stringWithFormat:
             @"%@ software frame format=%d size=%dx%d lines=%d,%d,%d",
             self.streamName, decodedFrame->format, decodedFrame->width, decodedFrame->height,
-            decodedFrame->linesize[0], decodedFrame->linesize[1], decodedFrame->linesize[2]]];
+            decodedFrame->linesize[0], decodedFrame->linesize[1], decodedFrame->linesize[2]];
+        fprintf(stderr, "vcam SOFTWARE frame %s\n", line.UTF8String ?: "(nil)");
+        fflush(stderr);
+        [VCAMConfiguration appendProcessLog:line];
     }
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
@@ -612,6 +625,7 @@ cleanup:
     const AVCodec *decoder = NULL;
     BOOL producedFrame = NO;
     BOOL loggedSoftwareFrame = NO;
+    BOOL loggedHardwareFrame = NO;
     BOOL loggedCorruptFrame = NO;
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
@@ -620,6 +634,10 @@ cleanup:
     NSString *urlString = self.streamURL.absoluteString;
     const char *url = urlString.UTF8String;
 
+    gFFmpegDiagnosticCount = 0;
+    fprintf(stderr, "vcam rtsp session start url=%s\n",
+            urlString.UTF8String ?: "(nil)");
+    fflush(stderr);
     [self configureOpenOptions:&options];
     // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
     // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
@@ -649,12 +667,15 @@ cleanup:
     for (int index = 0; index < extraBytes; index++) {
         snprintf(extraHex + index * 2, 3, "%02x", stream->codecpar->extradata[index]);
     }
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+    NSString *sessionLine = [NSString stringWithFormat:
         @"%@ session decoder=%s codec=%d source=%dx%d format=%d extradata=%d extra=%@",
         self.streamName, decoder->name ?: "(unknown)", stream->codecpar->codec_id,
         stream->codecpar->width, stream->codecpar->height, stream->codecpar->format,
         stream->codecpar->extradata_size,
-        [NSString stringWithUTF8String:extraHex]]];
+        [NSString stringWithUTF8String:extraHex]];
+    fprintf(stderr, "vcam %s\n", sessionLine.UTF8String ?: "(nil)");
+    fflush(stderr);
+    [VCAMConfiguration appendProcessLog:sessionLine];
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
 
@@ -694,7 +715,8 @@ cleanup:
                 if (receiveResult >= 0) {
                     if ([self consumeFFmpegFrame:frame
                              loggedSoftwareFrame:&loggedSoftwareFrame
-                              loggedCorruptFrame:&loggedCorruptFrame]) {
+                              loggedHardwareFrame:&loggedHardwareFrame
+                             loggedCorruptFrame:&loggedCorruptFrame]) {
                         producedFrame = YES;
                         videoPacketsWithoutFrame = 0;
                     }
@@ -729,7 +751,8 @@ cleanup:
                     }
                     if ([self consumeFFmpegFrame:frame
                              loggedSoftwareFrame:&loggedSoftwareFrame
-                              loggedCorruptFrame:&loggedCorruptFrame]) {
+                              loggedHardwareFrame:&loggedHardwareFrame
+                             loggedCorruptFrame:&loggedCorruptFrame]) {
                         producedFrame = YES;
                         videoPacketsWithoutFrame = 0;
                     }
