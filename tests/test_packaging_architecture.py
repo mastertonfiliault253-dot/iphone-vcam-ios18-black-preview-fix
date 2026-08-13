@@ -39,8 +39,11 @@ class PackagingArchitectureTests(unittest.TestCase):
             encoding="utf-8"
         )
         # SpringBoard client is arm64-only now (vendored FFmpeg ships one slice);
-        # the CI still thins it and checks the ObjC stub sections.
-        self.assertIn('lipo "$springboard_client" -thin arm64', workflow)
+        # a single-arch dylib cannot be lipo-thinned, so the CI checks the
+        # ObjC stub sections on the file directly.
+        self.assertIn('lipo "$springboard_client" -verify_arch arm64', workflow)
+        self.assertNotIn('-thin arm64', workflow)
+        self.assertIn('otool -l "$springboard_client"', workflow)
         self.assertIn("sectname __objc_stubs", workflow)
         self.assertIn("sectname __objc_intobj", workflow)
 

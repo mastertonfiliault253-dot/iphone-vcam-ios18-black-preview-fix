@@ -59,9 +59,8 @@ jobs:
           lipo "$springboard_client" -verify_arch arm64
           lipo "$worker" -verify_arch arm64
           lipo "$injection_monitor" -verify_arch arm64
-          lipo "$springboard_client" -thin arm64 -output /tmp/VCAMSpringBoardClient-arm64.dylib
-          otool -l /tmp/VCAMSpringBoardClient-arm64.dylib | grep -q 'sectname __objc_stubs'
-          otool -l /tmp/VCAMSpringBoardClient-arm64.dylib | grep -q 'sectname __objc_intobj'
+                    otool -l "$springboard_client" | grep -q 'sectname __objc_stubs'
+          otool -l "$springboard_client" | grep -q 'sectname __objc_intobj'
           ldid -e "$worker" > /tmp/vcamd-entitlements.plist
           /usr/libexec/PlistBuddy -c 'Print :com.apple.private.memorystatus' /tmp/vcamd-entitlements.plist | grep -qx true
           obsolete_count="$(find .theos/_ -type f \( -name VCAM.dylib -o -name VCAMAppClient.dylib -o -name VCAMWebKitClient.dylib \) -print | wc -l | tr -d ' ')"
