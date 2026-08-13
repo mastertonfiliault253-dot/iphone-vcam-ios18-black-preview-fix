@@ -298,7 +298,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     // metadata and the panel can display the hardware/software decoder state.
     CVBufferSetAttachment(pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"),
                           hardware ? kCFBooleanTrue : kCFBooleanFalse,
-                          kCVBufferPropagateAttachments);
+                          kCVAttachmentMode_ShouldPropagate);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
     BOOL logFirstHardwareFrame = NO;
@@ -599,7 +599,6 @@ cleanup:
     AVStream *stream = NULL;
     const AVCodec *decoder = NULL;
     BOOL producedFrame = NO;
-    BOOL loggedFirstHardwareFrame = NO;
     BOOL loggedSoftwareFrame = NO;
     BOOL loggedCorruptFrame = NO;
     BOOL loggedReceiveFailure = NO;
