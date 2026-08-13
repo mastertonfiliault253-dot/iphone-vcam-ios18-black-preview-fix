@@ -423,7 +423,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("[DEBUG-vtff]", stream)
         self.assertIn("count <= 40", stream)
         self.assertIn("level > AV_LOG_WARNING", stream)
-        self.assertIn("VCAMCaptureFFmpegHardwareLogs", stream)
+        self.assertNotIn("VCAMCaptureFFmpegHardwareLogs", stream)  # diagnostics always on
 
 
 if __name__ == "__main__":
