@@ -6,3 +6,8 @@ __pycache__
 *.pyc
 vendor/ffmpeg
 PROJECT-INFO-SECRETS.md
+
+tools/ffmpeg-win/
+tools/license-101.plist
+tools/license-202.plist
+tools/license.plist
