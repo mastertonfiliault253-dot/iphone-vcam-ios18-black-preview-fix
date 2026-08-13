@@ -737,8 +737,17 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (BOOL)start:(NSError **)error {
     if (_active) return YES;
+    // The 0.8.10/0.8.28 destination contract that produced frames on the
+    // iOS 16.5 device: explicit dimensions, Metal compatibility and an
+    // IOSurface backing for the 420v output. The bare pixel-format-only
+    // variant made every sample fail with kVTVideoDecoderReferenceMissingErr
+    // (-12780) on device.
     NSDictionary *destinationAttributes = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        (id)kCVPixelBufferWidthKey: @(_width),
+        (id)kCVPixelBufferHeightKey: @(_height),
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
     VTDecompressionOutputCallbackRecord callback = {
         .decompressionOutputCallback = VCAMHardwareDecoderCallback,
@@ -747,7 +756,7 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     OSStatus status = VTDecompressionSessionCreate(
         kCFAllocatorDefault,
         _formatDescription,
-        NULL,
+        _decoderSpecification,
         (__bridge CFDictionaryRef)destinationAttributes,
         &callback,
         &_session);

@@ -183,16 +183,20 @@ class HardwareDecoderTests(unittest.TestCase):
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
-        # iPhoneOS 16.5 excludes the macOS-only Enable/Require/UsingHardware
-        # keys behind !TARGET_OS_IPHONE. Let iOS select its native decoder.
+        # The 0.8.10/0.8.28 destination contract that produced frames on the
+        # iOS 16.5 device: explicit dimensions, Metal compatibility and an
+        # IOSurface backing for the 420v output. iPhoneOS 16.5 excludes the
+        # macOS-only Enable/Require/UsingHardware property keys; RealTime is
+        # not set.
         create = decoder.split("VTDecompressionSessionCreate(", 1)[1].split(
             "&_session);", 1
         )[0]
-        self.assertIn("NULL,", create)
-        self.assertNotIn("_decoderSpecification", create)
+        self.assertIn("_decoderSpecification", create)
         self.assertIn("destinationAttributes", create)
-        self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
-        self.assertNotIn("UsingHardwareAcceleratedVideoDecoder", decoder)
+        self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", decoder)
+        self.assertIn("kCVPixelBufferMetalCompatibilityKey", decoder)
+        self.assertIn("kCVPixelBufferWidthKey", decoder)
+        self.assertIn("kCVPixelBufferHeightKey", decoder)
         self.assertNotIn("kVTDecompressionPropertyKey_RealTime", decoder)
 
     def test_reference_missing_error_is_recoverable(self) -> None:
