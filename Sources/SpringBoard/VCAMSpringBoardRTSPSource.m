@@ -137,17 +137,24 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
         avformat_close_input(&format);
         return NO;
     }
-    VCAMHardwareVideoDecoder *decoder = nil;
-    BOOL isolationDemuxOnly = YES;
-    int64_t sessionStart = av_gettime_relative();
-    BOOL decodedAny = NO;
+    // The VideoToolbox session, all decodePacket calls, the output drain and
+    // the frame handler run exclusively on the main queue. The demux thread
+    // only reads packets and hands clones to the main queue, so no
+    // CVPixelBuffer ever crosses a thread boundary.
+    __block VCAMHardwareVideoDecoder *decoder = nil;
+    __block BOOL decoderStarted = NO;
+    __block BOOL decodedAny = NO;
+    __block int64_t sessionStart = av_gettime_relative();
+    __weak typeof(self) weakSelf = self;
+    VCAMSpringBoardRTSPFrameHandler handler = _frameHandler;
+    dispatch_semaphore_t drainGate = dispatch_semaphore_create(4);
     while (self.running && av_read_frame(format, packet) >= 0) {
         if (packet->stream_index != videoStream) {
             av_packet_unref(packet);
             continue;
         }
         BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
-        if (decoder == nil && !isKeyFrame) {
+        if (!decoderStarted && !isKeyFrame) {
             if (av_gettime_relative() - sessionStart > 10000000LL) {
                 self.lastError = @"key frame timeout";
                 [VCAMConfiguration appendProcessLog:
@@ -158,54 +165,67 @@ static CMTime VCAMRTSPSourcePacketTime(AVPacket *packet, AVStream *stream) {
             av_packet_unref(packet);
             continue;
         }
-        if (decoder == nil) {
-            // ISOLATION-EXPERIMENT B: demux only, no VideoToolbox session.
-            if (isolationDemuxOnly) {
-                [VCAMConfiguration appendProcessLog:
-                    @"springboard RTSP isolation: decoder skipped (demux only)"];
-                av_packet_unref(packet);
-                break;
-            }
-            decoder = [[VCAMHardwareVideoDecoder alloc]
-                initWithCodecParameters:codecParameters];
-            NSError *decoderError = nil;
-            if (decoder == nil || ![decoder start:&decoderError]) {
-                self.lastError = decoderError.localizedDescription ?: @"decoder init failed";
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"springboard RTSP decoder start failed error=%@", self.lastError]];
-                av_packet_unref(packet);
-                break;
-            }
-            [VCAMConfiguration appendProcessLog:
-                @"springboard RTSP decoder started (direct VideoToolbox)"];
-        }
+        AVPacket *clone = av_packet_clone(packet);
         av_packet_unref(packet);
-        // Drain decoded frames to the bridge on the main queue.
-        CVPixelBufferRef frame = NULL;
-        CMTime framePts = kCMTimeInvalid;
-        while ((frame = [decoder copyNextOutputFrame:&framePts]) != NULL) {
-            decodedAny = YES;
-            self.decodedFrames += 1;
-            __weak typeof(self) weakSelf = self;
-            VCAMSpringBoardRTSPFrameHandler handler = _frameHandler;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                if (handler == nil || !strongSelf.running) {
-                    CVPixelBufferRelease(frame);
+        if (clone == NULL) continue;
+        dispatch_semaphore_wait(drainGate, DISPATCH_TIME_FOREVER);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            AVPacket *packetClone = clone;
+            if (strongSelf == nil || !strongSelf.running) {
+                av_packet_free(&packetClone);
+                dispatch_semaphore_signal(drainGate);
+                return;
+            }
+            if (!decoderStarted) {
+                decoder = [[VCAMHardwareVideoDecoder alloc]
+                    initWithCodecParameters:codecParameters];
+                NSError *decoderError = nil;
+                if (decoder == nil || ![decoder start:&decoderError]) {
+                    strongSelf.lastError =
+                        decoderError.localizedDescription ?: @"decoder init failed";
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"springboard RTSP decoder start failed error=%@",
+                        strongSelf.lastError]];
+                    av_packet_free(&packetClone);
+                    dispatch_semaphore_signal(drainGate);
                     return;
                 }
-                uint32_t width = (uint32_t)CVPixelBufferGetWidth(frame);
-                uint32_t height = (uint32_t)CVPixelBufferGetHeight(frame);
-                handler(frame, framePts, width, height);
+                decoderStarted = YES;
+                [VCAMConfiguration appendProcessLog:
+                    @"springboard RTSP decoder started (direct VideoToolbox)"];
+            }
+            CMTime pts = VCAMRTSPSourcePacketTime(packetClone, stream);
+            [decoder decodePacket:packetClone->data
+                           length:(size_t)packetClone->size
+                 presentationTime:pts
+                       decodeTime:kCMTimeInvalid
+                         duration:kCMTimeInvalid
+                       isKeyFrame:(packetClone->flags & AV_PKT_FLAG_KEY) != 0];
+            av_packet_free(&packetClone);
+            // Drain decoded frames and deliver synchronously on the main
+            // queue, so the buffer lives and dies on one thread.
+            CVPixelBufferRef frame = NULL;
+            CMTime framePts = kCMTimeInvalid;
+            while ((frame = [decoder copyNextOutputFrame:&framePts]) != NULL) {
+                decodedAny = YES;
+                strongSelf.decodedFrames += 1;
+                if (handler != nil) {
+                    uint32_t width = (uint32_t)CVPixelBufferGetWidth(frame);
+                    uint32_t height = (uint32_t)CVPixelBufferGetHeight(frame);
+                    handler(frame, framePts, width, height);
+                }
                 CVPixelBufferRelease(frame);
-            });
-        }
-        if (decodedAny) {
-            // Publish rate: cap the decode drain so the bridge keeps up.
-            [NSThread sleepForTimeInterval:0.008];
-        }
+            }
+            dispatch_semaphore_signal(drainGate);
+        });
     }
-    if (decoder != nil) [decoder stop];
+    dispatch_semaphore_wait(drainGate, DISPATCH_TIME_FOREVER);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (decoder != nil) [decoder stop];
+        decoder = nil;
+        decoderStarted = NO;
+    });
     av_packet_free(&packet);
     avformat_close_input(&format);
     if (!decodedAny && self.lastError == nil) self.lastError = @"stream ended";
