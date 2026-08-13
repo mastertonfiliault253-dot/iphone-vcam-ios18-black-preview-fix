@@ -259,23 +259,25 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
-            "- (BOOL)decodeOneFFmpegSessionUsingHardware", 1
+            "- (BOOL)consumeFFmpegFrame", 1
         )[0]
         self.assertNotIn("decodeOneHardwareSession", session)
-        self.assertIn("decodeOneFFmpegSessionUsingHardware:YES", session)
-        self.assertIn("decodeOneFFmpegSessionUsingHardware:NO", session)
-        self.assertIn("avcodec_get_hw_config(decoder, index)", rtsp)
-        self.assertIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
-        self.assertIn("config->device_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
-        self.assertIn("hardwareState.pixelFormat = config->pix_fmt", rtsp)
-        self.assertIn("codecContext->opaque = &hardwareState", rtsp)
+        self.assertIn("decodeOneFFmpegSession", session)
+        # Auto-hwaccel: no manual hardware device scaffolding on iOS.
+        self.assertNotIn("avcodec_get_hw_config", rtsp)
+        self.assertNotIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
+        self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertNotIn("hardwareState.pixelFormat", rtsp)
+        self.assertNotIn("codecContext->opaque", rtsp)
+        # Zero-copy hardware frame contract.
+        self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
         self.assertIn("decodedFrame->data[3]", rtsp)
 
     def test_ffmpeg_upstream_path_passes_demuxed_packets_without_manual_au_filtering(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        loop = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
+        loop = stream.rsplit("- (BOOL)decodeOneFFmpegSession", 1)[1].split(
             "cleanup:", 1
         )[0]
         self.assertIn("avcodec_parameters_to_context(codecContext, stream->codecpar)", loop)
@@ -288,19 +290,13 @@ class HardwareDecoderTests(unittest.TestCase):
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        session = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1].split(
+        session = stream.rsplit("- (BOOL)decodeOneFFmpegSession", 1)[1].split(
             "cleanup:", 1
         )[0]
-
         self.assertIn("if (videoPacketsWithoutFrame >= 300)", session)
-        self.assertNotIn(
-            "if (useHardware && !producedFrame && videoPacketsWithoutFrame >= 300)",
-            session,
-        )
-        self.assertIn("decoder stalled hardware=%d packets=300; reconnecting", session)
-        self.assertIn("if (stalledOut != NULL) *stalledOut = YES", session)
-        self.assertIn("if (useHardware && stalledOut != NULL) *stalledOut = YES", session)
-        self.assertIn("stalled ? @\"stalled\"", stream)
+        self.assertIn("decoder stalled packets=300; reconnecting", session)
+        self.assertNotIn("stalledOut", session)
+        self.assertNotIn("useHardware", session)
 
     def test_rtsp_transport_failure_retries_hardware_before_software_fallback(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
@@ -309,21 +305,21 @@ class HardwareDecoderTests(unittest.TestCase):
         session = stream.split("- (BOOL)decodeOneSession", 1)[1].split(
             "- (BOOL)consumeFFmpegFrame", 1
         )[0]
-        self.assertIn("BOOL hardwareRejected = NO", session)
-        self.assertIn("hardwareRejected:&hardwareRejected", session)
-        self.assertIn("if (!stalled && !hardwareRejected)", session)
-        self.assertIn("transport unavailable before hardware verdict; retrying hardware", session)
-        hardware_decision = session.split("BOOL hardwareRejected = NO", 1)[1]
-        self.assertLess(
-            hardware_decision.index("if (!stalled && !hardwareRejected)"),
-            hardware_decision.index("self.softwareFallbackActive = YES"),
-        )
-        decoder = stream.rsplit("- (BOOL)decodeOneFFmpegSessionUsingHardware", 1)[1]
-        self.assertIn("hardwareRejected:(BOOL *)hardwareRejectedOut", decoder)
-        self.assertIn("if (hardwareRejectedOut != NULL) *hardwareRejectedOut = NO", decoder)
-        self.assertNotIn("hardwareRejectedOut", decoder.split("int openResult", 1)[1].split(
-            "int streamInfoResult", 1
-        )[0])
+        self.assertIn("Single session with automatic hardware acceleration", session)
+        self.assertIn("return [self decodeOneFFmpegSession];", session)
+        # The old dual-session decision scaffolding is gone: hardware and
+        # software frames now mix inside one decode loop.
+        self.assertNotIn("hardwareRejected", stream)
+        self.assertNotIn("softwareFallbackActive", stream)
+        self.assertNotIn("decodeOneFFmpegSessionUsingHardware", stream)
+        # Per-frame dispatch: VIDEOTOOLBOX frames use the zero-copy CVPixelBuffer,
+        # everything else flows to the software conversion queue.
+        consume = stream.split("- (BOOL)consumeFFmpegFrame", 1)[1].split(
+            "- (BOOL)decodeOneFFmpegSession", 1
+        )[0]
+        self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", consume)
+        self.assertIn("decodedFrame->data[3]", consume)
+        self.assertIn("enqueueLatestSoftwareFrame", consume)
 
     def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
@@ -345,12 +341,9 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("if (self.usesRTSPTransport)", stream)
         self.assertIn('@"%@ hardware first-frame size=', stream)
         self.assertNotIn('@"rtsp ', stream)
-        self.assertIn("self.softwareFallbackActive = NO;", stream)
+        self.assertNotIn("self.softwareFallbackActive", stream)
         self.assertNotIn("hardwareRetryDeadline", stream)
-        self.assertNotIn("software retry window elapsed; retrying hardware", stream)
-        self.assertIn("if (self.softwareFallbackActive)", stream)
-        self.assertIn("decodeOneFFmpegSessionUsingHardware:NO stalled:NULL", stream)
-        self.assertIn("hardwareRejected:NULL", stream)
+        self.assertNotIn("decodeOneFFmpegSessionUsingHardware", stream)
         self.assertNotIn("static volatile int consecutiveSendFailures", stream)
         self.assertEqual(producer.count("[[VCAMRTSPStreamSource alloc]"), 2)
         self.assertEqual(pipeline.count("[[VCAMRTSPStreamSource alloc]"), 2)
