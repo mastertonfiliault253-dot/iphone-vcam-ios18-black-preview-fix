@@ -982,12 +982,13 @@ bool VCAMSharedSurfaceWriterPublish(VCAMSharedSurfaceWriter *writer,
     uint32_t primaries = VCAMColorPrimariesCode(primariesValue);
     uint32_t transfer = VCAMTransferFunctionCode(transferValue);
     uint32_t matrix = VCAMYCbCrMatrixCode(matrixValue);
-    CFBooleanRef decodeHardware = CVBufferGetAttachment(
+    CFBooleanRef decodeHardware = CVBufferCopyAttachment(
         pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"), NULL);
     if (decodeHardware == kCFBooleanTrue) {
         transfer = (transfer & VCAMSharedFrameTransferFunctionMask) |
             (1U << VCAMSharedFrameDecodeHardwareShift);
     }
+    if (decodeHardware != NULL) CFRelease(decodeHardware);
     if (primariesValue != NULL) CFRelease(primariesValue);
     if (transferValue != NULL) CFRelease(transferValue);
     if (matrixValue != NULL) CFRelease(matrixValue);
