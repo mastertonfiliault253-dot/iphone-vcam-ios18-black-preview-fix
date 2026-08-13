@@ -64,6 +64,7 @@ static uint8_t *VCAMFilterParameterSetNALs(const uint8_t *bytes, size_t length,
     // full AU — stripping parameter sets leaves VT unable to decode IDR and
     // every frame fails with kVTVideoDecoderReferenceMissingErr (-12780).
     // avcC input is already length-prefixed: return NULL to keep the original.
+    (void)hevc;
     if (outLength == NULL || bytes == NULL || length < 4) return NULL;
     *outLength = 0;
     if (strippedAny != NULL) *strippedAny = NO;
