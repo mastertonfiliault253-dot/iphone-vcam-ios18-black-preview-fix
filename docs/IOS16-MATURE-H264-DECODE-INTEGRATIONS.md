@@ -4,11 +4,11 @@
 > 从 `0.8.82+ios16-stream-stability` 起，RTSP 固定使用 FFmpeg 软件解码，
 > direct-VT、FFmpeg VideoToolbox hwaccel 与 SpringBoard RTSP 探针均已删除。
 
-## 结论
+## 当时的候选结论（已被真机结果推翻）
 
-正式实现应直接采用两条系统/上游路径，不引入 mpv、WebRTC 或 FFmpegKit 依赖：
+当时曾建议采用两条系统/上游路径，不引入 mpv、WebRTC 或 FFmpegKit 依赖：
 
-- RTSP：`libavformat` 处理 RTSP/RTP，`libavcodec` 的 VideoToolbox hwaccel 处理 H.264、SPS/PPS、NAL 转换、时间戳和重排；从 `AV_PIX_FMT_VIDEOTOOLBOX` 的 `AVFrame.data[3]` 取得 `CVPixelBufferRef`。
+- RTSP（已撤销）：`libavformat` 处理 RTSP/RTP，曾尝试由 `libavcodec` 的 VideoToolbox hwaccel 处理 H.264；目标真机未连续取得非空硬件帧，当前正式实现固定为 FFmpeg 软件解码。
 - HLS：使用 Apple `AVPlayerItem` + `AVPlayerItemVideoOutput`，通过 `hasNewPixelBufferForItemTime:` 和 `copyPixelBufferForItemTime:itemTimeForDisplay:` 取得系统解码后的 `CVPixelBufferRef`。
 
 mpv 最有价值的是其 FFmpeg hwaccel 初始化、失败重建和软件回退策略；WebRTC 最有价值的是作为手工 VT 样本组装的对照基准。FFmpegKit 只能证明 iOS 构建中可以启用 VideoToolbox，不提供比 FFmpeg 上游更合适的嵌入式解码实现。
@@ -19,7 +19,7 @@ mpv 最有价值的是其 FFmpeg hwaccel 初始化、失败重建和软件回退
 
 | 案例 | 源码事实 | 对本项目的直接用途 | iOS 16 证据边界 |
 | --- | --- | --- | --- |
-| FFmpeg 上游 | 官方示例枚举 `AVCodecHWConfig`，选择 `AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX`，复制 `codecpar`，设置 `get_format`/`hw_device_ctx`，再执行标准 send/receive；VideoToolbox 后端内部由活动 SPS/PPS 构造 `avcC`，把 Annex-B NAL 改为 4 字节大端长度，创建 `CMSampleBuffer` 并等待异步 VT 输出；硬件帧写入 `AVFrame.data[3]` | **正式采用**。这是 RTSP 唯一业务解码路径 | 源码使用 Apple VideoToolbox，但上游没有证明本机、本系统小版本和当前码流已通过 |
+| FFmpeg 上游 | 官方示例枚举 `AVCodecHWConfig`，选择 `AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX`，复制 `codecpar`，设置 `get_format`/`hw_device_ctx`，再执行标准 send/receive；VideoToolbox 后端内部由活动 SPS/PPS 构造 `avcC`，把 Annex-B NAL 改为 4 字节大端长度，创建 `CMSampleBuffer` 并等待异步 VT 输出；硬件帧写入 `AVFrame.data[3]` | 历史隔离实验；当前只保留 FFmpeg 的 RTSP/RTP 解复用与软件 send/receive | 源码使用 Apple VideoToolbox，但上游没有证明本机、本系统小版本和当前码流已通过 |
 | mpv/libmpv | `videotoolbox` 是主动支持的 hwdec；文档注明 libmpv 下支持 iOS 9+。实现仍调用 FFmpeg：创建 hw device、在 `get_format` 中选硬件格式、标准 send/receive，并在硬件失败后重建/回退 | 采用初始化验证、有限包重放、连续失败阈值和软件回退思路；**不引入 mpv** | “iOS 9+”覆盖 iOS 16 的可用范围，不是 iOS 16.1/当前 RTSP 的测试报告 |
 | Google WebRTC iOS H.264 | `RTCVideoDecoderH264.mm` 从 Annex-B 提取 SPS/PPS，格式变化时重建 VT；`nalu_rewriter.cc` 跳过样本中的 SPS/PPS，把剩余 NAL 写成 4 字节大端长度；异步解码，遇到 invalid session/malfunction 重建，输出 `CVPixelBuffer` | 仅用于对照失败 access unit 的 AVCC 字节布局、SPS/PPS 和 session 重建；**不进入正式 RTSP 路径** | 源码是 iOS 实现，但无该提交针对 iOS 16.1/当前码流的证明 |
 | FFmpegKit iOS | 主发行版最低 iOS 12.1，可选 `--enable-ios-videotoolbox`，README 标注 iOS VideoToolbox 可用；其 Apple API主要是执行 FFmpeg/FFprobe 命令的包装层 | 只可参考构建/链接；项目已有 libav* 集成，增加 wrapper 没有解码价值 | iOS 12.1+ 包含 iOS 16；测试应用不证明当前 RTSP 解码，且原项目已归档并停止发布 |

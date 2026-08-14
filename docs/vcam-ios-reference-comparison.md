@@ -15,7 +15,7 @@ replacement seam.
 | --- | --- | --- |
 | Media path | Hard-coded `/tmp/test.png` or commented DCIM MOV | SpringBoard picker and shared configuration |
 | Image | UIImage/CGImage | SpringBoard ImageIO normalization into one source-sized IOSurface |
-| Local video | AVAssetReader preloads at most 60 BGRA frames | SpringBoard AVPlayerItemVideoOutput, source-sized NV12, no frame-array preload |
+| Local video | AVAssetReader preloads at most 60 BGRA frames | SpringBoard AVPlayerItemVideoOutput, source-sized BGRA IOSurface, no frame-array preload |
 | Loop | Callback index modulo the short frame array | Complete asset timeline loops at end-of-item |
 | Memory | Frame array remains resident; README notes leaks | Only source state, renderer pools and latest shared frames stay resident |
 | OBS | None | WebSocket/JPEG latest-frame source in `vcamd` |
@@ -32,7 +32,8 @@ pixel frame, but it does not make mediaserverd a safe place for file/network
 decoders. Here `vcamd` owns OBS/RTSP blocking, reconnecting and decode state,
 while SpringBoard owns static images and native local-video/HLS playback. Static images
 publish one source-sized BGRA IOSurface; moving native sources use three
-source-sized NV12 surfaces, with a fixed BGRA mmap only for compatibility. The
+source-sized BGRA surfaces. RTSP uses the fixed BGRA mmap as its production
+transport, and that mmap also remains the surface-handshake fallback. The
 consumer roles—mediaserverd replacement and UI preview clients—only perform a
 bounded memory copy and reject stale or torn slots.
 

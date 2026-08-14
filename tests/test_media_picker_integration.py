@@ -276,7 +276,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("- (CGImageRef)copyLatestImage", obs)
         self.assertEqual(obs.count("jpeg = self.latestJPEG"), 1)
 
-    def test_mmap_is_only_a_fresh_bootstrap_for_a_new_surface_generation(self) -> None:
+    def test_mmap_generation_guard_rejects_stale_surface_bootstraps(self) -> None:
         image_utils = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
@@ -302,16 +302,6 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("slotSurfaceGeneration", shared)
         self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", daemon)
         self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", bridge)
-
-    def test_rtsp_transform_uses_the_same_native_frame_for_size_and_render(self) -> None:
-        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
-            encoding="utf-8"
-        )
-        rtsp_branch = producer.split("VCAMRTSPStreamSource *rtsp", 1)[1].split(
-            "- (NSInteger)preferredFramesPerSecond", 1
-        )[0]
-        self.assertIn("copySampleFromPixelBuffer:native", rtsp_branch)
-        self.assertNotIn("copyVideoSampleForTemplate", rtsp_branch)
 
     def test_photo_picker_preserves_the_original_file_representation(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
@@ -709,6 +699,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMLastVirtualFrameHostTime", image_utils)
         self.assertIn("<= 2.5", image_utils)
         self.assertIn("virtual frame stale; rendering black instead of frozen frame", image_utils)
+        self.assertNotIn("} else if (VCAMLastVirtualFrame != NULL) {", image_utils)
 
     def test_preview_displays_worker_oriented_pixels_without_a_second_transform(self) -> None:
         preview = (ROOT / "Sources" / "UI" / "VCAMSharedFramePreviewView.m").read_text(

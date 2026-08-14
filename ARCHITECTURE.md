@@ -5,11 +5,8 @@ The fixed version, CI artifact hash, current device evidence and unresolved acce
 VCAM separates media production, camera replacement and control UI:
 
 - `vcamd` owns OBS and RTSP decoding. RTSP is software-only on iOS 16.0-16.5
-  and publishes native 8-bit
-  NV12 through a source-sized three-slot IOSurface ring when no transform is
-  required, or source-sized three-slot BGRA after an explicit user transform.
-  OBS publishes source-sized BGRA through a three-slot IOSurface ring. The surface-handshake
-  fallback alone uses the fixed 1080x1920 BGRA mmap.
+  and publishes the rendered 1080x1920 BGRA result through the fixed three-slot
+  mmap. OBS publishes source-sized BGRA through a three-slot IOSurface ring.
 - `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
   validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
   client.
@@ -19,11 +16,11 @@ VCAM separates media production, camera replacement and control UI:
   one source-sized BGRA IOSurface and owns local video/HLS playback through
   `AVPlayer`. It takes NV12 frames from `AVPlayerItemVideoOutput` and performs
   source orientation and explicit user transforms in one Metal-backed Core
-  Image render directly into a source-sized three-slot `420v` IOSurface;
+  Image render directly into a source-sized three-slot BGRA IOSurface;
   BGRA mmap is the compatibility
   fallback.
   The SpringBoard and app-host control-panel previews may passively read the
-  freshest raw BGRA mmap or NV12 IOSurface frame. They never claim the
+  freshest raw BGRA mmap or IOSurface frame. They never claim the
   mediaserverd consumer lease. When an app sandbox cannot open either raw
   transport, SpringBoard returns a downscaled JPEG over the existing loopback
   broker for panel display only. App hosts receive UI only; they never decode
@@ -57,13 +54,14 @@ that exact target and preserves its format description and propagated sample
 attachments. Only the replacement pixels and route-specific composition
 policy change.
 
-The native local-video/HLS bridge and eligible software-decoded RTSP frames publish raw,
-uncompressed NV12 pixels into source-sized three-slot IOSurface rings. Static
-images use one source-sized uncompressed BGRA IOSurface; OBS and transformed
-RTSP use source-sized three-slot BGRA IOSurfaces. Fallback publication alone
-uses raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
+The native local-video/HLS bridge publishes source-sized, uncompressed BGRA
+pixels into three-slot IOSurface rings. Static images use one source-sized
+uncompressed BGRA IOSurface; OBS uses a source-sized three-slot BGRA IOSurface.
+RTSP uses raw, uncompressed 1080x1920 BGRA pixels in the fixed three-slot mmap
+as its production transport. No JPEG, H.264,
 HEVC or source-container payload is sent to mediaserverd. RTSP software decoding
-keeps the decoded source dimensions; a 256 MiB worst-case whole-pipeline budget
+keeps the decoded source dimensions until the single renderer pass into the
+fixed transport; a 256 MiB worst-case whole-pipeline budget
 accounts for the decoded frame, conversion work buffers and three publication
 slots, rejecting larger frames instead of silently downscaling them. The vcamd
 worker requests a 384 MB jetsam limit before decoder startup, leaving 128 MB
@@ -74,8 +72,9 @@ or `vcamd` to mediaserverd and verifies peer start time, executable path and
 code-signing identity; frame bytes never pass
 through the daemon. mediaserverd retains the selected surface while rendering
 so SpringBoard never overwrites an in-use slot. UI previews are passive
-observers and do not alter that ownership handshake. The previous three-slot
-BGRA mmap remains the automatic fallback until the surface handshake succeeds.
+observers and do not alter that ownership handshake. The three-slot BGRA mmap
+is the RTSP production transport and remains the automatic fallback until a
+surface-backed source's handshake succeeds.
 On iOS 16 sandboxes that cannot resolve the package Mach service, the same
 global IOSurface is looked up by its published ID; no frame bytes cross XPC.
 Creating

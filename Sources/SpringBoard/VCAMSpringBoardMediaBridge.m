@@ -736,7 +736,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     if (image != nil && self.surfaceWriter == NULL) {
         self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
             outputWidth, outputHeight,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelFormatType_32BGRA,
             VCAMSharedFrameSlotCount);
         if (self.surfaceWriter != NULL) {
             self.surfaceWidth = outputWidth;
@@ -773,7 +773,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                 : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
             CIImage *renderImage = useSurfaceDestination ? image
                 : [self legacyCanvasImageFromOrientedImage:image];
-            VCAMSetVideoColorAttachments(destination);
+            if (useSurfaceDestination) {
+                VCAMSetRGBColorAttachments(destination);
+            } else {
+                VCAMSetVideoColorAttachments(destination);
+            }
             [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
             if (useSurfaceDestination) {
@@ -794,6 +798,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                             0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
                         CIImage *bootstrapImage =
                             [self legacyCanvasImageFromOrientedImage:image];
+                        VCAMSetVideoColorAttachments(bootstrap);
                         [self.context render:bootstrapImage
                              toCVPixelBuffer:bootstrap bounds:bootstrapTarget
                                   colorSpace:self.colorSpace];

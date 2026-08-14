@@ -12,6 +12,10 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("AVPlayerItemVideoOutput", source)
         self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
+        publish = source.split("- (BOOL)publishPixelBuffer", 1)[1]
+        self.assertIn("kCVPixelFormatType_32BGRA", publish)
+        self.assertIn("VCAMSetRGBColorAttachments(destination)", publish)
+        self.assertIn("VCAMSetVideoColorAttachments(bootstrap)", publish)
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", source)
         self.assertIn("contextWithMTLDevice", source)
         self.assertIn("VCAMSharedFrameWriterPublish", source)

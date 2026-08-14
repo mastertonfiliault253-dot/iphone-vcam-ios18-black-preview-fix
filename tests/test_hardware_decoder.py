@@ -6,7 +6,7 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class HardwareDecoderTests(unittest.TestCase):
-    def test_rtsp_native_nv12_uses_iosurface_without_the_bgra_round_trip(self) -> None:
+    def test_rtsp_software_frames_use_the_continuous_mmap_transport(self) -> None:
         converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
             encoding="utf-8"
         )
@@ -22,16 +22,19 @@ class HardwareDecoderTests(unittest.TestCase):
         )
 
         self.assertIn("VCAMCopyNV12FromAVFrame", converter)
-        self.assertIn("copyNativePixelBufferForSurface", stream)
-        native_copy = stream.split("- (CVPixelBufferRef)copyNativePixelBufferForSurface", 1)[1].split(
-            "- (CMSampleBufferRef)copyDirectPreviewSample", 1
-        )[0]
-        self.assertIn("kCVPixelFormatType_32BGRA", native_copy)
+        self.assertNotIn("copyNativePixelBufferForSurface", stream)
         self.assertIn("copyNativePixelBufferForSurface", producer)
-        self.assertIn("needsTransform", producer)
+        native_transport = producer.split("- (BOOL)usesNativeSurfaceTransport", 1)[1].split(
+            "- (uint32_t)nativeSurfaceSlotCount", 1
+        )[0]
+        self.assertNotIn("VCAMSourceKindRTSP", native_transport)
+        native_copy = producer.split("- (CVPixelBufferRef)copyNativePixelBufferForSurface", 1)[1].split(
+            "- (NSInteger)preferredFramesPerSecond", 1
+        )[0]
+        self.assertNotIn("VCAMSourceKindRTSP", native_copy)
         self.assertIn("copyVideoSampleForTemplate:template", producer)
-        self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", daemon)
-        self.assertIn("vcamd native transport received", daemon)
+        self.assertIn("BOOL nativeTransport = [VCAMProducer usesNativeSurfaceTransport]", daemon)
+        self.assertIn("VCAMSharedFrameWriterPublish(VCAMWriter, pixelBuffer)", daemon)
         self.assertIn("vcamd native IOSurface create failed", daemon)
         self.assertIn("VCAMCopyPixelBufferPlanes", daemon)
         self.assertIn("VCAMSharedSurfaceWriterHasConsumer", daemon)
@@ -83,7 +86,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn('"nobuffer"', options)
         self.assertNotIn('"low_delay"', options)
 
-    def test_vcamd_can_publish_native_rtsp_surfaces_through_the_broker(self) -> None:
+    def test_surface_broker_authorizes_only_expected_publishers_and_consumers(self) -> None:
         broker = (ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m").read_text(
             encoding="utf-8"
         )

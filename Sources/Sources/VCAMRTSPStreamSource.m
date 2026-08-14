@@ -599,22 +599,6 @@ cleanup:
     return producedFrame;
 }
 
-- (CVPixelBufferRef)copyNativePixelBufferForSurface {
-    CVPixelBufferRef pixelBuffer = NULL;
-    @synchronized (self) {
-        if (!self.running || _latestPixelBuffer == NULL ||
-            CACurrentMediaTime() - _latestFrameHostTime >= 3.5) {
-            return NULL;
-        }
-        OSType format = CVPixelBufferGetPixelFormatType(_latestPixelBuffer);
-        if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
-            format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
-            format != kCVPixelFormatType_32BGRA) return NULL;
-        pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
-    }
-    return pixelBuffer;
-}
-
 - (CMSampleBufferRef)copyDirectPreviewSample {
     CVPixelBufferRef pixelBuffer = NULL;
     uint64_t sequence = 0;

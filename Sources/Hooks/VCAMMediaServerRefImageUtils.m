@@ -651,14 +651,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             // blink on every producer hiccup.
             CVPixelBufferRelease(scratch);
             scratch = CVPixelBufferRetain(VCAMLastVirtualFrame);
-        } else if (VCAMLastVirtualFrame != NULL) {
-            // Static local media publishes one frame and then idles. Keep
-            // showing the last virtual frame instead of failing closed to
-            // black, so a chosen photo stays visible (user requirement).
-            // This branch is only reached while virtual mode is enabled, so a
-            // cleared/disabled source still returns to the real camera.
-            CVPixelBufferRelease(scratch);
-            scratch = CVPixelBufferRetain(VCAMLastVirtualFrame);
         } else if (VCAMFillBlackSharedFrame(scratch)) {
             // The stream has been gone long enough that a frozen frame would
             // be mistaken for the live picture. Fail closed to black instead.

@@ -146,15 +146,13 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 - (BOOL)usesNativeSurfaceTransport {
     __block BOOL enabled = NO;
     dispatch_sync(self.stateQueue, ^{
-        BOOL nativeRTSP = self.configuration.sourceKind == VCAMSourceKindRTSP &&
-            [self.source isKindOfClass:VCAMRTSPStreamSource.class];
         BOOL nativeOBS = self.configuration.sourceKind == VCAMSourceKindOBSWebSocket &&
             [self.source isKindOfClass:VCAMOBSStreamSource.class];
         BOOL nativeStill = self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
             !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
             [self.source isKindOfClass:VCAMLocalMediaSource.class];
         enabled = self.configuration.enabled &&
-            (nativeOBS || nativeRTSP || nativeStill);
+            (nativeOBS || nativeStill);
     });
     return enabled;
 }
@@ -222,31 +220,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
             if (sample != NULL) CFRelease(sample);
             if (template != NULL) CFRelease(template);
             if (image != NULL) CGImageRelease(image);
-        } else if (self.configuration.sourceKind == VCAMSourceKindRTSP &&
-            [self.source isKindOfClass:VCAMRTSPStreamSource.class]) {
-            VCAMRTSPStreamSource *rtsp = (VCAMRTSPStreamSource *)self.source;
-            CVPixelBufferRef native = [rtsp copyNativePixelBufferForSurface];
-            NSInteger rotation = ((self.configuration.rotationDegrees % 360) + 360) % 360;
-            BOOL needsTransform = self.configuration.mirrorHorizontally || rotation != 0;
-            if (native != NULL && needsTransform) {
-                size_t width = CVPixelBufferGetWidth(native);
-                size_t height = CVPixelBufferGetHeight(native);
-                CGSize outputSize = rotation == 90 || rotation == 270
-                    ? CGSizeMake(height, width) : CGSizeMake(width, height);
-                CMSampleBufferRef template = [self copyTemplateForSize:outputSize];
-                CMSampleBufferRef sample = template == NULL ? NULL
-                    : [self.renderer copySampleFromPixelBuffer:native
-                                                      template:template
-                                                 configuration:self.configuration];
-                CVPixelBufferRef imageBuffer = sample == NULL ? NULL
-                    : CMSampleBufferGetImageBuffer(sample);
-                if (imageBuffer != NULL) pixelBuffer = CVPixelBufferRetain(imageBuffer);
-                if (sample != NULL) CFRelease(sample);
-                if (template != NULL) CFRelease(template);
-                CVPixelBufferRelease(native);
-            } else {
-                pixelBuffer = native;
-            }
         }
     });
     return pixelBuffer;

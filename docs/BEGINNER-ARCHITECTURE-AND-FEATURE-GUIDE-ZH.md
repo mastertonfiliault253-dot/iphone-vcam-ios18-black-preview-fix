@@ -1,7 +1,7 @@
 # VCAM 框架与功能分析（小白学习版）
 
 > 适用项目：`IOSVCAN-DS/vcam`  
-> 文档基准：`0.8.82+ios16-stream-stability`
+> 文档基准：`0.8.83+ios16-transport-stability`
 > 部署目标：越狱环境下的 iOS 16.0–16.5（不包含 iOS 15，也不承诺 iOS 16.6 及以上）
 
 最新固定提交、CI run、DEB 哈希和设备证据见 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)。
@@ -134,10 +134,10 @@ flowchart LR
 | 来源 | 正式生产进程 | 解码/读取方式 | 共享像素 | 槽数 |
 |---|---|---|---|---:|
 | 静态图片 | SpringBoard | ImageIO | 源尺寸 BGRA | 1 |
-| 本地视频 | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 420v/NV12 | 3 |
-| HLS | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 420v/NV12 | 3 |
+| 本地视频 | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 BGRA IOSurface | 3 |
+| HLS | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 BGRA IOSurface | 3 |
 | OBS | `vcamd` | LAN WebSocket JPEG | 源尺寸 BGRA | 3 |
-| RTSP | `vcamd` | FFmpeg 纯软件解码 | NV12；有旋转时为 BGRA | 3 |
+| RTSP | `vcamd` | FFmpeg 纯软件解码 | 固定 1080×1920 BGRA mmap | 3 |
 
 ### 5.1 静态图片
 
@@ -161,14 +161,14 @@ HLS 同样走 Apple 原生 `AVPlayer`，由系统处理分片、缓冲和时间�
 
 ### 5.5 RTSP
 
-RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序，并在 iOS 16.0-16.5 上固定使用软件解码。无额外旋转/镜像时，8 位 NV12/YUV420 可以直接进入三槽 IOSurface，减少 BGRA 转换。
+RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序，并在 iOS 16.0-16.5 上固定使用软件解码。解码帧经过一次统一渲染后，以固定 1080×1920 BGRA 写入三槽 mmap。iOS 16.1 真机上，root `vcamd` 创建 NV12 和 BGRA IOSurface 都返回 `-6662`，但 mmap 序号按源帧率持续推进，因此正式路径不再反复尝试失败的 IOSurface。
 
 此前 direct-VT、FFmpeg VideoToolbox 和 GStreamer `vtdec_hw` 探针都没有在目标真机连续取得非空硬件帧；软件解码反而能出帧。继续保留硬解选择器还会污染软件 codec context，造成连接成功却不出帧，因此这些 RTSP 硬解正式分支已经删除。必须区分两个概念：
 
 - 成功连接 RTSP：只证明网络和协议握手成功；
 - 连续收到非空 `CVPixelBuffer` 并在屏幕上稳定显示：才证明解码链路真正工作。
 
-当前 RTSP 真机重点验收项是软件解码后的连续非空帧、IOSurface 序号持续推进，以及长时间播放不冻结；不再把硬件解码列为交付目标。
+当前 RTSP 真机重点验收项是软件解码后的连续非空帧、mmap 序号持续推进，以及长时间播放不冻结；不再把硬件解码列为交付目标。
 
 ## 6. 为什么图片用 1 缓冲，视频用 3 缓冲
 
@@ -197,9 +197,9 @@ IOSurface 是 Apple 提供的跨进程图像共享机制。不同进程可以引
 当前正式帧通路优先使用源尺寸 IOSurface：
 
 - 图片：一槽 BGRA；
-- 本地视频/HLS：三槽 NV12；
+- 本地视频/HLS：三槽 BGRA；
 - OBS：三槽 BGRA；
-- RTSP：三槽 NV12 或变换后的 BGRA。
+- RTSP 不使用 IOSurface；它使用固定三槽 BGRA mmap。
 
 ### 7.2 Broker
 
@@ -207,7 +207,7 @@ Broker 只传 IOSurface 权限和少量元数据，不传整帧像素。配置�
 
 ### 7.3 mmap 兼容通路
 
-项目还保留固定 1080×1920、三槽 BGRA 的 mmap，主要用于 IOSurface 权限握手前的兼容启动和显式旧解码器回滚。正常握手完成后，不能无限使用旧 mmap 帧代替新的 IOSurface 数据。
+项目保留固定 1080×1920、三槽 BGRA 的 mmap。它是 RTSP 的正式连续传输，也是其他 IOSurface 来源在权限握手前的兼容启动和显式旧解码器回滚通路。对于已经采用某个 IOSurface generation 的来源，握手完成后不能无限使用旧 mmap 帧代替新的 IOSurface 数据。
 
 共享元数据包含：
 

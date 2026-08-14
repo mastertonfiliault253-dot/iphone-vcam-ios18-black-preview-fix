@@ -20,9 +20,9 @@ VCAM Media Bridge 是一个面向 iOS 16.0–16.5 的 rootless 越狱虚拟相�
 flowchart LR
     UI[SpringBoard 小白点/配置/选择器/预览] -->|broker 写入配置| CFG[(/var/mobile/Media/VCAM)]
     CFG --> VCAMD[/var/jb/usr/libexec/vcamd]
-    VCAMD -->|启动握手回退 BGRA| SHM[固定三槽 mmap]
-    VCAMD -->|本地图片 1 槽 / OBS 与 RTSP 3 槽| SURF[源尺寸 IOSurface]
-    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal，3 槽| SURF
+    VCAMD -->|RTSP 正式传输 / 启动握手回退 BGRA| SHM[固定三槽 mmap]
+    VCAMD -->|本地图片 1 槽 / OBS 3 槽| SURF[源尺寸 IOSurface]
+    UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal → BGRA，3 槽| SURF
     VCAMD -. XPC 权限中继 .-> SURF
     SHM --> MSD[mediaserverd: BWNodeOutput 替换]
     SURF --> MSD
@@ -37,7 +37,7 @@ flowchart LR
 - **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地图片、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。应用沙箱不能直接读取 mmap/IOSurface 时，悬浮面板只通过回环 Broker 获取降采样 JPEG，绝不把 JPEG 送入 mediaserverd。
 - **vcamd（项目自己的 LaunchDaemon）**：负责 OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地图片/视频/HLS 路径只作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
-- **共享帧**：本地图片按解码后的原始方向和尺寸发布一个不可变 BGRA IOSurface；本地视频和 HLS 使用三个源尺寸 NV12 IOSurface；OBS 使用三个源尺寸 BGRA IOSurface；RTSP 无变换时使用 NV12、显式旋转或镜像后使用 BGRA。只有 XPC 握手回退保留固定三槽 BGRA mmap。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
+- **共享帧**：本地图片按解码后的原始方向和尺寸发布一个不可变 BGRA IOSurface；本地视频、HLS 和 OBS 使用三个源尺寸 BGRA IOSurface；RTSP 使用固定 1080×1920 三槽 BGRA mmap。mmap 同时承担其他来源的 XPC 握手回退。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 
 ## 3. 目录与源码地图
 
@@ -97,7 +97,7 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲，并固定使用软件解码；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；显式旋转或镜像时改为源尺寸三槽 BGRA IOSurface；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲，并固定使用软件解码；损坏后进入有界“等干净关键帧”恢复。解码帧经过一次统一渲染后，写入固定 1080×1920 三槽 BGRA mmap。root `vcamd` 在 iOS 16.1 真机创建显式 NV12/BGRA IOSurface 都返回 `-6662`，而 mmap 序号按源帧率持续推进，因此正式 RTSP 不再进入失败的 surface 分支。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率、解码帧和 mmap 序号，避免把服务器断流或低帧率误判为解码失败。
 
 ### HLS
 

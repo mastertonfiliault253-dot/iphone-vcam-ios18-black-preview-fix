@@ -23,12 +23,13 @@ targeted. Audio is not replaced.
 
 `OBS → vcamd → source-sized three-slot raw BGRA IOSurface (mmap bootstrap) → mediaserverd + passive UI preview`
 
-`RTSP → vcamd FFmpeg → decoded raw NV12 → three-slot IOSurface (raw BGRA mmap fallback) → mediaserverd + passive UI preview`
+`RTSP → vcamd FFmpeg software decode → one renderer pass → fixed three-slot raw BGRA mmap → mediaserverd + passive UI preview`
 
-`local video / HLS → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
+`local video / HLS → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot BGRA IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
 
-The handshake-only compatibility frame region in `/var/tmp/com.codex.vcam.frames` remains
-fixed at 1080×1920 BGRA. IOSurface metadata independently carries the source
+The frame region in `/var/tmp/com.codex.vcam.frames` remains fixed at
+1080×1920 BGRA. It is RTSP's production transport and the handshake/rollback
+compatibility transport for surface-backed sources. IOSurface metadata carries the source
 width, height, pixel format and an active depth of one or three slots. Publication uses atomic slot and sequence
 metadata; neither transport contains JPEG, H.264, HEVC or another encoded
 payload. The SpringBoard and filtered app-host control panels may passively
@@ -139,10 +140,11 @@ the original sample, and either construction path remains fail-closed.
   FFmpeg VideoToolbox experiments are not production branches. It forces
   MediaMTX-compatible interleaved TCP, accepts
   only video media, uses a 10-second TCP I/O timeout and keeps normal RTP/H.264 reorder and
-  reference buffering. Eligible 8-bit decoded frames are repacked as native
-  NV12 and published by IOSurface without BGRA conversion; an explicit user
-  rotation/mirror is rendered once into a source-sized three-slot BGRA
-  IOSurface instead of falling back permanently to the fixed mmap. HLS uses
+  reference buffering. Decoded frames pass through one renderer operation and
+  publish fixed 1080x1920 BGRA through mmap. Root `vcamd` IOSurface probes for
+  both explicit NV12 and BGRA returned `-6662` on the iOS 16.1 test device,
+  while mmap publication continued at source rate, so RTSP no longer attempts
+  the failing surface path. HLS uses
   SpringBoard's system `AVPlayer`; live-edge lag is telemetry only, so VCAM does
   not periodically seek and flush a healthy native playback queue. The old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.

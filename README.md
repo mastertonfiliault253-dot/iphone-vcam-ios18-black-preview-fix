@@ -13,9 +13,9 @@ payment or authentication decisions.
 
 The media hook and UI overlay have separate injection scopes:
 
-- `mediaserverd`: reads the latest source-sized frame from a one-slot BGRA
-  IOSurface for static images or a three-slot NV12/BGRA IOSurface for moving media,
-  with the fixed three-slot BGRA mmap retained only as handshake fallback, and
+- `mediaserverd`: reads the latest frame from a one-slot BGRA IOSurface for
+  static images, a three-slot BGRA IOSurface for SpringBoard/OBS moving media,
+  or the fixed three-slot BGRA mmap used by RTSP and compatibility paths, and
   replaces validated `BWNodeOutput` consumer boundaries for preview,
   browser/WebRTC, still capture and movie recording. Rendering supports the
   observed BGRA and bi-planar YUV formats. Device-private compressed recording
@@ -39,7 +39,7 @@ The media hook and UI overlay have separate injection scopes:
   `mediaserverd`. If an app sandbox cannot directly read the raw mmap/IOSurface
   preview, its panel requests a downscaled JPEG from SpringBoard over the
   loopback broker. That JPEG is UI-only; the camera replacement path remains
-  raw, source-sized BGRA/NV12.
+  raw BGRA pixels.
 
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns OBS
 WebSocket/JPEG reception, direct RTSP demux/decode, and publication of only the
@@ -76,14 +76,15 @@ when enabled, without pre-decoding the entire asset into memory.
   keeps normal RTP/H.264 reorder and reference buffering, and always uses
   FFmpeg's software decoder on the supported iOS 16.0-16.5 devices. The retired
   direct-VideoToolbox and FFmpeg-hwaccel RTSP branches are not compiled.
-  Native 8-bit NV12/YUV420 frames publish through the IOSurface ring without a
-  BGRA round trip. An explicit user rotation or mirror is rendered once into a
-  source-sized three-slot BGRA IOSurface; mmap remains only the automatic
-  consumer-handshake fallback.
+  Decoded frames pass through the existing renderer once and publish as raw
+  1080x1920 BGRA through the continuous three-slot mmap transport. This is the
+  production RTSP transport on the tested iOS 16.1 device: root `vcamd`
+  IOSurface creation returned `-6662` for both explicit NV12 and BGRA probes,
+  while mmap sequence sampling continued at the source frame rate.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
   source orientation and explicit user transforms in one Metal-backed Core
-  Image render directly into a source-sized three-slot `420v` IOSurface ring.
+  Image render directly into a source-sized three-slot BGRA IOSurface ring.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
   the live three-slot BGRA mmap compatibility fallback. HLS prefers a one-second
