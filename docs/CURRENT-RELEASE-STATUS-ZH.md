@@ -1,74 +1,84 @@
 # VCAM 当前发布基线与技术状态
 
-> 本文件记录“最新可部署版本”的固定快照。每次发布新版本时必须同时更新本文件、`control`、运行时 `VCAMBuildTag()` 和安装文档。
+> 本文件记录“最新 CI 候选版本”的固定快照。只有完成对应真机可见验收后，才能升级为正式发布。每次候选版本变化时必须同时更新本文件、`control`、运行时 `VCAMBuildTag()` 和安装文档。
 
-## 1. 当前发布基线
+## 1. 当前 CI 候选基线
 
 | 项目 | 当前值 |
 |---|---|
-| 包版本 | `0.8.81+ios16-source-pipeline-audit` |
-| Git 提交 | `a93badbbf22d1cdf4f373d454affd320836c2d6c` |
-| 提交说明 | `fix Debian postrm executable mode` |
+| 包版本 | `0.8.83+ios16-transport-stability` |
+| Git 提交 | `37def391236026f724180649c24d6b59b757b0b0` |
+| 提交说明 | `fix RTSP and HLS transport continuity` |
 | 发布分支 | `codex/ios16-media-bridge` |
-| 发布 remote | `current`（`cuentaripionose-prog/iphone-vcam-ios16-private`） |
-| macOS CI run | `31528507761`（成功） |
+| 发布 remote | `newrepo`（`djw415024-ctrl/iphone-vcam-ios16-private`） |
+| macOS CI run | `31823034266`（成功） |
 | DEB 架构 | `iphoneos-arm64`，包内客户端包含 `arm64`/`arm64e` |
-| DEB 大小 | `1,101,854` 字节 |
-| DEB SHA-256 | `0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F` |
+| DEB 大小 | `1,107,056` 字节 |
+| DEB SHA-256 | `4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317` |
 | 支持系统 | iOS `>= 16.0` 且 `< 16.6` |
 | 越狱布局 | rootless |
 
 本机已校验的 CI 产物：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
 ```
 
 运行时可在 `/var/mobile/Media/VCAM/broker-probe.log` 中核对：
 
 ```text
-tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
+tag=com.codex.vcam/0.8.83+ios16-transport-stability
 ```
 
 ## 2. 本版本的主要技术变化
 
-本版本是 iOS 16 源尺寸媒体管线的完整审查加固版：
+本版本在上一轮完整审查基础上收敛 RTSP/HLS 传输：
 
 - 继续保留真实物理相机图作为 WebKit 分辨率、帧率、像素格式、时间戳和附件的协商外壳，只替换像素；
 - WebKit 终端仍按已验证的 iOS 16 存储基准做一次方向补偿和 full-bleed 中心裁剪，不拉伸、不添加 VCAM 黑边；
 - 静态拍照不再由 VCAM 强写系统方向 metadata；Camera、WebKit、拍照和录像保持各自路由语义；
 - mmap 与 IOSurface 交接加入 producer generation、跨进程发布锁、PID start-token 和旧帧拒绝；
-- RTSP 改为 FFmpeg 上游 VideoToolbox hwaccel，只有明确硬件拒绝或解码停滞才粘性回退软件；
+- RTSP 固定为 FFmpeg 软件解码，删除正式 RTSP 的 VideoToolbox/hwaccel 与失败 IOSurface 分支；
 - P010/10-bit packing、BT.2020 颜色边界、源尺寸软件回退和整条管线内存预算已加固；
-- HLS 保持 Apple 原生 `AVPlayerItemVideoOutput`，加入直播边缘追赶与无帧重连；
+- HLS 保持 Apple 原生 `AVPlayerItemVideoOutput`，NV12 解码帧由 Metal/Core Image 一次渲染到 SpringBoard 可创建的三槽 BGRA IOSurface；
+- 删除 mediaserverd 在动态源停滞 2.5 秒后仍永久复用最后一帧的错误分支，真实停滞现在转黑并等待新帧恢复；
 - 本地非循环视频正常结束后保留最后一帧，不再被通用停滞逻辑重新循环；
 - 导入、下载、配置 Broker、日志大小、安装/卸载脚本和 fresh-install 真实相机回退均完成安全与并发审查。
 
-共享传输基线没有改回固定画布：
+共享传输基线按生产进程能力分流；RTSP 是明确记录的固定传输例外：
 
 - 静态图片：源尺寸、一槽 BGRA IOSurface；
-- 本地视频/HLS：源尺寸、三槽 420v/NV12 IOSurface；
+- 本地视频/HLS：源尺寸、三槽 BGRA IOSurface；
 - OBS：源尺寸、三槽 BGRA IOSurface；
-- RTSP：无变换时三槽 NV12，有显式旋转/镜像时三槽 BGRA；
-- 固定 1080×1920 BGRA mmap 仅作握手兼容与显式旧路径回滚。
+- RTSP：FFmpeg 软件解码后一次渲染到固定 1080×1920、三槽 BGRA mmap；
+- 固定 mmap 是 RTSP 的正式传输，也是其他 surface 来源的握手兼容与显式旧路径回滚。
 
 ## 3. 构建和发布证据
 
 以下证据已经具备：
 
-- Git HEAD 与 `current/codex/ios16-media-bridge` 同为 `a93badb`；
-- `control` 与 `VCAMBuildTag()` 均为 `0.8.81+ios16-source-pipeline-audit`；
-- 174 项主机回归测试通过，完整 Standards/Spec 复审均未发现新的确定性缺陷；
-- macOS CI run `31528507761` 成功产生正式 DEB；
+- 代码提交与 `newrepo/codex/ios16-media-bridge` 同为 `37def39`；
+- `control` 与 `VCAMBuildTag()` 均为 `0.8.83+ios16-transport-stability`；
+- 181 项主机回归测试通过，WSL arm64/arm64e 双架构编译通过；
+- macOS CI run `31823034266` 成功产生 CI 候选 DEB；
 - 本地从该 DEB 独立提取两个客户端，均为 `arm64`/`arm64e`；两个 arm64e 薄片均含非空 `__objc_stubs` 和 `__objc_intobj`；
 - 本机保存的 DEB SHA-256 已重新计算并与安装文档一致；
-- Debian `postinst`、`prerm`、`postrm` 在 Git 索引和正式包中均为可执行文件。
+- Debian `postinst`、`prerm`、`postrm` 在 Git 索引和该 CI 候选包中均为可执行文件。
 
-该精确 CI 包尚未记录部署到 `192.168.2.101` 或 `192.168.2.201`；此前版本的安装和可见结果不能代替本版本验收。
+该精确 CI 包已部署到 `192.168.2.101`，`dpkg-query` 返回 `0.8.83+ios16-transport-stability`。`192.168.2.201` 本轮未部署。
 
 ## 4. 当前真机证据
 
-此前版本在主要测试机 `192.168.2.101` 上已经观察到：
+精确 `0.8.83` 包在主要测试机 `192.168.2.101` 上已经证明：
+
+- 设备只保留一个 launchd `vcamd` 实例；
+- RTSP 连接 `rtsp://192.168.2.181:8554/live`，日志明确为 FFmpeg software decoder；
+- 固定 mmap sequence 在 5 秒内从 `353119` 推进到 `353265`，即 146 帧、约 29.2 FPS；
+- 最新一次启动不再进入 RTSP IOSurface 创建路径。
+
+2026-08-15 的服务端隔离读测还表明：`.181` HLS 在 25 次约 23 秒采样中无 HTTP 错误，live edge 最大停顿 0.94 秒、PDT 最大偏差 0.001 秒、最大 live-edge lag 1.08 秒；当时服务端 HLS 连续。RTSP 同期 12.2 秒收到 178 个解码帧，约 14.58 FPS，明显低于服务器声明的 60 FPS。前者不能替代 2.101 的 HLS 客户端验收，后者会造成卡顿感，但不等同网络连接已经断开。
+
+此前版本还曾观察到：
 
 - Safari `getUserMedia` 实际目标为 640×480、420f；
 - 虚拟人物画面连续、正向；
@@ -76,7 +86,7 @@ tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
 - 浏览器控制面板可读取静态图预览；
 - 静态图片状态显示“已加载静态图片”，不再显示波动 FPS。
 
-这些证据只覆盖当时安装版本和实际观察到的 Safari 路由，不能外推为当前 `0.8.81`、Chrome、Edge、Firefox 或所有分辨率档位已经通过。
+RTSP 的序号证据只证明生产端连续发布；采样时 Camera 未打开，不能把它外推为 `mediaserverd` 已消费或用户可见画面已长期通过。Safari 方向证据仍来自此前版本，不能外推为当前包、Chrome、Edge、Firefox 或所有分辨率档位已经通过。
 
 ## 5. 仍需用户逐项确认的设备验收
 
@@ -93,14 +103,13 @@ tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
 
 ## 6. 仍未关闭的高风险项
 
-RTSP 硬件解码不能只依据 `VTDecompressionSessionCreate` 成功、连接成功或日志中出现 VideoToolbox 来验收。必须在 iOS 16.0–16.5 真机上同时证明：
+RTSP 硬件解码已明确退出交付范围。当前 RTSP 验收必须在 iOS 16.0–16.5 真机上同时证明：
 
 1. RTSP/RTP/H.264 解复用持续正常；
-2. 解码回调连续返回非空 `CVPixelBuffer`；
-3. 实际选择硬件路径，没有静默回退软件；
-4. IOSurface 序号持续推进；
-5. Camera/Safari 中可见画面连续且方向正确；
-6. 长时间运行无明显丢帧、延迟累积或热降频。
+2. 软件解码连续返回非空帧；
+3. mmap 序号持续推进；
+4. Camera/Safari 中可见画面连续且方向正确；
+5. 长时间运行无明显丢帧、延迟累积或热降频。
 
 HLS 已使用 Apple 原生 `AVPlayerItemVideoOutput` 管线，但“使用原生硬解候选管线”不等于所有服务端和真机组合已经达到低延迟、零丢帧，仍须结合源端时间线和设备帧计数验收。
 

@@ -4,17 +4,19 @@
 
 推荐使用 SSH 安装，因为可以在安装前核对文件哈希，并在安装后检查软件包和系统进程状态。Sileo 本地安装可作为备用方式。
 
-## 1. 当前正式版本
+## 1. 当前 CI 候选版本
 
-- 版本：`0.8.81+ios16-source-pipeline-audit`
+该包已通过构建与结构校验，但 HLS 断流和 RTSP 可见连续性仍由用户在 2.101 上验收，不能仅凭安装成功视为正式发布通过。
+
+- 版本：`0.8.83+ios16-transport-stability`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
-- macOS CI：`31528507761`（成功）
-- Git 提交：`a93badbbf22d1cdf4f373d454affd320836c2d6c`
-- SHA-256：`0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F`
+- macOS CI：`31823034266`（成功）
+- Git 提交：`37def391236026f724180649c24d6b59b757b0b0`
+- SHA-256：`4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317`
 - 本机文件：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
 ```
 
 > 正式部署只使用 macOS CI 产物。WSL 包可用于开发编译检查，但不能替代 macOS CI 的 arm64e Objective-C section 验证。
@@ -45,14 +47,14 @@ Test-NetConnection 192.168.2.101 -Port 22
 ### 3.1 在电脑上校验安装包
 
 ```powershell
-$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-a93badb-run31528507761-a\vcam-rootless\com.codex.vcam_0.8.81+ios16-source-pipeline-audit_iphoneos-arm64.deb"
+$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb"
 Get-FileHash -Algorithm SHA256 -LiteralPath $Package
 ```
 
 输出必须是：
 
 ```text
-0017182D34811536D135AC76DC5FABE62A7666E48D227BE486AF0C80B8770F1F
+4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317
 ```
 
 哈希不一致时停止安装，重新下载 CI 产物。
@@ -88,7 +90,7 @@ sha256sum /var/tmp/vcam.deb
 手机端哈希必须与电脑端完全一致：
 
 ```text
-0017182d34811536d135ac76dc5fabe62a7666e48d227be486af0c80b8770f1f
+4bb5f87f7fc806325cc1535776574d31329809f3751ea4bfd809535c71482317
 ```
 
 ### 3.4 安装
@@ -122,7 +124,7 @@ dpkg-query -W com.codex.vcam
 当前版本应显示：
 
 ```text
-com.codex.vcam    0.8.81+ios16-source-pipeline-audit
+com.codex.vcam    0.8.83+ios16-transport-stability
 ```
 
 ### 4.2 检查关键进程
@@ -147,7 +149,7 @@ tail -n 50 /var/mobile/Media/VCAM/broker-probe.log
 应出现类似：
 
 ```text
-tag=com.codex.vcam/0.8.81+ios16-source-pipeline-audit
+tag=com.codex.vcam/0.8.83+ios16-transport-stability
 ```
 
 软件包安装、进程存在和 dylib 映射并不等于功能验收。还应在系统相机和 Safari `getUserMedia` 页面中检查虚拟画面、方向、裁剪比例、小白点和悬浮预览。

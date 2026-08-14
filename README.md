@@ -80,7 +80,9 @@ when enabled, without pre-decoding the entire asset into memory.
   1080x1920 BGRA through the continuous three-slot mmap transport. This is the
   production RTSP transport on the tested iOS 16.1 device: root `vcamd`
   IOSurface creation returned `-6662` for both explicit NV12 and BGRA probes,
-  while mmap sequence sampling continued at the source frame rate.
+  while mmap sequence sampling continued on the publication timer. That
+  sequence proves transport activity, not the decoded source frame rate;
+  decoder counters and visible content must be checked separately.
 - HLS: enter an HTTP/HTTPS `.m3u8` URL. SpringBoard uses the system `AVPlayer`
   pipeline, copies NV12 frames from `AVPlayerItemVideoOutput`, and performs
   source orientation and explicit user transforms in one Metal-backed Core

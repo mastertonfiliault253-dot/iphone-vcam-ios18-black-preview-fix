@@ -161,7 +161,7 @@ HLS 同样走 Apple 原生 `AVPlayer`，由系统处理分片、缓冲和时间�
 
 ### 5.5 RTSP
 
-RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序，并在 iOS 16.0-16.5 上固定使用软件解码。解码帧经过一次统一渲染后，以固定 1080×1920 BGRA 写入三槽 mmap。iOS 16.1 真机上，root `vcamd` 创建 NV12 和 BGRA IOSurface 都返回 `-6662`，但 mmap 序号按源帧率持续推进，因此正式路径不再反复尝试失败的 IOSurface。
+RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序，并在 iOS 16.0-16.5 上固定使用软件解码。解码帧经过一次统一渲染后，以固定 1080×1920 BGRA 写入三槽 mmap。iOS 16.1 真机上，root `vcamd` 创建 NV12 和 BGRA IOSurface 都返回 `-6662`，因此正式路径不再反复尝试失败的 IOSurface。mmap 序号持续推进只证明发布定时器仍在运行，不能证明真实解码帧率或画面内容仍在变化；排查时必须另看解码帧计数和可见画面。
 
 此前 direct-VT、FFmpeg VideoToolbox 和 GStreamer `vtdec_hw` 探针都没有在目标真机连续取得非空硬件帧；软件解码反而能出帧。继续保留硬解选择器还会污染软件 codec context，造成连接成功却不出帧，因此这些 RTSP 硬解正式分支已经删除。必须区分两个概念：
 
@@ -376,10 +376,10 @@ Linux Theos 工具链可以编出 arm64e 切片，但当前无法生成与 macOS
 
 ### 15.1 已有强证据
 
-- 当前源码 174 项主机测试通过，完整 Standards/Spec 复审未发现新的确定性缺陷；
-- macOS CI run `31528507761` 已产出 `0.8.81+ios16-source-pipeline-audit` 正式候选包；
+- 当前源码 181 项主机测试通过，WSL arm64/arm64e 双架构编译通过；
+- macOS CI run `31823034266` 已产出 `0.8.83+ios16-transport-stability` CI 候选包；HLS 断流与 RTSP 可见连续性尚待 2.101 真机验收；
 - 本地从同一 DEB 独立验证：两个注入客户端均含 `arm64`/`arm64e`，arm64e 薄片均有非空 `__objc_stubs` 和 `__objc_intobj`；
-- 该精确 CI 包尚未记录安装到测试设备，下面的可见结果来自此前版本，不能自动继承；
+- 该精确 CI 包已安装到 2.101；RTSP mmap 5 秒推进 146 帧，但可见画面和 HLS 仍需下面的设备操作验收；
 - 此前在测试机 2.101 上，Safari 640×480、420f 路径曾观察到连续、正向、无 VCAM 黑边的虚拟画面；
 - 此前浏览器面板能显示静态图预览，静态状态不再显示波动 FPS。
 

@@ -143,8 +143,9 @@ the original sample, and either construction path remains fail-closed.
   reference buffering. Decoded frames pass through one renderer operation and
   publish fixed 1080x1920 BGRA through mmap. Root `vcamd` IOSurface probes for
   both explicit NV12 and BGRA returned `-6662` on the iOS 16.1 test device,
-  while mmap publication continued at source rate, so RTSP no longer attempts
-  the failing surface path. HLS uses
+  while mmap publication continued on its output timer, so RTSP no longer
+  attempts the failing surface path. Publication sequence alone does not prove
+  decoded source cadence; decoder counters are a separate acceptance signal. HLS uses
   SpringBoard's system `AVPlayer`; live-edge lag is telemetry only, so VCAM does
   not periodically seek and flush a healthy native playback queue. The old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.

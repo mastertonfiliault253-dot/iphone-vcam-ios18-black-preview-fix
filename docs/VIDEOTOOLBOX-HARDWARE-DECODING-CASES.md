@@ -262,7 +262,7 @@ WebRTC 的 iOS H.264 解码器提供了与生命周期相关的一手旁证：�
 
 ### E7：Apple 官方 API 与 iOS 16.5 SDK 边界（已核对）
 
-Apple 对普通播放的推荐是优先使用 AVFoundation，而不是直接管理 VideoToolbox session：HLS 使用 `AVPlayer`，需要拉取解码后画面时附加 `AVPlayerItemVideoOutput`；本地文件逐帧处理可使用 `AVAssetReaderTrackOutput` 请求 NV12。iOS 没有公开的 RTSP 播放/解复用 API，因此本项目的 RTSP 仍需由 FFmpeg 处理 RTSP/RTP，再把完整压缩 access unit 交给 `VTDecompressionSession`。把 RTSP 在服务端转换成 HLS/低延迟 HLS 后交给 AVPlayer 是另一种架构，但会改变延迟和部署边界。
+Apple 对普通播放的推荐是优先使用 AVFoundation，而不是直接管理 VideoToolbox session：HLS 使用 `AVPlayer`，需要拉取解码后画面时附加 `AVPlayerItemVideoOutput`；本地文件逐帧处理可使用 `AVAssetReaderTrackOutput` 请求 NV12。iOS 没有公开的 RTSP 播放/解复用 API；当前正式实现由 FFmpeg 处理 RTSP/RTP 并使用软件解码，不再把 access unit 交给 `VTDecompressionSession`。把 RTSP 在服务端转换成 HLS/低延迟 HLS 后交给 AVPlayer 是另一种架构，但会改变延迟和部署边界。
 
 iPhoneOS 16.5 SDK 明确公开 `VTIsHardwareDecodeSupported`（iOS 11+），但把 `EnableHardwareAcceleratedVideoDecoder`、`RequireHardwareAcceleratedVideoDecoder` 和 `UsingHardwareAcceleratedVideoDecoder` 三个声明放在 `#if !TARGET_OS_IPHONE` 内。因而 iOS 16–16.5 的公开验收不能依赖这些桌面可见的选择/查询键；即使通过相同 CFString 私下传入，也不能当作 Apple 对 iPhone 的稳定契约。当前 `decoderSpecification = NULL` 保持 iOS 原生选择，真机验收要求为：设备能力查询为 true、session 创建成功、callback 连续得到非 NULL `CVPixelBuffer`、画面内容正确且前后台恢复稳定。
 
@@ -276,7 +276,7 @@ iPhoneOS 16.5 SDK 明确公开 `VTIsHardwareDecodeSupported`（iOS 11+），但�
 
 后续对照已经让 `AVAssetReaderTrackOutput(outputSettings=nil)` 从独立 H.264 MP4 产生 Apple 原生压缩 `CMSampleBuffer`，不再经过 FFmpeg、RTP、Annex-B 重写或项目 sample 组装。iOS 16.1 真机首个有效 sample 为 `avc1`、640×360、8083 字节、1 sample；`VTIsHardwareDecodeSupported(H.264)=true`，`VTDecompressionSessionCreate` 成功。无论 decoder specification 为 NULL，还是使用与 FFmpeg H.264 上游相同字符串键 `RequireHardwareAcceleratedVideoDecoder=true`，callback 都连续返回 `-12780` 且 image buffer 为 NULL，之后 session 进入 `-12902`。root 与 mobile 用户结果一致；切到静态图片并等待 12 秒让 SpringBoard HLS/AVPlayer 完全释放后结果仍一致。
 
-因此，当前真机上的 direct-VT 失败已经不能归因于服务端帧率、RTSP/RTP、FFmpeg extradata、NAL/AU 重写或 HLS 资源占用；这些因素仍可能造成别的错误，但不是本轮 `-12780` 的充分原因。FFmpeg、WebRTC、GStreamer `vtdec_hw` 最终都调用同一个 VT 解码边界，仅替换 demux/parser 不会绕过这条设备级失败。RTSP 正式路径仍保留 FFmpeg 上游 hwaccel 与软件 fail-open，但在找到能让同一 Apple 原生 sample 输出非空 `CVPixelBuffer` 的进程/系统上下文前，不应继续叠加第三套 parser 或输出属性实验。
+因此，当前真机上的 direct-VT 失败已经不能归因于服务端帧率、RTSP/RTP、FFmpeg extradata、NAL/AU 重写或 HLS 资源占用；这些因素仍可能造成别的错误，但不是本轮 `-12780` 的充分原因。FFmpeg、WebRTC、GStreamer `vtdec_hw` 最终都调用同一个 VT 解码边界，仅替换 demux/parser 不会绕过这条设备级失败。历史版本曾保留 FFmpeg 上游 hwaccel 与软件 fail-open；当前正式 RTSP 已删除该状态机并固定使用 FFmpeg 软件解码，不再继续叠加第三套 parser 或输出属性实验。
 
 ### E2：把输入 contract 变成可证伪检查
 

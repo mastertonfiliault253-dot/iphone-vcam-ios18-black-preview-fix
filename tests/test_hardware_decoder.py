@@ -63,10 +63,10 @@ class HardwareDecoderTests(unittest.TestCase):
             "CVPixelBufferRef VCAMCopyBGRAFromAVFrame", 1
         )[0]
 
-        # vcamd copies this short-lived software-decode buffer into the
-        # brokered IOSurface ring. Requiring the intermediate allocation itself
-        # to be IOSurface-backed fails in the root daemon context and silently
-        # diverts RTSP back to the fixed BGRA mmap canvas.
+        # This is a short-lived software-decode intermediate. RTSP intentionally
+        # renders it into the fixed BGRA mmap transport; requiring IOSurface
+        # backing here fails in the root daemon context and is not part of the
+        # formal RTSP path.
         self.assertNotIn("kCVPixelBufferIOSurfacePropertiesKey", nv12)
         self.assertNotIn("kCVPixelBufferMetalCompatibilityKey", nv12)
         self.assertIn("pixelFormat, NULL, &pixelBuffer", nv12)

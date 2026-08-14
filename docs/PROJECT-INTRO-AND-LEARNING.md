@@ -97,7 +97,7 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲，并固定使用软件解码；损坏后进入有界“等干净关键帧”恢复。解码帧经过一次统一渲染后，写入固定 1080×1920 三槽 BGRA mmap。root `vcamd` 在 iOS 16.1 真机创建显式 NV12/BGRA IOSurface 都返回 `-6662`，而 mmap 序号按源帧率持续推进，因此正式 RTSP 不再进入失败的 surface 分支。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率、解码帧和 mmap 序号，避免把服务器断流或低帧率误判为解码失败。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲，并固定使用软件解码；损坏后进入有界“等干净关键帧”恢复。解码帧经过一次统一渲染后，写入固定 1080×1920 三槽 BGRA mmap。root `vcamd` 在 iOS 16.1 真机创建显式 NV12/BGRA IOSurface 都返回 `-6662`，而 mmap 序号可随发布定时器持续推进，因此正式 RTSP 不再进入失败的 surface 分支。该序号不能证明真实解码帧率；诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率、解码帧和 mmap 序号，避免把服务器断流或低帧率误判为解码失败。
 
 ### HLS
 
@@ -109,7 +109,7 @@ SpringBoard 使用系统 `AVPlayer` 处理分片、时间线和码率切换，�
 - 工具链：Theos，部署目标 iOS 16.0 且包依赖限制为 `< 16.6`；`vendor/ffmpeg` 由 CI 内 `scripts/build-ffmpeg-ios.sh` 构建。
 - 本地 WSL 构建只是编译检查；可安装产物只来自私有 macOS CI。
 - CI workflow：`Build rootless package`，响应 `codex/ios16-media-bridge` 分支 push，运行全部主机测试 → Theos 构建 → 校验单一 DEB、arm64/arm64e、Objective-C stub sections、entitlement 与废弃 dylib → 上传 `vcam-rootless` artifact。
-- 仓库规则：当前发布 remote 为私有 `current`（`cuentaripionose-prog/iphone-vcam-ios16-private`）；`origin`（wordgege/iPhone-VCAM）是公开上游，**严禁推送**。推送前必须用 `git remote -v` 再确认目标；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore。
+- 仓库规则：当前发布 remote 为私有 `newrepo`（`djw415024-ctrl/iphone-vcam-ios16-private`）；`origin`（wordgege/iPhone-VCAM）是公开上游，**严禁推送**。推送前必须用 `git remote -v` 再确认目标；`PROJECT-INFO-SECRETS.md` 和 SSH 辅助脚本已 gitignore。
 - 发布校验：同一 run 独立下载两份 artifact，核对 DEB SHA-256 一致，再上传设备核对一次 SHA 后 `dpkg -i`。
 
 ### GitHub 外部浏览器授权
@@ -127,7 +127,7 @@ git remote -v
 ## 7. 设备测试环境
 
 - 当前主验收设备：iPhone13,2 / iOS 16.1 / Dopamine rootless；产品支持范围仍为 iOS 16.0–16.5。
-- SSH：`root@192.168.2.201`（密码等敏感信息只放在 `PROJECT-INFO-SECRETS.md`，本文件不重复）。
+- 当前主测试机 SSH：`root@192.168.2.101`（2.201 仅作备用部署机；密码等敏感信息只放在 `PROJECT-INFO-SECRETS.md`，本文件不重复）。
 - 远程控制：TrollVNC + noVNC，SSH 本地转发 5901/5801/5802 到本机，浏览器打开 `http://127.0.0.1:5802/novnc/vnc.html?host=127.0.0.1&port=5901&autoconnect=true&resize=scale`。
 
 关键路径：
@@ -173,7 +173,7 @@ python -m unittest discover -s tests -v
 
 ### RTSP 连接成功但没有连续画面
 
-当前 iOS 16.1 真机上，FFmpeg 上游 VideoToolbox 与 Apple `AVAssetReader` 原生压缩 `CMSampleBuffer` 的 direct-VT 对照都出现 callback `-12780`、image buffer 为 NULL；软件解码能出帧。正式 RTSP 路径已删除硬解选择和回退状态机，固定为 FFmpeg 软件解码。排查时必须同时看服务器 packet/PTS、vcamd 解码帧以及共享 surface 序号，详细历史证据见 `VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md`。
+当前 iOS 16.1 真机上，FFmpeg 上游 VideoToolbox 与 Apple `AVAssetReader` 原生压缩 `CMSampleBuffer` 的 direct-VT 对照都出现 callback `-12780`、image buffer 为 NULL；软件解码能出帧。正式 RTSP 路径已删除硬解选择和回退状态机，固定为 FFmpeg 软件解码。排查时必须同时看服务器 packet/PTS、vcamd 的真实解码帧计数以及 mmap 发布序号；仅看到 mmap 序号按定时器推进，不能证明源内容仍在解码。详细历史证据见 `VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md`。
 
 ### 浏览器相机输出黑屏
 
@@ -216,7 +216,7 @@ python -m unittest discover -s tests -v
 | 传播标记 | 替换成功后写入 sample/image 的版本化附件，供下游快速路径验证 |
 | fail-closed | 虚拟模式开启后，宁可黑屏/抑制也不泄漏真实相机帧 |
 | `vcamd` / `vcaminjectd` | 项目自己的守护进程：daemon 源解码/发布/XPC rights relay 与注入修复 |
-| 共享帧 | 图片使用一个不可变 IOSurface；视频使用三个 IOSurface；兼容 mmap 保留三缓冲。均带序号/时间戳与消费者占用计数 |
+| 共享帧 | 图片使用一个不可变 IOSurface；本地视频/HLS/OBS 使用三个 IOSurface；RTSP 的正式传输使用固定三槽 mmap。两类传输均带序号/时间戳；IOSurface 另有消费者占用计数 |
 
 ## 12. 当前状态与下一步
 
