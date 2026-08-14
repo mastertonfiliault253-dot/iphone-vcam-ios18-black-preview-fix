@@ -16,8 +16,8 @@
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
-static const char *const VCAMLegacyRTSPDaemonMarker =
-    "/var/tmp/vcam-rtsp-legacy-vcamd.enable";
+static const char *const VCAMSpringBoardRTSPMarker =
+    "/var/tmp/vcam-rtsp-springboard-vt.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalImageDaemonMarker =
@@ -474,7 +474,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL hls = next.sourceKind == VCAMSourceKindHLS && next.hlsURL != nil &&
         access(VCAMLegacyHLSDaemonMarker, F_OK) != 0;
     BOOL rtsp = next.sourceKind == VCAMSourceKindRTSP && next.rtspURL != nil &&
-        access(VCAMLegacyRTSPDaemonMarker, F_OK) != 0;
+        access(VCAMSpringBoardRTSPMarker, F_OK) == 0;
     BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
         VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;

@@ -385,9 +385,9 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
 
-    def test_springboard_owns_production_rtsp_decode_path(self) -> None:
-        """SpringBoard (app process) runs direct-VT RTSP decode; vcamd RTSP
-        decode is a marker-gated rollback only."""
+    def test_daemon_software_decode_is_default_rtsp_path(self) -> None:
+        """vcamd software decode is the default RTSP path; SpringBoard's
+        direct-VT decoder is an opt-in experiment behind a marker."""
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
             encoding="utf-8"
@@ -409,20 +409,20 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("Sources/Daemon/VCAMHardwareVideoDecoder.m", makefile)
         self.assertIn("VideoToolbox", makefile.split("VCAMSpringBoardClient_FRAMEWORKS", 1)[1].split("\n", 1)[0])
         self.assertIn("VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil", makefile)
-        # The bridge routes RTSP into the SpringBoard decoder with a
-        # marker-gated rollback to the daemon.
-        self.assertIn("VCAMLegacyRTSPDaemonMarker", bridge)
+        # The bridge routes RTSP into the SpringBoard decoder only when the
+        # opt-in marker is present (default is daemon software decode).
+        self.assertIn("VCAMSpringBoardRTSPMarker", bridge)
         self.assertIn("sourceKind == VCAMSourceKindRTSP", bridge)
         self.assertIn("publishPixelBuffer:buffer sourceName:@\"RTSP\"", bridge)
         self.assertIn("initWithURL:next.rtspURL", bridge)
         # The decoder is no longer vcamd-only.
         self.assertNotIn("vcamd-only", header)
         self.assertIn("injected SpringBoard client", header)
-        # vcamd keeps the decoder behind the marker file.
-        self.assertIn("VCAMLegacyRTSPDaemonMarker", producer)
-        self.assertIn("access(VCAMLegacyRTSPDaemonMarker, F_OK) == 0", producer)
-        self.assertIn("VCAMLegacyRTSPDaemonPipelineMarker", pipeline)
-        self.assertIn("access(VCAMLegacyRTSPDaemonPipelineMarker, F_OK) == 0", pipeline)
+        # vcamd software decode is the default (marker disables it).
+        self.assertIn("VCAMSpringBoardRTSPMarker", producer)
+        self.assertIn("access(VCAMSpringBoardRTSPMarker, F_OK) != 0", producer)
+        self.assertIn("VCAMSpringBoardRTSPMarker", pipeline)
+        self.assertIn("access(VCAMSpringBoardRTSPMarker, F_OK) != 0", pipeline)
         # Source-level contract: tcp transport, key-frame gate, direct VT.
         self.assertIn('av_dict_set(&options, "rtsp_transport", "tcp", 0)', source)
         self.assertIn("VCAMHardwareVideoDecoder alloc", source)

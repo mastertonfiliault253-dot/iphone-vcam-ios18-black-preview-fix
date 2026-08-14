@@ -11,8 +11,8 @@
 
 #include <unistd.h>
 
-static const char *const VCAMLegacyRTSPDaemonPipelineMarker =
-    "/var/tmp/vcam-rtsp-legacy-vcamd.enable";
+static const char *const VCAMSpringBoardRTSPMarker =
+    "/var/tmp/vcam-rtsp-springboard-vt.enable";
 
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _previewTemplateSample;
@@ -73,9 +73,9 @@ static const char *const VCAMLegacyRTSPDaemonPipelineMarker =
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                // SpringBoard owns the production RTSP path; daemon decode is a
-                // marker-gated rollback only.
-                if (access(VCAMLegacyRTSPDaemonPipelineMarker, F_OK) == 0) {
+                // Daemon software decode is the default RTSP path; SpringBoard's
+                // direct-VT decoder is an opt-in experiment behind a marker.
+                if (access(VCAMSpringBoardRTSPMarker, F_OK) != 0) {
                     self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
                                                                               renderer:self.renderer];
                 }
