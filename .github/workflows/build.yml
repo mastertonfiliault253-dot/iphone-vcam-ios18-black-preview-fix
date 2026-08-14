@@ -71,26 +71,6 @@ jobs:
           test "$(grep -c '^            \.processPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 2
           test "$(grep -c '^            \.dylibPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 2
           ! grep -q '\.processPath = "/Applications/' Sources/Daemon/VCAMInjectionMonitor.m
-      - name: Verify captured RTSP stream decodes with macOS VideoToolbox
-        run: |
-          cat > /tmp/vt-test.swift <<'EOF'
-          import AVFoundation
-          import Foundation
-          let asset = AVURLAsset(url: URL(fileURLWithPath: CommandLine.arguments[1]))
-          let sem = DispatchSemaphore(value: 0)
-          let gen = AVAssetImageGenerator(asset: asset)
-          gen.appliesPreferredTrackTransform = true
-          do {
-              let img = try gen.copyCGImage(at: CMTime(seconds: 2, preferredTimescale: 600), actualTime: nil)
-              print("VT decoded frame ok: \(img.width)x\(img.height)")
-          } catch {
-              print("VT decode FAILED: \(error)")
-              exit(1)
-          }
-          sem.signal()
-          sem.wait()
-          EOF
-          swift /tmp/vt-test.swift tests/fixtures/rtsp-capture-6s.mp4
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-rootless

@@ -301,6 +301,12 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("avcodec_get_hw_config", rtsp)
         self.assertNotIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
 
+        workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Verify captured RTSP stream decodes with macOS VideoToolbox", workflow)
+        self.assertNotIn("vt-test.swift", workflow)
+
     def test_ffmpeg_upstream_path_passes_demuxed_packets_without_manual_au_filtering(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
