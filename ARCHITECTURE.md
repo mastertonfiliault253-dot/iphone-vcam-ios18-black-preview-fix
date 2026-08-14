@@ -4,7 +4,8 @@ The fixed version, CI artifact hash, current device evidence and unresolved acce
 
 VCAM separates media production, camera replacement and control UI:
 
-- `vcamd` owns OBS and RTSP decoding. RTSP publishes native 8-bit
+- `vcamd` owns OBS and RTSP decoding. RTSP is software-only on iOS 16.0-16.5
+  and publishes native 8-bit
   NV12 through a source-sized three-slot IOSurface ring when no transform is
   required, or source-sized three-slot BGRA after an explicit user transform.
   OBS publishes source-sized BGRA through a three-slot IOSurface ring. The surface-handshake
@@ -56,12 +57,12 @@ that exact target and preserves its format description and propagated sample
 attachments. Only the replacement pixels and route-specific composition
 policy change.
 
-The native local-video/HLS bridge and eligible RTSP frames publish raw,
+The native local-video/HLS bridge and eligible software-decoded RTSP frames publish raw,
 uncompressed NV12 pixels into source-sized three-slot IOSurface rings. Static
 images use one source-sized uncompressed BGRA IOSurface; OBS and transformed
 RTSP use source-sized three-slot BGRA IOSurfaces. Fallback publication alone
 uses raw, uncompressed BGRA pixels in mmap. No JPEG, H.264,
-HEVC or source-container payload is sent to mediaserverd. RTSP software fallback
+HEVC or source-container payload is sent to mediaserverd. RTSP software decoding
 keeps the decoded source dimensions; a 256 MiB worst-case whole-pipeline budget
 accounts for the decoded frame, conversion work buffers and three publication
 slots, rejecting larger frames instead of silently downscaling them. The vcamd

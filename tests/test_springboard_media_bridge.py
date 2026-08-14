@@ -57,6 +57,18 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("8ULL * 1000000000ULL", source)
         self.assertIn("localVideo ? sourceFramesPerSecond : 60", source)
 
+    def test_hls_does_not_periodically_seek_and_flush_native_playback(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        tick = source.split("- (void)tick:", 1)[1].split(
+            "- (BOOL)ensureSurfaceWriterForPixelBuffer", 1
+        )[0]
+        self.assertNotIn("seekToTime:", tick)
+        self.assertNotIn("consecutiveHighLiveLagTicks", source)
+        self.assertNotIn("lastLiveEdgeSeekTimestampNanoseconds", source)
+        self.assertNotIn("springboard HLS live-edge catch-up", source)
+
     def test_local_video_reuses_native_player_pipeline_and_keeps_daemon_rollback(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
@@ -265,26 +277,11 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
 
 
-    def test_hls_frames_tag_hardware_decode_after_ci_render_and_on_bootstrap(self) -> None:
+    def test_native_player_frames_do_not_claim_unobservable_decoder_class(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
         ).read_text(encoding="utf-8")
-        # The destination tag must survive the CIContext render, so it is set
-        # after rendering, not before.
-        segment = source.split(
-            "VCAMSetVideoColorAttachments(destination);", 1
-        )[1].split("if (useSurfaceDestination) {", 1)[0]
-        self.assertLess(
-            segment.index("render:renderImage"),
-            segment.index("com.codex.vcam.decodeHardware"),
-        )
-        self.assertIn("kCFBooleanTrue", segment)
-        # The mmap bootstrap frame carries the same tag so the compatibility
-        # path reports hardware decode too.
-        bootstrap = source.split("render:bootstrapImage", 1)[1].split(
-            "compatibilityPublished =", 1
-        )[0]
-        self.assertIn("com.codex.vcam.decodeHardware", bootstrap)
+        self.assertNotIn("com.codex.vcam.decodeHardware", source)
 
 if __name__ == "__main__":
     unittest.main()

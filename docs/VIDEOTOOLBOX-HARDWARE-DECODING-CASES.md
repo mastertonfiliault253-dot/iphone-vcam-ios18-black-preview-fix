@@ -1,5 +1,9 @@
 # iOS 16 VideoToolbox 硬件解码实现案例与 vcamd 实验建议
 
+> 历史实验记录：本文保留失败证据和外部方案对照，不代表当前生产代码。
+> 从 `0.8.82+ios16-stream-stability` 起，RTSP 使用 FFmpeg 纯软件解码，
+> 已删除 direct-VT、FFmpeg VideoToolbox hwaccel 与 SpringBoard RTSP 分支。
+
 调查日期：2026-08-09
 部署范围：iOS 16.0–16.5，arm64/arm64e 设备
 调查范围：Apple 公共 SDK/官方文档、FFmpeg/WebRTC/VLC/ijkplayer/GStreamer 项目官方源码。没有使用博客或论坛结论。

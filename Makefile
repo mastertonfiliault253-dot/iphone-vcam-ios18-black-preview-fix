@@ -33,15 +33,11 @@ VCAMSpringBoardClient_FILES = \
 	Sources/Hooks/VCAMSpringBoardEntry.xm \
 	Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m \
 	Sources/SpringBoard/VCAMSpringBoardMediaBridge.m \
-	Sources/SpringBoard/VCAMSpringBoardRTSPSource.m \
-	Sources/Daemon/VCAMHardwareVideoDecoder.m \
 	Sources/Core/VCAMConfiguration.m \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)
-VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
-VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers VideoToolbox
-VCAMSpringBoardClient_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
-VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil
+VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
+VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 # vcamd is package-owned and is not injected. OBS and RTSP live here; retained
 # local-image/video and HLS readers are explicit rollback paths only. It also

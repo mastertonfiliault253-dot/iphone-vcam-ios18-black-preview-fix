@@ -1,7 +1,7 @@
 # VCAM 框架与功能分析（小白学习版）
 
 > 适用项目：`IOSVCAN-DS/vcam`  
-> 文档基准：`0.8.81+ios16-source-pipeline-audit`
+> 文档基准：`0.8.82+ios16-stream-stability`
 > 部署目标：越狱环境下的 iOS 16.0–16.5（不包含 iOS 15，也不承诺 iOS 16.6 及以上）
 
 最新固定提交、CI run、DEB 哈希和设备证据见 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)。
@@ -137,7 +137,7 @@ flowchart LR
 | 本地视频 | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 420v/NV12 | 3 |
 | HLS | SpringBoard | AVPlayer + AVPlayerItemVideoOutput | 源尺寸 420v/NV12 | 3 |
 | OBS | `vcamd` | LAN WebSocket JPEG | 源尺寸 BGRA | 3 |
-| RTSP | `vcamd` | FFmpeg + VideoToolbox/软件回退 | NV12；有旋转时为 BGRA | 3 |
+| RTSP | `vcamd` | FFmpeg 纯软件解码 | NV12；有旋转时为 BGRA | 3 |
 
 ### 5.1 静态图片
 
@@ -151,7 +151,7 @@ MOV、MP4、M4V 走 Apple 原生 `AVPlayer`。视频轨道的 `preferredTransfor
 
 ### 5.3 HLS
 
-HLS 同样走 Apple 原生 `AVPlayer`，由系统处理分片、缓冲、时间线和硬件解码。项目当前设置较小的前向缓冲，在直播边缘延迟持续超过阈值时追到可 seek 的直播边缘，并在长时间没有解码帧时重建会话。
+HLS 同样走 Apple 原生 `AVPlayer`，由系统处理分片、缓冲和时间线。项目无法通过 iOS 16 公共 API 证明某一次播放实际使用了哪类解码器，因此界面只显示“系统原生播放”。项目设置较小的前向缓冲，只记录直播边缘延迟，不再定时 seek 刷新正常播放队列；连续八秒没有解码帧时才重建会话。
 
 注意：使用了原生管线不等于已经证明所有 HLS 服务端都低延迟、无卡顿。服务端时间戳、分片长度、实际发布帧率和手机端渲染都需要共同验收。
 
@@ -161,15 +161,14 @@ HLS 同样走 Apple 原生 `AVPlayer`，由系统处理分片、缓冲、时间�
 
 ### 5.5 RTSP
 
-RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序。可用时选择 VideoToolbox，失败时保留软件解码回退。无额外旋转/镜像时，8 位 NV12/YUV420 可以直接进入三槽 IOSurface，减少 BGRA 转换。
+RTSP 使用 FFmpeg 处理 RTSP/RTP、H.264 参数集、NAL、时间戳和重排序，并在 iOS 16.0-16.5 上固定使用软件解码。无额外旋转/镜像时，8 位 NV12/YUV420 可以直接进入三槽 IOSurface，减少 BGRA 转换。
 
-必须区分三个概念：
+此前 direct-VT、FFmpeg VideoToolbox 和 GStreamer `vtdec_hw` 探针都没有在目标真机连续取得非空硬件帧；软件解码反而能出帧。继续保留硬解选择器还会污染软件 codec context，造成连接成功却不出帧，因此这些 RTSP 硬解正式分支已经删除。必须区分两个概念：
 
 - 成功连接 RTSP：只证明网络和协议握手成功；
-- `VTDecompressionSession` 创建成功：只证明解码会话创建成功；
 - 连续收到非空 `CVPixelBuffer` 并在屏幕上稳定显示：才证明解码链路真正工作。
 
-当前 RTSP “硬件解码稳定连续出帧”仍属于真机重点验收项，不能只凭编译、日志中出现 VideoToolbox 或测试字符串宣称完成。
+当前 RTSP 真机重点验收项是软件解码后的连续非空帧、IOSurface 序号持续推进，以及长时间播放不冻结；不再把硬件解码列为交付目标。
 
 ## 6. 为什么图片用 1 缓冲，视频用 3 缓冲
 
@@ -399,7 +398,7 @@ Linux Theos 工具链可以编出 arm64e 切片，但当前无法生成与 macOS
 ### 15.3 仍是高风险验收项
 
 - RTSP 在 iOS 16.0–16.5 真机上连续输出非空 `CVPixelBuffer`；
-- 日志证明实际走 VideoToolbox 硬件解码，而不是只创建会话或回退软件；
+- 日志证明只走 FFmpeg 软件解码，且没有 VideoToolbox 选择器污染 codec context；
 - RTSP/HLS 动态分辨率、三槽轮换和快速切源时无撕裂、旧帧或冻结；
 - Chrome、Edge、Firefox 必须以“设备实际安装并现场显示”为准，plist 名单不能代替验收。
 
@@ -497,6 +496,6 @@ TCP 连接
 ## 19. 最后记住四句话
 
 1. 小白点显示正常，不等于相机替换正常。
-2. RTSP 能连接，不等于硬件解码已经出帧。
+2. RTSP 能连接，不等于软件解码和共享发布已经持续出帧。
 3. 编译和安装成功，不等于真机业务验收成功。
 4. 方向、比例、分辨率和像素格式是四个不同问题，不能靠加一个 90° 旋转同时解决。

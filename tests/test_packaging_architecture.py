@@ -322,11 +322,10 @@ class PackagingArchitectureTests(unittest.TestCase):
 
     def test_ffmpeg_is_linked_only_to_worker(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        # vcamd (legacy rollback) and the injected SpringBoard client (production
-        # RTSP demux + direct VideoToolbox decode) are the two media workers.
-        # mediaserverd stays a shallow consumer with no FFmpeg linkage.
+        # vcamd is the only FFmpeg worker. SpringBoard owns only native
+        # AVPlayer playback; mediaserverd remains a shallow consumer.
         self.assertIn("vcamd_LIBRARIES = avformat avcodec avutil", makefile)
-        self.assertIn("VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil", makefile)
+        self.assertNotIn("VCAMSpringBoardClient_LIBRARIES", makefile)
         self.assertNotIn("VCAMMediaServerClient_LIBRARIES", makefile)
 
     def test_wsl_release_copy_drops_path_bound_module_cache(self) -> None:

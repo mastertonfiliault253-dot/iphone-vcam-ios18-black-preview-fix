@@ -702,7 +702,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         sourceTitle = @"HLS 原生播放已启用";
         detail = values[@"hlsURL"] ?: @"未配置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
-        sourceTitle = @"RTSP 直连已启用";
+        sourceTitle = @"RTSP 软件解码已启用";
         detail = values[@"rtspURL"] ?: @"未设置地址";
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
@@ -721,10 +721,18 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         streamText = @"已加载静态图片";
         if (![streamStatus[@"receiving"] boolValue]) streamText = @"静态图片未就绪";
     } else if ([streamStatus[@"receiving"] boolValue]) {
-        BOOL decodeHardware = [streamStatus[@"decodeHardware"] boolValue];
+        NSString *playbackKind = @"原始帧";
+        if ([source isEqualToString:@"rtsp"]) {
+            playbackKind = @"FFmpeg 软件解码";
+        } else if ([source isEqualToString:@"hls"] ||
+                   [source isEqualToString:@"local"]) {
+            // AVPlayer does not expose a public per-playback hardware-decoder
+            // verdict on iOS 16. Do not turn native playback into a false
+            // hardware/software claim in the user-visible status.
+            playbackKind = @"系统原生播放";
+        }
         streamText = [NSString stringWithFormat:@"已收到推流（%@，%.0f ms 前）",
-            decodeHardware ? @"硬件解码" : @"软件解码",
-            [streamStatus[@"ageMs"] doubleValue]];
+            playbackKind, [streamStatus[@"ageMs"] doubleValue]];
     } else {
         streamText = @"未收到推流";
     }

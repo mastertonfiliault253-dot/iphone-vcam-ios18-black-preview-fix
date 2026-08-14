@@ -12,8 +12,6 @@
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
-static const char *const VCAMSpringBoardRTSPMarker =
-    "/var/tmp/vcam-rtsp-springboard-vt.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalImageDaemonMarker =
@@ -113,12 +111,9 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                // Daemon software decode is the default RTSP path. SpringBoard's
-                // direct-VT decoder is an opt-in experiment behind a marker.
-                if (access(VCAMSpringBoardRTSPMarker, F_OK) != 0) {
-                    self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                              renderer:self.renderer];
-                }
+                // RTSP is always decoded by FFmpeg's software decoder in vcamd.
+                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
+                                                                          renderer:self.renderer];
                 break;
             case VCAMSourceKindHLS:
                 // SpringBoard owns the production AVPlayer HLS path. Retain

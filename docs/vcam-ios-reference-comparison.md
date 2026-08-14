@@ -19,7 +19,7 @@ replacement seam.
 | Loop | Callback index modulo the short frame array | Complete asset timeline loops at end-of-item |
 | Memory | Frame array remains resident; README notes leaks | Only source state, renderer pools and latest shared frames stay resident |
 | OBS | None | WebSocket/JPEG latest-frame source in `vcamd` |
-| RTSP | None | FFmpeg demux + VideoToolbox in `vcamd` |
+| RTSP | None | FFmpeg demux + software decode in `vcamd` |
 | HLS | None | SpringBoard AVPlayer + AVPlayerItemVideoOutput |
 | Preview/control | None | One foreground-owned white dot, unified picker and shared-frame preview in SpringBoard plus UI-only Camera/browser hosts |
 | mediaserverd dependencies | UIKit and in-process decoding | Rendering frameworks only; no UIKit, source decoder or network client |

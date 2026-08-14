@@ -199,7 +199,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.81+ios16-source-pipeline-audit";
+    return "com.codex.vcam/0.8.82+ios16-stream-stability";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

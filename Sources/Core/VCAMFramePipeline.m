@@ -9,11 +9,6 @@
 #import "../Sources/VCAMOBSStreamSource.h"
 #import "../Sources/VCAMRTSPStreamSource.h"
 
-#include <unistd.h>
-
-static const char *const VCAMSpringBoardRTSPMarker =
-    "/var/tmp/vcam-rtsp-springboard-vt.enable";
-
 @interface VCAMFramePipeline () {
     CMSampleBufferRef _previewTemplateSample;
     CGSize _previewTemplateSize;
@@ -73,12 +68,8 @@ static const char *const VCAMSpringBoardRTSPMarker =
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                // Daemon software decode is the default RTSP path; SpringBoard's
-                // direct-VT decoder is an opt-in experiment behind a marker.
-                if (access(VCAMSpringBoardRTSPMarker, F_OK) != 0) {
-                    self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                              renderer:self.renderer];
-                }
+                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
+                                                                          renderer:self.renderer];
                 break;
             case VCAMSourceKindHLS:
                 self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration

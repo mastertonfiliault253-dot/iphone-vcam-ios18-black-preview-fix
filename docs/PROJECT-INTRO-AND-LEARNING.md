@@ -50,7 +50,7 @@ flowchart LR
 | `Sources/Daemon/VCAMFrameProducer.m` | 配置加载、媒体源生命周期、按模板取帧 |
 | `Sources/Sources/VCAMLocalMediaSource.m` | 本地图片源，以及显式回滚时使用的增量 AVAssetReader/FFmpeg 本地视频路径 |
 | `Sources/SpringBoard/VCAMSpringBoardMediaBridge.m` | SpringBoard 本地视频/HLS：AVPlayerItemVideoOutput → NV12 → Metal/Core Image → IOSurface/mmap |
-| `Sources/Sources/VCAMRTSPStreamSource.m` | RTSP/FFmpeg/VideoToolbox 源（最新帧模型，软解兜底） |
+| `Sources/Sources/VCAMRTSPStreamSource.m` | RTSP/FFmpeg 纯软件解码源（最新帧模型） |
 | `Sources/Sources/VCAMOBSStreamSource.m` | OBS WebSocket/JPEG 源 |
 | `Sources/Core/VCAMFrameRenderer.m` | 像素格式归一化、旋转、镜像、内容模式、目标尺寸 |
 | `Sources/Core/VCAMConfiguration.m` | 配置读写、Broker 客户端/服务端、媒体导入 |
@@ -97,7 +97,7 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### RTSP
 
-`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲；优先 VideoToolbox，无输出自动切软解；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；显式旋转或镜像时改为源尺寸三槽 BGRA IOSurface；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
+`vcamd` 内 FFmpeg：TCP、正常 RTP 重排与 H.264 参考缓冲，并固定使用软件解码；损坏后进入有界“等干净关键帧”恢复。8-bit YUV420/NV12 在无需变换时直接重排为 native NV12 IOSurface，避免 BGRA 往返；显式旋转或镜像时改为源尺寸三槽 BGRA IOSurface；消费者握手前保留 BGRA mmap 回退。诊断统一使用仓库的确定性 MediaMTX/FFmpeg 流，并分别记录源端实测帧率和输出帧率，避免把服务器断流或低帧率误判为解码失败。
 
 ### HLS
 
@@ -171,9 +171,9 @@ python -m unittest discover -s tests -v
 
 正式路径先看 SpringBoard 日志中的 `springboard local video start`、`decoded=... published=... empty=0 failures=0`、`health` 和 `loop`；约 10 秒应推进约 300 个 30fps 帧。只有显式创建 legacy marker 后，才使用 `scripts/analyze-local-playback-performance.py` 分析 daemon `AVAssetReader`/FFmpeg 回滚路径。
 
-### RTSP 没有硬件帧
+### RTSP 连接成功但没有连续画面
 
-当前 iOS 16.1 真机上，FFmpeg 上游 VideoToolbox 与 Apple `AVAssetReader` 原生压缩 `CMSampleBuffer` 的 direct-VT 对照都出现 callback `-12780`、image buffer 为 NULL；服务端帧率、RTSP/RTP、NAL/AU 重写和 HLS 资源占用已被分别排除为唯一根因。正式路径保留软件 fail-open，详细证据见 `VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md`。
+当前 iOS 16.1 真机上，FFmpeg 上游 VideoToolbox 与 Apple `AVAssetReader` 原生压缩 `CMSampleBuffer` 的 direct-VT 对照都出现 callback `-12780`、image buffer 为 NULL；软件解码能出帧。正式 RTSP 路径已删除硬解选择和回退状态机，固定为 FFmpeg 软件解码。排查时必须同时看服务器 packet/PTS、vcamd 解码帧以及共享 surface 序号，详细历史证据见 `VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md`。
 
 ### 浏览器相机输出黑屏
 
@@ -196,7 +196,7 @@ python -m unittest discover -s tests -v
 1. `README.md` → `ARCHITECTURE.md` → `docs/injection-target-architecture.md`（目标与安全边界）。
 2. `Sources/Hooks/VCAMMediaServerRefEntry.xm`（核心注入与路由，重点理解 fail-closed 和传播标记）。
 3. `Sources/Daemon/VCAMFrameProducer.m` + `Sources/Core/VCAMMediaSource.h`（源的生命周期与取帧契约）。
-4. `Sources/Sources/VCAMRTSPStreamSource.m`（FFmpeg 上游 hwaccel 与软件 fail-open）。
+4. `Sources/Sources/VCAMRTSPStreamSource.m`（FFmpeg 软件解码、重连与最新帧队列）。
 5. `Sources/SpringBoard/VCAMSpringBoardMediaBridge.m`（HLS AVPlayer/NV12/Metal/IOSurface）。
 6. `Sources/Core/VCAMFrameRenderer.m`（daemon 源格式归一化/旋转/内容模式）。
 7. `Sources/Shared/VCAMSharedFrame.m` + `VCAMSurfaceBroker.m`（动态 IOSurface 槽深、固定 mmap 回退和 XPC rights relay）。
@@ -224,5 +224,5 @@ python -m unittest discover -s tests -v
 - HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、保留 iOS 16.1 必需的自动续播并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
 - 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。相册/文件选择现在保留原始 representation 且每次生成新路径；仍必须用新 CI 包重复选择同一类型资源验证切换和长期显示。
 - 静态照片必须在每个新 CI 包重新验收。私有 `pf20` StillImage 源不得被直接抑制，应先在 mediaserverd 内进入可替换的 420f `Meteor Headroom` 终点；普通照片与 Live Photo 都要确认主图、缩略图和配对视频完整且不含真实帧。
-- RTSP 的 FFmpeg upstream VT 仍未取得连续非空 `AVFrame.data[3]`/`CVPixelBuffer`；Apple direct-VT 对照也失败。软件回退可用，但在真机达到连续非空硬件帧前不得宣称 RTSP 硬件解码完成。
+- RTSP 硬解实验已终止并从正式代码移除；当前交付目标是 FFmpeg 软件解码连续出帧、共享序号推进、断线重连和长期稳定性。
 - Camera 与 MobileSafari 已有单点所有权证据；Chrome、Edge、Firefox 未在当前设备安装，因此只具备 bundle/策略主机测试，不能写成真机已验收。三指双击也必须在每个实际安装的 UI 宿主上物理复验隐藏/显示及进程切换恢复。

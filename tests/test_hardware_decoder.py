@@ -280,24 +280,26 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
-    def test_rtsp_uses_ffmpeg_upstream_videotoolbox_contract(self) -> None:
+    def test_rtsp_uses_ffmpeg_software_decoder_only(self) -> None:
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
-            "- (BOOL)consumeFFmpegFrame", 1
-        )[0]
-        self.assertIn("decodeOneHardwareSession", session)
-        self.assertIn("decodeOneFFmpegSession", session)
-        # Auto-hwaccel: no manual hardware device scaffolding on iOS.
+        self.assertIn("avcodec_find_decoder", rtsp)
+        self.assertIn("avcodec_send_packet(codecContext, packet)", rtsp)
+        self.assertIn("avcodec_receive_frame(codecContext, frame)", rtsp)
+        self.assertIn("codecContext->thread_count = 0", rtsp)
+        self.assertIn("enqueueLatestSoftwareFrame", rtsp)
+        self.assertNotIn("VCAMHardwareVideoDecoder", rtsp)
+        self.assertNotIn("decodeOneHardwareSession", rtsp)
+        self.assertNotIn("VCAMRequestVideoToolboxFormat", rtsp)
+        self.assertNotIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
+        self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertNotIn("hw_device_ctx", rtsp)
+        self.assertNotIn("hwaccel_flags", rtsp)
+        self.assertNotIn("gVideoToolboxDisabled", rtsp)
+        self.assertNotIn("gFramelessSessionCount", rtsp)
         self.assertNotIn("avcodec_get_hw_config", rtsp)
         self.assertNotIn("AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX", rtsp)
-        self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
-        self.assertNotIn("hardwareState.pixelFormat", rtsp)
-        self.assertNotIn("codecContext->opaque", rtsp)
-        # Zero-copy hardware frame contract.
-        self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
-        self.assertIn("decodedFrame->data[3]", rtsp)
 
     def test_ffmpeg_upstream_path_passes_demuxed_packets_without_manual_au_filtering(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
@@ -324,35 +326,20 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("stalledOut", session)
         self.assertNotIn("useHardware", session)
 
-    def test_rtsp_transport_failure_retries_hardware_before_software_fallback(self) -> None:
+    def test_rtsp_reconnect_loop_stays_software_only(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        session = stream.split("- (BOOL)decodeOneSession", 1)[1].split(
-            "- (BOOL)consumeFFmpegFrame", 1
+        reconnect = stream.split("- (void)decodeReconnectLoop", 1)[1].split(
+            "- (void)acceptDecodedPixelBuffer", 1
         )[0]
-        self.assertIn("direct VideoToolbox session first", session)
-        self.assertIn("return [self decodeOneFFmpegSession];", session)
-        # The old dual-session decision scaffolding is gone: hardware and
-        # software frames now mix inside one decode loop.
+        self.assertIn("decodeOneFFmpegSession", reconnect)
+        self.assertNotIn("decodeOneSession", reconnect)
         self.assertNotIn("hardwareRejected", stream)
         self.assertNotIn("softwareFallbackActive", stream)
         self.assertNotIn("decodeOneFFmpegSessionUsingHardware", stream)
-        # Per-frame dispatch: VIDEOTOOLBOX frames use the zero-copy CVPixelBuffer,
-        # everything else flows to the software conversion queue.
-        consume = stream.split("- (BOOL)consumeFFmpegFrame", 1)[1].split(
-            "- (BOOL)decodeOneFFmpegSession", 1
-        )[0]
-        self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", consume)
-        self.assertIn("decodedFrame->data[3]", consume)
-        self.assertIn("enqueueLatestSoftwareFrame", consume)
-        # Two frameless VideoToolbox sessions latch the decoder into software
-        # mode so the stream keeps producing frames on iOS 16.1.
-        self.assertIn("gVideoToolboxDisabled", stream)
-        self.assertIn("gFramelessSessionCount", stream)
-        self.assertIn("if (gVideoToolboxDisabled) return *formats", stream)
 
-    def test_hls_uses_the_ffmpeg_videotoolbox_stream_source(self) -> None:
+    def test_legacy_hls_rollback_reuses_the_software_ffmpeg_stream_source(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
@@ -370,7 +357,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('@"https"', stream)
         self.assertIn('av_dict_set(options, "rw_timeout", "3000000", 0)', stream)
         self.assertIn("if (self.usesRTSPTransport)", stream)
-        self.assertIn('@"%@ hardware first-frame size=', stream)
+        self.assertNotIn('@"%@ hardware first-frame size=', stream)
         self.assertNotIn('@"rtsp ', stream)
         self.assertNotIn("self.softwareFallbackActive", stream)
         self.assertNotIn("hardwareRetryDeadline", stream)
@@ -385,14 +372,9 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
 
-    def test_daemon_software_decode_is_default_rtsp_path(self) -> None:
-        """vcamd software decode is the default RTSP path; SpringBoard's
-        direct-VT decoder is an opt-in experiment behind a marker."""
+    def test_daemon_software_decode_is_the_only_rtsp_path(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
-            encoding="utf-8"
-        )
-        source = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.m").read_text(
             encoding="utf-8"
         )
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
@@ -401,43 +383,18 @@ class HardwareDecoderTests(unittest.TestCase):
         pipeline = (ROOT / "Sources" / "Core" / "VCAMFramePipeline.m").read_text(
             encoding="utf-8"
         )
-        header = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.h").read_text(
-            encoding="utf-8"
-        )
-        # SpringBoard client links FFmpeg + VideoToolbox + both new pieces.
-        self.assertIn("Sources/SpringBoard/VCAMSpringBoardRTSPSource.m", makefile)
-        self.assertIn("Sources/Daemon/VCAMHardwareVideoDecoder.m", makefile)
-        self.assertIn("VideoToolbox", makefile.split("VCAMSpringBoardClient_FRAMEWORKS", 1)[1].split("\n", 1)[0])
-        self.assertIn("VCAMSpringBoardClient_LIBRARIES = avformat avcodec avutil", makefile)
-        # The bridge routes RTSP into the SpringBoard decoder only when the
-        # opt-in marker is present (default is daemon software decode).
-        self.assertIn("VCAMSpringBoardRTSPMarker", bridge)
-        self.assertIn("sourceKind == VCAMSourceKindRTSP", bridge)
-        self.assertIn("publishPixelBuffer:buffer sourceName:@\"RTSP\"", bridge)
-        self.assertIn("initWithURL:next.rtspURL", bridge)
-        # The decoder is no longer vcamd-only.
-        self.assertNotIn("vcamd-only", header)
-        self.assertIn("injected SpringBoard client", header)
-        # vcamd software decode is the default (marker disables it).
-        self.assertIn("VCAMSpringBoardRTSPMarker", producer)
-        self.assertIn("access(VCAMSpringBoardRTSPMarker, F_OK) != 0", producer)
-        self.assertIn("VCAMSpringBoardRTSPMarker", pipeline)
-        self.assertIn("access(VCAMSpringBoardRTSPMarker, F_OK) != 0", pipeline)
-        # Source-level contract: tcp transport, key-frame gate, direct VT.
-        self.assertIn('av_dict_set(&options, "rtsp_transport", "tcp", 0)', source)
-        self.assertIn("VCAMHardwareVideoDecoder alloc", source)
-        self.assertIn("copyNextOutputFrame", source)
-        self.assertIn("key frame timeout", source)
-        self.assertIn("dispatch_async(dispatch_get_main_queue()", source)
-    def test_hls_direct_vt_bootstraps_in_band_parameter_sets(self) -> None:
-        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("VCAMCopyCodecParametersWithPacketExtradata", stream)
-        self.assertIn("stream->codecpar->extradata_size > 0", stream)
-        self.assertIn("AV_INPUT_BUFFER_PADDING_SIZE", stream)
-        self.assertIn("direct-VT using in-band parameter sets", stream)
+        self.assertNotIn("Sources/SpringBoard/VCAMSpringBoardRTSPSource.m", makefile)
+        springboard_files = makefile.split("VCAMSpringBoardClient_FILES =", 1)[1].split(
+            "VCAMSpringBoardClient_CFLAGS", 1
+        )[0]
+        self.assertNotIn("VCAMHardwareVideoDecoder.m", springboard_files)
+        self.assertNotIn("VCAMSpringBoardRTSP", bridge)
+        self.assertNotIn("VCAMSpringBoardRTSPMarker", producer)
+        self.assertNotIn("VCAMSpringBoardRTSPMarker", pipeline)
+        self.assertIn("case VCAMSourceKindRTSP:", producer)
+        self.assertIn("[[VCAMRTSPStreamSource alloc]", producer)
+        self.assertFalse((ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.h").exists())
+        self.assertFalse((ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.m").exists())
 
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
@@ -485,7 +442,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("vcam-diagnostic-software", rtsp)
         self.assertNotIn("rtsp packet dump", rtsp)
 
-    def test_videotoolbox_packet_probe_is_bounded_and_device_visible(self) -> None:
+    def test_decoder_diagnostics_are_bounded_and_device_visible(self) -> None:
         decoder = (ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m").read_text(
             encoding="utf-8"
         )
@@ -496,7 +453,7 @@ class HardwareDecoderTests(unittest.TestCase):
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("[DEBUG-vtff]", stream)
+        self.assertIn("[ffmpeg]", stream)
         self.assertIn("count <= 3000", stream)
         self.assertIn("level > AV_LOG_VERBOSE", stream)
         self.assertNotIn("VCAMCaptureFFmpegHardwareLogs", stream)  # diagnostics always on

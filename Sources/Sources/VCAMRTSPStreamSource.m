@@ -1,5 +1,4 @@
 #import "VCAMRTSPStreamSource.h"
-#import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import "../Daemon/VCAMPixelConverter.h"
 #import "../Shared/VCAMSharedFrame.h"
 #import <QuartzCore/QuartzCore.h>
@@ -12,17 +11,9 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
-#include <libavutil/hwcontext.h>
-#include <libavutil/mem.h>
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
-// On iOS 16.1 the VideoToolbox hwaccel fails every picture (direct-VT also
-// reports -12780/-12909 on this OS build). After two frameless sessions the
-// latch disables VideoToolbox so FFmpeg falls back to its software decoder
-// and the stream keeps producing frames instead of reconnecting forever.
-static volatile int gVideoToolboxDisabled = 0;
-static volatile int gFramelessSessionCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
 
@@ -33,9 +24,7 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
         AVClass *cls = *(AVClass **)context;
         if (cls != NULL && cls->class_name != NULL) {
             const char *name = cls->class_name;
-            if (strstr(name, "videotoolbox") != NULL ||
-                strstr(name, "h264") != NULL ||
-                strstr(name, "VDA") != NULL) {
+            if (strstr(name, "h264") != NULL || strstr(name, "hevc") != NULL) {
                 decoderClass = YES;
             }
         }
@@ -53,7 +42,7 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
         gFFmpegLastMessageCount += 1;
         if (gFFmpegLastMessageCount > 5) {
             if (gFFmpegLastMessageCount == 6) {
-                fprintf(stderr, "[DEBUG-vtff] (further identical messages suppressed)\n");
+                fprintf(stderr, "[ffmpeg] (further identical messages suppressed)\n");
                 fflush(stderr);
             }
             return;
@@ -65,7 +54,7 @@ static void VCAMFFmpegDiagnosticLog(void *context, int level,
     int count = __sync_add_and_fetch(&gFFmpegDiagnosticCount, 1);
     if (count <= 3000) {
         NSString *line = [NSString stringWithFormat:
-            @"[DEBUG-vtff] level=%d %@", level,
+            @"[ffmpeg] level=%d %@", level,
             [NSString stringWithUTF8String:message] ?: @"(invalid utf8)"];
         fprintf(stderr, "%s\n", line.UTF8String);
         fflush(stderr);
@@ -97,49 +86,6 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
-static CMTime VCAMPacketTime(AVPacket *packet, AVStream *stream) {
-    if (packet == NULL) return kCMTimeInvalid;
-    int64_t pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
-    if (pts == AV_NOPTS_VALUE) return kCMTimeInvalid;
-    AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 90000};
-    double seconds = (double)pts * av_q2d(timeBase);
-    if (!isfinite(seconds)) return kCMTimeInvalid;
-    return CMTimeMakeWithSeconds(seconds, 600);
-}
-
-static enum AVPixelFormat VCAMRequestVideoToolboxFormat(AVCodecContext *context,
-                                                           const enum AVPixelFormat *formats) {
-    (void)context;
-    // If a previous run proved VideoToolbox produces no frames, fall
-    // straight through to the software format.
-    if (gVideoToolboxDisabled) return *formats;
-    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
-        if (*format == AV_PIX_FMT_VIDEOTOOLBOX) return *format;
-    }
-    return *formats;
-}
-
-static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
-    const AVCodecParameters *source, const AVPacket *packet) {
-    if (source == NULL || packet == NULL || packet->data == NULL ||
-        packet->size <= 0) return NULL;
-    AVCodecParameters *copy = avcodec_parameters_alloc();
-    if (copy == NULL) return NULL;
-    if (avcodec_parameters_copy(copy, source) < 0) {
-        avcodec_parameters_free(&copy);
-        return NULL;
-    }
-    av_freep(&copy->extradata);
-    copy->extradata = av_mallocz((size_t)packet->size + AV_INPUT_BUFFER_PADDING_SIZE);
-    if (copy->extradata == NULL) {
-        avcodec_parameters_free(&copy);
-        return NULL;
-    }
-    memcpy(copy->extradata, packet->data, (size_t)packet->size);
-    copy->extradata_size = packet->size;
-    return copy;
-}
-
 @interface VCAMRTSPStreamSource () {
     CVPixelBufferRef _latestPixelBuffer;
     CFTimeInterval _latestFrameHostTime;
@@ -153,8 +99,6 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     CFTimeInterval _diagnosticWindowStart;
     CFTimeInterval _diagnosticLastFrameTime;
     NSUInteger _diagnosticFrames;
-    NSUInteger _diagnosticHardwareFrames;
-    BOOL _loggedFirstHardwareFrame;
     BOOL _loggedFirstSoftwareFrame;
     double _diagnosticFrameIntervals[256];
     NSUInteger _diagnosticFrameIntervalCount;
@@ -260,7 +204,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
                 pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
             }
             if (pixelBuffer != NULL) {
-                [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
+                [self acceptDecodedPixelBuffer:pixelBuffer];
                 CVPixelBufferRelease(pixelBuffer);
             } else {
                 static dispatch_once_t conversionFailureToken;
@@ -307,7 +251,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     while (self.running) {
         BOOL producedFrame = NO;
         @autoreleasepool {
-            producedFrame = [self decodeOneSession];
+            producedFrame = [self decodeOneFFmpegSession];
         }
         if (!self.running) break;
         if (producedFrame) {
@@ -331,18 +275,16 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     }
 }
 
-- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer hardware:(BOOL)hardware {
+- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     CVPixelBufferRetain(pixelBuffer);
-    // Tag the decode class so the publisher can fold it into the shared-frame
-    // metadata and the panel can display the hardware/software decoder state.
+    // RTSP is deliberately software-only on iOS 16.0-16.5. Tag the decoded
+    // frame explicitly so the panel cannot misreport the transport as hardware.
     CVBufferSetAttachment(pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"),
-                          hardware ? kCFBooleanTrue : kCFBooleanFalse,
+                          kCFBooleanFalse,
                           kCVAttachmentMode_ShouldPropagate);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
-    BOOL logFirstHardwareFrame = NO;
     BOOL logFirstSoftwareFrame = NO;
-    uint64_t firstHardwareSequence = 0;
     @synchronized (self) {
         if (!self.running) {
             CVPixelBufferRelease(pixelBuffer);
@@ -353,14 +295,7 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
         _latestFrameHostTime = now;
         _latestFrameSequence += 1;
         _diagnosticFrames += 1;
-        if (hardware) {
-            _diagnosticHardwareFrames += 1;
-            if (!_loggedFirstHardwareFrame) {
-                _loggedFirstHardwareFrame = YES;
-                logFirstHardwareFrame = YES;
-                firstHardwareSequence = _latestFrameSequence;
-            }
-        } else if (!_loggedFirstSoftwareFrame) {
+        if (!_loggedFirstSoftwareFrame) {
             _loggedFirstSoftwareFrame = YES;
             logFirstSoftwareFrame = YES;
         }
@@ -386,22 +321,12 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
                 @"sourceWidth": @(CVPixelBufferGetWidth(pixelBuffer)),
                 @"sourceHeight": @(CVPixelBufferGetHeight(pixelBuffer)),
                 @"sourcePixelFormat": @(CVPixelBufferGetPixelFormatType(pixelBuffer)),
-                @"hardwareFrames": @(_diagnosticHardwareFrames),
                 @"frameSequence": @(_latestFrameSequence),
             };
             _diagnosticWindowStart = now;
             _diagnosticFrames = 0;
-            _diagnosticHardwareFrames = 0;
             _diagnosticFrameIntervalCount = 0;
         }
-    }
-    if (logFirstHardwareFrame) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ hardware first-frame size=%zux%zu format=%08x sequence=%llu",
-            self.streamName, CVPixelBufferGetWidth(pixelBuffer),
-            CVPixelBufferGetHeight(pixelBuffer),
-            (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
-            (unsigned long long)firstHardwareSequence]];
     }
     if (logFirstSoftwareFrame) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
@@ -417,179 +342,8 @@ static AVCodecParameters *VCAMCopyCodecParametersWithPacketExtradata(
     return VCAMCopyBGRAFromAVFrame(frame);
 }
 
-- (BOOL)decodeOneHardwareSession {
-    AVFormatContext *formatContext = NULL;
-    AVDictionary *options = NULL;
-    int videoStream = -1;
-    AVStream *stream = NULL;
-    BOOL producedFrame = NO;
-    BOOL firstFrameProduced = NO;
-    CFAbsoluteTime sessionStart = 0;
-    BOOL receivedKeyPacket = NO;
-    VCAMHardwareVideoDecoder *decoder = nil;
-    NSError *decoderError = nil;
-    AVPacket *packet = NULL;
-    NSString *urlString = self.streamURL.absoluteString;
-    [self configureOpenOptions:&options];
-    int openResult = avformat_open_input(&formatContext, urlString.UTF8String, NULL, &options);
-    if (openResult < 0) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ direct-VT input open failed error=%@", self.streamName,
-            VCAMFFmpegErrorDescription(openResult)]];
-        goto cleanup;
-    }
-    int streamInfoResult = avformat_find_stream_info(formatContext, NULL);
-    if (streamInfoResult < 0) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ direct-VT stream probe failed error=%@", self.streamName,
-            VCAMFFmpegErrorDescription(streamInfoResult)]];
-        goto cleanup;
-    }
-    videoStream = av_find_best_stream(formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (videoStream < 0) goto cleanup;
-    stream = formatContext->streams[videoStream];
-    if (stream->codecpar->extradata_size > 0) {
-        decoder = [[VCAMHardwareVideoDecoder alloc]
-            initWithCodecParameters:stream->codecpar];
-        if (decoder == nil || ![decoder start:&decoderError]) {
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"%@ direct-VT unavailable codec=%s extradata=%d error=%@", self.streamName,
-                avcodec_get_name(stream->codecpar->codec_id),
-                stream->codecpar->extradata_size,
-                decoderError.localizedDescription ?: @"(init failed)"]];
-            goto cleanup;
-        }
-    }
-    packet = av_packet_alloc();
-    if (packet == NULL) {
-        [decoder stop];
-        goto cleanup;
-    }
-    if (decoder != nil) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ hardware session codec=%s source=%dx%d", self.streamName,
-            avcodec_get_name(stream->codecpar->codec_id),
-            stream->codecpar->width, stream->codecpar->height]];
-    } else {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ direct-VT waiting for in-band parameter sets codec=%s", self.streamName,
-            avcodec_get_name(stream->codecpar->codec_id)]];
-    }
-    // Wait for the first IDR before feeding (a mid-GOP join only poisons
-    // VideoToolbox with -12909 noise). The stream uses a ~20 s GOP and
-    // VideoToolbox drops the frames right after a fresh session's first sync
-    // frame (documented Apple behavior), so allow up to 60 s for the SECOND
-    // IDR to warm the decoder before falling back.
-    sessionStart = CFAbsoluteTimeGetCurrent();
-    while (self.running && av_read_frame(formatContext, packet) >= 0) {
-        if (packet->stream_index == videoStream) {
-            CMTime pts = VCAMPacketTime(packet, stream);
-            BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
-            if (!receivedKeyPacket && !isKeyFrame) {
-                if (CFAbsoluteTimeGetCurrent() - sessionStart > 10.0) {
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"%@ direct-VT key frame timed out; falling back to FFmpeg hwaccel",
-                        self.streamName]];
-                    av_packet_unref(packet);
-                    break;
-                }
-                av_packet_unref(packet);
-                continue;
-            }
-            if (isKeyFrame && !receivedKeyPacket) {
-                if (decoder == nil) {
-                    AVCodecParameters *inBandParameters =
-                        VCAMCopyCodecParametersWithPacketExtradata(stream->codecpar, packet);
-                    decoder = [[VCAMHardwareVideoDecoder alloc]
-                        initWithCodecParameters:inBandParameters];
-                    avcodec_parameters_free(&inBandParameters);
-                    if (decoder == nil || ![decoder start:&decoderError]) {
-                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                            @"%@ direct-VT in-band parameter setup failed codec=%s packet=%d error=%@",
-                            self.streamName, avcodec_get_name(stream->codecpar->codec_id),
-                            packet->size,
-                            decoderError.localizedDescription ?: @"(init failed)"]];
-                        av_packet_unref(packet);
-                        break;
-                    }
-                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                        @"%@ direct-VT using in-band parameter sets packet=%d", self.streamName,
-                        packet->size]];
-                }
-                receivedKeyPacket = YES;
-            }
-            if (decoder == nil) {
-                av_packet_unref(packet);
-                continue;
-            }
-            [decoder decodePacket:packet->data
-                           length:(size_t)packet->size
-                 presentationTime:pts
-                       decodeTime:kCMTimeInvalid
-                         duration:kCMTimeInvalid
-                       isKeyFrame:isKeyFrame];
-            CVPixelBufferRef output = NULL;
-            CMTime outputPts = kCMTimeInvalid;
-            while ((output = [decoder copyNextOutputFrame:&outputPts])) {
-                [self acceptDecodedPixelBuffer:output hardware:YES];
-                CVPixelBufferRelease(output);
-                producedFrame = YES;
-                firstFrameProduced = YES;
-            }
-            // A direct-VT session that opens but cannot produce a frame must
-            // not block the pipeline forever (e.g. in-band-only parameter
-            // sets). Give it a bounded first-frame window, then let the
-            // FFmpeg hwaccel fallback take over.
-            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            BOOL keyFrameDecodeTimedOut = receivedKeyPacket &&
-                now - sessionStart > 60.0;
-            if (!firstFrameProduced && keyFrameDecodeTimedOut) {
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"%@ direct-VT first frame timed out; falling back to FFmpeg hwaccel",
-                    self.streamName]];
-                break;
-            }
-        }
-        av_packet_unref(packet);
-    }
-    [decoder flush];
-    CVPixelBufferRef output = NULL;
-    CMTime outputPts = kCMTimeInvalid;
-    while ((output = [decoder copyNextOutputFrame:&outputPts])) {
-        [self acceptDecodedPixelBuffer:output hardware:YES];
-        CVPixelBufferRelease(output);
-        producedFrame = YES;
-    }
-    [decoder stop];
-cleanup:
-    av_dict_free(&options);
-    av_packet_free(&packet);
-    avformat_close_input(&formatContext);
-    return producedFrame;
-}
-
-- (BOOL)decodeOneSession {
-    // Try the direct VideoToolbox session first. Its samples carry only slice
-    // NALs (parameter sets live in the CMVideoFormatDescription), which is
-    // what iOS VideoToolbox requires — feeding SPS/PPS into VT, as FFmpeg's
-    // hwaccel does, is rejected with -12909 on device. Fall back to FFmpeg's
-    // auto-hwaccel (which degrades to software on iOS) when direct VT cannot
-    // produce frames.
-    BOOL produced = [self decodeOneHardwareSession];
-    if (produced || !self.running) {
-        fprintf(stderr, "vcam direct-VT session produced=%d running=%d\n",
-                produced, self.running);
-        fflush(stderr);
-        return produced;
-    }
-    fprintf(stderr, "vcam direct-VT session produced=0; falling back to FFmpeg hwaccel\n");
-    fflush(stderr);
-    return [self decodeOneFFmpegSession];
-}
-
 - (BOOL)consumeFFmpegFrame:(AVFrame *)decodedFrame
         loggedSoftwareFrame:(BOOL *)loggedSoftwareFrame
-        loggedHardwareFrame:(BOOL *)loggedHardwareFrame
          loggedCorruptFrame:(BOOL *)loggedCorruptFrame {
     // CoreVideo exposes BT.2020 NCL metadata but no distinct constant-luminance
     // transport contract. Publishing CL as NCL changes the decoded colors, so
@@ -611,20 +365,6 @@ cleanup:
                 self.streamName, decodedFrame->flags, decodedFrame->decode_error_flags]];
         }
         return NO;
-    }
-    if (decodedFrame->format == AV_PIX_FMT_VIDEOTOOLBOX &&
-        decodedFrame->data[3] != NULL) {
-        // Zero-copy hardware frame: data[3] is the CVPixelBufferRef owned by
-        // the VideoToolbox hwaccel.
-        if (loggedHardwareFrame != NULL && !*loggedHardwareFrame) {
-            *loggedHardwareFrame = YES;
-            fprintf(stderr, "vcam HARDWARE frame size=%dx%d\n",
-                    decodedFrame->width, decodedFrame->height);
-            fflush(stderr);
-        }
-        [self acceptDecodedPixelBuffer:(CVPixelBufferRef)decodedFrame->data[3]
-                              hardware:YES];
-        return YES;
     }
     if (loggedSoftwareFrame != NULL && !*loggedSoftwareFrame) {
         *loggedSoftwareFrame = YES;
@@ -650,12 +390,10 @@ cleanup:
     const AVCodec *decoder = NULL;
     BOOL producedFrame = NO;
     BOOL loggedSoftwareFrame = NO;
-    BOOL loggedHardwareFrame = NO;
     BOOL loggedCorruptFrame = NO;
     BOOL loggedReceiveFailure = NO;
     BOOL loggedSendFailure = NO;
     NSString *sessionLine = nil;
-    AVBufferRef *hwDeviceRef = NULL;
     NSUInteger videoPacketsWithoutFrame = 0;
     NSUInteger consecutiveSendFailures = 0;
     NSString *urlString = self.streamURL.absoluteString;
@@ -718,51 +456,17 @@ cleanup:
     fflush(stderr);
 
     codecContext->err_recognition = AV_EF_CAREFUL;
-    // Automatic hardware acceleration: requesting AV_PIX_FMT_VIDEOTOOLBOX in
-    // get_format makes libavcodec activate the internal videotoolbox hwaccel
-    // (enabled in build-ffmpeg-ios.sh) without a manual hw_device_ctx — that
-    // API fails on iOS. Hardware frames arrive as AV_PIX_FMT_VIDEOTOOLBOX
-    // with a CVPixelBufferRef in data[3]; if VideoToolbox rejects the stream
-    // (missing SPS/PPS, unsupported profile) the decoder falls back to
-    // software formats transparently.
-    codecContext->get_format = VCAMRequestVideoToolboxFormat;
-    codecContext->hwaccel_flags = AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH |
-        AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH;
-    codecContext->thread_count = 0;  // auto: A13 software decode of 1080p30
-                                   // needs multiple threads to keep up
-    // The internal videotoolbox_vld hwaccel requires a hw_device_ctx even
-    // though VideoToolbox has no selectable device; pass NULL device. Once
-    // the frameless-session latch has disabled VideoToolbox, skip the device
-    // entirely — a dangling hw_device_ctx keeps the decoder attached to the
-    // broken hwaccel and send_packet fails with an opaque OSStatus instead
-    // of falling through to software decoding.
-    if (!gVideoToolboxDisabled) {
-        int hwResult = av_hwdevice_ctx_create(&hwDeviceRef,
-                                              AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                                              NULL, NULL, 0);
-        if (hwResult >= 0 && hwDeviceRef != NULL) {
-            codecContext->hw_device_ctx = av_buffer_ref(hwDeviceRef);
-            fprintf(stderr, "vcam VIDEOTOOLBOX hw_device_ctx created\n");
-            fflush(stderr);
-        } else {
-            char hwError[AV_ERROR_MAX_STRING_SIZE] = {0};
-            av_strerror(hwResult, hwError, sizeof(hwError));
-            fprintf(stderr, "vcam VIDEOTOOLBOX hw_device_ctx failed error=%d (%s)\n",
-                    hwResult, hwError);
-            fflush(stderr);
-        }
-    } else {
-        fprintf(stderr, "vcam VideoToolbox disabled; skipping hw_device_ctx (software decode)\n");
-        fflush(stderr);
-    }
+    // Keep FFmpeg on its software decoder for the entire RTSP session. The
+    // previous VideoToolbox paths repeatedly produced zero frames or rejected
+    // valid packets on the supported iOS 16 devices, delaying every reconnect.
+    codecContext->thread_count = 0;
     if (avcodec_open2(codecContext, decoder, NULL) < 0) {
         fprintf(stderr, "vcam avcodec_open2 FAILED\n");
         fflush(stderr);
         goto cleanup;
     }
-    fprintf(stderr, "vcam hwaccel=%s pix_fmt=%d sw_pix_fmt=%d\n",
-            codecContext->hwaccel != NULL ? codecContext->hwaccel->name : "NONE",
-            codecContext->pix_fmt, codecContext->sw_pix_fmt);
+    fprintf(stderr, "vcam software decoder ready pix_fmt=%d threads=%d\n",
+            codecContext->pix_fmt, codecContext->thread_count);
     fflush(stderr);
 
     packet = av_packet_alloc();
@@ -805,7 +509,6 @@ cleanup:
                 if (receiveResult >= 0) {
                     if ([self consumeFFmpegFrame:frame
                              loggedSoftwareFrame:&loggedSoftwareFrame
-                              loggedHardwareFrame:&loggedHardwareFrame
                              loggedCorruptFrame:&loggedCorruptFrame]) {
                         producedFrame = YES;
                         videoPacketsWithoutFrame = 0;
@@ -832,8 +535,8 @@ cleanup:
                     int receiveResult = avcodec_receive_frame(codecContext, frame);
                     if (receiveResult < 0) {
                         if (receiveResult != AVERROR(EAGAIN)) {
-                            // A non-IDR frame without a reference (mid-GOP
-                            // join) fails hardware decode with INVALIDDATA.
+                            // A non-IDR frame without a reference can fail
+                            // after joining a stream mid-GOP.
                             // Keep reading instead of reconnecting so the
                             // next IDR can reset the decoder.
                             if (!loggedReceiveFailure) {
@@ -848,7 +551,6 @@ cleanup:
                     }
                     if ([self consumeFFmpegFrame:frame
                              loggedSoftwareFrame:&loggedSoftwareFrame
-                              loggedHardwareFrame:&loggedHardwareFrame
                              loggedCorruptFrame:&loggedCorruptFrame]) {
                         producedFrame = YES;
                         videoPacketsWithoutFrame = 0;
@@ -871,7 +573,7 @@ cleanup:
                     restartSession = YES;
                 }
             }
-            // A publisher restart can leave either decoder consuming packets
+            // A publisher restart can leave the decoder consuming packets
             // without producing frames after this session previously worked.
             // Reconnect so FFmpeg rebuilds SDP/extradata and codec state.
             if (videoPacketsWithoutFrame >= 300) {
@@ -893,23 +595,7 @@ cleanup:
     av_packet_free(&packet);
     av_frame_free(&frame);
     avcodec_free_context(&codecContext);
-    av_buffer_unref(&hwDeviceRef);
     avformat_close_input(&formatContext);
-
-    if (producedFrame) {
-        gFramelessSessionCount = 0;
-    } else if (!gVideoToolboxDisabled) {
-        gFramelessSessionCount += 1;
-        if (gFramelessSessionCount >= 2) {
-            gVideoToolboxDisabled = 1;
-            fprintf(stderr, "vcam disabling VideoToolbox after %d frameless sessions; falling back to software decode\n",
-                    gFramelessSessionCount);
-            fflush(stderr);
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"%@ VideoToolbox disabled after %d frameless sessions; software decode from now on",
-                self.streamName, gFramelessSessionCount]];
-        }
-    }
     return producedFrame;
 }
 

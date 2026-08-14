@@ -12,12 +12,9 @@
 
 #import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
-#import "VCAMSpringBoardRTSPSource.h"
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
-static const char *const VCAMSpringBoardRTSPMarker =
-    "/var/tmp/vcam-rtsp-springboard-vt.enable";
 static const char *const VCAMLegacyLocalVideoDaemonMarker =
     "/var/tmp/vcam-local-video-legacy-vcamd.enable";
 static const char *const VCAMLegacyLocalImageDaemonMarker =
@@ -91,7 +88,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @interface VCAMSpringBoardMediaBridge ()
 @property(nonatomic, strong, nullable) VCAMConfiguration *configuration;
 @property(nonatomic, strong, nullable) AVPlayer *player;
-@property(nonatomic, strong, nullable) VCAMSpringBoardRTSPSource *rtspSource;
 @property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *output;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
@@ -107,8 +103,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) BOOL started;
 @property(nonatomic) NSUInteger decodedFrames;
 @property(nonatomic) NSUInteger displayTicks;
-@property(nonatomic) NSUInteger consecutiveHighLiveLagTicks;
-@property(nonatomic) uint64_t lastLiveEdgeSeekTimestampNanoseconds;
 @property(nonatomic) NSUInteger emptyCopies;
 @property(nonatomic) NSUInteger publishedFrames;
 @property(nonatomic) NSUInteger publishFailures;
@@ -190,10 +184,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     [retiredLayer removeFromSuperlayer];
     self.playerLayer = nil;
-    if (self.rtspSource != nil) {
-        [self.rtspSource stop];
-        self.rtspSource = nil;
-    }
     self.output = nil;
     self.player = nil;
     self.configuration = nil;
@@ -209,8 +199,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.surfaceWidth = 0;
     self.surfaceHeight = 0;
     self.lastSurfaceProbeTimestampNanoseconds = 0;
-    self.consecutiveHighLiveLagTicks = 0;
-    self.lastLiveEdgeSeekTimestampNanoseconds = 0;
     if (retiredPlayer != nil) {
         // AVPlayer can synchronously wait on an HLS media queue while pausing
         // or releasing its item. SpringBoard's main thread only detaches the
@@ -473,15 +461,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     VCAMConfiguration *next = [VCAMConfiguration loadCurrent];
     BOOL hls = next.sourceKind == VCAMSourceKindHLS && next.hlsURL != nil &&
         access(VCAMLegacyHLSDaemonMarker, F_OK) != 0;
-    BOOL rtsp = next.sourceKind == VCAMSourceKindRTSP && next.rtspURL != nil &&
-        access(VCAMSpringBoardRTSPMarker, F_OK) == 0;
     BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
         VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;
     BOOL staticImage = next.sourceKind == VCAMSourceKindLocalMedia &&
         next.mediaPath.length > 0 && !VCAMLocalMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalImageDaemonMarker, F_OK) != 0;
-    BOOL shouldPlay = next.enabled && (hls || rtsp || localVideo || staticImage);
+    BOOL shouldPlay = next.enabled && (hls || localVideo || staticImage);
     if (!shouldPlay) {
         [self stopPlayback];
         return;
@@ -497,12 +483,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL transportReady = self.writer != NULL && [self prepareOutputPool];
     if (!transportReady || self.context == nil) {
         self.lastError = self.lastError ?: @"renderer unavailable";
-        return;
-    }
-    if (rtsp) {
-        if (![self startRTSP:next]) {
-            [self stopPlayback];
-        }
         return;
     }
     if (staticImage) {
@@ -585,8 +565,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.decodedFrames = 0;
     self.localVideoReachedEnd = NO;
     self.displayTicks = 0;
-    self.consecutiveHighLiveLagTicks = 0;
-    self.lastLiveEdgeSeekTimestampNanoseconds = 0;
     self.emptyCopies = 0;
     self.publishedFrames = 0;
     self.publishFailures = 0;
@@ -611,29 +589,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         playbackURL.absoluteString, [item.outputs containsObject:self.output],
         self.playerLayer.superlayer != nil,
         (long)self.displayLink.preferredFramesPerSecond]];
-}
-
-- (BOOL)startRTSP:(VCAMConfiguration *)next {
-    VCAMSpringBoardRTSPSource *source = [[VCAMSpringBoardRTSPSource alloc]
-        initWithURL:next.rtspURL];
-    self.rtspSource = source;
-    __weak typeof(self) weakSelf = self;
-    [source startWithFrameHandler:^(CVPixelBufferRef buffer, CMTime pts,
-                                    uint32_t width, uint32_t height) {
-        (void)pts;
-        (void)width;
-        (void)height;
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (strongSelf == nil || !strongSelf.started) {
-            CVPixelBufferRelease(buffer);
-            return;
-        }
-        [strongSelf publishPixelBuffer:buffer sourceName:@"RTSP"];
-        CVPixelBufferRelease(buffer);
-    }];
-    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-        @"springboard RTSP start url=%@", next.rtspURL]];
-    return YES;
 }
 
 - (void)scheduleReconnectForItem:(AVPlayerItem *)item reason:(NSString *)reason {
@@ -707,33 +662,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     self.displayTicks += 1;
     double liveLag = self.localVideo ? NAN : VCAMLiveEdgeLagSeconds(item);
-    if (!self.localVideo && isfinite(liveLag) && liveLag > 3.0) {
-        self.consecutiveHighLiveLagTicks += 1;
-    } else {
-        self.consecutiveHighLiveLagTicks = 0;
-    }
-    if (self.consecutiveHighLiveLagTicks >= 90 &&
-        (self.lastLiveEdgeSeekTimestampNanoseconds == 0 || now == 0 ||
-         now - self.lastLiveEdgeSeekTimestampNanoseconds >= 5000000000ULL)) {
-        NSValue *rangeValue = item.seekableTimeRanges.lastObject;
-        CMTime edge = rangeValue == nil ? kCMTimeInvalid
-            : CMTimeRangeGetEnd(rangeValue.CMTimeRangeValue);
-        if (CMTIME_IS_NUMERIC(edge)) {
-            CMTime target = CMTimeSubtract(edge, CMTimeMakeWithSeconds(0.5, 600));
-            if (CMTIME_COMPARE_INLINE(target, <, kCMTimeZero)) target = kCMTimeZero;
-            self.lastLiveEdgeSeekTimestampNanoseconds = now;
-            self.consecutiveHighLiveLagTicks = 0;
-            [self.player seekToTime:target
-                    toleranceBefore:CMTimeMakeWithSeconds(0.25, 600)
-                     toleranceAfter:CMTimeMakeWithSeconds(0.25, 600)
-                  completionHandler:^(BOOL finished) {
-                if (finished && self.player != nil) [self.player play];
-            }];
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"springboard HLS live-edge catch-up lag=%.3f target=%.3f",
-                liveLag, CMTimeGetSeconds(target)]];
-        }
-    }
     if (self.displayTicks % 300 == 0) {
         CGSize presentationSize = item.presentationSize;
         NSString *healthFormat = self.localVideo
@@ -848,12 +776,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             VCAMSetVideoColorAttachments(destination);
             [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                       colorSpace:self.colorSpace];
-            // AVPlayer decodes HLS and local video through VideoToolbox; tag
-            // the frame after the CIContext render (which rewrites color
-            // attachments) so the shared-frame metadata reports hardware
-            // decode instead of the default "software decode".
-            CVBufferSetAttachment(destination, CFSTR("com.codex.vcam.decodeHardware"),
-                                  kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
             if (useSurfaceDestination) {
                 BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
                     self.surfaceWriter, destination);
@@ -875,9 +797,6 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                         [self.context render:bootstrapImage
                              toCVPixelBuffer:bootstrap bounds:bootstrapTarget
                                   colorSpace:self.colorSpace];
-                        CVBufferSetAttachment(bootstrap,
-                            CFSTR("com.codex.vcam.decodeHardware"),
-                            kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
                         compatibilityPublished =
                             VCAMSharedFrameWriterPublishForSurfaceGeneration(
                                 self.writer, bootstrap,

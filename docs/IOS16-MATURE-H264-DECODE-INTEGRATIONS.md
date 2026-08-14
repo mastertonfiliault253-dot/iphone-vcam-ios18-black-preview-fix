@@ -1,5 +1,9 @@
 # iOS 16 成熟 H.264 硬件解码实现对照
 
+> 历史调研归档：这些实现曾用于隔离实验，不再描述当前正式路径。
+> 从 `0.8.82+ios16-stream-stability` 起，RTSP 固定使用 FFmpeg 软件解码，
+> direct-VT、FFmpeg VideoToolbox hwaccel 与 SpringBoard RTSP 探针均已删除。
+
 ## 结论
 
 正式实现应直接采用两条系统/上游路径，不引入 mpv、WebRTC 或 FFmpegKit 依赖：

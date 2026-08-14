@@ -473,16 +473,14 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn('"nobuffer"', rtsp)
         self.assertNotIn('"low_delay"', rtsp)
         self.assertNotIn('"reorder_queue_size"', rtsp)
-        self.assertIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
-        self.assertNotIn("hardware session produced no frames; reconnecting", rtsp)
-        session = rtsp.split("- (BOOL)decodeOneSession", 1)[1].split(
-            "- (BOOL)consumeFFmpegFrame", 1
-        )[0]
-        self.assertIn("decodeOneHardwareSession", session)
-        self.assertIn("decodeOneFFmpegSession", session)
+        self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
+        self.assertNotIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
+        self.assertNotIn("decodeOneHardwareSession", rtsp)
+        self.assertNotIn("VCAMHardwareVideoDecoder", rtsp)
+        self.assertIn("decodeOneFFmpegSession", rtsp)
         self.assertNotIn("avcodec_get_hw_config", rtsp)
-        self.assertIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
-        self.assertIn("av_frame_clone", rtsp)
+        self.assertNotIn("av_hwdevice_ctx_create", rtsp)
+        self.assertIn("codecContext->thread_count = 0", rtsp)
         self.assertIn("_pendingSoftwareFrame", rtsp)
         self.assertIn("conversionQueue", rtsp)
         self.assertIn("sendResult = avcodec_send_packet(codecContext, packet)", rtsp)
@@ -1055,13 +1053,29 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("[self.onlineDownloadTask cancel]", selection)
         self.assertIn("self.button.enabled = YES", selection)
 
-    def test_hls_catches_up_only_after_sustained_live_edge_lag(self) -> None:
+    def test_hls_observes_live_edge_without_periodic_seek_flushes(self) -> None:
         bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("self.consecutiveHighLiveLagTicks >= 90", bridge)
-        self.assertIn("CMTimeRangeGetEnd", bridge)
-        self.assertIn("springboard HLS live-edge catch-up", bridge)
+        tick = bridge.split("- (void)tick:", 1)[1].split(
+            "- (BOOL)ensureSurfaceWriterForPixelBuffer", 1
+        )[0]
+        self.assertIn("VCAMLiveEdgeLagSeconds", bridge)
+        self.assertIn("liveLag=%.3f", tick)
+        self.assertNotIn("seekToTime:", tick)
+        self.assertNotIn("springboard HLS live-edge catch-up", bridge)
+
+    def test_stream_status_does_not_invent_native_hls_hardware_telemetry(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('sourceTitle = @"RTSP 软件解码已启用"', picker)
+        self.assertIn('playbackKind = @"FFmpeg 软件解码"', picker)
+        self.assertIn('playbackKind = @"系统原生播放"', picker)
+        status = picker.split("- (NSDictionary<NSString *, NSString *> *)currentStatus", 1)[1].split(
+            "- (void)refreshStatus", 1
+        )[0]
+        self.assertNotIn('decodeHardware ? @"硬件解码" : @"软件解码"', status)
 
     def test_diagnostic_logs_are_bounded(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(

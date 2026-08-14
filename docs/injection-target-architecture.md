@@ -135,15 +135,16 @@ the original sample, and either construction path remains fail-closed.
   static-image publisher for diagnostics only.
 - OBS receives only the newest JPEG packet. The source expires after 3.5 seconds
   without a packet.
-- RTSP uses FFmpeg inside `vcamd`, with VideoToolbox where available and a
-  software fallback. It forces MediaMTX-compatible interleaved TCP, accepts
+- RTSP uses FFmpeg software decoding inside `vcamd`; the failed direct-VT and
+  FFmpeg VideoToolbox experiments are not production branches. It forces
+  MediaMTX-compatible interleaved TCP, accepts
   only video media, uses a 10-second TCP I/O timeout and keeps normal RTP/H.264 reorder and
   reference buffering. Eligible 8-bit decoded frames are repacked as native
   NV12 and published by IOSurface without BGRA conversion; an explicit user
   rotation/mirror is rendered once into a source-sized three-slot BGRA
   IOSurface instead of falling back permanently to the fixed mmap. HLS uses
-  SpringBoard's system `AVPlayer`; sustained live-edge lag triggers a native seek
-  to the current seekable edge. The old daemon
+  SpringBoard's system `AVPlayer`; live-edge lag is telemetry only, so VCAM does
+  not periodically seek and flush a healthy native playback queue. The old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 
 SpringBoard remains the only configuration and requested-mode writer. `vcamd`, running as `mobile`,

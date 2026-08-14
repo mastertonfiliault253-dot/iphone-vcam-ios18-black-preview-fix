@@ -73,8 +73,9 @@ when enabled, without pre-decoding the entire asset into memory.
   source-sized BGRA pixels through the three-slot IOSurface ring.
 - RTSP: enter an `rtsp://` URL. Only `vcamd` links the minimal FFmpeg libraries;
   it uses MediaMTX-compatible interleaved TCP, accepts only the video track,
-  keeps normal RTP/H.264 reorder and reference buffering, uses VideoToolbox
-  where available, and a latest-only bounded software-conversion fallback.
+  keeps normal RTP/H.264 reorder and reference buffering, and always uses
+  FFmpeg's software decoder on the supported iOS 16.0-16.5 devices. The retired
+  direct-VideoToolbox and FFmpeg-hwaccel RTSP branches are not compiled.
   Native 8-bit NV12/YUV420 frames publish through the IOSurface ring without a
   BGRA round trip. An explicit user rotation or mirror is rendered once into a
   source-sized three-slot BGRA IOSurface; mmap remains only the automatic
@@ -86,8 +87,8 @@ when enabled, without pre-decoding the entire asset into memory.
   A launchd-owned XPC relay transfers those IOSurface rights from SpringBoard
   to mediaserverd; until that handshake succeeds, SpringBoard also publishes
   the live three-slot BGRA mmap compatibility fallback. HLS prefers a one-second
-  forward buffer, keeps AVPlayer's automatic stall recovery, logs its live-edge lag,
-  and rebuilds a session after eight seconds
+  forward buffer, keeps AVPlayer's automatic stall recovery, observes (but does
+  not periodically seek based on) live-edge lag, and rebuilds a session after eight seconds
   without a decoded frame. The retained daemon decoder can be
   selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.
