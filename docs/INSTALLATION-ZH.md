@@ -10,13 +10,14 @@
 
 - 版本：`0.8.83+ios16-transport-stability`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
-- macOS CI：`31823034266`（成功）
-- Git 提交：`37def391236026f724180649c24d6b59b757b0b0`
-- SHA-256：`4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317`
+- macOS CI：`31825692857`（成功）
+- CI 构建提交：`2e1d23ea034ce12b481509867274fec6b75058c9`
+- 运行时代码提交：`37def391236026f724180649c24d6b59b757b0b0`
+- SHA-256：`4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D`
 - 本机文件：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
 ```
 
 > 正式部署只使用 macOS CI 产物。WSL 包可用于开发编译检查，但不能替代 macOS CI 的 arm64e Objective-C section 验证。
@@ -47,14 +48,14 @@ Test-NetConnection 192.168.2.101 -Port 22
 ### 3.1 在电脑上校验安装包
 
 ```powershell
-$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb"
+$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb"
 Get-FileHash -Algorithm SHA256 -LiteralPath $Package
 ```
 
 输出必须是：
 
 ```text
-4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317
+4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D
 ```
 
 哈希不一致时停止安装，重新下载 CI 产物。
@@ -90,7 +91,7 @@ sha256sum /var/tmp/vcam.deb
 手机端哈希必须与电脑端完全一致：
 
 ```text
-4bb5f87f7fc806325cc1535776574d31329809f3751ea4bfd809535c71482317
+4dbb2420b64c7746aa703396751d8742b99f097ebb979c5219ed7b82be65ad1d
 ```
 
 ### 3.4 安装

@@ -377,7 +377,7 @@ Linux Theos 工具链可以编出 arm64e 切片，但当前无法生成与 macOS
 ### 15.1 已有强证据
 
 - 当前源码 181 项主机测试通过，WSL arm64/arm64e 双架构编译通过；
-- macOS CI run `31823034266` 已产出 `0.8.83+ios16-transport-stability` CI 候选包；HLS 断流与 RTSP 可见连续性尚待 2.101 真机验收；
+- macOS CI run `31825692857` 已从审查后的提交 `2e1d23e` 产出 `0.8.83+ios16-transport-stability` CI 候选包；HLS 断流与 RTSP 可见连续性尚待 2.101 真机验收；
 - 本地从同一 DEB 独立验证：两个注入客户端均含 `arm64`/`arm64e`，arm64e 薄片均有非空 `__objc_stubs` 和 `__objc_intobj`；
 - 该精确 CI 包已安装到 2.101；RTSP mmap 5 秒推进 146 帧，但可见画面和 HLS 仍需下面的设备操作验收；
 - 此前在测试机 2.101 上，Safari 640×480、420f 路径曾观察到连续、正向、无 VCAM 黑边的虚拟画面；

@@ -7,21 +7,22 @@
 | 项目 | 当前值 |
 |---|---|
 | 包版本 | `0.8.83+ios16-transport-stability` |
-| Git 提交 | `37def391236026f724180649c24d6b59b757b0b0` |
-| 提交说明 | `fix RTSP and HLS transport continuity` |
+| CI 构建提交 | `2e1d23ea034ce12b481509867274fec6b75058c9` |
+| 运行时代码提交 | `37def391236026f724180649c24d6b59b757b0b0` |
+| 构建提交说明 | `docs: align transport stability release evidence` |
 | 发布分支 | `codex/ios16-media-bridge` |
 | 发布 remote | `newrepo`（`djw415024-ctrl/iphone-vcam-ios16-private`） |
-| macOS CI run | `31823034266`（成功） |
+| macOS CI run | `31825692857`（成功） |
 | DEB 架构 | `iphoneos-arm64`，包内客户端包含 `arm64`/`arm64e` |
-| DEB 大小 | `1,107,056` 字节 |
-| DEB SHA-256 | `4BB5F87F7FC806325CC1535776574D31329809F3751EA4BFD809535C71482317` |
+| DEB 大小 | `1,107,352` 字节 |
+| DEB SHA-256 | `4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D` |
 | 支持系统 | iOS `>= 16.0` 且 `< 16.6` |
 | 越狱布局 | rootless |
 
 本机已校验的 CI 产物：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-37def39-run31823034266\vcam-rootless\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
 ```
 
 运行时可在 `/var/mobile/Media/VCAM/broker-probe.log` 中核对：
@@ -57,10 +58,10 @@ tag=com.codex.vcam/0.8.83+ios16-transport-stability
 
 以下证据已经具备：
 
-- 代码提交与 `newrepo/codex/ios16-media-bridge` 同为 `37def39`；
+- 候选 DEB 由提交 `2e1d23e` 构建；最后一次运行时代码变化为 `37def39`，其后的差异仅为审查后的测试注释和文档；
 - `control` 与 `VCAMBuildTag()` 均为 `0.8.83+ios16-transport-stability`；
 - 181 项主机回归测试通过，WSL arm64/arm64e 双架构编译通过；
-- macOS CI run `31823034266` 成功产生 CI 候选 DEB；
+- macOS CI run `31825692857` 成功产生 CI 候选 DEB；
 - 本地从该 DEB 独立提取两个客户端，均为 `arm64`/`arm64e`；两个 arm64e 薄片均含非空 `__objc_stubs` 和 `__objc_intobj`；
 - 本机保存的 DEB SHA-256 已重新计算并与安装文档一致；
 - Debian `postinst`、`prerm`、`postrm` 在 Git 索引和该 CI 候选包中均为可执行文件。
