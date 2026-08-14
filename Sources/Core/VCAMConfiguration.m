@@ -439,6 +439,23 @@ static NSData *VCAMLicensePublicKey(void) {
     return [NSData dataWithBytes:key length:294];
 }
 
+static SecKeyRef VCAMLicenseSecKey(void) {
+    static SecKeyRef cachedKey = NULL;
+    static dispatch_once_t ot;
+    dispatch_once(&ot, ^{
+        NSData *pubKey = VCAMLicensePublicKey();
+        CFErrorRef error = NULL;
+        cachedKey = SecKeyCreateWithData((__bridge CFDataRef)pubKey,
+            (__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,
+                                         (id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic},
+            &error);
+        if (cachedKey == NULL) {
+            VCAMAppendDiagnostics(@"license SecKeyCreateWithData failed");
+        }
+    });
+    return cachedKey;
+}
+
 + (BOOL)isLicensed {
     return [self validateLicenseFile];
 }
@@ -458,16 +475,19 @@ static NSData *VCAMLicensePublicKey(void) {
     }
     NSString *payload = [NSString stringWithFormat:@"%@|%@", udid, expiry ?: @"2099-12-31"];
     NSData *payloadData = [payload dataUsingEncoding:NSUTF8StringEncoding];
-    NSData *pubKey = VCAMLicensePublicKey();
-    CFErrorRef error = NULL;
-    SecKeyRef secKey = SecKeyCreateWithData((__bridge CFDataRef)pubKey,
-        (__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,
-                                     (id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic},
-        &error);
+    SecKeyRef secKey = VCAMLicenseSecKey();
     if (!secKey) return NO;
+    CFErrorRef error = NULL;
     BOOL ok = SecKeyVerifySignature(secKey, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,
         (__bridge CFDataRef)payloadData, (__bridge CFDataRef)sig, &error);
-    CFRelease(secKey);
+    if (!ok) {
+        // Retry once: Security framework can transiently fail in an
+        // injected SpringBoard context (intermittent "需要授权" alert).
+        VCAMAppendDiagnostics(@"license verify first attempt failed; retrying");
+        ok = SecKeyVerifySignature(secKey, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,
+            (__bridge CFDataRef)payloadData, (__bridge CFDataRef)sig, &error);
+    }
+    VCAMAppendDiagnostics([NSString stringWithFormat:@"license verify ok=%d", ok]);
     return ok;
 }
 
