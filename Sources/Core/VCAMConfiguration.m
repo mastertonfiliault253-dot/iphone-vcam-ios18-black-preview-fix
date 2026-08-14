@@ -199,7 +199,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.83+ios16-transport-stability";
+    return "com.codex.vcam/0.8.84+ios16-hls-loopback-stability";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

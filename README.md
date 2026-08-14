@@ -42,8 +42,10 @@ The media hook and UI overlay have separate injection scopes:
   raw BGRA pixels.
 
 `vcamd` is this package's LaunchDaemon, not an injected dylib. It owns OBS
-WebSocket/JPEG reception, direct RTSP demux/decode, and publication of only the
-latest frame. SpringBoard publishes source-sized static images and owns local
+WebSocket/JPEG reception, direct RTSP demux/decode, publication of only the
+latest frame, and the authenticated loopback byte relay used by non-loopback
+numeric-IP plain-HTTP HLS.
+The relay never decodes HLS. SpringBoard publishes source-sized static images and owns local
 video and HLS playback through the same system AVPlayer/NV12/Metal path. A source or decoder
 failure stops publication but does not disable virtual mode.
 SpringBoard is the sole enable/restore control-plane writer, so a delayed worker
@@ -95,6 +97,18 @@ when enabled, without pre-decoding the entire asset into memory.
   without a decoded frame. The retained daemon decoder can be
   selected for rollback by creating
   `/var/tmp/vcam-hls-legacy-vcamd.enable`.
+  On iOS 16.1, direct SpringBoard access to the configured plain-HTTP LAN
+  numeric-IP MediaMTX URL failed before the first frame, while the identical bytes played
+  through phone loopback. Production numeric-IP plain-HTTP HLS therefore registers a random
+  SpringBoard-generated session through the audit-identified vcamd XPC service and AVPlayer loads only
+  `127.0.0.1`; vcamd forwards the configured playlist/segments without FFmpeg
+  or VideoToolbox. A new session invalidates the previous source, concurrent
+  clients and response time are bounded, and same-origin absolute playlist and
+  root-relative, network-path, same-origin absolute and redirect URLs are
+  resolved and rewritten back to the tokenized loopback path. The bounded
+  relay accepts numeric IPv4/IPv6 origins so DNS cannot outlive its deadline.
+  HTTPS HLS and hostname-based HLS retain Apple's direct path and are separate
+  device-acceptance cases.
 - Local-video rollback: creating
   `/var/tmp/vcam-local-video-legacy-vcamd.enable` restores the retained daemon
   `AVAssetReader`/FFmpeg path for MOV, MP4 and M4V diagnostics.

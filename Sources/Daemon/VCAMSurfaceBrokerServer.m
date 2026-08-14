@@ -1,4 +1,5 @@
 #import "../Shared/VCAMSurfaceBroker.h"
+#import "VCAMHLSLoopbackProxy.h"
 #import "../Shared/VCAMProcessIdentity.h"
 
 #import <Foundation/Foundation.h>
@@ -307,6 +308,48 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         if (reply == NULL) return;
         xpc_dictionary_set_string(reply, "command", "config-auth-consume");
         xpc_dictionary_set_uint64(reply, "accepted", accepted ? 1 : 0);
+        xpc_connection_send_message(peer, reply);
+        VCAMXPCRelease(reply);
+        return;
+    }
+    if (strcmp(command, "hls-proxy-session") == 0) {
+        if (VCAMSurfaceBrokerIdentityForPeer(peer) !=
+            VCAMSurfaceBrokerPeerIdentitySpringBoard) return;
+        const char *upstreamBytes = xpc_dictionary_get_string(
+            message, "upstreamURL");
+        NSString *upstreamString = upstreamBytes == NULL ? nil :
+            [NSString stringWithUTF8String:upstreamBytes];
+        NSURL *upstreamURL = upstreamString.length <= 4096 ?
+            [NSURL URLWithString:upstreamString] : nil;
+        uint64_t high = xpc_dictionary_get_uint64(message, "tokenHigh");
+        uint64_t low = xpc_dictionary_get_uint64(message, "tokenLow");
+        uint64_t sessionEpoch = xpc_dictionary_get_uint64(
+            message, "sessionEpoch");
+        BOOL accepted = upstreamURL != nil &&
+            VCAMHLSLoopbackProxyRegisterSession(
+                upstreamURL, sessionEpoch, high, low);
+        xpc_object_t reply = xpc_dictionary_create_reply(message);
+        if (reply == NULL) return;
+        xpc_dictionary_set_string(reply, "command", "hls-proxy-session");
+        xpc_dictionary_set_uint64(reply, "accepted", accepted ? 1 : 0);
+        if (accepted) {
+            xpc_dictionary_set_uint64(reply, "tokenHigh", high);
+            xpc_dictionary_set_uint64(reply, "tokenLow", low);
+        }
+        xpc_connection_send_message(peer, reply);
+        VCAMXPCRelease(reply);
+        return;
+    }
+    if (strcmp(command, "hls-proxy-invalidate") == 0) {
+        if (VCAMSurfaceBrokerIdentityForPeer(peer) !=
+            VCAMSurfaceBrokerPeerIdentitySpringBoard) return;
+        BOOL invalidated = VCAMHLSLoopbackProxyInvalidateSession(
+            xpc_dictionary_get_uint64(message, "tokenHigh"),
+            xpc_dictionary_get_uint64(message, "tokenLow"));
+        xpc_object_t reply = xpc_dictionary_create_reply(message);
+        if (reply == NULL) return;
+        xpc_dictionary_set_string(reply, "command", "hls-proxy-invalidate");
+        xpc_dictionary_set_uint64(reply, "accepted", invalidated ? 1 : 0);
         xpc_connection_send_message(peer, reply);
         VCAMXPCRelease(reply);
         return;

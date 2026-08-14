@@ -7,6 +7,7 @@
 #import <unistd.h>
 
 #import "VCAMFrameProducer.h"
+#import "VCAMHLSLoopbackProxy.h"
 #import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
 #import "../Shared/VCAMSurfaceBroker.h"
@@ -343,6 +344,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "vcamd boot step=broker-server-start\n");
         VCAMSurfaceBrokerStartServer();
         fprintf(stderr, "vcamd boot step=broker-server-done\n");
+        VCAMHLSLoopbackProxyStart();
         fprintf(stderr, "vcamd boot step=frame-writer-create-start\n");
         VCAMWriter = VCAMSharedFrameWriterCreate();
         fprintf(stderr, "vcamd boot step=frame-writer-create-done writer=%p\n", VCAMWriter);

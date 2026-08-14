@@ -12,6 +12,8 @@
 
 #import "../Core/VCAMConfiguration.h"
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMHLSLoopbackProtocol.h"
+#import "../Shared/VCAMSurfaceBroker.h"
 
 static const char *const VCAMLegacyHLSDaemonMarker =
     "/var/tmp/vcam-hls-legacy-vcamd.enable";
@@ -117,6 +119,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) BOOL staticImageStartRetryable;
 @property(nonatomic) BOOL staticImageStartRetryPending;
 @property(nonatomic) NSUInteger staticImageStartRetryAttempt;
+@property(nonatomic) uint64_t hlsProxyTokenHigh;
+@property(nonatomic) uint64_t hlsProxyTokenLow;
+@property(nonatomic) uint64_t hlsSessionRequestGeneration;
+@property(nonatomic) uint64_t lastHLSSessionEpoch;
+@property(nonatomic) uint64_t hlsSessionRetryGeneration;
+@property(nonatomic) NSUInteger hlsSessionRetryAttempt;
+@property(nonatomic, copy, nullable) NSString *hlsSessionRetryURL;
 @property(nonatomic, strong, nullable) CIImage *staticRenderImage;
 @property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic) CGSize sourceNaturalSize;
@@ -173,6 +182,20 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 }
 
 - (void)stopPlayback {
+    self.hlsSessionRequestGeneration += 1;
+    uint64_t retiredTokenHigh = self.hlsProxyTokenHigh;
+    uint64_t retiredTokenLow = self.hlsProxyTokenLow;
+    self.hlsProxyTokenHigh = 0;
+    self.hlsProxyTokenLow = 0;
+    if (retiredTokenHigh != 0 && retiredTokenLow != 0) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            if (!VCAMSurfaceBrokerInvalidateHLSProxySession(
+                    retiredTokenHigh, retiredTokenLow)) {
+                [VCAMConfiguration appendProcessLog:
+                    @"springboard HLS proxy session invalidate timed out or was stale"];
+            }
+        });
+    }
     AVPlayer *retiredPlayer = self.player;
     AVPlayerItemVideoOutput *retiredOutput = self.output;
     AVPlayerLayer *retiredLayer = self.playerLayer;
@@ -476,6 +499,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter);
     if (self.configuration != nil && transportCurrent &&
         [self configurationMatches:next]) return;
+    BOOL sameHLSRetrySource = self.hlsSessionRetryURL.length > 0 &&
+        [self.hlsSessionRetryURL isEqualToString:next.hlsURL.absoluteString];
+    self.hlsSessionRetryGeneration += 1;
+    if (!sameHLSRetrySource) {
+        self.hlsSessionRetryAttempt = 0;
+        self.hlsSessionRetryURL = nil;
+    }
     [self stopPlayback];
     self.configuration = next;
     self.localVideo = localVideo;
@@ -502,14 +532,98 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.staticImageStartRetryAttempt = 0;
 
+    NSURL *playbackURL = localVideo ? [NSURL fileURLWithPath:next.mediaPath] : nil;
+    if (localVideo || !VCAMHLSLoopbackProxyNeedsRelay(next.hlsURL)) {
+        if (!localVideo) playbackURL = next.hlsURL;
+        [self startPlayerForConfiguration:next localVideo:localVideo
+                              playbackURL:playbackURL];
+        return;
+    }
+
+    uint64_t requestGeneration = ++self.hlsSessionRequestGeneration;
+    uint64_t monotonicEpoch = VCAMSharedFrameMonotonicNanoseconds();
+    uint64_t sessionEpoch = MAX(monotonicEpoch, self.lastHLSSessionEpoch + 1);
+    self.lastHLSSessionEpoch = sessionEpoch;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        uint64_t tokenHigh = 0;
+        uint64_t tokenLow = 0;
+        BOOL sessionReady = VCAMSurfaceBrokerCreateHLSProxySession(
+            next.hlsURL.absoluteString.UTF8String, sessionEpoch,
+            &tokenHigh, &tokenLow);
+        NSURL *relayURL = sessionReady ? VCAMHLSLoopbackProxyURLForUpstreamURL(
+            next.hlsURL, tokenHigh, tokenLow) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            BOOL current = strongSelf != nil && strongSelf.started &&
+                strongSelf.hlsSessionRequestGeneration == requestGeneration &&
+                [strongSelf configurationMatches:next];
+            if (!current) {
+                if (tokenHigh != 0 && tokenLow != 0) {
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        VCAMSurfaceBrokerInvalidateHLSProxySession(
+                            tokenHigh, tokenLow);
+                    });
+                }
+                return;
+            }
+            if (relayURL == nil) {
+                [strongSelf scheduleHLSProxySessionRetryForConfiguration:next];
+                return;
+            }
+            strongSelf.hlsSessionRetryAttempt = 0;
+            strongSelf.hlsSessionRetryURL = nil;
+            strongSelf.hlsSessionRetryGeneration += 1;
+            strongSelf.hlsProxyTokenHigh = tokenHigh;
+            strongSelf.hlsProxyTokenLow = tokenLow;
+            [strongSelf startPlayerForConfiguration:next localVideo:NO
+                                        playbackURL:relayURL];
+        });
+    });
+}
+
+- (void)scheduleHLSProxySessionRetryForConfiguration:(VCAMConfiguration *)configuration {
+    NSAssert(NSThread.isMainThread, @"HLS proxy retry scheduling requires main thread");
+    if (configuration.hlsURL == nil) return;
+    NSUInteger delay = MIN((NSUInteger)30,
+        (NSUInteger)1 << MIN(self.hlsSessionRetryAttempt, (NSUInteger)5));
+    self.hlsSessionRetryAttempt += 1;
+    uint64_t retryGeneration = ++self.hlsSessionRetryGeneration;
+    NSString *expectedURL = [configuration.hlsURL.absoluteString copy];
+    self.hlsSessionRetryURL = expectedURL;
+    self.lastError = @"HLS loopback session unavailable";
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard HLS proxy session retry attempt=%lu delay=%lus",
+        (unsigned long)self.hlsSessionRetryAttempt, (unsigned long)delay]];
+    [self stopPlayback];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!self.started ||
+            self.hlsSessionRetryGeneration != retryGeneration) return;
+        VCAMConfiguration *current = [VCAMConfiguration loadCurrent];
+        BOOL stillCurrent = current.enabled &&
+            current.sourceKind == VCAMSourceKindHLS &&
+            [current.hlsURL.absoluteString isEqualToString:expectedURL];
+        if (!stillCurrent) {
+            self.hlsSessionRetryAttempt = 0;
+            self.hlsSessionRetryURL = nil;
+            return;
+        }
+        [self reload];
+    });
+}
+
+- (void)startPlayerForConfiguration:(VCAMConfiguration *)next
+                          localVideo:(BOOL)localVideo
+                         playbackURL:(NSURL *)playbackURL {
+    NSAssert(NSThread.isMainThread, @"player creation requires main thread");
+    if (!self.started || ![self configurationMatches:next]) return;
     self.output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:@{
         (id)kCVPixelBufferPixelFormatTypeKey:
             @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferMetalCompatibilityKey: @YES,
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
     }];
-    NSURL *playbackURL = localVideo ? [NSURL fileURLWithPath:next.mediaPath]
-                                    : next.hlsURL;
     AVAsset *asset = localVideo
         ? [AVURLAsset URLAssetWithURL:playbackURL options:nil] : nil;
     AVPlayerItem *item = localVideo
@@ -585,8 +699,19 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     NSString *startFormat = localVideo
         ? @"springboard local video start url=%@ output=%d layer=%d fps=%ld"
         : @"springboard HLS start url=%@ output=%d layer=%d fps=%ld";
+    NSURLComponents *directLogComponents = [NSURLComponents
+        componentsWithURL:next.hlsURL resolvingAgainstBaseURL:NO];
+    directLogComponents.user = nil;
+    directLogComponents.password = nil;
+    directLogComponents.path = @"/[direct]";
+    directLogComponents.query = nil;
+    directLogComponents.fragment = nil;
+    NSString *startURL = localVideo ? playbackURL.absoluteString :
+        (VCAMHLSLoopbackProxyNeedsRelay(next.hlsURL) ?
+            [NSString stringWithFormat:@"http://127.0.0.1:%u/[redacted-session]",
+                VCAMHLSLoopbackProxyPort] : directLogComponents.string);
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:startFormat,
-        playbackURL.absoluteString, [item.outputs containsObject:self.output],
+        startURL, [item.outputs containsObject:self.output],
         self.playerLayer.superlayer != nil,
         (long)self.displayLink.preferredFramesPerSecond]];
 }
@@ -597,13 +722,20 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         (NSUInteger)1 << MIN(self.reconnectAttempt, (NSUInteger)5));
     self.reconnectAttempt += 1;
     self.reconnectPending = YES;
+    NSError *itemError = item.error;
+    NSError *underlyingError = [itemError.userInfo[NSUnderlyingErrorKey]
+        isKindOfClass:NSError.class] ? itemError.userInfo[NSUnderlyingErrorKey] : nil;
+    NSString *errorDetails = itemError == nil ? @"none" :
+        [NSString stringWithFormat:@"%@(code=%ld) underlying=%@(code=%ld)",
+            itemError.domain, (long)itemError.code,
+            underlyingError.domain ?: @"none", (long)underlyingError.code];
     self.lastError = reason.length > 0 ? reason : @"player item failed";
     NSString *reconnectFormat = self.localVideo
         ? @"springboard local video reconnect attempt=%lu delay=%lus error=%@"
         : @"springboard HLS reconnect attempt=%lu delay=%lus error=%@";
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:reconnectFormat,
         (unsigned long)self.reconnectAttempt, (unsigned long)delay,
-        self.lastError]];
+        [NSString stringWithFormat:@"%@ details=%@", self.lastError, errorDetails]]];
     [self stopPlayback];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
         (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -653,8 +785,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     if (self.output == nil || self.player.currentItem == nil) return;
     AVPlayerItem *item = self.player.currentItem;
     if (item.status == AVPlayerItemStatusFailed) {
-        [self scheduleReconnectForItem:item
-                                reason:item.error.localizedDescription];
+        [self scheduleReconnectForItem:item reason:@"player item failed"];
         return;
     }
     CMTime itemTime = [self.output itemTimeForHostTime:CACurrentMediaTime()];
@@ -664,6 +795,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     double liveLag = self.localVideo ? NAN : VCAMLiveEdgeLagSeconds(item);
     if (self.displayTicks % 300 == 0) {
         CGSize presentationSize = item.presentationSize;
+        NSString *healthError = item.error == nil ? @"none" :
+            [NSString stringWithFormat:@"%@(code=%ld)", item.error.domain,
+                (long)item.error.code];
         NSString *healthFormat = self.localVideo
             ? @"springboard local video health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@"
             : @"springboard HLS health ticks=%lu hasNew=%d itemStatus=%ld timeControl=%ld wait=%@ current=%.3f liveLag=%.3f size=%.0fx%.0f error=%@";
@@ -673,7 +807,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             self.player.reasonForWaitingToPlay ?: @"none",
             CMTimeGetSeconds(item.currentTime), liveLag, presentationSize.width,
             presentationSize.height,
-            item.error.localizedDescription ?: @"none"]];
+            healthError]];
     }
     if (!hasNewFrame) {
         if (self.localVideoReachedEnd) return;
@@ -856,7 +990,10 @@ static void VCAMSpringBoardMediaPreferencesChanged(
             ? (VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter)
                 ? @"iosurface" : @"iosurface+bootstrap-mmap")
             : @"mmap",
-        @"error": self.lastError ?: self.player.currentItem.error.localizedDescription ?: @"",
+        @"error": self.lastError ?: (self.player.currentItem.error == nil ? @"" :
+            [NSString stringWithFormat:@"%@(code=%ld)",
+                self.player.currentItem.error.domain,
+                (long)self.player.currentItem.error.code]),
     };
 }
 

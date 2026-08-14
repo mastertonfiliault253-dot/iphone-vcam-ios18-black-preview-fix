@@ -20,6 +20,7 @@ VCAM Media Bridge 是一个面向 iOS 16.0–16.5 的 rootless 越狱虚拟相�
 flowchart LR
     UI[SpringBoard 小白点/配置/选择器/预览] -->|broker 写入配置| CFG[(/var/mobile/Media/VCAM)]
     CFG --> VCAMD[/var/jb/usr/libexec/vcamd]
+    VCAMD -->|HTTP HLS 令牌化回环字节转发，不解码| UI
     VCAMD -->|RTSP 正式传输 / 启动握手回退 BGRA| SHM[固定三槽 mmap]
     VCAMD -->|本地图片 1 槽 / OBS 3 槽| SURF[源尺寸 IOSurface]
     UI -->|本地视频/HLS AVPlayerItemVideoOutput NV12 + Metal → BGRA，3 槽| SURF
@@ -35,7 +36,7 @@ flowchart LR
 
 - **mediaserverd 注入**：`VCAMMediaServerClient.dylib` 只做“取最新虚拟帧 → 按路由渲染/替换 → 输出”，不联网、不解码、不碰 UIKit/AVAssetReader。
 - **SpringBoard/UI 注入**：`VCAMSpringBoardClient.dylib` 在 SpringBoard 负责配置 Broker、本地图片、本地视频/HLS `AVPlayerItemVideoOutput`、Metal/Core Image 渲染和预览；Camera/浏览器宿主只启用 UI。应用沙箱不能直接读取 mmap/IOSurface 时，悬浮面板只通过回环 Broker 获取降采样 JPEG，绝不把 JPEG 送入 mediaserverd。
-- **vcamd（项目自己的 LaunchDaemon）**：负责 OBS、RTSP 和 IOSurface XPC 权限中继；崩溃不会直接拖死 mediaserverd。旧 daemon 本地图片/视频/HLS 路径只作显式回滚。
+- **vcamd（项目自己的 LaunchDaemon）**：负责 OBS、RTSP、IOSurface XPC 权限中继，以及普通 HTTP HLS 的认证回环字节转发；转发路径不解码 HLS，崩溃不会直接拖死 mediaserverd。旧 daemon 本地图片/视频/HLS 解码路径只作显式回滚。
 - **vcaminjectd（项目自己的 LaunchDaemon）**：root 权限，仅在 mediaserverd / SpringBoard PID 变化后修复两个允许的 dylib 映射。
 - **共享帧**：本地图片按解码后的原始方向和尺寸发布一个不可变 BGRA IOSurface；本地视频、HLS 和 OBS 使用三个源尺寸 BGRA IOSurface；RTSP 使用固定 1080×1920 三槽 BGRA mmap。mmap 同时承担其他来源的 XPC 握手回退。两条路径都有原子槽位/序号/时间戳与陈旧帧保护。
 
@@ -101,7 +102,7 @@ MOV/MP4/M4V 的正式路径位于 SpringBoard：系统 `AVPlayer` 解码，`AVPl
 
 ### HLS
 
-SpringBoard 使用系统 `AVPlayer` 处理分片、时间线和码率切换，从 `AVPlayerItemVideoOutput` 复制 NV12 `CVPixelBuffer`，再用 Metal-backed Core Image 一次完成旋转、镜像、fit/fill 与输出。HLS 不复用 RTSP 的 FFmpeg/direct-VT 解码路径。
+SpringBoard 使用系统 `AVPlayer` 处理分片、时间线和码率切换，从 `AVPlayerItemVideoOutput` 复制 NV12 `CVPixelBuffer`，再用 Metal-backed Core Image 一次完成旋转、镜像、fit/fill 与输出。数字 IP 的普通 HTTP 局域网源由 SpringBoard 生成随机令牌，再通过身份校验的 XPC 在 vcamd 登记；AVPlayer 只访问 tokenized `127.0.0.1:46322`。`vcamd` 只转发绑定上游的清单/分片字节，按 URL 语义重写根相对、network-path、同源绝对 URI 和重定向，不调用 FFmpeg/VideoToolbox。停止/切源注销旧令牌，客户端数、请求头、清单大小、非阻塞数字 IP connect 和响应总时长都有上限，截断清单拒绝。HTTPS/域名源仍走 Apple 直接路径。HLS 不复用 RTSP 的 FFmpeg/direct-VT 解码路径。
 
 ## 6. 构建、CI 与发布
 
@@ -221,7 +222,7 @@ python -m unittest discover -s tests -v
 ## 12. 当前状态与下一步
 
 - 当前发布基线见 [`CURRENT-RELEASE-STATUS-ZH.md`](CURRENT-RELEASE-STATUS-ZH.md)。每次交付都必须重新执行 `git rev-parse HEAD`、`gh run list`、下载 CI artifact、核对 SHA-256，并把同一 DEB 安装到目标设备；WSL 包只作编译检查。
-- HLS 服务端已经用固定 session 的五分钟连续性探针证明无 HTTP 错误、时间线连续且 live edge 保持新鲜。客户端使用 SpringBoard `AVPlayerItemVideoOutput` 连续发布，配置 1 秒前向缓冲、保留 iOS 16.1 必需的自动续播并记录 `liveLag`；每个新 CI 包仍需在 Camera 播放状态下复验非空帧、延迟和断流自恢复。
+- 现网 HLS 直接由 SpringBoard 访问 LAN 时在首帧前失败；同一 URL 经手机回环 A/B 可立即播放，因此当前候选实现加入 vcamd 认证回环字节转发。这个判断只定位了网络进程边界，尚不能替代新 CI 包在 Camera 播放状态下对非空帧、延迟、五分钟连续性和断流自恢复的验收。
 - 本地视频正式路径已在真机连续发布约 30fps、`empty=0`、`failures=0` 并多次循环；旧 daemon reader 仅保留为 marker 控制的回滚。相册/文件选择现在保留原始 representation 且每次生成新路径；仍必须用新 CI 包重复选择同一类型资源验证切换和长期显示。
 - 静态照片必须在每个新 CI 包重新验收。私有 `pf20` StillImage 源不得被直接抑制，应先在 mediaserverd 内进入可替换的 420f `Meteor Headroom` 终点；普通照片与 Live Photo 都要确认主图、缩略图和配对视频完整且不含真实帧。
 - RTSP 硬解实验已终止并从正式代码移除；当前交付目标是 FFmpeg 软件解码连续出帧、共享序号推进、断线重连和长期稳定性。

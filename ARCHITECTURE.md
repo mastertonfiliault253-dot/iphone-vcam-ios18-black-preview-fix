@@ -7,6 +7,9 @@ VCAM separates media production, camera replacement and control UI:
 - `vcamd` owns OBS and RTSP decoding. RTSP is software-only on iOS 16.0-16.5
   and publishes the rendered 1080x1920 BGRA result through the fixed three-slot
   mmap. OBS publishes source-sized BGRA through a three-slot IOSurface ring.
+  For non-loopback numeric-IP plain-HTTP HLS, vcamd additionally relays
+  authenticated HTTP bytes from the configured LAN origin to device loopback;
+  it never decodes those bytes.
 - `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
   validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
   client.
@@ -45,6 +48,17 @@ It does not rotate pixels according to the source or phone posture and does not
 replace the sample's orientation metadata; the existing system camera graph
 remains the sole owner of saved-photo orientation and aspect metadata. Audio is
 never replaced.
+
+Non-loopback numeric-IP plain-HTTP LAN HLS has a split ownership contract: the audit-identified
+SpringBoard process generates a random 128-bit token and registers it with vcamd over XPC, AVPlayer
+uses only the tokenized `127.0.0.1:46322` URL, and vcamd relays GET/HEAD bytes to
+the immutable upstream bound to that session. Issuing a new session invalidates
+the previous source. Relative resources retain the tokenized base; same-origin
+root-relative, network-path, same-origin absolute playlist and redirect URLs
+are resolved then rewritten to loopback. Active clients, headers, playlist
+size, numeric-IP connect and relay duration are bounded; framed playlist
+responses must be complete. HTTPS and hostname sources remain Apple's
+direct transport and must be accepted separately on the target device.
 
 The physical camera graph is the browser negotiation shell. VCAM does not
 advertise a synthetic capability table or force a fixed resolution: Safari and

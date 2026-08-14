@@ -8,7 +8,7 @@ The standard rootless package installs under `/var/jb` and contains exactly:
 | --- | --- | --- |
 | `VCAMMediaServerClient` | executable `mediaserverd` | Nonblocking read of a fresh shared frame and `BWNodeOutput` replacement |
 | `VCAMSpringBoardClient` | SpringBoard plus Camera, MobileSafari, Chrome, Edge and Firefox main-process bundle filters | SpringBoard owns the broker, static-image publisher and native local-video/HLS player; filtered app hosts get only the white dot, panel and preview |
-| `vcamd` | no injection; LaunchDaemon | OBS and RTSP decoding, latest-frame publication, plus explicit legacy local-image/video/HLS rollback |
+| `vcamd` | no injection; LaunchDaemon | OBS and RTSP decoding, latest-frame publication, authenticated plain-HTTP HLS loopback byte relay, plus explicit legacy local-image/video/HLS rollback |
 | `vcaminjectd` | no injection; root LaunchDaemon | Reinject only the two allowed clients after their exact process PID changes |
 
 Camera and the listed browser main processes receive the UI dylib only. Its
@@ -25,7 +25,16 @@ targeted. Audio is not replaced.
 
 `RTSP → vcamd FFmpeg software decode → one renderer pass → fixed three-slot raw BGRA mmap → mediaserverd + passive UI preview`
 
-`local video / HLS → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot BGRA IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
+`numeric-IP plain-HTTP LAN HLS bytes → tokenized vcamd loopback relay (no decode) → SpringBoard AVPlayer → decoded raw NV12 → Metal/Core Image → three-slot BGRA IOSurface (raw BGRA mmap bootstrap) → mediaserverd + passive UI preview`
+
+Local video, HTTPS HLS, HTTP-hostname HLS, and HTTP loopback HLS enter
+SpringBoard AVPlayer directly. For non-loopback numeric-IP plain HTTP,
+SpringBoard generates a random per-source token and registers it through the
+audit-identified vcamd XPC service, and AVPlayer uses only the resulting loopback URL. The relay binds
+all requests to that immutable session, resolves root-relative/network-path and
+same-origin absolute HLS URIs/redirects, verifies framed playlist completeness,
+and bounds concurrency and numeric-IP connect/relay duration; changing source invalidates
+the old token before it can address the new upstream.
 
 The frame region in `/var/tmp/com.codex.vcam.frames` remains fixed at
 1080×1920 BGRA. It is RTSP's production transport and the handshake/rollback
@@ -146,7 +155,8 @@ the original sample, and either construction path remains fail-closed.
   while mmap publication continued on its output timer, so RTSP no longer
   attempts the failing surface path. Publication sequence alone does not prove
   decoded source cadence; decoder counters are a separate acceptance signal. HLS uses
-  SpringBoard's system `AVPlayer`; live-edge lag is telemetry only, so VCAM does
+  SpringBoard's system `AVPlayer`; vcamd only supplies the authenticated
+  plain-HTTP loopback byte relay and performs no HLS decode. Live-edge lag is telemetry only, so VCAM does
   not periodically seek and flush a healthy native playback queue. The old daemon
   FFmpeg path exists only behind `/var/tmp/vcam-hls-legacy-vcamd.enable`.
 

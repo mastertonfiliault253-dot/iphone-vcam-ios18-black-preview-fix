@@ -5,6 +5,7 @@
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
@@ -302,5 +303,99 @@ bool VCAMSurfaceBrokerValidateConfigurationToken(uint64_t high, uint64_t low) {
                "config-auth-consume") == 0 &&
         xpc_dictionary_get_uint64(reply, "accepted") == 1;
     if (reply != NULL) VCAMXPCRelease(reply);
+    return accepted;
+}
+
+static bool VCAMSurfaceBrokerSendBoundedHLSRequest(
+    xpc_object_t request, const char *expectedCommand,
+    uint64_t *tokenHigh, uint64_t *tokenLow) {
+    xpc_connection_t connection = VCAMSurfaceBrokerPublisherConnection();
+    if (connection == NULL) return false;
+    NSObject *gate = [NSObject new];
+    dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+    __block BOOL waiting = YES;
+    __block BOOL completed = NO;
+    __block BOOL accepted = NO;
+    __block uint64_t high = 0;
+    __block uint64_t low = 0;
+    xpc_connection_send_message_with_reply(
+        connection, request,
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(xpc_object_t reply) {
+            BOOL valid = reply != NULL &&
+                xpc_get_type(reply) == VCAMXPCTypeDictionary() &&
+                strcmp(xpc_dictionary_get_string(reply, "command") ?: "",
+                       expectedCommand) == 0;
+            BOOL replyAccepted = valid &&
+                xpc_dictionary_get_uint64(reply, "accepted") == 1;
+            uint64_t replyHigh = tokenHigh != NULL && replyAccepted ?
+                xpc_dictionary_get_uint64(reply, "tokenHigh") : 0;
+            uint64_t replyLow = tokenLow != NULL && replyAccepted ?
+                xpc_dictionary_get_uint64(reply, "tokenLow") : 0;
+            @synchronized (gate) {
+                if (waiting) {
+                    completed = YES;
+                    accepted = replyAccepted;
+                    high = replyHigh;
+                    low = replyLow;
+                }
+            }
+            dispatch_semaphore_signal(completion);
+        });
+    dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC);
+    dispatch_semaphore_wait(completion, deadline);
+    @synchronized (gate) {
+        waiting = NO;
+        if (!completed || !accepted) return false;
+        if (tokenHigh != NULL) *tokenHigh = high;
+        if (tokenLow != NULL) *tokenLow = low;
+    }
+    return true;
+}
+
+bool VCAMSurfaceBrokerCreateHLSProxySession(const char *upstreamURL,
+                                            uint64_t sessionEpoch,
+                                            uint64_t *high, uint64_t *low) {
+    if (upstreamURL == NULL || sessionEpoch == 0 ||
+        high == NULL || low == NULL) return false;
+    *high = 0;
+    *low = 0;
+    uint64_t proposed[2] = {0};
+    do {
+        arc4random_buf(proposed, sizeof(proposed));
+    } while (proposed[0] == 0 || proposed[1] == 0);
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "command", "hls-proxy-session");
+    xpc_dictionary_set_string(request, "upstreamURL", upstreamURL);
+    xpc_dictionary_set_uint64(request, "sessionEpoch", sessionEpoch);
+    xpc_dictionary_set_uint64(request, "tokenHigh", proposed[0]);
+    xpc_dictionary_set_uint64(request, "tokenLow", proposed[1]);
+    bool accepted = VCAMSurfaceBrokerSendBoundedHLSRequest(
+        request, "hls-proxy-session", high, low);
+    VCAMXPCRelease(request);
+    accepted = accepted && *high == proposed[0] && *low == proposed[1];
+    if (!accepted) {
+        xpc_object_t invalidate = xpc_dictionary_create(NULL, NULL, 0);
+        xpc_dictionary_set_string(invalidate, "command", "hls-proxy-invalidate");
+        xpc_dictionary_set_uint64(invalidate, "tokenHigh", proposed[0]);
+        xpc_dictionary_set_uint64(invalidate, "tokenLow", proposed[1]);
+        xpc_connection_t connection = VCAMSurfaceBrokerPublisherConnection();
+        if (connection != NULL) xpc_connection_send_message(connection, invalidate);
+        VCAMXPCRelease(invalidate);
+        *high = 0;
+        *low = 0;
+    }
+    return accepted;
+}
+
+bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low) {
+    if (high == 0 || low == 0) return false;
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "command", "hls-proxy-invalidate");
+    xpc_dictionary_set_uint64(request, "tokenHigh", high);
+    xpc_dictionary_set_uint64(request, "tokenLow", low);
+    bool accepted = VCAMSurfaceBrokerSendBoundedHLSRequest(
+        request, "hls-proxy-invalidate", NULL, NULL);
+    VCAMXPCRelease(request);
     return accepted;
 }

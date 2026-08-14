@@ -40,10 +40,12 @@ VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVC
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 # vcamd is package-owned and is not injected. OBS and RTSP live here; retained
-# local-image/video and HLS readers are explicit rollback paths only. It also
-# relays IOSurface XPC rights without touching frame bytes.
+# local-image/video and HLS decoders are explicit rollback paths only. For
+# plain-HTTP HLS it relays authenticated bytes over device loopback but never
+# decodes them. It also relays IOSurface XPC rights without touching frame bytes.
 vcamd_FILES = \
 	Sources/Daemon/main.m \
+	Sources/Daemon/VCAMHLSLoopbackProxy.m \
 	Sources/Daemon/VCAMSurfaceBrokerServer.m \
 	Sources/Daemon/VCAMHardwareVideoDecoder.m \
 	Sources/Daemon/VCAMPixelConverter.m \

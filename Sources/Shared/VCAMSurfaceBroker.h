@@ -44,4 +44,15 @@ bool VCAMSurfaceBrokerCopyConfigurationToken(uint64_t *high, uint64_t *low);
 /// Asks the audit-identified XPC service to consume a previously issued token.
 bool VCAMSurfaceBrokerValidateConfigurationToken(uint64_t high, uint64_t low);
 
+/// Requests an HLS relay session from the audit-identified vcamd service.
+/// Only SpringBoard is authorized. The random token is embedded in AVPlayer's
+/// loopback URL and is invalidated atomically when a new session is issued.
+bool VCAMSurfaceBrokerCreateHLSProxySession(const char *upstreamURL,
+                                            uint64_t sessionEpoch,
+                                            uint64_t *high, uint64_t *low);
+
+/// Invalidates the matching HLS relay session. The reply is bounded to one
+/// second so SpringBoard never waits indefinitely on its main thread.
+bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low);
+
 NS_ASSUME_NONNULL_END

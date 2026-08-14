@@ -6,6 +6,87 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SpringBoardMediaBridgeTests(unittest.TestCase):
+    def test_plain_http_hls_is_relayed_through_vcamd_loopback_only(self) -> None:
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        proxy = (
+            ROOT / "Sources" / "Daemon" / "VCAMHLSLoopbackProxy.m"
+        ).read_text(encoding="utf-8")
+        header = (
+            ROOT / "Sources" / "Shared" / "VCAMHLSLoopbackProtocol.h"
+        ).read_text(encoding="utf-8")
+        daemon = (ROOT / "Sources" / "Daemon" / "main.m").read_text(
+            encoding="utf-8"
+        )
+        broker_server = (
+            ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m"
+        ).read_text(encoding="utf-8")
+        broker_client = (
+            ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m"
+        ).read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("VCAMSurfaceBrokerCreateHLSProxySession", bridge)
+        self.assertIn("VCAMHLSLoopbackProxyNeedsRelay", bridge)
+        self.assertIn("playbackURL = next.hlsURL", bridge)
+        self.assertIn("tokenHigh, tokenLow", bridge)
+        self.assertIn("hls-proxy-session", broker_server)
+        self.assertIn("hls-proxy-session", broker_client)
+        self.assertIn("VCAMSurfaceBrokerPeerIdentitySpringBoard", broker_server)
+        self.assertIn("[redacted-session]", bridge)
+        self.assertIn("components.host = @\"127.0.0.1\"", header)
+        self.assertIn("/__vcam_hls/", header)
+        self.assertIn("INADDR_LOOPBACK", proxy)
+        self.assertIn("VCAMHLSMaximumRequestHeaderBytes", proxy)
+        self.assertIn("VCAMHLSMaximumConcurrentClients", proxy)
+        self.assertIn("dispatch_semaphore_wait", proxy)
+        self.assertIn("VCAMHLSRequestHeaderDeadlineSeconds", proxy)
+        self.assertIn("VCAMHLSResponseDeadlineSeconds", proxy)
+        self.assertIn("CLOCK_MONOTONIC", proxy)
+        self.assertIn("O_NONBLOCK", proxy)
+        self.assertIn("VCAMHLSWaitForSocket", proxy)
+        self.assertNotIn("getaddrinfo", proxy)
+        self.assertNotIn("SO_RCVTIMEO", proxy)
+        self.assertNotIn("SO_SNDTIMEO", proxy)
+        self.assertIn("VCAMHLSLoopbackProxyRegisterSession", proxy)
+        self.assertIn("VCAMHLSLoopbackProxyInvalidateSession", proxy)
+        self.assertIn("sessionEpoch <= VCAMHLSSessionEpoch", proxy)
+        self.assertIn("lastHLSSessionEpoch + 1", bridge)
+        self.assertIn("scheduleHLSProxySessionRetryForConfiguration", bridge)
+        self.assertIn("hlsSessionRetryGeneration", bridge)
+        self.assertIn("hlsSessionRetryURL", bridge)
+        self.assertIn("self.hlsSessionRetryGeneration != retryGeneration", bridge)
+        self.assertIn("VCAMHLSCopyUpstreamURLForTarget", proxy)
+        self.assertIn("VCAMHLSRewriteBufferedResponse", proxy)
+        self.assertIn("VCAMHLSRewritePlaylistText", proxy)
+        self.assertIn("VCAMHLSSameOrigin", proxy)
+        self.assertIn("VCAMHLSDecodeChunkedBody", proxy)
+        self.assertIn("VCAMHLSPlaylistSignatureStateForResponse", proxy)
+        self.assertIn("VCAMHLSMaximumPlaylistSignatureProbeBytes", proxy)
+        self.assertIn("signatureProbeFailed", proxy)
+        self.assertIn("recv(server, buffer, readCapacity, 0)", proxy)
+        self.assertNotIn("appendBytes:buffer length:remaining", proxy)
+        self.assertIn("expectedLength != body.length", proxy)
+        self.assertIn("VCAMSurfaceBrokerInvalidateHLSProxySession", bridge)
+        self.assertIn("[method isEqualToString:@\"GET\"]", proxy)
+        self.assertIn("[method isEqualToString:@\"HEAD\"]", proxy)
+        self.assertIn("VCAMHLSLoopbackProxyStart", daemon)
+        self.assertIn("Sources/Daemon/VCAMHLSLoopbackProxy.m", makefile)
+        self.assertNotIn("AVPlayer", proxy)
+        self.assertNotIn("avcodec_", proxy)
+
+    def test_hls_reconnect_log_includes_error_codes_without_session_url(self) -> None:
+        source = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("itemError.domain", source)
+        self.assertIn("itemError.code", source)
+        self.assertIn("NSUnderlyingErrorKey", source)
+        self.assertNotIn("userInfo=%@", source)
+        self.assertNotIn("localizedDescription", source)
+        self.assertIn("details=%@", source)
+
     def test_hls_uses_avplayer_nv12_metal_and_shared_writer(self) -> None:
         source = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
