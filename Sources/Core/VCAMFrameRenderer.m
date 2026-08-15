@@ -11,6 +11,7 @@
     CGColorSpaceRef _colorSpace;
     size_t _poolWidth;
     size_t _poolHeight;
+    CFTypeRef _pixelTransferSession;
 }
 @end
 
@@ -25,6 +26,7 @@
 - (void)dealloc {
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
     if (_colorSpace != NULL) CGColorSpaceRelease(_colorSpace);
+    if (_pixelTransferSession != NULL) CFRelease(_pixelTransferSession);
 }
 
 - (void)copyAttachmentsFromTemplate:(CMSampleBufferRef)templateBuffer
@@ -166,10 +168,64 @@
         CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA) {
         return [self copySampleWrappingPixelBuffer:pixelBuffer template:templateBuffer];
     }
+    OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    // RTSP publishes NV12 (rotation at the push end). Scale/convert straight
+    // to the NV12 output with VTPixelTransferSession instead of a vImage BGRA
+    // round-trip.
+    if (identity &&
+        (sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+         sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) &&
+        CVPixelBufferGetPixelFormatType(target) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        if (_pixelTransferSession == NULL) {
+            VTPixelTransferSessionRef session = NULL;
+            if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &session) == noErr) {
+                _pixelTransferSession = session;
+            }
+        }
+        if (_pixelTransferSession != NULL) {
+            size_t outputWidth = CVPixelBufferGetWidth(target);
+            size_t outputHeight = CVPixelBufferGetHeight(target);
+            CVPixelBufferRef output = NULL;
+            NSDictionary *outputAttributes = @{
+                (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                (id)kCVPixelBufferWidthKey: @(outputWidth),
+                (id)kCVPixelBufferHeightKey: @(outputHeight),
+            };
+            if (CVPixelBufferCreate(kCFAllocatorDefault, outputWidth, outputHeight,
+                                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                    (__bridge CFDictionaryRef)outputAttributes,
+                                    &output) == kCVReturnSuccess) {
+                CFStringRef scalingMode = configuration.contentMode == 0 ? kVTScalingMode_Letterbox
+                    : configuration.contentMode == 1 ? kVTScalingMode_CropSourceToCleanAperture
+                    : kVTScalingMode_Normal;
+                (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
+                                           kVTPixelTransferPropertyKey_ScalingMode, scalingMode);
+                (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
+                                           kVTPixelTransferPropertyKey_RealTime, kCFBooleanTrue);
+                OSStatus transferStatus = VTPixelTransferSessionTransferImage(
+                    (VTPixelTransferSessionRef)_pixelTransferSession, pixelBuffer, output);
+                if (transferStatus == kCVReturnSuccess) {
+                    CVBufferSetAttachment(output, kCVImageBufferColorPrimariesKey,
+                                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                                          kCVAttachmentMode_ShouldPropagate);
+                    CVBufferSetAttachment(output, kCVImageBufferTransferFunctionKey,
+                                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                                          kCVAttachmentMode_ShouldPropagate);
+                    CVBufferSetAttachment(output, kCVImageBufferYCbCrMatrixKey,
+                                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                                          kCVAttachmentMode_ShouldPropagate);
+                    CMSampleBufferRef sample = [self copySampleWrappingPixelBuffer:output
+                                                                          template:templateBuffer];
+                    CVPixelBufferRelease(output);
+                    return sample;
+                }
+                CVPixelBufferRelease(output);
+            }
+        }
+    }
     // Orient, mirror, crop, and scale decoded NV12 or BGRA frames with vImage
     // so local videos never take the VTCreateCGImage + CGContext path on every
     // camera callback.
-    OSType sourceFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
     CGFloat sourceDegrees = atan2(sourceTransform.b, sourceTransform.a) *
         180.0 / M_PI;
     CGFloat combinedDegrees = sourceDegrees + configuration.rotationDegrees;

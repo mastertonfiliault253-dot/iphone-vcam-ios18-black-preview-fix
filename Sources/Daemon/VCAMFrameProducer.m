@@ -240,15 +240,20 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         _templateSample = NULL;
         _templateSize = CGSizeMake(width, height);
         CVPixelBufferRef pixelBuffer = NULL;
+        // RTSP publishes NV12 directly (rotation is handled at the push end);
+        // OBS and the local-media rollback keep BGRA.
+        OSType templateFormat = self.configuration.sourceKind == VCAMSourceKindRTSP
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            : kCVPixelFormatType_32BGRA;
         NSDictionary *attributes = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferPixelFormatTypeKey: @(templateFormat),
             (id)kCVPixelBufferWidthKey: @(width),
             (id)kCVPixelBufferHeightKey: @(height),
             (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
             (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
         };
         if (CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                                kCVPixelFormatType_32BGRA,
+                                templateFormat,
                                 (__bridge CFDictionaryRef)attributes,
                                 &pixelBuffer) != kCVReturnSuccess) return NULL;
         CMVideoFormatDescriptionRef format = NULL;
