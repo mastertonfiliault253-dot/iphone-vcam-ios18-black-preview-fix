@@ -6,7 +6,7 @@
 
 ## 1. 当前 CI 候选版本
 
-该包已通过构建与结构校验，但 HLS 断流和 RTSP 可见连续性仍由用户在 2.101 上验收，不能仅凭安装成功视为正式发布通过。
+该包已通过构建与结构校验，并已安装到 `192.168.2.201`（`dpkg-query` 返回 `0.8.84+ios16-hls-loopback-stability`）；但 HLS 断流、RTSP 可见连续性和方向/小白点仍需真机可见验收，不能仅凭安装成功视为正式发布通过。`192.168.2.201` 当前 ED25519 主机指纹（SHA256）：`IeDkiCfXRHur4vko8/XElmYxEizdq/sP6h8QX8rFBig`。
 
 - 版本：`0.8.84+ios16-hls-loopback-stability`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
