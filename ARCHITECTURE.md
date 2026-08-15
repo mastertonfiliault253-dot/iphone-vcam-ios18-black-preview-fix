@@ -129,11 +129,9 @@ Decisions:
 - Video sources (HLS / RTSP / local video) publish NV12; static images stay
   BGRA. H.264/HEVC decoders already produce 4:2:0, so a BGRA transport forces
   an unnecessary 4:2:0 -> 4:4:4 -> 4:2:0 chroma round-trip.
-- mediaserverd performs the per-consumer 90-degree rotation in YUV space with
-  Accelerate/vImage (Planar8 for the Y plane, Planar16U for the interleaved UV
-  plane) instead of producer-side pre-rotation plus a feedback channel. This
-  keeps the camera negotiation shell, the producer<->mediaserverd contract and
-  multi-consumer orientation handling unchanged.
+- mediaserverd reads NV12 directly and lets its existing Core Image pipeline
+  handle the per-consumer rotation, scale and 420f rendering; no separate YUV
+  rotation path, Accelerate/vImage or producer-side feedback channel is needed.
 - RTSP/HLS rotation stays at the push/stream end; local video and still images
   keep their in-app rotation.
 - The fixed three-slot mmap now accepts NV12 (BGRA remains compatible) because

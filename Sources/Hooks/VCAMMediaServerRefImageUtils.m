@@ -31,6 +31,7 @@ static uint64_t VCAMAdoptedSurfaceGeneration;
 /// daemon may take over only with a frame published after this observation.
 static uint64_t VCAMLegacyMmapCutoffNanoseconds;
 static CVPixelBufferPoolRef VCAMScratchPool;
+static CVPixelBufferPoolRef VCAMNV12ScratchPool;
 static CVPixelBufferPoolRef VCAMCompressedStagingPool;
 static size_t VCAMCompressedStagingWidth;
 static size_t VCAMCompressedStagingHeight;
@@ -311,6 +312,9 @@ void loadReplacementMedia(void) {
         CVReturn result = VCAMCreateStagingPool(
             kCVPixelFormatType_32BGRA,
             VCAMSharedFrameWidth, VCAMSharedFrameHeight, &VCAMScratchPool);
+        (void)VCAMCreateStagingPool(
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            VCAMSharedFrameWidth, VCAMSharedFrameHeight, &VCAMNV12ScratchPool);
         OSStatus transferCreateResult = kCVReturnUnsupported;
         OSStatus scalingResult = transferCreateResult;
         OSStatus realtimeResult = transferCreateResult;
@@ -605,8 +609,19 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     VCAMAdoptedSurfaceGeneration) ||
                 (!hasCurrentSurface &&
                  VCAMLegacyMmapCutoffNanoseconds != 0);
+            VCAMSharedFrameMetadata mmapFormatMetadata = {0};
+            BOOL hasMmapFormat = VCAMSharedFrameReaderGetLatestMetadata(
+                VCAMReader, 0, &mmapFormatMetadata);
+            CVPixelBufferPoolRef scratchPool = VCAMScratchPool;
+            if (hasMmapFormat &&
+                (mmapFormatMetadata.pixelFormat ==
+                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                 mmapFormatMetadata.pixelFormat ==
+                     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)) {
+                scratchPool = VCAMNV12ScratchPool;
+            }
             if (CVPixelBufferPoolCreatePixelBuffer(
-                    kCFAllocatorDefault, VCAMScratchPool,
+                    kCFAllocatorDefault, scratchPool,
                     &scratch) != kCVReturnSuccess) {
                 if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
                         targetBuffer, replacementBufferOut)) return YES;

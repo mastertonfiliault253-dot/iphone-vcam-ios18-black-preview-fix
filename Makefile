@@ -23,7 +23,7 @@ VCAMMediaServerClient_FILES = \
 	Sources/Hooks/VCAMMediaServerRefImageUtils.m \
 	$(VCAM_SHARED_FILES)
 VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=0 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMMediaServerClient_FRAMEWORKS = Accelerate CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal Security VideoToolbox
+VCAMMediaServerClient_FRAMEWORKS = CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal Security VideoToolbox
 
 # SpringBoard owns the broker, source-sized static-image publisher, and native
 # AVPlayer bridge for local video/HLS.
