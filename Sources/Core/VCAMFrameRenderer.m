@@ -176,6 +176,12 @@
         (sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
          sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) &&
         CVPixelBufferGetPixelFormatType(target) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        // Already 420v at the target size: wrap directly, skip VTPixelTransfer.
+        if (sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+            CVPixelBufferGetWidth(pixelBuffer) == CVPixelBufferGetWidth(target) &&
+            CVPixelBufferGetHeight(pixelBuffer) == CVPixelBufferGetHeight(target)) {
+            return [self copySampleWrappingPixelBuffer:pixelBuffer template:templateBuffer];
+        }
         if (_pixelTransferSession == NULL) {
             VTPixelTransferSessionRef session = NULL;
             if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &session) == noErr) {
@@ -195,11 +201,11 @@
                                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
                                     (__bridge CFDictionaryRef)outputAttributes,
                                     &output) == kCVReturnSuccess) {
-                CFStringRef scalingMode = configuration.contentMode == 0 ? kVTScalingMode_Letterbox
-                    : configuration.contentMode == 1 ? kVTScalingMode_CropSourceToCleanAperture
-                    : kVTScalingMode_Normal;
+                // Rotation and aspect are handled at the RTSP push end; scale
+                // uniformly (stretch) so a 1:1 transfer stays a clean copy.
                 (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
-                                           kVTPixelTransferPropertyKey_ScalingMode, scalingMode);
+                                           kVTPixelTransferPropertyKey_ScalingMode,
+                                           kVTScalingMode_Normal);
                 (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
                                            kVTPixelTransferPropertyKey_RealTime, kCFBooleanTrue);
                 OSStatus transferStatus = VTPixelTransferSessionTransferImage(

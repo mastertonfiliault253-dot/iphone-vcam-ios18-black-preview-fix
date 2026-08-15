@@ -8,6 +8,7 @@
     VCAMSharedFrameReader *_reader;
     VCAMSharedSurfaceReader *_surfaceReader;
     CVPixelBufferPoolRef _pixelBufferPool;
+    CVPixelBufferPoolRef _nv12PixelBufferPool;
     CMVideoFormatDescriptionRef _formatDescription;
     OSType _formatPixelFormat;
     size_t _formatWidth;
@@ -209,6 +210,16 @@ static BOOL VCAMPreviewGetBrokerMetadata(
                                 (__bridge CFDictionaryRef)poolAttributes,
                                 (__bridge CFDictionaryRef)pixelAttributes,
                                 &_pixelBufferPool);
+        NSDictionary *nv12PixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
+            (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                (__bridge CFDictionaryRef)poolAttributes,
+                                (__bridge CFDictionaryRef)nv12PixelAttributes,
+                                &_nv12PixelBufferPool);
         _brokerImageView = [[UIImageView alloc] initWithFrame:self.bounds];
         _brokerImageView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -233,6 +244,7 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     VCAMSharedFrameReaderDestroy(_reader);
     VCAMSharedSurfaceReaderDestroy(_surfaceReader);
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
+    if (_nv12PixelBufferPool != NULL) CVPixelBufferPoolRelease(_nv12PixelBufferPool);
     if (_formatDescription != NULL) CFRelease(_formatDescription);
 }
 
@@ -269,8 +281,9 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     (void)displayLink;
     const uint64_t maximumAge = 1000000000ULL;
     BOOL frameWasSurface = NO;
+    VCAMSharedFrameMetadata previewMetadata = {0};
     if (!VCAMPreviewGetLatestMetadata(
-            _reader, _surfaceReader, maximumAge, NULL, &frameWasSurface)) {
+            _reader, _surfaceReader, maximumAge, &previewMetadata, &frameWasSurface)) {
         [self requestBrokerPreviewIfNeeded];
         return;
     }
@@ -287,12 +300,17 @@ static BOOL VCAMPreviewGetBrokerMetadata(
         pixelBuffer = surfaceFrame.pixelBuffer;
         metadata = surfaceFrame.metadata;
     } else {
-        if (_pixelBufferPool == NULL) {
+        CVPixelBufferPoolRef previewPool = _pixelBufferPool;
+        if (previewMetadata.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+            previewMetadata.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+            previewPool = _nv12PixelBufferPool;
+        }
+        if (previewPool == NULL) {
             [self requestBrokerPreviewIfNeeded];
             return;
         }
         if (CVPixelBufferPoolCreatePixelBuffer(
-                kCFAllocatorDefault, _pixelBufferPool, &pixelBuffer) !=
+                kCFAllocatorDefault, previewPool, &pixelBuffer) !=
                 kCVReturnSuccess) {
             [self requestBrokerPreviewIfNeeded];
             return;
