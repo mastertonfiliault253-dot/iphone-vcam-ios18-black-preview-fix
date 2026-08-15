@@ -5,6 +5,7 @@
             "com.apple.camera",
             "com.apple.mobilesafari",
             "com.google.chrome.ios",
+            "com.google.GoogleMobile",
             "com.microsoft.msedge",
             "org.mozilla.ios.Firefox"
         );
@@ -13,6 +14,7 @@
             "Camera",
             "MobileSafari",
             "Google Chrome",
+            "Google",
             "Microsoft Edge",
             "Firefox"
         );

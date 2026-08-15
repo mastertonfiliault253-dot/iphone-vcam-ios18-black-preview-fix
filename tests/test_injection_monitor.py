@@ -23,6 +23,7 @@ class InjectionMonitorTests(unittest.TestCase):
         for forbidden in (
             "/Applications/Camera.app",
             "MobileSafari",
+            "Google",
             "Google Chrome",
             "Microsoft Edge",
             "Firefox",
@@ -38,6 +39,7 @@ class InjectionMonitorTests(unittest.TestCase):
             "com.apple.camera",
             "com.apple.mobilesafari",
             "com.google.chrome.ios",
+            "com.google.GoogleMobile",
             "com.microsoft.msedge",
             "org.mozilla.ios.Firefox",
         ):
