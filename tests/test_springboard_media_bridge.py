@@ -94,8 +94,10 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("AVPlayerItemVideoOutput", source)
         self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", source)
         publish = source.split("- (BOOL)publishPixelBuffer", 1)[1]
-        self.assertIn("kCVPixelFormatType_32BGRA", publish)
-        self.assertIn("VCAMSetRGBColorAttachments(destination)", publish)
+        # HLS copies NV12 directly; local video renders into NV12 via
+        # CIRenderDestination. Only the mmap bootstrap remains BGRA.
+        self.assertIn("VCAMCopyNV12PixelBuffer", publish)
+        self.assertIn("CIRenderDestination", publish)
         self.assertIn("VCAMSetVideoColorAttachments(bootstrap)", publish)
         self.assertIn("kCVPixelBufferIOSurfacePropertiesKey", source)
         self.assertIn("contextWithMTLDevice", source)

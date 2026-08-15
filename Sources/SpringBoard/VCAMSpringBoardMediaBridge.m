@@ -906,9 +906,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.lastSurfaceProbeTimestampNanoseconds = 0;
     }
     if (image != nil && self.surfaceWriter == NULL) {
-        OSType surfaceFormat = nv12Direct
-            ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            : kCVPixelFormatType_32BGRA;
+        // HLS and local video both publish NV12. HLS copies directly; local
+        // video renders orientation into NV12 via CIRenderDestination.
+        OSType surfaceFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
         self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
             outputWidth, outputHeight,
             surfaceFormat,
@@ -947,17 +947,20 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                 // HLS publishes NV12 directly; no Core Image BGRA round-trip.
                 (void)VCAMCopyNV12PixelBuffer(source, destination);
                 VCAMSetVideoColorAttachments(destination);
+            } else if (useSurfaceDestination && self.localVideo) {
+                // Local video renders its orientation into NV12 via Core Image.
+                VCAMSetVideoColorAttachments(destination);
+                CIRenderDestination *ciDestination = [[CIRenderDestination alloc]
+                    initWithPixelBuffer:destination];
+                ciDestination.colorSpace = self.colorSpace;
+                CIRenderTask *renderTask = [self.context startTaskToRender:image
+                    fromRect:image.extent toDestination:ciDestination atPoint:CGPointZero
+                    error:nil];
+                if (renderTask != nil) (void)[renderTask waitUntilCompletedAndReturnError:nil];
             } else {
-                CGRect target = useSurfaceDestination
-                    ? CGRectMake(0, 0, outputWidth, outputHeight)
-                    : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
-                CIImage *renderImage = useSurfaceDestination ? image
-                    : [self legacyCanvasImageFromOrientedImage:image];
-                if (useSurfaceDestination) {
-                    VCAMSetRGBColorAttachments(destination);
-                } else {
-                    VCAMSetVideoColorAttachments(destination);
-                }
+                CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+                CIImage *renderImage = [self legacyCanvasImageFromOrientedImage:image];
+                VCAMSetVideoColorAttachments(destination);
                 [self.context render:renderImage toCVPixelBuffer:destination bounds:target
                           colorSpace:self.colorSpace];
             }
