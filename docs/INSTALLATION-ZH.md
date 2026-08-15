@@ -6,18 +6,18 @@
 
 ## 1. 当前 CI 候选版本
 
-该包已通过构建与结构校验，并已安装到 `192.168.2.201` 和 `192.168.2.101`（两台 `dpkg-query` 均返回 `0.8.84+ios16-hls-loopback-stability`）；但 HLS 断流、RTSP 可见连续性和方向/小白点仍需真机可见验收，不能仅凭安装成功视为正式发布通过。主机指纹（SHA256）：`192.168.2.201` = `IeDkiCfXRHur4vko8/XElmYxEizdq/sP6h8QX8rFBig`（已确认）；`192.168.2.101` = `htqq2Gfr3i53cD/KH6FqxhM8lVzOIVQ5sdGRrzxBV8A`（待确认）。
+该包已通过构建与结构校验，并已安装到 `192.168.2.201` 和 `192.168.2.101`（两台 `dpkg-query` 均返回 `0.8.90+ios16-nv12-preview-fix`）；但 HLS 断流、RTSP 可见连续性和方向/小白点仍需真机可见验收，不能仅凭安装成功视为正式发布通过。主机指纹（SHA256）：`192.168.2.201` = `IeDkiCfXRHur4vko8/XElmYxEizdq/sP6h8QX8rFBig`（已确认）；`192.168.2.101` = `htqq2Gfr3i53cD/KH6FqxhM8lVzOIVQ5sdGRrzxBV8A`（待确认）。
 
-- 版本：`0.8.84+ios16-hls-loopback-stability`
+- 版本：`0.8.90+ios16-nv12-preview-fix`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
-- macOS CI：`31863022706`（成功）
-- CI 构建提交：`770b45210300fc6d0c9b1aa70b40b52088378195`
-- 运行时代码提交：`770b45210300fc6d0c9b1aa70b40b52088378195`
-- SHA-256：`E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2`
+- macOS CI：`31893744985`（成功）
+- CI 构建提交：`06b30cc389bda4cec3624b852889be4aca1cc6dc`
+- 运行时代码提交：`06b30cc389bda4cec3624b852889be4aca1cc6dc`
+- SHA-256：`22F548FCD66ECEBDA5CD3736A42437B53971440426E0B9D2062DC03304F28632`
 - 本机文件：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-06b30cc-run31893744985\com.codex.vcam_0.8.90+ios16-nv12-preview-fix_iphoneos-arm64.deb
 ```
 
 > 正式部署只使用 macOS CI 产物。WSL 包可用于开发编译检查，但不能替代 macOS CI 的 arm64e Objective-C section 验证。
@@ -48,14 +48,14 @@ Test-NetConnection 192.168.2.101 -Port 22
 ### 3.1 在电脑上校验安装包
 
 ```powershell
-$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb"
+$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-06b30cc-run31893744985\com.codex.vcam_0.8.90+ios16-nv12-preview-fix_iphoneos-arm64.deb"
 Get-FileHash -Algorithm SHA256 -LiteralPath $Package
 ```
 
 输出必须是：
 
 ```text
-E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2
+22F548FCD66ECEBDA5CD3736A42437B53971440426E0B9D2062DC03304F28632
 ```
 
 哈希不一致时停止安装，重新下载 CI 产物。
@@ -91,7 +91,7 @@ sha256sum /var/tmp/vcam.deb
 手机端哈希必须与电脑端完全一致：
 
 ```text
-e085255b8c1a89ebbc1bf52b2be6d6d9f1aa5c90ed47f484cc5443d8b5f139c2
+22f548fcd66ecebda5cd3736a42437b53971440426e0b9d2062dc03304f28632
 ```
 
 ### 3.4 安装
@@ -125,7 +125,7 @@ dpkg-query -W com.codex.vcam
 当前版本应显示：
 
 ```text
-com.codex.vcam    0.8.84+ios16-hls-loopback-stability
+com.codex.vcam    0.8.90+ios16-nv12-preview-fix
 ```
 
 ### 4.2 检查关键进程
@@ -150,7 +150,7 @@ tail -n 50 /var/mobile/Media/VCAM/broker-probe.log
 应出现类似：
 
 ```text
-tag=com.codex.vcam/0.8.84+ios16-hls-loopback-stability
+tag=com.codex.vcam/0.8.90+ios16-nv12-preview-fix
 ```
 
 软件包安装、进程存在和 dylib 映射并不等于功能验收。还应在系统相机和 Safari `getUserMedia` 页面中检查虚拟画面、方向、裁剪比例、小白点和悬浮预览。

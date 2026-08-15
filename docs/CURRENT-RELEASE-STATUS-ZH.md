@@ -1,34 +1,36 @@
 # VCAM 当前发布基线与技术状态
 
+> 候选版本已更新到 `0.8.90+ios16-nv12-preview-fix`。本轮主要技术变化：视频源（RTSP/HLS）共享传输从 BGRA 迁移到 NV12，去掉 BGRA<->YUV 的二次色度重采样；mediaserverd 用 Core Image 直接处理 NV12 输入（无需单独 YUV 旋转）；直播流支持保存/切换/编辑/删除；Google 应用小白点注入修复；悬浮窗预览改为 NV12 感知。本地视频与图片仍走 BGRA（本地视频旋转是主要开销，NV12 化收益小）。该候选已装到 `192.168.2.101`，真机可见验收（悬浮窗预览、RTSP/HLS 画面、颜色/方向）待用户确认。
+
 > 本文件记录“最新 CI 候选版本”的固定快照。只有完成对应真机可见验收后，才能升级为正式发布。每次候选版本变化时必须同时更新本文件、`control`、运行时 `VCAMBuildTag()` 和安装文档。
 
 ## 1. 当前 CI 候选基线
 
 | 项目 | 当前值 |
 |---|---|
-| 包版本 | `0.8.84+ios16-hls-loopback-stability` |
-| CI 构建提交 | `770b45210300fc6d0c9b1aa70b40b52088378195` |
-| 运行时代码提交 | `770b45210300fc6d0c9b1aa70b40b52088378195` |
+| 包版本 | `0.8.90+ios16-nv12-preview-fix` |
+| CI 构建提交 | `06b30cc389bda4cec3624b852889be4aca1cc6dc` |
+| 运行时代码提交 | `06b30cc389bda4cec3624b852889be4aca1cc6dc` |
 | 构建提交说明 | `fix: relay LAN HLS through authenticated loopback` |
 | 发布分支 | `codex/ios16-media-bridge` |
 | 发布 remote | `newrepo`（`djw415024-ctrl/iphone-vcam-ios16-private`） |
-| macOS CI run | `31863022706`（成功） |
+| macOS CI run | `31893744985`（成功） |
 | DEB 架构 | `iphoneos-arm64`，包内客户端包含 `arm64`/`arm64e` |
-| DEB 大小 | `1,119,944` 字节 |
-| DEB SHA-256 | `E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2` |
+| DEB 大小 | `1,124,894` 字节 |
+| DEB SHA-256 | `22F548FCD66ECEBDA5CD3736A42437B53971440426E0B9D2062DC03304F28632` |
 | 支持系统 | iOS `>= 16.0` 且 `< 16.6` |
 | 越狱布局 | rootless |
 
 本机已校验的 CI 产物：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-770b452-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-06b30cc-run31893744985\com.codex.vcam_0.8.90+ios16-nv12-preview-fix_iphoneos-arm64.deb
 ```
 
 运行时可在 `/var/mobile/Media/VCAM/broker-probe.log` 中核对：
 
 ```text
-tag=com.codex.vcam/0.8.84+ios16-hls-loopback-stability
+tag=com.codex.vcam/0.8.90+ios16-nv12-preview-fix
 ```
 
 ## 2. 本版本的主要技术变化
@@ -60,19 +62,19 @@ tag=com.codex.vcam/0.8.84+ios16-hls-loopback-stability
 
 以下证据已经具备：
 
-- 候选 DEB 由提交 `2e1d23e` 构建；最后一次运行时代码变化为 `37def39`，其后的差异仅为审查后的测试注释和文档；
-- `control` 与 `VCAMBuildTag()` 均为 `0.8.84+ios16-hls-loopback-stability`；
+- 候选 DEB 由提交 `06b30cc` 构建；最后一次运行时代码变化同为 `06b30cc`（NV12 传输 + 悬浮窗预览修复）；
+- `control` 与 `VCAMBuildTag()` 均为 `0.8.90+ios16-nv12-preview-fix`；
 - 181 项主机回归测试通过，WSL arm64/arm64e 双架构编译通过；
 - macOS CI run `31825692857` 成功产生 CI 候选 DEB；
 - 本地从该 DEB 独立提取两个客户端，均为 `arm64`/`arm64e`；两个 arm64e 薄片均含非空 `__objc_stubs` 和 `__objc_intobj`；
 - 本机保存的 DEB SHA-256 已重新计算并与安装文档一致；
 - Debian `postinst`、`prerm`、`postrm` 在 Git 索引和该 CI 候选包中均为可执行文件。
 
-该精确 CI 包已部署到 `192.168.2.101`，`dpkg-query` 返回 `0.8.84+ios16-hls-loopback-stability`。`192.168.2.201` 本轮未部署。
+该精确 CI 包已部署到 `192.168.2.101`，`dpkg-query` 返回 `0.8.90+ios16-nv12-preview-fix`。`192.168.2.201` 本轮未部署。
 
 ## 4. 当前真机证据
 
-> `0.8.84` 已部署到 `192.168.2.201` 和 `192.168.2.101`：两台 `dpkg-query` 均返回 `0.8.84+ios16-hls-loopback-stability`，`vcamd`/`vcaminjectd`/`mediaserverd`/`SpringBoard` 进程均存在；但可见画面、方向、HLS/RTSP 连续性与小白点仍待真机可见验收。以下为上一候选 `0.8.83` 在 `192.168.2.101` 上已取得的证据，不能外推为 `0.8.84` 已经通过。
+> `0.8.90` 已部署到 `192.168.2.101`：`dpkg-query` 返回 `0.8.90+ios16-nv12-preview-fix`，`vcamd`/`vcaminjectd`/`mediaserverd`/`SpringBoard` 进程均存在；但可见画面、方向、HLS/RTSP 连续性与小白点仍待真机可见验收。以下为上一候选 `0.8.83` 在 `192.168.2.101` 上已取得的证据，不能外推为 `0.8.90` 已经通过。
 
 精确 `0.8.83` 包在主要测试机 `192.168.2.101` 上已经证明：
 
