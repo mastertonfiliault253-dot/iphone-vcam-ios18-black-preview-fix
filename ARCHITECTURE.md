@@ -116,3 +116,29 @@ Once virtual mode is enabled, capture is fail-closed: a missing, stale or
 unrenderable source may retain the last virtual frame, emit black or suppress a
 consumer sample, but it must never expose a real camera frame. Only an explicit
 restore request returns to the real camera.
+
+
+## NV12 video transport optimization (in progress)
+
+Goal: make the browser getUserMedia path behave like the real camera (native
+420f, single chroma pass, less redundant GPU work). Video sources migrate the
+shared transport from BGRA to NV12; static images remain BGRA.
+
+Decisions:
+
+- Video sources (HLS / RTSP / local video) publish NV12; static images stay
+  BGRA. H.264/HEVC decoders already produce 4:2:0, so a BGRA transport forces
+  an unnecessary 4:2:0 -> 4:4:4 -> 4:2:0 chroma round-trip.
+- mediaserverd performs the per-consumer 90-degree rotation in YUV space with
+  Accelerate/vImage (Planar8 for the Y plane, Planar16U for the interleaved UV
+  plane) instead of producer-side pre-rotation plus a feedback channel. This
+  keeps the camera negotiation shell, the producer<->mediaserverd contract and
+  multi-consumer orientation handling unchanged.
+- RTSP/HLS rotation stays at the push/stream end; local video and still images
+  keep their in-app rotation.
+- The fixed three-slot mmap now accepts NV12 (BGRA remains compatible) because
+  RTSP's production transport is the mmap.
+
+Status: mmap NV12 support has landed. The mediaserverd NV12 read + vImage
+rotation is in progress. Runtime behavior is unchanged until every producer
+publishes NV12 and mediaserverd reads it.
