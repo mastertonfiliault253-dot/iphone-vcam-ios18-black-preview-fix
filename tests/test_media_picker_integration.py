@@ -1096,6 +1096,12 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("- (void)rememberStreamURL:", picker)
         self.assertIn("[self presentStreamChooser]", picker)
         self.assertIn("[self rememberStreamURL:urlString]", picker)
+        self.assertIn("- (void)removeStreamURL:", picker)
+        self.assertIn("- (void)presentStreamManager", picker)
+        self.assertIn("promptForLiveStreamReplacingURL", picker)
+        self.assertIn("currentStreamURLFromValues", picker)
+        self.assertIn("管理已保存", picker)
+        self.assertNotIn('values[@"rtspURL"] ?: values[@"hlsURL"]', picker)
 
 
 if __name__ == "__main__":

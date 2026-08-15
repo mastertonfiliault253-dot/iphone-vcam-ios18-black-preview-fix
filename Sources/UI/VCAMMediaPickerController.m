@@ -151,6 +151,11 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 - (void)presentStreamChooser;
 - (BOOL)applyStreamURL:(NSURL *)url;
 - (void)rememberStreamURL:(NSString *)urlString;
+- (void)removeStreamURL:(NSString *)urlString;
+- (void)presentStreamManager;
+- (void)presentEditDeleteForStreamURL:(NSString *)urlString;
+- (void)promptForLiveStreamReplacingURL:(NSString *)replacingURL;
+- (nullable NSString *)currentStreamURLFromValues:(NSDictionary *)values;
 @end
 
 static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
@@ -1099,6 +1104,9 @@ didCompleteWithError:(NSError *)error {
     [sheet addAction:[UIAlertAction actionWithTitle:@"＋ 输入新地址" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self promptForLiveStream];
     }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"管理已保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentStreamManager];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [[self presentingViewController] presentViewController:sheet animated:YES completion:nil];
 }
@@ -1149,22 +1157,83 @@ didCompleteWithError:(NSError *)error {
     [self updatePreferences:@{@"savedStreams": saved}];
 }
 
-- (void)promptForLiveStream {
+- (void)removeStreamURL:(NSString *)urlString {
+    if (urlString.length == 0) return;
     NSDictionary *values = [VCAMConfiguration currentValues];
+    NSArray *existing = values[@"savedStreams"];
+    if (![existing isKindOfClass:NSArray.class]) return;
+    NSMutableArray *saved = [existing mutableCopy];
+    [saved removeObject:urlString];
+    [self updatePreferences:@{@"savedStreams": saved}];
+    [self postConfigurationChanged];
+}
+
+- (void)presentStreamManager {
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSArray *saved = values[@"savedStreams"];
+    if (![saved isKindOfClass:NSArray.class] || saved.count == 0) {
+        [self showMessage:@"暂无已保存的直播流" error:NO];
+        return;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"管理已保存直播流"
+                                                                   message:@"点选地址可编辑或删除"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *entry in saved) {
+        if (![entry isKindOfClass:NSString.class] || entry.length == 0) continue;
+        [sheet addAction:[UIAlertAction actionWithTitle:entry style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self presentEditDeleteForStreamURL:entry];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [[self presentingViewController] presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentEditDeleteForStreamURL:(NSString *)urlString {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:urlString
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"编辑" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self promptForLiveStreamReplacingURL:urlString];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [self removeStreamURL:urlString];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [[self presentingViewController] presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)promptForLiveStream {
+    [self promptForLiveStreamReplacingURL:nil];
+}
+
+- (void)promptForLiveStreamReplacingURL:(NSString *)replacingURL {
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSString *initial = replacingURL.length > 0 ? replacingURL : [self currentStreamURLFromValues:values];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"输入直播流"
                                                                    message:@"输入 ws:// 电脑桥接、rtsp:// 手机直连，或 http(s):// HLS 地址"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.text = values[@"rtspURL"] ?: values[@"hlsURL"] ?: values[@"obsWebSocketURL"] ?: @"rtsp://192.168.2.1:8554/live";
+        field.text = initial ?: @"";
         field.keyboardType = UIKeyboardTypeURL;
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"启用" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         NSURL *url = [NSURL URLWithString:alert.textFields.firstObject.text ?: @""];
-        [self applyStreamURL:url];
+        if (![self applyStreamURL:url]) return;
+        if (replacingURL.length > 0 && ![url.absoluteString isEqualToString:replacingURL]) {
+            [self removeStreamURL:replacingURL];
+        }
     }]];
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+- (nullable NSString *)currentStreamURLFromValues:(NSDictionary *)values {
+    NSString *source = [values[@"source"] lowercaseString];
+    if ([source isEqualToString:@"rtsp"]) return values[@"rtspURL"];
+    if ([source isEqualToString:@"hls"]) return values[@"hlsURL"];
+    if ([source isEqualToString:@"obs"]) return values[@"obsWebSocketURL"];
+    return nil;
 }
 
 - (NSUInteger)beginMediaSelection {
