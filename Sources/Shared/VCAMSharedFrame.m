@@ -38,6 +38,13 @@ static const uint32_t VCAMSharedSurfaceVersion = 8;
 static const char *const VCAMSharedSurfacePath = "/var/tmp/com.codex.vcam.surfaces";
 static const size_t VCAMSharedFrameBytesPerRow = VCAMSharedFrameWidth * 4;
 static const size_t VCAMSharedFrameSlotBytes = VCAMSharedFrameBytesPerRow * VCAMSharedFrameHeight;
+// Fixed slot stride keeps the mmap layout stable regardless of the active
+// pixel format (BGRA is the largest). NV12 frames use the leading bytes
+// of each stride-sized slot.
+static const size_t VCAMSharedFrameSlotStride = VCAMSharedFrameSlotBytes;
+static const size_t VCAMSharedFrameNV12RowBytes = VCAMSharedFrameWidth;
+static const size_t VCAMSharedFrameNV12YPlaneBytes = VCAMSharedFrameWidth * VCAMSharedFrameHeight;
+static const size_t VCAMSharedFrameNV12UVHeight = VCAMSharedFrameHeight / 2;
 
 typedef struct {
     uint32_t magic;
@@ -270,15 +277,21 @@ struct VCAMSharedSurfaceReader {
 };
 
 static size_t VCAMSharedFrameMappedBytes(void) {
-    return sizeof(VCAMSharedFrameHeader) + VCAMSharedFrameSlotCount * VCAMSharedFrameSlotBytes;
+    return sizeof(VCAMSharedFrameHeader) + VCAMSharedFrameSlotCount * VCAMSharedFrameSlotStride;
 }
 
 static uint8_t *VCAMSharedFrameMutableSlot(void *mapping, uint32_t slot) {
-    return (uint8_t *)mapping + sizeof(VCAMSharedFrameHeader) + slot * VCAMSharedFrameSlotBytes;
+    return (uint8_t *)mapping + sizeof(VCAMSharedFrameHeader) + slot * VCAMSharedFrameSlotStride;
 }
 
 static const uint8_t *VCAMSharedFrameSlot(const void *mapping, uint32_t slot) {
-    return (const uint8_t *)mapping + sizeof(VCAMSharedFrameHeader) + slot * VCAMSharedFrameSlotBytes;
+    return (const uint8_t *)mapping + sizeof(VCAMSharedFrameHeader) + slot * VCAMSharedFrameSlotStride;
+}
+
+static bool VCAMSharedFramePixelFormatIsSupported(uint32_t format) {
+    return format == kCVPixelFormatType_32BGRA ||
+        format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+        format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
 }
 
 static bool VCAMSharedFrameHeaderIsValid(const VCAMSharedFrameHeader *header) {
@@ -289,8 +302,8 @@ static bool VCAMSharedFrameHeaderIsValid(const VCAMSharedFrameHeader *header) {
         header->slotCount == VCAMSharedFrameSlotCount &&
         header->width == VCAMSharedFrameWidth &&
         header->height == VCAMSharedFrameHeight &&
+        VCAMSharedFramePixelFormatIsSupported(header->pixelFormat) &&
         header->bytesPerRow == VCAMSharedFrameBytesPerRow &&
-        header->pixelFormat == kCVPixelFormatType_32BGRA &&
         header->slotBytes == VCAMSharedFrameSlotBytes;
 }
 
@@ -403,10 +416,11 @@ bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
     uint64_t surfaceGeneration) {
     if (writer == NULL || writer->header == NULL || pixelBuffer == NULL ||
         CVPixelBufferGetWidth(pixelBuffer) != VCAMSharedFrameWidth ||
-        CVPixelBufferGetHeight(pixelBuffer) != VCAMSharedFrameHeight ||
-        CVPixelBufferGetPixelFormatType(pixelBuffer) != kCVPixelFormatType_32BGRA) {
+        CVPixelBufferGetHeight(pixelBuffer) != VCAMSharedFrameHeight) {
         return false;
     }
+    OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    if (!VCAMSharedFramePixelFormatIsSupported(format)) return false;
     if (CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
         return false;
     }
@@ -422,6 +436,9 @@ bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
         CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
         return false;
     }
+    // The header's bytesPerRow/slotBytes stay fixed to the BGRA slot stride;
+    // pixelFormat records the frame format actually stored in the slot.
+    writer->header->pixelFormat = format;
     uint64_t sequence = atomic_load_explicit(&writer->header->publishedSequence,
                                              memory_order_relaxed) + 1;
     uint32_t slot = (uint32_t)(sequence % VCAMSharedFrameSlotCount);
@@ -429,12 +446,30 @@ bool VCAMSharedFrameWriterPublishForSurfaceGeneration(
     // the same slot will reject the result on its post-copy sequence check.
     atomic_store_explicit(&writer->header->slotSequence[slot], 0, memory_order_release);
     uint8_t *destination = VCAMSharedFrameMutableSlot(writer->mapping, slot);
-    const uint8_t *source = (const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
-    size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
-        memcpy(destination + row * VCAMSharedFrameBytesPerRow,
-               source + row * sourceBytesPerRow,
-               VCAMSharedFrameBytesPerRow);
+    if (format == kCVPixelFormatType_32BGRA) {
+        const uint8_t *source = (const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+        size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
+            memcpy(destination + row * VCAMSharedFrameBytesPerRow,
+                   source + row * sourceBytesPerRow,
+                   VCAMSharedFrameBytesPerRow);
+        }
+    } else {
+        const uint8_t *ySource = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+        size_t ySourceBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+        for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
+            memcpy(destination + row * VCAMSharedFrameNV12RowBytes,
+                   ySource + row * ySourceBytesPerRow,
+                   VCAMSharedFrameNV12RowBytes);
+        }
+        const uint8_t *uvSource = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+        size_t uvSourceBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+        uint8_t *uvDestination = destination + VCAMSharedFrameNV12YPlaneBytes;
+        for (size_t row = 0; row < VCAMSharedFrameNV12UVHeight; row++) {
+            memcpy(uvDestination + row * VCAMSharedFrameNV12RowBytes,
+                   uvSource + row * uvSourceBytesPerRow,
+                   VCAMSharedFrameNV12RowBytes);
+        }
     }
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     VCAMSharedFrameWriteSlotMetadata(
@@ -659,10 +694,11 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
                                      VCAMSharedFrameMetadata *metadata) {
     if (reader == NULL || destination == NULL ||
         CVPixelBufferGetWidth(destination) != VCAMSharedFrameWidth ||
-        CVPixelBufferGetHeight(destination) != VCAMSharedFrameHeight ||
-        CVPixelBufferGetPixelFormatType(destination) != kCVPixelFormatType_32BGRA) {
+        CVPixelBufferGetHeight(destination) != VCAMSharedFrameHeight) {
         return false;
     }
+    OSType destinationFormat = CVPixelBufferGetPixelFormatType(destination);
+    if (!VCAMSharedFramePixelFormatIsSupported(destinationFormat)) return false;
     VCAMSharedFrameSnapshot snapshot = {0};
     if (!VCAMSharedFrameReaderGetSnapshot(
             reader, maximumAgeNanoseconds, &snapshot, NULL)) return false;
@@ -670,13 +706,31 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
     uint32_t slot = snapshot.slot;
 
     if (CVPixelBufferLockBaseAddress(destination, 0) != kCVReturnSuccess) return false;
-    uint8_t *target = (uint8_t *)CVPixelBufferGetBaseAddress(destination);
-    size_t targetBytesPerRow = CVPixelBufferGetBytesPerRow(destination);
     const uint8_t *source = VCAMSharedFrameSlot(reader->mapping, slot);
-    for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
-        memcpy(target + row * targetBytesPerRow,
-               source + row * VCAMSharedFrameBytesPerRow,
-               VCAMSharedFrameBytesPerRow);
+    if (destinationFormat == kCVPixelFormatType_32BGRA) {
+        uint8_t *target = (uint8_t *)CVPixelBufferGetBaseAddress(destination);
+        size_t targetBytesPerRow = CVPixelBufferGetBytesPerRow(destination);
+        for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
+            memcpy(target + row * targetBytesPerRow,
+                   source + row * VCAMSharedFrameBytesPerRow,
+                   VCAMSharedFrameBytesPerRow);
+        }
+    } else {
+        uint8_t *yTarget = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(destination, 0);
+        size_t yTargetBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(destination, 0);
+        for (size_t row = 0; row < VCAMSharedFrameHeight; row++) {
+            memcpy(yTarget + row * yTargetBytesPerRow,
+                   source + row * VCAMSharedFrameNV12RowBytes,
+                   VCAMSharedFrameNV12RowBytes);
+        }
+        uint8_t *uvTarget = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(destination, 1);
+        size_t uvTargetBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(destination, 1);
+        const uint8_t *uvSource = source + VCAMSharedFrameNV12YPlaneBytes;
+        for (size_t row = 0; row < VCAMSharedFrameNV12UVHeight; row++) {
+            memcpy(uvTarget + row * uvTargetBytesPerRow,
+                   uvSource + row * VCAMSharedFrameNV12RowBytes,
+                   VCAMSharedFrameNV12RowBytes);
+        }
     }
     CVPixelBufferUnlockBaseAddress(destination, 0);
 
@@ -691,7 +745,7 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
         metadata->monotonicTimestampNanoseconds = snapshot.timestamp;
         metadata->width = VCAMSharedFrameWidth;
         metadata->height = VCAMSharedFrameHeight;
-        metadata->pixelFormat = kCVPixelFormatType_32BGRA;
+        metadata->pixelFormat = destinationFormat;
         metadata->surfaceID = 0;
         metadata->surfaceGeneration = surfaceGeneration;
         metadata->colorPrimaries = atomic_load_explicit(
