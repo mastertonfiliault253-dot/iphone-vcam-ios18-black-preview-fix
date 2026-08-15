@@ -8,16 +8,16 @@
 
 该包已通过构建与结构校验，但 HLS 断流和 RTSP 可见连续性仍由用户在 2.101 上验收，不能仅凭安装成功视为正式发布通过。
 
-- 版本：`0.8.83+ios16-transport-stability`
+- 版本：`0.8.84+ios16-hls-loopback-stability`
 - 架构：`iphoneos-arm64`，客户端包含 `arm64` 和 `arm64e`
-- macOS CI：`31825692857`（成功）
-- CI 构建提交：`2e1d23ea034ce12b481509867274fec6b75058c9`
-- 运行时代码提交：`37def391236026f724180649c24d6b59b757b0b0`
-- SHA-256：`4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D`
+- macOS CI：`31863022706`（成功）
+- CI 构建提交：`770b45210300fc6d0c9b1aa70b40b52088378195`
+- 运行时代码提交：`770b45210300fc6d0c9b1aa70b40b52088378195`
+- SHA-256：`E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2`
 - 本机文件：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb
 ```
 
 > 正式部署只使用 macOS CI 产物。WSL 包可用于开发编译检查，但不能替代 macOS CI 的 arm64e Objective-C section 验证。
@@ -48,14 +48,14 @@ Test-NetConnection 192.168.2.101 -Port 22
 ### 3.1 在电脑上校验安装包
 
 ```powershell
-$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb"
+$Package = "D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb"
 Get-FileHash -Algorithm SHA256 -LiteralPath $Package
 ```
 
 输出必须是：
 
 ```text
-4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D
+E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2
 ```
 
 哈希不一致时停止安装，重新下载 CI 产物。
@@ -91,7 +91,7 @@ sha256sum /var/tmp/vcam.deb
 手机端哈希必须与电脑端完全一致：
 
 ```text
-4dbb2420b64c7746aa703396751d8742b99f097ebb979c5219ed7b82be65ad1d
+e085255b8c1a89ebbc1bf52b2be6d6d9f1aa5c90ed47f484cc5443d8b5f139c2
 ```
 
 ### 3.4 安装
@@ -125,7 +125,7 @@ dpkg-query -W com.codex.vcam
 当前版本应显示：
 
 ```text
-com.codex.vcam    0.8.83+ios16-transport-stability
+com.codex.vcam    0.8.84+ios16-hls-loopback-stability
 ```
 
 ### 4.2 检查关键进程
@@ -150,7 +150,7 @@ tail -n 50 /var/mobile/Media/VCAM/broker-probe.log
 应出现类似：
 
 ```text
-tag=com.codex.vcam/0.8.83+ios16-transport-stability
+tag=com.codex.vcam/0.8.84+ios16-hls-loopback-stability
 ```
 
 软件包安装、进程存在和 dylib 映射并不等于功能验收。还应在系统相机和 Safari `getUserMedia` 页面中检查虚拟画面、方向、裁剪比例、小白点和悬浮预览。

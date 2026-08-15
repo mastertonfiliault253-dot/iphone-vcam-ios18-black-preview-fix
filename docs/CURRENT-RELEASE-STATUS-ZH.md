@@ -6,34 +6,36 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 包版本 | `0.8.83+ios16-transport-stability` |
-| CI 构建提交 | `2e1d23ea034ce12b481509867274fec6b75058c9` |
-| 运行时代码提交 | `37def391236026f724180649c24d6b59b757b0b0` |
-| 构建提交说明 | `docs: align transport stability release evidence` |
+| 包版本 | `0.8.84+ios16-hls-loopback-stability` |
+| CI 构建提交 | `770b45210300fc6d0c9b1aa70b40b52088378195` |
+| 运行时代码提交 | `770b45210300fc6d0c9b1aa70b40b52088378195` |
+| 构建提交说明 | `fix: relay LAN HLS through authenticated loopback` |
 | 发布分支 | `codex/ios16-media-bridge` |
 | 发布 remote | `newrepo`（`djw415024-ctrl/iphone-vcam-ios16-private`） |
-| macOS CI run | `31825692857`（成功） |
+| macOS CI run | `31863022706`（成功） |
 | DEB 架构 | `iphoneos-arm64`，包内客户端包含 `arm64`/`arm64e` |
-| DEB 大小 | `1,107,352` 字节 |
-| DEB SHA-256 | `4DBB2420B64C7746AA703396751D8742B99F097EBB979C5219ED7B82BE65AD1D` |
+| DEB 大小 | `1,119,944` 字节 |
+| DEB SHA-256 | `E085255B8C1A89EBBC1BF52B2BE6D6D9F1AA5C90ED47F484CC5443D8B5F139C2` |
 | 支持系统 | iOS `>= 16.0` 且 `< 16.6` |
 | 越狱布局 | rootless |
 
 本机已校验的 CI 产物：
 
 ```text
-D:\work\IOSVCAN-DS\vcam\dist\ci-2e1d23e-run31825692857\com.codex.vcam_0.8.83+ios16-transport-stability_iphoneos-arm64.deb
+D:\work\IOSVCAN-DS\vcam\dist\ci-770b452-run31863022706\com.codex.vcam_0.8.84+ios16-hls-loopback-stability_iphoneos-arm64.deb
 ```
 
 运行时可在 `/var/mobile/Media/VCAM/broker-probe.log` 中核对：
 
 ```text
-tag=com.codex.vcam/0.8.83+ios16-transport-stability
+tag=com.codex.vcam/0.8.84+ios16-hls-loopback-stability
 ```
 
 ## 2. 本版本的主要技术变化
 
 本版本在上一轮完整审查基础上收敛 RTSP/HLS 传输：
+
+- 新增数字 IP 的普通 HTTP 局域网 HLS 认证回环代理：SpringBoard 通过身份校验的 XPC 在 `vcamd` 登记随机会话，`AVPlayer` 只访问 tokenized `127.0.0.1`，`vcamd` 仅转发绑定上游的清单/分片字节；对无扩展名或 chunked 响应做 `#EXTM3U` 签名探测；会话建立失败按指数退避重试，快速切源用单调 generation 淘汰旧任务；
 
 - 继续保留真实物理相机图作为 WebKit 分辨率、帧率、像素格式、时间戳和附件的协商外壳，只替换像素；
 - WebKit 终端仍按已验证的 iOS 16 存储基准做一次方向补偿和 full-bleed 中心裁剪，不拉伸、不添加 VCAM 黑边；
@@ -59,16 +61,18 @@ tag=com.codex.vcam/0.8.83+ios16-transport-stability
 以下证据已经具备：
 
 - 候选 DEB 由提交 `2e1d23e` 构建；最后一次运行时代码变化为 `37def39`，其后的差异仅为审查后的测试注释和文档；
-- `control` 与 `VCAMBuildTag()` 均为 `0.8.83+ios16-transport-stability`；
+- `control` 与 `VCAMBuildTag()` 均为 `0.8.84+ios16-hls-loopback-stability`；
 - 181 项主机回归测试通过，WSL arm64/arm64e 双架构编译通过；
 - macOS CI run `31825692857` 成功产生 CI 候选 DEB；
 - 本地从该 DEB 独立提取两个客户端，均为 `arm64`/`arm64e`；两个 arm64e 薄片均含非空 `__objc_stubs` 和 `__objc_intobj`；
 - 本机保存的 DEB SHA-256 已重新计算并与安装文档一致；
 - Debian `postinst`、`prerm`、`postrm` 在 Git 索引和该 CI 候选包中均为可执行文件。
 
-该精确 CI 包已部署到 `192.168.2.101`，`dpkg-query` 返回 `0.8.83+ios16-transport-stability`。`192.168.2.201` 本轮未部署。
+该精确 CI 包已部署到 `192.168.2.101`，`dpkg-query` 返回 `0.8.84+ios16-hls-loopback-stability`。`192.168.2.201` 本轮未部署。
 
 ## 4. 当前真机证据
+
+> `0.8.84` 候选尚未部署到真机（本次安装时 `192.168.2.101` 的 SSH 在握手阶段被远端关闭）。以下为上一候选 `0.8.83` 在 `192.168.2.101` 上已取得的证据，不能外推为 `0.8.84` 已经通过。
 
 精确 `0.8.83` 包在主要测试机 `192.168.2.101` 上已经证明：
 
