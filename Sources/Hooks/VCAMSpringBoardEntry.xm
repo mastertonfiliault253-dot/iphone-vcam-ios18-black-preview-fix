@@ -27,10 +27,12 @@ static void VCAMWriteClientProof(void) {
     @autoreleasepool {
         VCAMWriteClientProof();
         [VCAMConfiguration startWriteBroker];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[VCAMMediaPickerController sharedController] startControlUI];
+        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[VCAMSpringBoardMediaBridge sharedBridge] start];
-            [[VCAMMediaPickerController sharedController] startControlUI];
         });
     }
 }

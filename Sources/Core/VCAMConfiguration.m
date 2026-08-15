@@ -152,6 +152,15 @@ static BOOL VCAMConfigurationValueIsValid(NSString *key, id value) {
         return [value isKindOfClass:NSDictionary.class] &&
             [NSJSONSerialization isValidJSONObject:value];
     }
+    if ([key isEqualToString:@"savedStreams"]) {
+        if (![value isKindOfClass:NSArray.class]) return NO;
+        NSArray<NSString *> *entries = (NSArray<NSString *> *)value;
+        if (entries.count > 24) return NO;
+        for (NSString *entry in entries) {
+            if (![entry isKindOfClass:NSString.class] || entry.length == 0 || entry.length > 4096) return NO;
+        }
+        return [NSJSONSerialization isValidJSONObject:value];
+    }
     return NO;
 }
 
@@ -199,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.84+ios16-hls-loopback-stability";
+    return "com.codex.vcam/0.8.85+ios16-dot-stream-history";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -671,7 +680,7 @@ static SecKeyRef VCAMLicenseSecKey(void) {
             @"preferredFramesPerSecond", @"rotationDegrees", @"mirrorHorizontally",
             @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL", @"hlsURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
-            @"floatingButtonPositions", @"floatingButtonVisibility",
+            @"floatingButtonPositions", @"floatingButtonVisibility", @"savedStreams",
         ]];
     });
     return keys;

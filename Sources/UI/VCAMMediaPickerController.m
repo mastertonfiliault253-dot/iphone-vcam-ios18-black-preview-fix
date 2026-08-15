@@ -148,6 +148,9 @@ static NSString *VCAMNormalizedMediaName(NSString *suggestedName,
 @property(atomic) NSUInteger onlineDownloadGeneration;
 @property(atomic, copy, nullable) NSString *onlineDownloadLimitError;
 - (void)installButtonWhenWindowIsReady;
+- (void)presentStreamChooser;
+- (BOOL)applyStreamURL:(NSURL *)url;
+- (void)rememberStreamURL:(NSString *)urlString;
 @end
 
 static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
@@ -313,18 +316,27 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 - (nullable UIWindow *)cameraWindow {
     UIWindow *springBoardWindow = [self springBoardHomeWindow];
     if (springBoardWindow != nil) return springBoardWindow;
+    UIWindow *anyKeyWindow = nil;
+    UIWindow *anyVisibleWindow = nil;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (scene.activationState != UISceneActivationStateForegroundActive ||
-            ![scene isKindOfClass:UIWindowScene.class]) continue;
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
+        BOOL active = scene.activationState == UISceneActivationStateForegroundActive ||
+                      scene.activationState == UISceneActivationStateForegroundInactive;
         for (UIWindow *window in windowScene.windows) {
-            if (window.isKeyWindow && !window.hidden && window.windowLevel == UIWindowLevelNormal) return window;
-        }
-        for (UIWindow *window in windowScene.windows) {
-            if (!window.hidden && window.windowLevel == UIWindowLevelNormal && window.rootViewController != nil) return window;
+            if (window == nil || window.hidden ||
+                [window.accessibilityIdentifier isEqualToString:VCAMFloatingWindowIdentifier]) continue;
+            if (window.isKeyWindow) {
+                if (active) return window;
+                if (anyKeyWindow == nil) anyKeyWindow = window;
+            }
+            if (anyVisibleWindow == nil && window.rootViewController != nil &&
+                window.windowLevel >= UIWindowLevelNormal) anyVisibleWindow = window;
         }
     }
-    return nil;
+    if (anyKeyWindow != nil) return anyKeyWindow;
+    if (anyVisibleWindow != nil) return anyVisibleWindow;
+    return [self keySceneWindow];
 }
 
 - (NSArray<UIWindow *> *)allVisibleWindows {
@@ -852,7 +864,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 
 - (void)controlPanelDidRequestLiveStream:(VCAMControlPanelViewController *)panel {
     (void)panel;
-    [self promptForLiveStream];
+    [self presentStreamChooser];
 }
 
 - (void)controlPanelDidRequestClockwiseRotation:(VCAMControlPanelViewController *)panel {
@@ -1066,6 +1078,77 @@ didCompleteWithError:(NSError *)error {
     });
 }
 
+- (void)presentStreamChooser {
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSArray *saved = values[@"savedStreams"];
+    if (![saved isKindOfClass:NSArray.class] || saved.count == 0) {
+        [self promptForLiveStream];
+        return;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"已保存的直播流"
+                                                                   message:@"点选即可切换，或输入新地址"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *entry in saved) {
+        if (![entry isKindOfClass:NSString.class] || entry.length == 0) continue;
+        NSURL *url = [NSURL URLWithString:entry];
+        if (url == nil) continue;
+        [sheet addAction:[UIAlertAction actionWithTitle:entry style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self applyStreamURL:url];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"＋ 输入新地址" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self promptForLiveStream];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [[self presentingViewController] presentViewController:sheet animated:YES completion:nil];
+}
+
+- (BOOL)applyStreamURL:(NSURL *)url {
+    if (url == nil) return NO;
+    NSString *scheme = url.scheme.lowercaseString;
+    BOOL isWebSocket = [@[@"ws", @"wss"] containsObject:scheme];
+    BOOL isRTSP = [scheme isEqualToString:@"rtsp"];
+    BOOL isHLS = [@[@"http", @"https"] containsObject:scheme];
+    if (!isWebSocket && !isRTSP && !isHLS) {
+        [self showMessage:@"直播流地址必须以 ws://、wss://、rtsp:// 或 http(s):// 开头" error:YES];
+        return NO;
+    }
+    [self beginMediaSelection];
+    NSMutableDictionary *updates = [@{@"enabled": @YES, @"rotationDegrees": @0, @"mirrorHorizontally": @NO} mutableCopy];
+    NSString *urlString = url.absoluteString ?: @"";
+    if (isRTSP) {
+        updates[@"source"] = @"rtsp";
+        updates[@"rtspURL"] = urlString;
+    } else if (isHLS) {
+        updates[@"source"] = @"hls";
+        updates[@"hlsURL"] = urlString;
+    } else {
+        updates[@"source"] = @"obs";
+        updates[@"obsWebSocketURL"] = urlString;
+    }
+    if (![self updatePreferences:updates]) {
+        [self showMessage:@"直播流配置写入失败" error:YES];
+        return NO;
+    }
+    [self rememberStreamURL:urlString];
+    [self postConfigurationChanged];
+    [self presentPanel];
+    return YES;
+}
+
+- (void)rememberStreamURL:(NSString *)urlString {
+    if (urlString.length == 0) return;
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSArray *existing = values[@"savedStreams"];
+    if (![existing isKindOfClass:NSArray.class]) existing = @[];
+    NSMutableArray *saved = [existing mutableCopy];
+    NSUInteger index = [saved indexOfObject:urlString];
+    if (index != NSNotFound) [saved removeObjectAtIndex:index];
+    [saved insertObject:urlString atIndex:0];
+    while (saved.count > 24) [saved removeLastObject];
+    [self updatePreferences:@{@"savedStreams": saved}];
+}
+
 - (void)promptForLiveStream {
     NSDictionary *values = [VCAMConfiguration currentValues];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"输入直播流"
@@ -1079,36 +1162,7 @@ didCompleteWithError:(NSError *)error {
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"启用" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         NSURL *url = [NSURL URLWithString:alert.textFields.firstObject.text ?: @""];
-        NSString *scheme = url.scheme.lowercaseString;
-        BOOL isWebSocket = [@[@"ws", @"wss"] containsObject:scheme];
-        BOOL isRTSP = [scheme isEqualToString:@"rtsp"];
-        BOOL isHLS = [@[@"http", @"https"] containsObject:scheme];
-        if (!isWebSocket && !isRTSP && !isHLS) {
-            [self showMessage:@"直播流地址必须以 ws://、wss://、rtsp:// 或 http(s):// 开头" error:YES];
-            return;
-        }
-        [self beginMediaSelection];
-        NSMutableDictionary *updates = [@{
-            @"enabled": @YES,
-            @"rotationDegrees": @0,
-            @"mirrorHorizontally": @NO,
-        } mutableCopy];
-        if (isRTSP) {
-            updates[@"source"] = @"rtsp";
-            updates[@"rtspURL"] = url.absoluteString;
-        } else if (isHLS) {
-            updates[@"source"] = @"hls";
-            updates[@"hlsURL"] = url.absoluteString;
-        } else {
-            updates[@"source"] = @"obs";
-            updates[@"obsWebSocketURL"] = url.absoluteString;
-        }
-        if (![self updatePreferences:updates]) {
-            [self showMessage:@"直播流配置写入失败" error:YES];
-            return;
-        }
-        [self postConfigurationChanged];
-        [self presentPanel];
+        [self applyStreamURL:url];
     }]];
     [[self presentingViewController] presentViewController:alert animated:YES completion:nil];
 }

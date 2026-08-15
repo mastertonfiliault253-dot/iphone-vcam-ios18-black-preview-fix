@@ -204,11 +204,11 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceWriterRefreshLatest", daemon)
         self.assertIn('@"rotationDegrees": @0', install)
         self.assertIn('@"mirrorHorizontally": @NO', install)
-        live = picker.split("- (void)promptForLiveStream", 1)[1].split(
-            "- (NSUInteger)beginMediaSelection", 1
+        apply = picker.split("- (BOOL)applyStreamURL:(NSURL *)url {", 1)[1].split(
+            "- (void)rememberStreamURL:(NSString *)urlString {", 1
         )[0]
-        self.assertIn('@"rotationDegrees": @0', live)
-        self.assertIn('@"mirrorHorizontally": @NO', live)
+        self.assertIn('@"rotationDegrees": @0', apply)
+        self.assertIn('@"mirrorHorizontally": @NO', apply)
 
     def test_async_media_selection_is_backgrounded_main_committed_and_last_wins(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
@@ -1080,6 +1080,22 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("metadata.st_size > 4 * 1024 * 1024", mediaserver)
         self.assertIn("flock(descriptor, LOCK_EX)", configuration)
         self.assertIn("flock(descriptor, LOCK_EX)", mediaserver)
+
+
+    def test_live_stream_saved_connections_are_persisted_and_switchable(self) -> None:
+        configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
+            encoding="utf-8"
+        )
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('@"savedStreams"', configuration)
+        self.assertIn('key isEqualToString:@"savedStreams"', configuration)
+        self.assertIn("- (void)presentStreamChooser", picker)
+        self.assertIn("- (BOOL)applyStreamURL:", picker)
+        self.assertIn("- (void)rememberStreamURL:", picker)
+        self.assertIn("[self presentStreamChooser]", picker)
+        self.assertIn("[self rememberStreamURL:urlString]", picker)
 
 
 if __name__ == "__main__":
