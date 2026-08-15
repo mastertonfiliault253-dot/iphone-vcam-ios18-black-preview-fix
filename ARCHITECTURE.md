@@ -137,7 +137,6 @@ Decisions:
 - The fixed three-slot mmap now accepts NV12 (BGRA remains compatible) because
   RTSP's production transport is the mmap.
 
-Status: mmap NV12 support and the mediaserverd NV12 read have landed. Core
-Image already accepts NV12 input, so no separate YUV rotation path is needed.
-Remaining: producers (RTSP/HLS/local video) publish NV12. Runtime behavior is
-unchanged until those producers switch.
+Status: mmap NV12, the mediaserverd NV12 read and the RTSP producer NV12 path
+have landed. Core Image already accepts NV12 input, so no separate YUV rotation
+path is needed. Remaining: HLS and local-video producers publish NV12.
