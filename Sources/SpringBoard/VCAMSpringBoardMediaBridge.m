@@ -78,6 +78,39 @@ static void VCAMSetRGBColorAttachments(CVPixelBufferRef pixelBuffer) {
                           kCVAttachmentMode_ShouldPropagate);
 }
 
+static BOOL VCAMCopyNV12PixelBuffer(CVPixelBufferRef source,
+                                     CVPixelBufferRef destination) {
+    if (source == NULL || destination == NULL) return NO;
+    size_t width = CVPixelBufferGetWidth(source);
+    size_t height = CVPixelBufferGetHeight(source);
+    if (CVPixelBufferGetWidth(destination) != width ||
+        CVPixelBufferGetHeight(destination) != height) return NO;
+    if (CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) return NO;
+    if (CVPixelBufferLockBaseAddress(destination, 0) != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+    const uint8_t *ySource = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0);
+    size_t ySourceRowBytes = CVPixelBufferGetBytesPerRowOfPlane(source, 0);
+    uint8_t *yDestination = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(destination, 0);
+    size_t yDestinationRowBytes = CVPixelBufferGetBytesPerRowOfPlane(destination, 0);
+    for (size_t row = 0; row < height; row++) {
+        memcpy(yDestination + row * yDestinationRowBytes,
+               ySource + row * ySourceRowBytes, width);
+    }
+    const uint8_t *uvSource = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1);
+    size_t uvSourceRowBytes = CVPixelBufferGetBytesPerRowOfPlane(source, 1);
+    uint8_t *uvDestination = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(destination, 1);
+    size_t uvDestinationRowBytes = CVPixelBufferGetBytesPerRowOfPlane(destination, 1);
+    for (size_t row = 0; row < height / 2; row++) {
+        memcpy(uvDestination + row * uvDestinationRowBytes,
+               uvSource + row * uvSourceRowBytes, width);
+    }
+    CVPixelBufferUnlockBaseAddress(destination, 0);
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    return YES;
+}
+
 static void VCAMSpringBoardMediaPreferencesChanged(
     CFNotificationCenterRef center, void *observer, CFStringRef name,
     const void *object, CFDictionaryRef userInfo) {
@@ -852,6 +885,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 
 - (BOOL)publishPixelBuffer:(CVPixelBufferRef)source sourceName:(NSString *)sourceName {
     uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+    OSType sourceFormat = source == NULL ? 0 : CVPixelBufferGetPixelFormatType(source);
+    BOOL nv12Direct = !self.localVideo && self.configuration.rotationDegrees == 0 &&
+        !self.configuration.mirrorHorizontally &&
+        (sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+         sourceFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
     CIImage *image = [self imageByOrientingPixelBuffer:source];
     CGRect sourceExtent = image == nil ? CGRectZero : image.extent;
     uint32_t outputWidth = (uint32_t)MAX(2.0, ceil(CGRectGetWidth(sourceExtent)));
@@ -868,9 +906,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.lastSurfaceProbeTimestampNanoseconds = 0;
     }
     if (image != nil && self.surfaceWriter == NULL) {
+        OSType surfaceFormat = nv12Direct
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            : kCVPixelFormatType_32BGRA;
         self.surfaceWriter = VCAMSharedSurfaceWriterCreateConfigured(
             outputWidth, outputHeight,
-            kCVPixelFormatType_32BGRA,
+            surfaceFormat,
             VCAMSharedFrameSlotCount);
         if (self.surfaceWriter != NULL) {
             self.surfaceWidth = outputWidth;
@@ -902,18 +943,24 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     BOOL published = NO;
     if (destinationStatus == kCVReturnSuccess && destination != NULL) {
         if (image != nil) {
-            CGRect target = useSurfaceDestination
-                ? CGRectMake(0, 0, outputWidth, outputHeight)
-                : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
-            CIImage *renderImage = useSurfaceDestination ? image
-                : [self legacyCanvasImageFromOrientedImage:image];
-            if (useSurfaceDestination) {
-                VCAMSetRGBColorAttachments(destination);
-            } else {
+            if (useSurfaceDestination && nv12Direct) {
+                // HLS publishes NV12 directly; no Core Image BGRA round-trip.
+                (void)VCAMCopyNV12PixelBuffer(source, destination);
                 VCAMSetVideoColorAttachments(destination);
+            } else {
+                CGRect target = useSurfaceDestination
+                    ? CGRectMake(0, 0, outputWidth, outputHeight)
+                    : CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+                CIImage *renderImage = useSurfaceDestination ? image
+                    : [self legacyCanvasImageFromOrientedImage:image];
+                if (useSurfaceDestination) {
+                    VCAMSetRGBColorAttachments(destination);
+                } else {
+                    VCAMSetVideoColorAttachments(destination);
+                }
+                [self.context render:renderImage toCVPixelBuffer:destination bounds:target
+                          colorSpace:self.colorSpace];
             }
-            [self.context render:renderImage toCVPixelBuffer:destination bounds:target
-                      colorSpace:self.colorSpace];
             if (useSurfaceDestination) {
                 BOOL surfacePublished = VCAMSharedSurfaceWriterPublish(
                     self.surfaceWriter, destination);

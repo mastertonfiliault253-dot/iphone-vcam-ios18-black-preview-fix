@@ -214,7 +214,9 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceWriterCreateConfigured", source)
         self.assertIn("outputWidth, outputHeight", source)
         self.assertNotIn("CGContextDrawImage", source)
-        self.assertNotIn("memcpy(", source)
+        # HLS NV12 is copied directly (fast CPU copy) instead of a GPU Core Image
+        # round-trip; the BGRA path still uses Core Image above.
+        self.assertIn("VCAMCopyNV12PixelBuffer", source)
 
     def test_iosurface_transport_has_bounded_ring_and_mmap_fallback(self) -> None:
         shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
