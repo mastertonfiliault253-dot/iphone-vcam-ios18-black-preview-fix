@@ -11,3 +11,4 @@ tools/ffmpeg-win/
 tools/license-101.plist
 tools/license-202.plist
 tools/license.plist
+tools/.license-ui-state.json

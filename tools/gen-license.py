@@ -20,13 +20,19 @@ def gen_license(udid, expiry_date="2099-12-31"):
     }
 
 
-def print_license(lic):
-    import io, base64
+def license_plist_bytes(lic):
     bdata = io.BytesIO()
     plistlib.dump(lic, bdata, fmt=plistlib.FMT_BINARY)
-    b64 = base64.b64encode(bdata.getvalue()).decode()
+    return bdata.getvalue()
+
+
+def license_b64(lic):
+    return base64.b64encode(license_plist_bytes(lic)).decode()
+
+
+def print_license(lic):
     print('=== Paste this into the device dialog ===')
-    print(b64)
+    print(license_b64(lic))
     print('=== END ===')
 
 if __name__ == "__main__":
@@ -39,6 +45,6 @@ if __name__ == "__main__":
     expiry = sys.argv[2] if len(sys.argv) > 2 else "2099-12-31"
     lic = gen_license(udid, expiry)
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(KEY_DIR, "license.plist")
-    bdata = io.BytesIO(); plistlib.dump(lic, bdata, fmt=plistlib.FMT_BINARY); open(out, "wb").write(bdata.getvalue())
+    open(out, "wb").write(license_plist_bytes(lic))
     print_license(lic)
     
