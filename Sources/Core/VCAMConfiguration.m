@@ -208,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.92+ios16-nv12-rtsp-rotate";
+    return "com.codex.vcam/0.8.93+ios16-nv12-rtsp-ignore-rotate";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
