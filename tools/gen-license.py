@@ -1,5 +1,5 @@
 """VCAM License Generator — RSA-2048 sign device UDID + expiry date."""
-import sys, os, plistlib, base64
+import sys, os, io, plistlib, base64
 from datetime import datetime
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     udid = sys.argv[1].strip().upper()
     expiry = sys.argv[2] if len(sys.argv) > 2 else "2099-12-31"
     lic = gen_license(udid, expiry)
-    out = sys.argv[3] if len(sys.argv) > 3 else "license.plist"
+    out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(KEY_DIR, "license.plist")
     bdata = io.BytesIO(); plistlib.dump(lic, bdata, fmt=plistlib.FMT_BINARY); open(out, "wb").write(bdata.getvalue())
     print_license(lic)
     
