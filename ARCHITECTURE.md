@@ -136,10 +136,10 @@ Decisions:
   keep their in-app rotation.
 - The fixed three-slot mmap now accepts NV12 (BGRA remains compatible) because
   RTSP's production transport is the mmap.
-- RTSP panel rotation/mirror changes must not restart the FFmpeg source:
-  `VCAMConfigurationsProduceSameFrames` treats RTSP transform as equal so the
-  renderer's identity NV12 path stays live mid-stream (rotation is applied only
-  at the push end).
+- RTSP panel rotation/mirror/fill-mode changes must not restart the FFmpeg
+  source: `VCAMConfigurationsProduceSameFrames` treats RTSP transform and
+  content mode as equal so the renderer's identity NV12 path stays live
+  mid-stream (rotation and fill are applied only at the push end).
 
 Status: mmap NV12, the mediaserverd NV12 read, and the RTSP, HLS and local
 video producer NV12 paths have landed. Core Image accepts NV12 input and renders

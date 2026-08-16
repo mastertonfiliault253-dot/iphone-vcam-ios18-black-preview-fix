@@ -29,19 +29,21 @@ static BOOL VCAMObjectsEqual(id left, id right) {
 static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                 VCAMConfiguration *right) {
     if (left == nil || right == nil) return NO;
-    // RTSP transform is applied at the push end; panel rotation/mirror changes
-    // must not tear down and restart the FFmpeg source (it garbles playback).
+    // RTSP transform and fill mode are applied at the push end; panel
+    // rotation/mirror/content-mode changes must not tear down and restart the
+    // FFmpeg source (it garbles playback).
     BOOL rtsp = left.sourceKind == VCAMSourceKindRTSP &&
         right.sourceKind == VCAMSourceKindRTSP;
     BOOL transformMatches = rtsp ||
         (left.mirrorHorizontally == right.mirrorHorizontally &&
          left.rotationDegrees == right.rotationDegrees);
+    BOOL contentModeMatches = rtsp || left.contentMode == right.contentMode;
     return left.enabled == right.enabled &&
         left.replaceAudio == right.replaceAudio &&
         left.loopMedia == right.loopMedia &&
         transformMatches &&
         left.sourceKind == right.sourceKind &&
-        left.contentMode == right.contentMode &&
+        contentModeMatches &&
         left.preferredFramesPerSecond == right.preferredFramesPerSecond &&
         left.localDecoderMode == right.localDecoderMode &&
         VCAMObjectsEqual(left.mediaPath, right.mediaPath) &&
