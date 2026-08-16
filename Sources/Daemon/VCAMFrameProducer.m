@@ -237,18 +237,12 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     // RTSP publishes NV12 only for the identity transform (rotation is handled
     // at the push end). When the panel rotates RTSP, fall back to BGRA so the
     // existing vImage NV12->BGRA path still renders the rotation correctly.
-    BOOL identityTransform = self.configuration.rotationDegrees == 0 &&
-        !self.configuration.mirrorHorizontally;
-    OSType templateFormat = (self.configuration.sourceKind == VCAMSourceKindRTSP &&
-                             identityTransform)
+    // RTSP always publishes NV12 (rotation is ignored; handled at push end).
+    OSType templateFormat = self.configuration.sourceKind == VCAMSourceKindRTSP
         ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         : kCVPixelFormatType_32BGRA;
-    CVPixelBufferRef existingImage = _templateSample == NULL ? NULL
-        : CMSampleBufferGetImageBuffer(_templateSample);
-    OSType existingFormat = existingImage == NULL ? 0
-        : CVPixelBufferGetPixelFormatType(existingImage);
     if (_templateSample == NULL || (size_t)_templateSize.width != width ||
-        (size_t)_templateSize.height != height || existingFormat != templateFormat) {
+        (size_t)_templateSize.height != height) {
         if (_templateSample != NULL) CFRelease(_templateSample);
         _templateSample = NULL;
         _templateSize = CGSizeMake(width, height);

@@ -161,8 +161,11 @@
                                   configuration:(VCAMConfiguration *)configuration {
     CVImageBufferRef target = CMSampleBufferGetImageBuffer(templateBuffer);
     if (pixelBuffer == NULL || target == NULL) return NULL;
+    // RTSP rotation is handled at the push end; ignore panel rotation/mirror
+    // so the NV12 identity path always applies for RTSP.
     BOOL identity = CGAffineTransformIsIdentity(sourceTransform) &&
-        configuration.rotationDegrees == 0 && !configuration.mirrorHorizontally;
+        (configuration.sourceKind == VCAMSourceKindRTSP ||
+         (configuration.rotationDegrees == 0 && !configuration.mirrorHorizontally));
     if (identity && CVPixelBufferGetWidth(pixelBuffer) == CVPixelBufferGetWidth(target) &&
         CVPixelBufferGetHeight(pixelBuffer) == CVPixelBufferGetHeight(target) &&
         CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA) {
