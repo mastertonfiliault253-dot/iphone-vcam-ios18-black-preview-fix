@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #include <stdio.h>
 #include <string.h>
+#include <notify.h>
 
 static void VCAMFourCCString(OSType value, char output[5]) {
     output[0] = (char)((value >> 24) & 0xff);
@@ -554,6 +555,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         %orig(sampleBuffer);
         return;
     }
+
+    notify_post("com.codex.vcam.ios18.frame");
 
     // Usually completed by the constructor warm-up. dispatch_once inside the
     // renderer makes this a no-op; an unusually early first frame waits for the
