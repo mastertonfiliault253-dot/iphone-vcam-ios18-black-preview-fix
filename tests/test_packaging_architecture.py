@@ -83,7 +83,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertFalse(targets["vcaminjectd"]["injected"])
         self.assertEqual(
             targets["vcaminjectd"]["allowedTargets"],
-            ["SpringBoard", "mediaserverd"],
+            ["SpringBoard", "cameracaptured"],
         )
         self.assertEqual(
             targets["VCAMSpringBoardClient"]["bundleIds"],
@@ -105,7 +105,7 @@ class PackagingArchitectureTests(unittest.TestCase):
                 "hls-ffmpeg-videotoolbox",
             ],
         )
-        self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["mediaserverd"])
+        self.assertEqual(targets["VCAMMediaServerClient"]["executables"], ["cameracaptured"])
 
     def test_launchdaemon_runs_package_worker_from_rootless_prefix(self) -> None:
         launchd = (
@@ -123,7 +123,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("launchctl print system/com.codex.vcamd", postinst)
         self.assertIn("launchctl bootout system/com.codex.vcamd", prerm)
         self.assertIn('remove|purge)', postrm)
-        self.assertIn("killall -9 mediaserverd", postrm)
+        self.assertIn("killall -9 cameracaptured", postrm)
         self.assertIn("killall -9 SpringBoard", postrm)
 
         injection_launchd = (
@@ -139,7 +139,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         postinst = (
             ROOT / "layout" / "DEBIAN" / "postinst"
         ).read_text(encoding="utf-8")
-        restart = "killall -9 SpringBoard mediaserverd"
+        restart = "killall -9 SpringBoard cameracaptured"
         self.assertIn(restart, postinst)
         self.assertLess(
             postinst.index(restart),

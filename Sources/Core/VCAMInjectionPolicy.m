@@ -35,7 +35,7 @@
     if ([bundle containsString:@"com.apple.webkit"] || [process containsString:@"webkit"]) {
         return VCAMInjectionTargetWebKit;
     }
-    if ([process isEqualToString:@"mediaserverd"]) return VCAMInjectionTargetMediaServer;
+    if (([process isEqualToString:@"cameracaptured"] || [process isEqualToString:@"mediaserverd"])) return VCAMInjectionTargetMediaServer;
     return VCAMInjectionTargetUnknown;
 }
 
@@ -135,7 +135,7 @@
         case VCAMInjectionTargetFirefox: return @"Firefox";
         case VCAMInjectionTargetGoogle: return @"Google";
         case VCAMInjectionTargetWebKit: return @"WebKit WebContent";
-        case VCAMInjectionTargetMediaServer: return @"mediaserverd";
+        case VCAMInjectionTargetMediaServer: return @"cameracaptured";
         case VCAMInjectionTargetSpringBoard: return @"主屏 SpringBoard";
         case VCAMInjectionTargetUnknown: return @"未知进程";
     }

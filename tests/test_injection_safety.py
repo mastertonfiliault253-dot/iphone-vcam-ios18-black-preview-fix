@@ -15,7 +15,7 @@ class InjectionSafetyTests(unittest.TestCase):
 
         media = (ROOT / "VCAMMediaServerClient.plist").read_text(encoding="utf-8")
         springboard = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
-        self.assertIn("mediaserverd", media)
+        self.assertIn("cameracaptured", media)
         self.assertNotIn("Bundles", media)
         self.assertIn("com.apple.springboard", springboard)
         self.assertIn("SpringBoard", springboard)

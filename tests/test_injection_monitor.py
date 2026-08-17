@@ -16,7 +16,7 @@ class InjectionMonitorTests(unittest.TestCase):
             '.processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"',
             source,
         )
-        self.assertIn('.processPath = "/usr/sbin/mediaserverd"', source)
+        self.assertIn('.processPath = "/usr/libexec/cameracaptured"', source)
         self.assertEqual(source.count(".dylibPath ="), 2)
         # Application clients (Camera, Safari, browsers) are loaded by ElleKit
         # from the plist filter; opainject must never target an app process.

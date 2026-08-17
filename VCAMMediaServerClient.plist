@@ -1,8 +1,8 @@
 {
     Filter = {
         Executables = (
-            "/usr/sbin/mediaserverd",
-            mediaserverd,
+            "/usr/libexec/cameracaptured",
+            cameracaptured,
         );
     };
 }

@@ -181,8 +181,8 @@ int main(int argc, char *argv[]) {
             .proofFormat = "pid=%d start=%llu ",
         },
         {
-            .name = "mediaserverd",
-            .processPath = "/usr/sbin/mediaserverd",
+            .name = "cameracaptured",
+            .processPath = "/usr/libexec/cameracaptured",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib",
             .proofPath = "/var/tmp/vcam-ref-msd.log",
             .proofFormat = "[%d][start=%llu][",

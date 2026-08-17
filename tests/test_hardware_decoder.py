@@ -105,7 +105,7 @@ class HardwareDecoderTests(unittest.TestCase):
         # must not gate identity; config-auth issues 10s tokens to any loopback
         # peer so Camera/Safari can reach the SpringBoard broker (0.8.80 parity).
         self.assertNotIn("VCAMProcessStartToken", broker)
-        self.assertIn('@"/usr/sbin/mediaserverd"', broker)
+        self.assertIn('@"/usr/libexec/cameracaptured"', broker)
         self.assertIn('@"/usr/libexec/vcamd"', broker)
         self.assertIn('@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"', broker)
         self.assertIn("Signing-identity gates (csops) are intentionally not used", broker)

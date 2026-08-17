@@ -49,8 +49,8 @@ vcam_best_effort_inject() {
             process_pattern='/SpringBoard.app/SpringBoard'
             proof_path=/var/tmp/vcam-springboard-client.log
             ;;
-        mediaserverd)
-            process_pattern='/usr/sbin/mediaserverd'
+        cameracaptured)
+            process_pattern='/usr/libexec/cameracaptured'
             proof_path=/var/tmp/vcam-ref-msd.log
             ;;
         *)
@@ -75,7 +75,7 @@ vcam_best_effort_inject() {
 
         case "$target_name" in
             SpringBoard) proof_pattern="pid=$target_pid " ;;
-            mediaserverd) proof_pattern="[$target_pid][" ;;
+            cameracaptured) proof_pattern="[$target_pid][" ;;
         esac
         if grep -Fq "$proof_pattern" "$proof_path" 2>/dev/null; then
             vcam_log_injection "already-loaded target=$target_name pid=$target_pid proof=1"
@@ -110,11 +110,11 @@ vcam_best_effort_inject() {
 # and producing duplicate UI/broker behavior. Respawn both exact hosts first.
 : > /var/tmp/vcam-springboard-client.log 2>/dev/null || true
 : > /var/tmp/vcam-ref-msd.log 2>/dev/null || true
-killall -9 SpringBoard mediaserverd >/dev/null 2>&1 || true
+killall -9 SpringBoard cameracaptured >/dev/null 2>&1 || true
 sleep 1
 
 vcam_best_effort_inject SpringBoard /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
-vcam_best_effort_inject mediaserverd /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
+vcam_best_effort_inject cameracaptured /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
 
 inject_daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcaminjectd.plist
 if [ -e "$inject_daemon_plist" ]; then

@@ -156,9 +156,11 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     // Signing-identity gates (csops) are intentionally not used: under a
     // jailbreak they are unreliable and rejected legitimate peers that the
     // exact path/name/bundle allow-list below already constrains.
-    if ([path isEqualToString:@"/usr/sbin/mediaserverd"] &&
-        strcmp(name, "mediaserverd") == 0 &&
-        VCAMPeerIsPlatformBinary(pid)) {
+    if (VCAMPeerIsPlatformBinary(pid) &&
+        (([path isEqualToString:@"/usr/libexec/cameracaptured"] &&
+          strcmp(name, "cameracaptured") == 0) ||
+         ([path isEqualToString:@"/usr/sbin/mediaserverd"] &&
+          strcmp(name, "mediaserverd") == 0))) {
         return VCAMSurfaceBrokerPeerIdentityMediaServer;
     }
     if ([path hasSuffix:@"/usr/libexec/vcamd"] &&

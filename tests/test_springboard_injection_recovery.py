@@ -25,7 +25,7 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         self.assertIn('"com.google.chrome.ios"', springboard_filter)
         self.assertIn('"com.microsoft.msedge"', springboard_filter)
         self.assertIn('"org.mozilla.ios.Firefox"', springboard_filter)
-        self.assertIn("mediaserverd", media_filter)
+        self.assertIn("cameracaptured", media_filter)
 
     def test_postinstall_recovers_exact_targets_with_exact_dylibs_only(self) -> None:
         postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(
@@ -36,14 +36,14 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
             "/var/jb/Library/MobileSubstrate/DynamicLibraries/"
             "VCAMSpringBoardClient.dylib"
         )
-        mediaserverd_call = (
-            "vcam_best_effort_inject mediaserverd "
+        cameracaptured_call = (
+            "vcam_best_effort_inject cameracaptured "
             "/var/jb/Library/MobileSubstrate/DynamicLibraries/"
             "VCAMMediaServerClient.dylib"
         )
         self.assertEqual(postinst.count("vcam_best_effort_inject "), 2)
         self.assertIn(springboard_call, postinst)
-        self.assertIn(mediaserverd_call, postinst)
+        self.assertIn(cameracaptured_call, postinst)
         self.assertIn("/var/jb/usr/bin/opainject", postinst)
         self.assertIn("/var/tmp/vcam-postinst-inject.log", postinst)
         self.assertNotIn("TweakLoader.dylib", postinst)

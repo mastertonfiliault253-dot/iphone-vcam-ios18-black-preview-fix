@@ -66,7 +66,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :com.apple.private.memorystatus' /tmp/vcamd-entitlements.plist | grep -qx true
           obsolete_count="$(find .theos/_ -type f \( -name VCAM.dylib -o -name VCAMAppClient.dylib -o -name VCAMWebKitClient.dylib \) -print | wc -l | tr -d ' ')"
           test "$obsolete_count" -eq 0
-          grep -q '"/usr/sbin/mediaserverd"' Sources/Daemon/VCAMInjectionMonitor.m
+          grep -q '"/usr/libexec/cameracaptured"' Sources/Daemon/VCAMInjectionMonitor.m
           grep -q '"/System/Library/CoreServices/SpringBoard.app/SpringBoard"' Sources/Daemon/VCAMInjectionMonitor.m
           test "$(grep -c '^            \.processPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 2
           test "$(grep -c '^            \.dylibPath = ' Sources/Daemon/VCAMInjectionMonitor.m)" -eq 2

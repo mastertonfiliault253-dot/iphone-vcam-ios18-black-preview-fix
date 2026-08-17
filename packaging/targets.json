@@ -12,7 +12,7 @@
       "binary": "VCAMMediaServerClient.dylib",
       "role": "nonblocking-latest-frame-consumer",
       "bundleIds": [],
-      "executables": ["mediaserverd"],
+      "executables": ["cameracaptured"],
       "injected": true,
       "forbiddenDependencies": ["FFmpeg", "UIKit", "AVAssetReader", "network"]
     },
@@ -49,7 +49,7 @@
       "bundleIds": [],
       "executables": ["vcaminjectd"],
       "injected": false,
-      "allowedTargets": ["SpringBoard", "mediaserverd"]
+      "allowedTargets": ["SpringBoard", "cameracaptured"]
     }
   ]
 }

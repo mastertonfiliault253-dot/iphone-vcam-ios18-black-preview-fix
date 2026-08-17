@@ -1,6 +1,6 @@
 ARCHS = arm64 arm64e
 TARGET = iphone:clang:latest:18.0
-INSTALL_TARGET_PROCESSES = SpringBoard mediaserverd
+INSTALL_TARGET_PROCESSES = SpringBoard cameracaptured
 
 include $(THEOS)/makefiles/common.mk
 
