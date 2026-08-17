@@ -42,6 +42,7 @@ jobs:
             probe/vcam-ios18-probe.m \
             -o vcam-ios18-probe.dylib \
             -framework Foundation -framework CoreMedia -framework CoreVideo
+          ldid -S vcam-ios18-probe.dylib
           lipo -info vcam-ios18-probe.dylib
           file vcam-ios18-probe.dylib
       - name: Validate rootless release shape
