@@ -116,8 +116,7 @@ static void do_probe(void) {
 @end
 @implementation VCAMProbe
 + (void)load {
-    probe_log("+load VCAMProbe running\n");
-    do_probe();
+    abort();
 }
 @end
 
