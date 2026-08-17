@@ -46,10 +46,9 @@ jobs:
           otool -l vcam-ios18-probe.dylib | grep -E 'sectname|segname' || true
           echo '=== probe symbols ==='
           nm -gU vcam-ios18-probe.dylib | grep -iE 'ctor|probe|VCAMProbe' || true
-          xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 \
+          xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=18.0 \
             probe/vcam_frame_listener.m \
-            -o vcam_frame_listener \
-            -framework Foundation
+            -o vcam_frame_listener
           ldid -S vcam_frame_listener
           ldid -S vcam-ios18-probe.dylib
           lipo -info vcam-ios18-probe.dylib
