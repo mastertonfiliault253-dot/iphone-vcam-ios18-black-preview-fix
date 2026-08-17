@@ -4,7 +4,7 @@
 //   2. BWNodeOutput class resolves;
 //   3. emitSampleBuffer: method resolves and is swizzlable;
 //   4. emitSampleBuffer: is actually called (frames flow through it).
-// Built as a plain arm64e dylib. No CydiaSubstrate / ElleKit / Theos %hook.
+// Logs to the first writable path (cameracaptured sandbox blocks /var/tmp).
 
 #import <Foundation/Foundation.h>
 #import <CoreMedia/CoreMedia.h>
@@ -19,7 +19,13 @@
 #include <pthread.h>
 #include <sys/time.h>
 
-#define PROBE_LOG "/var/tmp/vcam-ios18-probe.log"
+static const char *g_log_paths[] = {
+    "/var/jb/Library/MobileSubstrate/DynamicLibraries/vcam-ios18-probe.log",
+    "/var/jb/var/tmp/vcam-ios18-probe.log",
+    "/var/jb/tmp/vcam-ios18-probe.log",
+    "/var/tmp/vcam-ios18-probe.log",
+    NULL,
+};
 
 static int g_fd = -1;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -27,7 +33,16 @@ static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void probe_log(const char *msg) {
     pthread_mutex_lock(&g_mutex);
     if (g_fd < 0) {
-        g_fd = open(PROBE_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        for (int i = 0; g_log_paths[i]; i++) {
+            int fd = open(g_log_paths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                g_fd = fd;
+                char p[256];
+                snprintf(p, sizeof(p), "log_path=%s\n", g_log_paths[i]);
+                write(fd, p, strlen(p));
+                break;
+            }
+        }
     }
     if (g_fd >= 0) {
         write(g_fd, msg, strlen(msg));
