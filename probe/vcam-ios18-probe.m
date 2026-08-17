@@ -84,8 +84,8 @@ static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
     }
 }
 
-__attribute__((constructor))
-static void probe_ctor(void) {
+__attribute__((constructor, used))
+void vcam_ios18_probe_ctor(void) {
     char buf[512];
     struct timeval tv = {0};
     gettimeofday(&tv, NULL);

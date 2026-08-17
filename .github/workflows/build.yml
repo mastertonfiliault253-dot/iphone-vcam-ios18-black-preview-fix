@@ -39,9 +39,11 @@ jobs:
       - name: Build iOS 18 probe dylib (no-substrate)
         run: |
           xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -dynamiclib \
+            -Wl,-no_dead_strip \
             probe/vcam-ios18-probe.m \
             -o vcam-ios18-probe.dylib \
             -framework Foundation -framework CoreMedia -framework CoreVideo
+          otool -l vcam-ios18-probe.dylib | grep -q '__mod_init_func'
           ldid -S vcam-ios18-probe.dylib
           lipo -info vcam-ios18-probe.dylib
           file vcam-ios18-probe.dylib
