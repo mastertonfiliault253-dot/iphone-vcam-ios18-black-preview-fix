@@ -36,7 +36,7 @@ VCAMSpringBoardClient_FILES = \
 	Sources/Core/VCAMConfiguration.m \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)
-VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
+VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
 
 # vcamd is package-owned and is not injected. OBS and RTSP live here; retained
@@ -59,7 +59,7 @@ vcamd_FILES = \
 vcamd_ARCHS = arm64
 vcamd_INSTALL_PATH = /usr/libexec
 vcamd_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/vcamd.entitlements
-vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
+vcamd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/vendor/ffmpeg/include $(VCAM_MODULE_CACHE_FLAGS)
 vcamd_FRAMEWORKS = Accelerate AVFoundation AudioToolbox CoreMedia CoreVideo Foundation IOSurface ImageIO QuartzCore Security VideoToolbox
 vcamd_LDFLAGS = -L$(THEOS_PROJECT_DIR)/vendor/ffmpeg/lib
 vcamd_LIBRARIES = avformat avcodec avutil proc
@@ -70,7 +70,7 @@ vcamd_LIBRARIES = avformat avcodec avutil proc
 vcaminjectd_FILES = Sources/Daemon/VCAMInjectionMonitor.m
 vcaminjectd_ARCHS = arm64
 vcaminjectd_INSTALL_PATH = /usr/libexec
-vcaminjectd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type $(VCAM_MODULE_CACHE_FLAGS)
+vcaminjectd_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations $(VCAM_MODULE_CACHE_FLAGS)
 vcaminjectd_FRAMEWORKS = Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
