@@ -28,6 +28,7 @@ static int g_fd = -1;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void probe_log(const char *msg) {
+    NSLog(@"VCAMPROBE %s", msg);
     pthread_mutex_lock(&g_mutex);
     if (g_fd < 0) {
         for (int i = 0; g_log_paths[i]; i++) {
