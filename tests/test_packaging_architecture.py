@@ -27,12 +27,12 @@ class PackagingArchitectureTests(unittest.TestCase):
                 f"{relative_path} must be committed as executable",
             )
 
-    def test_package_targets_only_ios_16_through_16_5(self) -> None:
+    def test_package_targets_ios_18(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         control = (ROOT / "control").read_text(encoding="utf-8")
-        self.assertIn("TARGET = iphone:clang:latest:16.0", makefile)
-        self.assertIn("firmware (>= 16.0)", control)
-        self.assertIn("firmware (<< 16.6)", control)
+        self.assertIn("TARGET = iphone:clang:latest:18.0", makefile)
+        self.assertIn("firmware (>= 18.0)", control)
+        self.assertIn("firmware (<< 19.0)", control)
 
     def test_ci_rejects_arm64e_ui_without_objective_c_stub_sections(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
