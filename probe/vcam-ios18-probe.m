@@ -1,10 +1,7 @@
 // vcam-ios18-probe.m
-// Standalone (no-substrate) probe to verify, inside cameracaptured:
-//   1. constructors run under opainject;
-//   2. BWNodeOutput class resolves;
-//   3. emitSampleBuffer: method resolves and is swizzlable;
-//   4. emitSampleBuffer: is actually called (frames flow through it).
-// Logs to the first writable path (cameracaptured sandbox blocks /var/tmp).
+// Standalone (no-substrate) probe. Uses ObjC +load (guaranteed on dlopen) plus
+// a constructor fallback. Verifies inside cameracaptured that BWNodeOutput
+// resolves and emitSampleBuffer: is called.
 
 #import <Foundation/Foundation.h>
 #import <CoreMedia/CoreMedia.h>
@@ -61,6 +58,7 @@ static void probe_logf(const char *fmt, ...) {
 }
 
 static void (*orig_emitSampleBuffer)(id, SEL, void *) = NULL;
+static int g_probed = 0;
 
 static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
     static volatile long s_count = 0;
@@ -84,12 +82,13 @@ static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
     }
 }
 
-__attribute__((constructor, used))
-void vcam_ios18_probe_ctor(void) {
-    char buf[512];
+static void do_probe(void) {
+    if (g_probed) return;
+    g_probed = 1;
+
     struct timeval tv = {0};
     gettimeofday(&tv, NULL);
-    probe_logf("PROBE CTOR pid=%d t=%ld.%03d\n", getpid(), (long)tv.tv_sec, (int)(tv.tv_usec / 1000));
+    probe_logf("PROBE pid=%d t=%ld.%03d\n", getpid(), (long)tv.tv_sec, (int)(tv.tv_usec / 1000));
 
     Class cls = objc_getClass("BWNodeOutput");
     probe_logf("BWNodeOutput class=%p name=%s\n", cls, cls ? class_getName(cls) : "(nil)");
@@ -109,5 +108,19 @@ void vcam_ios18_probe_ctor(void) {
             probe_log("emitSampleBuffer: method NOT found\n");
         }
     }
-    probe_log("PROBE CTOR DONE\n");
+    probe_log("PROBE DONE\n");
+}
+
+@interface VCAMProbe : NSObject
+@end
+@implementation VCAMProbe
++ (void)load {
+    probe_log("+load VCAMProbe running\n");
+    do_probe();
+}
+@end
+
+__attribute__((constructor))
+void vcam_ios18_probe_ctor(void) {
+    do_probe();
 }
