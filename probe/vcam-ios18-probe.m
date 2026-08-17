@@ -116,7 +116,7 @@ static void do_probe(void) {
 @end
 @implementation VCAMProbe
 + (void)load {
-    abort();
+    do_probe();
 }
 @end
 
