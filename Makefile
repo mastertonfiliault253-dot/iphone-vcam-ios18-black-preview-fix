@@ -1,5 +1,5 @@
 ARCHS = arm64 arm64e
-TARGET = iphone:clang:latest:16.0
+TARGET = iphone:clang:latest:18.0
 INSTALL_TARGET_PROCESSES = SpringBoard mediaserverd
 
 include $(THEOS)/makefiles/common.mk

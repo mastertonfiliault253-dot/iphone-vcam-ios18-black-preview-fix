@@ -1,9 +1,9 @@
 Package: com.codex.vcam
 Name: VCAM Media Bridge
-Version: 0.8.95+ios16-nv12-rtsp-no-reload-fill
+Version: 0.8.96+ios18-adapt
 Architecture: iphoneos-arm
 Description: System virtual-camera bridge with isolated local, OBS, RTSP and HLS decoding plus UI-only app overlays.
 Maintainer: Local Build
 Author: Local Build
 Section: Tweaks
-Depends: firmware (>= 16.0), firmware (<< 16.6), mobilesubstrate (>= 0.9.5000) | ellekit
+Depends: firmware (>= 18.0), firmware (<< 19.0), mobilesubstrate (>= 0.9.5000) | ellekit

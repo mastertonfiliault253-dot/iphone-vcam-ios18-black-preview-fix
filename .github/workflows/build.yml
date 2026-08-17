@@ -3,7 +3,7 @@ name: Build rootless package
 on:
   workflow_dispatch:
   push:
-    branches: ["codex/ios16-media-bridge"]
+    branches: ["codex/ios18-adapt"]
   pull_request:
 
 jobs:
