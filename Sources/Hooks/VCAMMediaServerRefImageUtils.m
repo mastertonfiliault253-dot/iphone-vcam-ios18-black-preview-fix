@@ -315,6 +315,9 @@ void loadReplacementMedia(void) {
         VCAMReader = VCAMSharedFrameReaderCreate();
         VCAMSurfaceReader = VCAMSharedSurfaceReaderCreate();
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        notify_post(device != nil
+            ? "com.codex.vcam.ios18.metal"
+            : "com.codex.vcam.ios18.metalnil");
         VCAMContext = device != nil
             ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
             : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
