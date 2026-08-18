@@ -319,9 +319,8 @@ void loadReplacementMedia(void) {
         notify_post(device != nil
             ? "com.codex.vcam.ios18.metal"
             : "com.codex.vcam.ios18.metalnil");
-        VCAMContext = device != nil
-            ? [CIContext contextWithMTLDevice:device options:@{kCIContextUseSoftwareRenderer: @NO}]
-            : [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        // ponytail: cameracaptured Metal render hangs; force software renderer.
+        VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
         VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         VCAMReaderLock = [NSLock new];
         VCAMPixelTransferLock = [NSLock new];
@@ -796,6 +795,9 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             : [task waitUntilCompletedAndReturnError:&completionError];
         BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
+        notify_post(coreImageRendered
+            ? "com.codex.vcam.ios18.rendered"
+            : "com.codex.vcam.ios18.renderfail");
         rendered = coreImageRendered && (!compressedTarget ||
             VCAMTransferIntoCompressedTarget(stagingBuffer, targetBuffer,
                                              compressedReplacementBuffer));
