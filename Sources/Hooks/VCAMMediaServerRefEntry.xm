@@ -608,6 +608,15 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
             notify_post("com.codex.vcam.ios18.route.other"); break;
     }
 
+    // ponytail: iOS18 cameracaptured rejects vcam-built replacement sample
+    // buffers in %orig (watchdog hang). Keep only the in-place camera-source
+    // route; pass through real frames for every route that would allocate a
+    // new buffer until the buffer is made iOS18-compatible.
+    if (replacementRoute != VCAMReplacementRouteCameraSourceVideo) {
+        %orig(sampleBuffer);
+        return;
+    }
+
     BOOL propagatedReplacement =
         VCAMRouteUsesPropagationMarker(replacementRoute) &&
         VCAMSampleHasMatchingPropagationMarker(sampleBuffer, originalImageBuffer);
