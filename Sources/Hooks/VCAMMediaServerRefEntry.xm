@@ -570,6 +570,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         return;
     }
 
+    notify_post("com.codex.vcam.ios18.vmode");
+
     CVPixelBufferRef originalImageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     VCAMReplacementRoute replacementRoute =
         VCAMReplacementRouteForOutput(self, originalImageBuffer);
@@ -590,6 +592,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         %orig(sampleBuffer);
         return;
     }
+
+    notify_post("com.codex.vcam.ios18.route");
 
     BOOL propagatedReplacement =
         VCAMRouteUsesPropagationMarker(replacementRoute) &&
