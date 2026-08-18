@@ -282,8 +282,19 @@ void VCAMRefLog(const char *message) {
     snprintf(line, sizeof(line), "[%d][start=%llu][%s.%03d] %s\n", getpid(),
              (unsigned long long)processStartToken, stamp,
              (int)(value.tv_usec / 1000), message != NULL ? message : "(null)");
-    int descriptor = open("/var/tmp/vcam-ref-msd.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (descriptor >= 0) {
+    // cameracaptured sandbox blocks /var/tmp; try several writable candidates
+    // in order so the iOS18 daemon can emit its signature/proof log.
+    static const char *candidatePaths[] = {
+        "/var/mobile/Media/VCAM/vcam-ref.log",
+        "/var/mobile/Library/Caches/vcam-ref.log",
+        "/var/log/vcam-ref.log",
+        "/tmp/vcam-ref.log",
+        "/var/tmp/vcam-ref-msd.log",
+        NULL,
+    };
+    for (int index = 0; candidatePaths[index] != NULL; index++) {
+        int descriptor = open(candidatePaths[index], O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (descriptor < 0) continue;
         if (flock(descriptor, LOCK_EX) == 0) {
             struct stat metadata = {0};
             if (fstat(descriptor, &metadata) == 0 &&
@@ -294,6 +305,7 @@ void VCAMRefLog(const char *message) {
             (void)flock(descriptor, LOCK_UN);
         }
         close(descriptor);
+        break;
     }
 }
 
