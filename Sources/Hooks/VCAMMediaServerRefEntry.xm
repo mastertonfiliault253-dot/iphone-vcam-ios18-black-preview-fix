@@ -644,6 +644,9 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
                     replacementRoute == VCAMReplacementRouteCameraSourceVideo ||
                     replacementRoute == VCAMReplacementRouteStillPhoto);
                 replacementSucceeded = replacementSampleBuffer != NULL;
+                notify_post(replacementSucceeded
+                    ? "com.codex.vcam.ios18.sbcreated"
+                    : "com.codex.vcam.ios18.sbfail");
             }
             if (replacementSucceeded &&
                 replacementRoute == VCAMReplacementRouteStillPhoto) {
