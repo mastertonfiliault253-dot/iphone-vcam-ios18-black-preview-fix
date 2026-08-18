@@ -46,8 +46,13 @@ jobs:
           otool -l vcam-ios18-probe.dylib | grep -E 'sectname|segname' || true
           echo '=== probe symbols ==='
           nm -gU vcam-ios18-probe.dylib | grep -iE 'ctor|probe|VCAMProbe' || true
+          xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=18.0 \
+            probe/vcam_frame_listener.m \
+            -o vcam_frame_listener
+          ldid -S vcam_frame_listener
           ldid -S vcam-ios18-probe.dylib
           lipo -info vcam-ios18-probe.dylib
+          lipo -info vcam_frame_listener
           file vcam-ios18-probe.dylib
       - name: Validate rootless release shape
         run: |
@@ -93,5 +98,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-ios18-probe
-          path: vcam-ios18-probe.dylib
+          path: |
+            vcam-ios18-probe.dylib
+            vcam_frame_listener
           retention-days: 7
