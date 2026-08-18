@@ -593,7 +593,20 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
         return;
     }
 
-    notify_post("com.codex.vcam.ios18.route");
+    switch (replacementRoute) {
+        case VCAMReplacementRouteCameraSourceVideo:
+            notify_post("com.codex.vcam.ios18.route.camsrc"); break;
+        case VCAMReplacementRouteVideoConverter:
+            notify_post("com.codex.vcam.ios18.route.converter"); break;
+        case VCAMReplacementRouteCameraPreview:
+            notify_post("com.codex.vcam.ios18.route.preview"); break;
+        case VCAMReplacementRouteVideoRecording:
+            notify_post("com.codex.vcam.ios18.route.recording"); break;
+        case VCAMReplacementRouteStillPhoto:
+            notify_post("com.codex.vcam.ios18.route.still"); break;
+        default:
+            notify_post("com.codex.vcam.ios18.route.other"); break;
+    }
 
     BOOL propagatedReplacement =
         VCAMRouteUsesPropagationMarker(replacementRoute) &&
