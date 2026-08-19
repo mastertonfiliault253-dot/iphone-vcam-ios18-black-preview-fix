@@ -4,7 +4,7 @@
 
 #import <notify.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
+#import <mach/vm_map.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -51,9 +51,9 @@ int main(void) {
                 mach_port_t task = MACH_PORT_NULL;
                 if (pid > 0 && task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
                     char buf[768] = {0};
-                    mach_vm_size_t size = sizeof(buf) - 1;
-                    if (mach_vm_read_overwrite(task, (mach_vm_address_t)addr,
-                                               size, (mach_vm_address_t)buf, &size) == KERN_SUCCESS) {
+                    vm_size_t size = (vm_size_t)sizeof(buf) - 1;
+                    if (vm_read_overwrite(task, (vm_address_t)addr,
+                                               size, (vm_address_t)buf, &size) == KERN_SUCCESS) {
                         buf[sizeof(buf) - 1] = '\0';
                         FILE *f = fopen("/var/tmp/vcam-ios18-sigs.log", "a");
                         if (f) {
