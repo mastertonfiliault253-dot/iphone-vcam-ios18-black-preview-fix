@@ -33,8 +33,10 @@ static pid_t find_cameracaptured(void) {
 
 int main(void) {
     int sigtoken = -1;
-    if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK) {
-        printf("notify_register_check failed for signew\n");
+    int addrtoken = -1;
+    if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.sigaddr", &addrtoken) != NOTIFY_STATUS_OK) {
+        printf("notify_register_check failed\n");
         return 1;
     }
     printf("sig listener ready pid=%d\n", getpid());
@@ -43,7 +45,7 @@ int main(void) {
         int check = 0;
         if (notify_check(sigtoken, &check) == NOTIFY_STATUS_OK && check != 0) {
             uint64_t addr = 0;
-            notify_get_state("com.codex.vcam.ios18.sigaddr", &addr);
+            notify_get_state(addrtoken, &addr);
             if (addr != 0) {
                 pid_t pid = find_cameracaptured();
                 mach_port_t task = MACH_PORT_NULL;
