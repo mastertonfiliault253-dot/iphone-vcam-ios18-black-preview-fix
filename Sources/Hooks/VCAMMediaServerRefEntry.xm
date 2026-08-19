@@ -612,7 +612,8 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
     // buffers in %orig (watchdog hang). Keep only the in-place camera-source
     // route; pass through real frames for every route that would allocate a
     // new buffer until the buffer is made iOS18-compatible.
-    if (replacementRoute != VCAMReplacementRouteCameraSourceVideo) {
+    if (replacementRoute != VCAMReplacementRouteCameraSourceVideo &&
+        replacementRoute != VCAMReplacementRouteCameraPreview) {
         %orig(sampleBuffer);
         return;
     }
