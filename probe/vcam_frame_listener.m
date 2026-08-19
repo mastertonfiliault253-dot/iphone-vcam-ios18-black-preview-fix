@@ -1,61 +1,69 @@
 // vcam_frame_listener.m
-// On-device root tool. Polls Darwin notifications posted by the cameracaptured
-// hook, and records hits to /var/tmp/vcam-ios18-frames.log.
+// On-device root tool. Polls Darwin notifications and reads the cameracaptured
+// hook's current signature string via task_for_pid + mach_vm_read.
 
 #import <notify.h>
+#import <mach/mach.h>
+#import <mach/mach_vm.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
-static const char *g_names[] = {
-    "com.codex.vcam.ios18.frame",
-    "com.codex.vcam.ios18.vmode",
-    "com.codex.vcam.ios18.route.camsrc",
-    "com.codex.vcam.ios18.route.converter",
-    "com.codex.vcam.ios18.route.preview",
-    "com.codex.vcam.ios18.route.recording",
-    "com.codex.vcam.ios18.route.still",
-    "com.codex.vcam.ios18.route.other",
-    "com.codex.vcam.ios18.metal",
-    "com.codex.vcam.ios18.metalnil",
-    "com.codex.vcam.ios18.rendered",
-    "com.codex.vcam.ios18.renderfail",
-    "com.codex.vcam.ios18.sbcreated",
-    "com.codex.vcam.ios18.sbfail",
-};
-#define N (int)(sizeof(g_names)/sizeof(g_names[0]))
+extern int proc_listallpids(void *buffer, int buffersize);
+extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 
-int main(void) {
-    int tokens[N];
-    long counts[N];
-    for (int i = 0; i < N; i++) {
-        tokens[i] = -1;
-        counts[i] = 0;
-        if (notify_register_check(g_names[i], &tokens[i]) != NOTIFY_STATUS_OK) {
-            printf("notify_register_check failed for %s\n", g_names[i]);
-            return 1;
+static pid_t find_cameracaptured(void) {
+    int n = proc_listallpids(NULL, 0);
+    if (n <= 0) return 0;
+    pid_t *pids = (pid_t *)malloc((size_t)(n + 32) * sizeof(pid_t));
+    if (!pids) return 0;
+    int count = proc_listallpids(pids, (n + 32) * (int)sizeof(pid_t));
+    pid_t match = 0;
+    for (int i = 0; i < count; i++) {
+        char path[4096] = {0};
+        if (proc_pidpath(pids[i], path, sizeof(path)) > 0 &&
+            strcmp(path, "/usr/libexec/cameracaptured") == 0) {
+            match = pids[i];
+            break;
         }
     }
-    printf("listener ready pid=%d n=%d\n", getpid(), N);
+    free(pids);
+    return match;
+}
+
+int main(void) {
+    int sigtoken = -1;
+    if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK) {
+        printf("notify_register_check failed for signew\n");
+        return 1;
+    }
+    printf("sig listener ready pid=%d\n", getpid());
     fflush(stdout);
     while (1) {
-        int any = 0;
-        for (int i = 0; i < N; i++) {
-            int check = 0;
-            if (notify_check(tokens[i], &check) == NOTIFY_STATUS_OK && check != 0) {
-                counts[i]++;
-                any = 1;
+        int check = 0;
+        if (notify_check(sigtoken, &check) == NOTIFY_STATUS_OK && check != 0) {
+            uint64_t addr = 0;
+            notify_get_state("com.codex.vcam.ios18.sigaddr", &addr);
+            if (addr != 0) {
+                pid_t pid = find_cameracaptured();
+                mach_port_t task = MACH_PORT_NULL;
+                if (pid > 0 && task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
+                    char buf[768] = {0};
+                    mach_vm_size_t size = sizeof(buf) - 1;
+                    if (mach_vm_read_overwrite(task, (mach_vm_address_t)addr,
+                                               size, (mach_vm_address_t)buf, &size) == KERN_SUCCESS) {
+                        buf[sizeof(buf) - 1] = '\0';
+                        FILE *f = fopen("/var/tmp/vcam-ios18-sigs.log", "a");
+                        if (f) {
+                            fprintf(f, "%s\n", buf);
+                            fclose(f);
+                        }
+                    }
+                    mach_port_deallocate(mach_task_self(), task);
+                }
             }
         }
-        if (any) {
-            FILE *f = fopen("/var/tmp/vcam-ios18-frames.log", "a");
-            if (f) {
-                fprintf(f,
-                    "frame=%ld vmode=%ld camsrc=%ld converter=%ld preview=%ld recording=%ld still=%ld other=%ld metal=%ld metalnil=%ld rendered=%ld renderfail=%ld sbcreated=%ld sbfail=%ld\n",
-                    counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],counts[6],counts[7],counts[8],counts[9],counts[10],counts[11],counts[12],counts[13]);
-                fclose(f);
-            }
-        }
-        usleep(50000);
+        usleep(100000);
     }
     return 0;
 }

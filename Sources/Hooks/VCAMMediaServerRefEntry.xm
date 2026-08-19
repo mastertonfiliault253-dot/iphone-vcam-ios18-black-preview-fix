@@ -7,6 +7,8 @@
 #include <string.h>
 #include <notify.h>
 
+static char g_lastOutputSignature[768] = {0};
+
 static void VCAMFourCCString(OSType value, char output[5]) {
     output[0] = (char)((value >> 24) & 0xff);
     output[1] = (char)((value >> 16) & 0xff);
@@ -478,6 +480,10 @@ static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
              VCAMTargetBufferIsSupported(pixelBuffer),
              replacementRoute != VCAMReplacementRouteNone,
              VCAMReplacementRouteName(replacementRoute));
+    strlcpy(g_lastOutputSignature, message, sizeof(g_lastOutputSignature));
+    notify_set_state("com.codex.vcam.ios18.sigaddr",
+                     (uint64_t)(uintptr_t)g_lastOutputSignature);
+    notify_post("com.codex.vcam.ios18.signew");
     VCAMRefLog(message);
 }
 
