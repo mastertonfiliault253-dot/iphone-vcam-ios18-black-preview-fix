@@ -128,10 +128,17 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("virtual frame stale; rendering black instead of frozen frame", implementation)
         self.assertIn("VCAMVirtualModeIsEnabled", implementation)
         self.assertIn("VCAMConfiguredMode = 0", implementation)
-        # <true/> deserializes as CFBoolean (not NSNumber); enabled must be
-        # read via boolValue so the persisted virtual mode is not lost.
-        self.assertIn("enabledValue != nil", implementation)
-        self.assertIn("[enabledValue boolValue]", implementation)
+        # mediaserverd must not ask Foundation to parse the plist. Its iOS 18
+        # hook runs in a fragile camera daemon; read only the bounded enabled
+        # XML scalar and retain the last valid mode on any read/parse failure.
+        self.assertIn("VCAMReadConfiguredModeFromFile", implementation)
+        self.assertIn('open("/var/mobile/Media/VCAM/com.codex.vcam.plist", O_RDONLY)', implementation)
+        self.assertIn("metadata.st_size > 1024 * 1024", implementation)
+        self.assertIn("errno == EINTR", implementation)
+        self.assertIn("<key>enabled</key>", implementation)
+        self.assertIn("<true/>", implementation)
+        self.assertIn("<false/>", implementation)
+        self.assertNotIn("dictionaryWithContentsOfFile", implementation)
         self.assertIn("VCAMConfiguredMode != 0", implementation)
         self.assertIn("VCAMSharedFrameReaderGetActiveState", implementation)
         self.assertNotIn("VCAMRequestedModeOverride", implementation)

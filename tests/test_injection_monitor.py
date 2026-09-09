@@ -45,23 +45,28 @@ class InjectionMonitorTests(unittest.TestCase):
         ):
             self.assertIn(expected, plist)
 
-    def test_monitor_retries_after_pid_change_and_requires_constructor_proof(self) -> None:
+    def test_monitor_does_not_reinject_same_stable_pid_without_file_proof(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
             encoding="utf-8"
         )
         self.assertIn("pid != target->observedPID", source)
         self.assertIn("startToken != target->observedStartToken", source)
         self.assertIn("target->injectedPID = 0", source)
+        self.assertIn("attemptedPID", source)
+        self.assertIn("attemptedStartToken", source)
         self.assertIn("VCAMProofContainsProcess", source)
         self.assertIn("VCAMProcessStartToken", source)
-        # The injector's exit status is not the source of truth: opainject PAC
-        # mode can time out after a successful dlopen, so only the on-disk
-        # constructor proof plus a stable pid count as success.
+        # A proof is still preferred, but a sandbox-invisible proof must not
+        # cause repeated PAC injection into the same stable process.
         self.assertIn("observedStartToken == startToken", source)
         self.assertIn("observed == pid", source)
         self.assertIn("target->nextAttempt = now + 30", source)
         self.assertIn("ETIMEDOUT", source)
         self.assertIn("late-proof", source)
+        self.assertIn("assumed-loaded proof=0", source)
+        self.assertIn("attempted-without-proof", source)
+        self.assertIn("target->attemptedPID == pid &&", source)
+        self.assertIn("target->attemptedStartToken == startToken", source)
         # A pid that already has constructor proof must never be injected again,
         # even across daemon restarts.
         self.assertIn("already-loaded proof=1", source)

@@ -27,39 +27,26 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         self.assertIn('"org.mozilla.ios.Firefox"', springboard_filter)
         self.assertIn("cameracaptured", media_filter)
 
-    def test_postinstall_recovers_exact_targets_with_exact_dylibs_only(self) -> None:
+    def test_postinstall_defers_exact_targets_to_single_injection_daemon(self) -> None:
         postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(
             encoding="utf-8"
         )
-        springboard_call = (
-            "vcam_best_effort_inject SpringBoard "
-            "/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-            "VCAMSpringBoardClient.dylib"
+        self.assertEqual(postinst.count('vcam_log_injection "deferred target='), 2)
+        self.assertIn(
+            'vcam_log_injection "deferred target=SpringBoard reason=vcaminjectd"',
+            postinst,
         )
-        cameracaptured_call = (
-            "vcam_best_effort_inject cameracaptured "
-            "/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-            "VCAMMediaServerClient.dylib"
+        self.assertIn(
+            'vcam_log_injection "deferred target=cameracaptured reason=vcaminjectd"',
+            postinst,
         )
-        self.assertEqual(postinst.count("vcam_best_effort_inject "), 2)
-        self.assertIn(springboard_call, postinst)
-        self.assertIn(cameracaptured_call, postinst)
-        self.assertIn("/var/jb/usr/bin/opainject", postinst)
+        self.assertNotIn("vcam_best_effort_inject", postinst)
+        self.assertNotIn("/var/jb/usr/bin/opainject", postinst)
         self.assertIn("/var/tmp/vcam-postinst-inject.log", postinst)
         self.assertNotIn("TweakLoader.dylib", postinst)
         self.assertNotIn("sbreload", postinst)
-        self.assertIn("for inject_attempt in 1 2 3 4 5", postinst)
-        self.assertIn('if [ "$observed_pid" = "$target_pid" ]', postinst)
-        self.assertIn(
-            'retry target=$target_name old_pid=$target_pid new_pid=$observed_pid',
-            postinst,
-        )
-        self.assertIn(
-            'completed target=$target_name pid=$target_pid attempt=$inject_attempt',
-            postinst,
-        )
         for forbidden in ("Camera", "MobileSafari", "SafariViewService", "WebKit"):
-            self.assertNotIn(f"vcam_best_effort_inject {forbidden}", postinst)
+            self.assertNotIn(f"deferred target={forbidden}", postinst)
 
     def test_white_dot_waits_for_springboard_window_lifecycle(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(

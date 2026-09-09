@@ -39,82 +39,17 @@ vcam_log_injection() {
     printf '%s\n' "$*" >> "$vcam_inject_log" 2>/dev/null || true
 }
 
-vcam_best_effort_inject() {
-    target_name="$1"
-    target_dylib="$2"
-    injector=/var/jb/usr/bin/opainject
-
-    case "$target_name" in
-        SpringBoard)
-            process_pattern='/SpringBoard.app/SpringBoard'
-            proof_path=/var/tmp/vcam-springboard-client.log
-            ;;
-        cameracaptured)
-            process_pattern='/usr/libexec/cameracaptured'
-            proof_path=/var/tmp/vcam-ref-msd.log
-            ;;
-        *)
-            vcam_log_injection "refused target=$target_name"
-            return 0
-            ;;
-    esac
-
-    if [ ! -x "$injector" ] || [ ! -f "$target_dylib" ]; then
-        vcam_log_injection "unavailable target=$target_name injector=$injector dylib=$target_dylib"
-        return 0
-    fi
-
-    for inject_attempt in 1 2 3 4 5; do
-        target_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
-            sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || target_pid=""
-        if [ -z "$target_pid" ]; then
-            vcam_log_injection "retry target=$target_name old_pid=none new_pid=none reason=process-not-found attempt=$inject_attempt"
-            sleep 1
-            continue
-        fi
-
-        case "$target_name" in
-            SpringBoard) proof_pattern="pid=$target_pid " ;;
-            cameracaptured) proof_pattern="[$target_pid][" ;;
-        esac
-        if grep -Fq "$proof_pattern" "$proof_path" 2>/dev/null; then
-            vcam_log_injection "already-loaded target=$target_name pid=$target_pid proof=1"
-            return 0
-        fi
-
-        vcam_log_injection "attempt target=$target_name pid=$target_pid dylib=$target_dylib attempt=$inject_attempt"
-        inject_status=0
-        "$injector" "$target_pid" "$target_dylib" >> "$vcam_inject_log" 2>&1 || inject_status="$?"
-        sleep 1
-
-        observed_pid="$(ps ax 2>/dev/null | grep "$process_pattern" | grep -v grep | \
-            sed -n '1{s/^[[:space:]]*//;s/[[:space:]].*$//;p;}')" || observed_pid=""
-        if [ "$observed_pid" = "$target_pid" ]; then
-            if [ "$inject_status" -eq 0 ]; then
-                vcam_log_injection "completed target=$target_name pid=$target_pid attempt=$inject_attempt"
-                return 0
-            fi
-            vcam_log_injection "retry target=$target_name old_pid=$target_pid new_pid=$observed_pid reason=injector-status-$inject_status attempt=$inject_attempt"
-        else
-            vcam_log_injection "retry target=$target_name old_pid=$target_pid new_pid=$observed_pid reason=pid-changed attempt=$inject_attempt"
-        fi
-        sleep 1
-    done
-
-    vcam_log_injection "exhausted target=$target_name attempts=5"
-    return 0
-}
-
 # A loaded dylib cannot be replaced in place. Upgrades used to inject the new
-# client into the existing process, leaving the old Objective-C classes alive
-# and producing duplicate UI/broker behavior. Respawn both exact hosts first.
+# client into the existing process, leaving the old Objective-C classes alive.
+# Respawn both exact hosts first. vcaminjectd is the sole opainject owner so a
+# missing constructor proof cannot make postinst and the watchdog inject the
+# same stable process independently.
 : > /var/tmp/vcam-springboard-client.log 2>/dev/null || true
 : > /var/tmp/vcam-ref-msd.log 2>/dev/null || true
 killall -9 SpringBoard cameracaptured >/dev/null 2>&1 || true
 sleep 1
-
-vcam_best_effort_inject SpringBoard /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib
-vcam_best_effort_inject cameracaptured /var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib
+vcam_log_injection "deferred target=SpringBoard reason=vcaminjectd"
+vcam_log_injection "deferred target=cameracaptured reason=vcaminjectd"
 
 inject_daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcaminjectd.plist
 if [ -e "$inject_daemon_plist" ]; then

@@ -29,6 +29,8 @@ typedef struct {
     uint64_t observedStartToken;
     pid_t injectedPID;
     uint64_t injectedStartToken;
+    pid_t attemptedPID;
+    uint64_t attemptedStartToken;
     time_t nextAttempt;
 } VCAMInjectionTarget;
 
@@ -110,11 +112,13 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
         target->observedStartToken = startToken;
         target->injectedPID = 0;
         target->injectedStartToken = 0;
+        target->attemptedPID = 0;
+        target->attemptedStartToken = 0;
         target->nextAttempt = 0;
     }
-    if (pid <= 0 || startToken == 0 ||
-        (target->injectedPID == pid &&
-         target->injectedStartToken == startToken)) return;
+    if (pid <= 0 || startToken == 0) return;
+    if (target->injectedPID == pid &&
+        target->injectedStartToken == startToken) return;
 
     // A proof line already in the shared log means the dylib is loaded in this
     // exact pid (from postinst or a previous daemon run). Never re-inject:
@@ -128,6 +132,12 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
         return;
     }
 
+    // A sandbox-invisible proof is not a reason to inject the same stable
+    // process again. The proof check above remains first so a delayed proof
+    // can still promote this attempt to verified without another injection.
+    if (target->attemptedPID == pid &&
+        target->attemptedStartToken == startToken) return;
+
     time_t now = time(NULL);
     if (now < target->nextAttempt) return;
     // Generous backoff: opainject PAC mode can take several seconds, and a
@@ -138,14 +148,14 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
     sleep(1);
     pid_t observed = VCAMFindProcessAtPath(target->processPath);
     // The injector may return ETIMEDOUT even after a successful dlopen when
-    // opainject's PAC bootstrap thread never reports back. The constructor
-    // proof is the source of truth; require only that the pid survived and the
-    // proof appeared.
+    // opainject's PAC bootstrap thread never reports back. Prefer constructor
+    // proof, but do not use a missing proof to justify another PAC injection.
     uint64_t observedStartToken = VCAMProcessStartToken(observed);
-    BOOL proved = observed == pid && observedStartToken == startToken &&
+    BOOL stable = observed == pid && observedStartToken == startToken;
+    BOOL proved = stable &&
         VCAMProofContainsProcess(target, pid, startToken);
     fprintf(stderr, "target=%s pid=%d injector=%d stable=%d proof=%d\n",
-            target->name, pid, result, observed == pid, proved);
+            target->name, pid, result, stable, proved);
     if (proved) {
         target->injectedPID = pid;
         target->injectedStartToken = startToken;
@@ -160,11 +170,38 @@ static void VCAMCheckTarget(VCAMInjectionTarget *target) {
         }
         observed = VCAMFindProcessAtPath(target->processPath);
         observedStartToken = VCAMProcessStartToken(observed);
-        if (observed == pid && observedStartToken == startToken &&
-            VCAMProofContainsProcess(target, pid, startToken)) {
+        stable = observed == pid && observedStartToken == startToken;
+        if (stable && VCAMProofContainsProcess(target, pid, startToken)) {
             target->injectedPID = pid;
             target->injectedStartToken = startToken;
+            proved = YES;
             fprintf(stderr, "target=%s pid=%d late-proof=1\n", target->name, pid);
+        }
+    }
+
+    if (stable) {
+        // Mark the exact pid/start pair as attempted even when the proof file
+        // is unreadable from the daemon's context. This is deliberately
+        // separate from injectedPID: a zero exit plus a stable target is
+        // enough to avoid the crash loop, but remains an explicit assumption
+        // until the runtime hook produces observable evidence.
+        target->attemptedPID = pid;
+        target->attemptedStartToken = startToken;
+        if (!proved && result == 0) {
+            target->injectedPID = pid;
+            target->injectedStartToken = startToken;
+        }
+        if (target->injectedPID == pid &&
+            target->injectedStartToken == startToken) {
+            if (!proved) {
+                fprintf(stderr, "target=%s pid=%d assumed-loaded proof=0\n",
+                        target->name, pid);
+            }
+        }
+        else {
+            fprintf(stderr,
+                    "target=%s pid=%d attempted-without-proof injector=%d\n",
+                    target->name, pid, result);
         }
     }
 }

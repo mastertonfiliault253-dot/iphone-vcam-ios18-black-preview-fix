@@ -10,6 +10,7 @@
 #import "../Shared/VCAMSurfaceBroker.h"
 
 #include <fcntl.h>
+#include <errno.h>
 #include <notify.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -239,23 +240,73 @@ static BOOL VCAMCopyLastCompressedVirtualFrame(CVPixelBufferRef targetBuffer,
     return copied;
 }
 
-static void VCAMReloadConfiguredMode(void) {
-    @autoreleasepool {
-        NSDictionary *values = [NSDictionary dictionaryWithContentsOfFile:
-            @"/var/mobile/Media/VCAM/com.codex.vcam.plist"];
-        // <true/> deserializes as CFBoolean, which is not an NSNumber but does
-        // answer boolValue; only a missing key is truly unreadable.
-        id enabledValue = values[@"enabled"];
-        if (enabledValue != nil) {
-            (void)__sync_lock_test_and_set(
-                &VCAMConfiguredMode,
-                [enabledValue boolValue] ? 1 : 0);
-        } else {
-            static dispatch_once_t invalidConfigurationToken;
-            dispatch_once(&invalidConfigurationToken, ^{
-                VCAMRefLog("configuration unreadable; retaining last virtual-camera mode");
-            });
+static BOOL VCAMReadConfiguredModeFromFile(BOOL *enabledOut) {
+    if (enabledOut == NULL) return NO;
+    int descriptor = open("/var/mobile/Media/VCAM/com.codex.vcam.plist", O_RDONLY);
+    if (descriptor < 0) return NO;
+    struct stat metadata = {0};
+    if (fstat(descriptor, &metadata) != 0 || metadata.st_size <= 0 ||
+        metadata.st_size > 1024 * 1024) {
+        close(descriptor);
+        return NO;
+    }
+    size_t capacity = (size_t)metadata.st_size;
+    char *contents = calloc(capacity + 1, 1);
+    if (contents == NULL) {
+        close(descriptor);
+        return NO;
+    }
+    size_t bytesRead = 0;
+    while (bytesRead < capacity) {
+        ssize_t result = read(descriptor, contents + bytesRead,
+                              capacity - bytesRead);
+        if (result < 0) {
+            if (errno == EINTR) continue;
+            break;
         }
+        if (result == 0) break;
+        bytesRead += (size_t)result;
+    }
+    close(descriptor);
+    if (bytesRead != capacity) {
+        free(contents);
+        return NO;
+    }
+
+    // The configuration writer uses atomic XML plist writes. Parse only the
+    // one scalar needed by mediaserverd so Foundation never parses a possibly
+    // concurrent plist in the camera daemon.
+    const char *key = strstr(contents, "<key>enabled</key>");
+    const char *nextKey = key != NULL ? strstr(key + 1, "<key>") : NULL;
+    const char *trueTag = key != NULL ? strstr(key, "<true") : NULL;
+    const char *falseTag = key != NULL ? strstr(key, "<false") : NULL;
+    const char *selected = NULL;
+    BOOL enabled = NO;
+    if (trueTag != NULL && (nextKey == NULL || trueTag < nextKey) &&
+        (strncmp(trueTag, "<true/>", 7) == 0 ||
+         strncmp(trueTag, "<true />", 8) == 0)) {
+        selected = trueTag;
+        enabled = YES;
+    } else if (falseTag != NULL && (nextKey == NULL || falseTag < nextKey) &&
+               (strncmp(falseTag, "<false/>", 8) == 0 ||
+                strncmp(falseTag, "<false />", 9) == 0)) {
+        selected = falseTag;
+    }
+    free(contents);
+    if (selected == NULL) return NO;
+    *enabledOut = enabled;
+    return YES;
+}
+
+static void VCAMReloadConfiguredMode(void) {
+    BOOL enabled = NO;
+    if (VCAMReadConfiguredModeFromFile(&enabled)) {
+        (void)__sync_lock_test_and_set(&VCAMConfiguredMode, enabled ? 1 : 0);
+    } else {
+        static dispatch_once_t invalidConfigurationToken;
+        dispatch_once(&invalidConfigurationToken, ^{
+            VCAMRefLog("configuration unreadable; retaining last virtual-camera mode");
+        });
     }
 }
 

@@ -143,10 +143,10 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn(restart, postinst)
         self.assertLess(
             postinst.index(restart),
-            postinst.index("vcam_best_effort_inject SpringBoard"),
+            postinst.index('vcam_log_injection "deferred target=SpringBoard'),
         )
-        self.assertIn('grep -Fq "$proof_pattern" "$proof_path"', postinst)
-        self.assertIn('already-loaded target=$target_name pid=$target_pid proof=1', postinst)
+        self.assertIn("vcaminjectd is the sole opainject owner", postinst)
+        self.assertNotIn("vcam_best_effort_inject", postinst)
 
     def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:
         launchd_path = (
