@@ -6,9 +6,11 @@
 #import <Foundation/Foundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
+#import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
@@ -27,8 +29,59 @@ static const char *g_log_paths[] = {
 static int g_fd = -1;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+enum {
+    VCAMProbeEventCapacity = 16,
+    VCAMProbeMessageCapacity = 768,
+};
+
+typedef struct {
+    uint64_t sequence;
+    char message[VCAMProbeMessageCapacity];
+} VCAMProbeEvent;
+
+// cameracaptured cannot reliably write any of the usual log locations. Keep
+// the bounded event ring in this image and publish only its address/sequence
+// through Darwin notify; the separate root listener reads it with task_for_pid.
+static VCAMProbeEvent g_probe_events[VCAMProbeEventCapacity] = {0};
+static uint64_t g_probe_sequence = 0;
+static int g_probe_addr_token = -1;
+static int g_probe_sequence_token = -1;
+static pthread_mutex_t g_notify_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void probe_notify(const char *msg) {
+    pthread_mutex_lock(&g_notify_mutex);
+    if (g_probe_addr_token < 0) {
+        notify_register_check("com.codex.vcam.ios18.probe.addr",
+                              &g_probe_addr_token);
+    }
+    if (g_probe_sequence_token < 0) {
+        notify_register_check("com.codex.vcam.ios18.probe.sequence",
+                              &g_probe_sequence_token);
+    }
+    if (g_probe_addr_token < 0 || g_probe_sequence_token < 0) {
+        pthread_mutex_unlock(&g_notify_mutex);
+        return;
+    }
+
+    uint64_t sequence = g_probe_sequence + 1;
+    VCAMProbeEvent *event = &g_probe_events[
+        (sequence - 1) % VCAMProbeEventCapacity];
+    event->sequence = 0;
+    strlcpy(event->message, msg ? msg : "(null)",
+            sizeof(event->message));
+    __sync_synchronize();
+    event->sequence = sequence;
+    g_probe_sequence = sequence;
+    notify_set_state(g_probe_addr_token,
+                     (uint64_t)(uintptr_t)g_probe_events);
+    notify_set_state(g_probe_sequence_token, sequence);
+    notify_post("com.codex.vcam.ios18.probe");
+    pthread_mutex_unlock(&g_notify_mutex);
+}
+
 static void probe_log(const char *msg) {
     NSLog(@"VCAMPROBE %s", msg);
+    probe_notify(msg);
     pthread_mutex_lock(&g_mutex);
     if (g_fd < 0) {
         for (int i = 0; g_log_paths[i]; i++) {

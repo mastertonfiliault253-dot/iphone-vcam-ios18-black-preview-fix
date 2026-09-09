@@ -6,11 +6,42 @@
 #import <mach/mach.h>
 #import <mach/vm_map.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <string.h>
 
 extern int proc_listallpids(void *buffer, int buffersize);
 extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+
+enum {
+    VCAMProbeEventCapacity = 16,
+    VCAMProbeMessageCapacity = 768,
+};
+
+typedef struct {
+    uint64_t sequence;
+    char message[VCAMProbeMessageCapacity];
+} VCAMProbeEvent;
+
+static kern_return_t read_remote(mach_port_t task, uint64_t address,
+                                  void *buffer, vm_size_t size) {
+    vm_size_t received = size;
+    return vm_read_overwrite(task, (vm_address_t)address, size,
+                             (vm_address_t)buffer, &received);
+}
+
+static void record_line(const char *path, const char *prefix,
+                        uint64_t sequence, const char *message) {
+    printf("%s seq=%llu %s\n", prefix,
+           (unsigned long long)sequence, message);
+    fflush(stdout);
+    FILE *f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "%s seq=%llu %s\n", prefix,
+                (unsigned long long)sequence, message);
+        fclose(f);
+    }
+}
 
 static pid_t find_cameracaptured(void) {
     int n = proc_listallpids(NULL, 0);
@@ -34,35 +65,65 @@ static pid_t find_cameracaptured(void) {
 int main(void) {
     int sigtoken = -1;
     int addrtoken = -1;
+    int probeToken = -1;
+    int probeAddrToken = -1;
+    int probeSequenceToken = -1;
     if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK ||
-        notify_register_check("com.codex.vcam.ios18.sigaddr", &addrtoken) != NOTIFY_STATUS_OK) {
+        notify_register_check("com.codex.vcam.ios18.sigaddr", &addrtoken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe", &probeToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.addr", &probeAddrToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.sequence", &probeSequenceToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed\n");
         return 1;
     }
     printf("sig listener ready pid=%d\n", getpid());
     fflush(stdout);
+    uint64_t lastProbeSequence = 0;
     while (1) {
         int check = 0;
-        if (notify_check(sigtoken, &check) == NOTIFY_STATUS_OK && check != 0) {
-            uint64_t addr = 0;
-            notify_get_state(addrtoken, &addr);
-            if (addr != 0) {
-                pid_t pid = find_cameracaptured();
-                mach_port_t task = MACH_PORT_NULL;
-                if (pid > 0 && task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
-                    char buf[768] = {0};
-                    vm_size_t size = (vm_size_t)sizeof(buf) - 1;
-                    if (vm_read_overwrite(task, (vm_address_t)addr,
-                                               size, (vm_address_t)buf, &size) == KERN_SUCCESS) {
+        (void)notify_check(sigtoken, &check);
+
+        uint64_t sigAddr = 0;
+        uint64_t probeAddr = 0;
+        uint64_t probeSequence = 0;
+        notify_get_state(addrtoken, &sigAddr);
+        notify_get_state(probeAddrToken, &probeAddr);
+        notify_get_state(probeSequenceToken, &probeSequence);
+        if ((check != 0 || probeSequence > lastProbeSequence) &&
+            (sigAddr != 0 || probeAddr != 0)) {
+            pid_t pid = find_cameracaptured();
+            mach_port_t task = MACH_PORT_NULL;
+            if (pid > 0 && task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
+                if (check != 0 && sigAddr != 0) {
+                    char buf[VCAMProbeMessageCapacity] = {0};
+                    if (read_remote(task, sigAddr, buf, sizeof(buf) - 1) == KERN_SUCCESS) {
                         buf[sizeof(buf) - 1] = '\0';
-                        FILE *f = fopen("/var/tmp/vcam-ios18-sigs.log", "a");
-                        if (f) {
-                            fprintf(f, "%s\n", buf);
-                            fclose(f);
-                        }
+                        record_line("/var/tmp/vcam-ios18-sigs.log",
+                                    "VCAM-SIGNATURE", 0, buf);
                     }
-                    mach_port_deallocate(mach_task_self(), task);
                 }
+                if (probeSequence > lastProbeSequence && probeAddr != 0) {
+                    VCAMProbeEvent events[VCAMProbeEventCapacity] = {0};
+                    if (read_remote(task, probeAddr, events, sizeof(events)) == KERN_SUCCESS) {
+                        uint64_t first = lastProbeSequence + 1;
+                        if (probeSequence - first >= VCAMProbeEventCapacity) {
+                            first = probeSequence - VCAMProbeEventCapacity + 1;
+                        }
+                        for (uint64_t sequence = first;
+                             sequence <= probeSequence; sequence++) {
+                            VCAMProbeEvent *event = &events[
+                                (sequence - 1) % VCAMProbeEventCapacity];
+                            if (event->sequence == sequence) {
+                                event->message[VCAMProbeMessageCapacity - 1] = '\0';
+                                record_line("/var/tmp/vcam-ios18-probe-events.log",
+                                            "VCAMPROBE-NOTIFY", sequence,
+                                            event->message);
+                            }
+                        }
+                        lastProbeSequence = probeSequence;
+                    }
+                }
+                mach_port_deallocate(mach_task_self(), task);
             }
         }
         usleep(100000);
