@@ -79,6 +79,8 @@ int main(void) {
     printf("sig listener ready pid=%d\n", getpid());
     fflush(stdout);
     uint64_t lastProbeSequence = 0;
+    int reportedTaskFailure = 0;
+    int reportedInitialState = 0;
     while (1) {
         int check = 0;
         int probeCheck = 0;
@@ -91,12 +93,23 @@ int main(void) {
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
+        if (!reportedInitialState) {
+            printf("listener state sigAddr=%llu probeAddr=%llu probeSeq=%llu\n",
+                   (unsigned long long)sigAddr,
+                   (unsigned long long)probeAddr,
+                   (unsigned long long)probeSequence);
+            fflush(stdout);
+            reportedInitialState = 1;
+        }
         if ((check != 0 || probeCheck != 0 ||
              probeSequence > lastProbeSequence) &&
             (sigAddr != 0 || probeAddr != 0)) {
             pid_t pid = find_cameracaptured();
             mach_port_t task = MACH_PORT_NULL;
-            if (pid > 0 && task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
+            kern_return_t taskResult = pid > 0
+                ? task_for_pid(mach_task_self(), pid, &task)
+                : KERN_INVALID_ARGUMENT;
+            if (pid > 0 && taskResult == KERN_SUCCESS) {
                 if (check != 0 && sigAddr != 0) {
                     char buf[VCAMProbeMessageCapacity] = {0};
                     if (read_remote(task, sigAddr, buf, sizeof(buf) - 1) == KERN_SUCCESS) {
@@ -127,6 +140,12 @@ int main(void) {
                     }
                 }
                 mach_port_deallocate(mach_task_self(), task);
+            } else if (!reportedTaskFailure) {
+                printf("listener task_for_pid failed pid=%d kr=%d probeCheck=%d probeSeq=%llu\n",
+                       pid, taskResult, probeCheck,
+                       (unsigned long long)probeSequence);
+                fflush(stdout);
+                reportedTaskFailure = 1;
             }
         }
         usleep(100000);
