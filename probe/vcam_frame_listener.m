@@ -16,6 +16,14 @@ extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 enum {
     VCAMProbeEventCapacity = 16,
     VCAMProbeMessageCapacity = 768,
+    VCAMProbeFlagStarted = 1 << 0,
+    VCAMProbeFlagClassFound = 1 << 1,
+    VCAMProbeFlagClassMissing = 1 << 2,
+    VCAMProbeFlagMethodFound = 1 << 3,
+    VCAMProbeFlagMethodMissing = 1 << 4,
+    VCAMProbeFlagSwizzled = 1 << 5,
+    VCAMProbeFlagDone = 1 << 6,
+    VCAMProbeFlagEmit = 1 << 7,
 };
 
 typedef struct {
@@ -43,6 +51,46 @@ static void record_line(const char *path, const char *prefix,
     }
 }
 
+static void record_probe_flags(uint64_t flags, uint64_t previous) {
+    struct FlagName {
+        uint64_t flag;
+        const char *name;
+    };
+    static const struct FlagName names[] = {
+        {VCAMProbeFlagStarted, "constructor-started"},
+        {VCAMProbeFlagClassFound, "BWNodeOutput-class-found"},
+        {VCAMProbeFlagClassMissing, "BWNodeOutput-class-missing"},
+        {VCAMProbeFlagMethodFound, "emitSampleBuffer-method-found"},
+        {VCAMProbeFlagMethodMissing, "emitSampleBuffer-method-missing"},
+        {VCAMProbeFlagSwizzled, "emitSampleBuffer-swizzled"},
+        {VCAMProbeFlagDone, "constructor-done"},
+        {VCAMProbeFlagEmit, "emitSampleBuffer-called"},
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if ((flags & names[i].flag) != 0 &&
+            (previous & names[i].flag) == 0) {
+            record_line("/var/tmp/vcam-ios18-probe-events.log",
+                        "VCAMPROBE-FLAG", names[i].flag, names[i].name);
+        }
+    }
+}
+
+static const char *const g_vcam_event_names[] = {
+    "com.codex.vcam.ios18.frame",
+    "com.codex.vcam.ios18.vmode",
+    "com.codex.vcam.ios18.route.camsrc",
+    "com.codex.vcam.ios18.route.converter",
+    "com.codex.vcam.ios18.route.preview",
+    "com.codex.vcam.ios18.route.recording",
+    "com.codex.vcam.ios18.route.still",
+    "com.codex.vcam.ios18.route.photo-encoder",
+    "com.codex.vcam.ios18.route.other",
+    "com.codex.vcam.ios18.rendered",
+    "com.codex.vcam.ios18.renderfail",
+    "com.codex.vcam.ios18.metal",
+    "com.codex.vcam.ios18.metalnil",
+};
+
 static pid_t find_cameracaptured(void) {
     int n = proc_listallpids(NULL, 0);
     if (n <= 0) return 0;
@@ -68,17 +116,37 @@ int main(void) {
     int probeToken = -1;
     int probeAddrToken = -1;
     int probeSequenceToken = -1;
+    int probeFlagsToken = -1;
+    int probeCountToken = -1;
+    int probeDimensionsToken = -1;
+    int probeFormatToken = -1;
+    int vcamEventTokens[sizeof(g_vcam_event_names) /
+                        sizeof(g_vcam_event_names[0])] = {0};
     if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.sigaddr", &addrtoken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.probe", &probeToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.probe.addr", &probeAddrToken) != NOTIFY_STATUS_OK ||
-        notify_register_check("com.codex.vcam.ios18.probe.sequence", &probeSequenceToken) != NOTIFY_STATUS_OK) {
+        notify_register_check("com.codex.vcam.ios18.probe.sequence", &probeSequenceToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.flags.state", &probeFlagsToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.count.state", &probeCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.dimensions.state", &probeDimensionsToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.probe.format.state", &probeFormatToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed\n");
         return 1;
+    }
+    for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
+        if (notify_register_check(g_vcam_event_names[i],
+                                  &vcamEventTokens[i]) != NOTIFY_STATUS_OK) {
+            printf("notify_register_check failed for %s\n",
+                   g_vcam_event_names[i]);
+            return 1;
+        }
     }
     printf("sig listener ready pid=%d\n", getpid());
     fflush(stdout);
     uint64_t lastProbeSequence = 0;
+    uint64_t lastProbeFlags = 0;
+    uint64_t lastProbeCount = 0;
     int reportedTaskFailure = 0;
     int reportedInitialState = 0;
     while (1) {
@@ -90,16 +158,49 @@ int main(void) {
         uint64_t sigAddr = 0;
         uint64_t probeAddr = 0;
         uint64_t probeSequence = 0;
+        uint64_t probeFlags = 0;
+        uint64_t probeCount = 0;
+        uint64_t probeDimensions = 0;
+        uint64_t probeFormat = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
+        notify_get_state(probeFlagsToken, &probeFlags);
+        notify_get_state(probeCountToken, &probeCount);
+        notify_get_state(probeDimensionsToken, &probeDimensions);
+        notify_get_state(probeFormatToken, &probeFormat);
+        for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
+            int eventCheck = 0;
+            if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
+                eventCheck != 0) {
+                record_line("/var/tmp/vcam-ios18-probe-events.log",
+                            "VCAM-NOTIFY", 0, g_vcam_event_names[i]);
+            }
+        }
         if (!reportedInitialState) {
-            printf("listener state sigAddr=%llu probeAddr=%llu probeSeq=%llu\n",
+            printf("listener state sigAddr=%llu probeAddr=%llu probeSeq=%llu probeFlags=%llu\n",
                    (unsigned long long)sigAddr,
                    (unsigned long long)probeAddr,
-                   (unsigned long long)probeSequence);
+                   (unsigned long long)probeSequence,
+                   (unsigned long long)probeFlags);
             fflush(stdout);
             reportedInitialState = 1;
+        }
+        if (probeFlags != lastProbeFlags) {
+            record_probe_flags(probeFlags, lastProbeFlags);
+            lastProbeFlags = probeFlags;
+        }
+        if (probeCount != lastProbeCount && probeCount != 0) {
+            uint32_t width = (uint32_t)(probeDimensions >> 32);
+            uint32_t height = (uint32_t)probeDimensions;
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "count=%llu dimensions=%ux%u format=0x%llx",
+                     (unsigned long long)probeCount, width, height,
+                     (unsigned long long)probeFormat);
+            record_line("/var/tmp/vcam-ios18-probe-events.log",
+                        "VCAMPROBE-EMIT", probeCount, message);
+            lastProbeCount = probeCount;
         }
         if ((check != 0 || probeCheck != 0 ||
              probeSequence > lastProbeSequence) &&

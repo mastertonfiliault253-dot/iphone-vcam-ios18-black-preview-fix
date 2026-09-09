@@ -32,6 +32,14 @@ static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 enum {
     VCAMProbeEventCapacity = 16,
     VCAMProbeMessageCapacity = 768,
+    VCAMProbeFlagStarted = 1 << 0,
+    VCAMProbeFlagClassFound = 1 << 1,
+    VCAMProbeFlagClassMissing = 1 << 2,
+    VCAMProbeFlagMethodFound = 1 << 3,
+    VCAMProbeFlagMethodMissing = 1 << 4,
+    VCAMProbeFlagSwizzled = 1 << 5,
+    VCAMProbeFlagDone = 1 << 6,
+    VCAMProbeFlagEmit = 1 << 7,
 };
 
 typedef struct {
@@ -47,6 +55,30 @@ static uint64_t g_probe_sequence = 0;
 static int g_probe_addr_token = -1;
 static int g_probe_sequence_token = -1;
 static pthread_mutex_t g_notify_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_probe_flags = 0;
+static uint64_t g_probe_count = 0;
+static uint64_t g_probe_dimensions = 0;
+static uint64_t g_probe_format = 0;
+static int g_probe_flags_token = -1;
+static int g_probe_count_token = -1;
+static int g_probe_dimensions_token = -1;
+static int g_probe_format_token = -1;
+
+static void probe_set_state_unlocked(int *token, const char *stateName,
+                                     uint64_t value) {
+    if (*token < 0) {
+        notify_register_check(stateName, token);
+    }
+    if (*token >= 0) notify_set_state(*token, value);
+}
+
+static void probe_publish_flag_unlocked(uint64_t flag) {
+    g_probe_flags |= flag;
+    probe_set_state_unlocked(&g_probe_flags_token,
+                             "com.codex.vcam.ios18.probe.flags.state",
+                             g_probe_flags);
+    notify_post("com.codex.vcam.ios18.probe.flags");
+}
 
 static void probe_notify(const char *msg) {
     pthread_mutex_lock(&g_notify_mutex);
@@ -77,6 +109,25 @@ static void probe_notify(const char *msg) {
     notify_set_state(g_probe_sequence_token, sequence);
     notify_post("com.codex.vcam.ios18.probe");
     pthread_mutex_unlock(&g_notify_mutex);
+}
+
+static void probe_publish_emit_unlocked(uint64_t count, size_t width,
+                                        size_t height, OSType format) {
+    g_probe_count = count;
+    g_probe_dimensions = ((uint64_t)(uint32_t)width << 32) |
+        (uint64_t)(uint32_t)height;
+    g_probe_format = (uint64_t)format;
+    probe_set_state_unlocked(&g_probe_count_token,
+                             "com.codex.vcam.ios18.probe.count.state",
+                             g_probe_count);
+    probe_set_state_unlocked(&g_probe_dimensions_token,
+                             "com.codex.vcam.ios18.probe.dimensions.state",
+                             g_probe_dimensions);
+    probe_set_state_unlocked(&g_probe_format_token,
+                             "com.codex.vcam.ios18.probe.format.state",
+                             g_probe_format);
+    probe_publish_flag_unlocked(VCAMProbeFlagEmit);
+    notify_post("com.codex.vcam.ios18.probe.emit");
 }
 
 static void probe_log(const char *msg) {
@@ -130,6 +181,9 @@ static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
         fc[3] = (char)(fmt & 0xff);
         probe_logf("emitSampleBuffer count=%ld self=%p sb=%p pb=%p %zux%zu fmt=%s\n",
                    n, self, sb, pb, w, h, fc);
+        pthread_mutex_lock(&g_notify_mutex);
+        probe_publish_emit_unlocked((uint64_t)n, w, h, fmt);
+        pthread_mutex_unlock(&g_notify_mutex);
     }
     if (orig_emitSampleBuffer) {
         orig_emitSampleBuffer(self, _cmd, sampleBuffer);
@@ -140,6 +194,10 @@ static void do_probe(void) {
     if (g_probed) return;
     g_probed = 1;
 
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(VCAMProbeFlagStarted);
+    pthread_mutex_unlock(&g_notify_mutex);
+
     struct timeval tv = {0};
     gettimeofday(&tv, NULL);
     probe_logf("PROBE pid=%d t=%ld.%03d\n", getpid(), (long)tv.tv_sec, (int)(tv.tv_usec / 1000));
@@ -148,20 +206,39 @@ static void do_probe(void) {
     probe_logf("BWNodeOutput class=%p name=%s\n", cls, cls ? class_getName(cls) : "(nil)");
 
     if (cls) {
+        pthread_mutex_lock(&g_notify_mutex);
+        probe_publish_flag_unlocked(VCAMProbeFlagClassFound);
+        pthread_mutex_unlock(&g_notify_mutex);
         SEL sel = sel_registerName("emitSampleBuffer:");
         Method m = class_getInstanceMethod(cls, sel);
         if (m) {
+            pthread_mutex_lock(&g_notify_mutex);
+            probe_publish_flag_unlocked(VCAMProbeFlagMethodFound);
+            pthread_mutex_unlock(&g_notify_mutex);
             const char *enc = method_getTypeEncoding(m);
             probe_logf("emitSampleBuffer: method=%p selector=%s type=%s\n",
                        m, sel_getName(method_getName(m)), enc ? enc : "(nil)");
             IMP old = method_setImplementation(m, (IMP)hooked_emitSampleBuffer);
             orig_emitSampleBuffer = (void (*)(id, SEL, void *))old;
+            pthread_mutex_lock(&g_notify_mutex);
+            probe_publish_flag_unlocked(VCAMProbeFlagSwizzled);
+            pthread_mutex_unlock(&g_notify_mutex);
             probe_logf("swizzled emitSampleBuffer: old_imp=%p new_imp=%p\n",
                        (void *)old, (void *)hooked_emitSampleBuffer);
         } else {
+            pthread_mutex_lock(&g_notify_mutex);
+            probe_publish_flag_unlocked(VCAMProbeFlagMethodMissing);
+            pthread_mutex_unlock(&g_notify_mutex);
             probe_log("emitSampleBuffer: method NOT found\n");
         }
+    } else {
+        pthread_mutex_lock(&g_notify_mutex);
+        probe_publish_flag_unlocked(VCAMProbeFlagClassMissing);
+        pthread_mutex_unlock(&g_notify_mutex);
     }
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(VCAMProbeFlagDone);
+    pthread_mutex_unlock(&g_notify_mutex);
     probe_log("PROBE DONE\n");
 }
 
