@@ -50,6 +50,8 @@ static CIContext *VCAMContext;
 static CGColorSpaceRef VCAMStandardColorSpace;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
+static int VCAMVirtualModeStateToken = -1;
+static int VCAMVirtualModeStateReadyToken = -1;
 // VTPixelTransferSession is available throughout the supported iOS 16.0-16.5
 // range. Keep the process-lifetime object in a narrow CF slot so this hook does
 // not depend on SDK-specific public typedef details.
@@ -318,6 +320,35 @@ static void VCAMPreferencesChanged(__unused CFNotificationCenterRef center,
     VCAMReloadConfiguredMode();
 }
 
+// Darwin notification registration hashes the observer identity inside
+// CoreFoundation. A NULL observer is not stable on iOS 18 arm64e and can
+// trigger a pointer-authentication trap while cameracaptured initializes.
+static uint8_t VCAMPreferencesObserverToken;
+
+static BOOL VCAMReadPublishedRequestedMode(BOOL *enabledOut) {
+    if (enabledOut == NULL) return NO;
+    if (VCAMVirtualModeStateToken < 0 &&
+        notify_register_check("com.codex.vcam.ios18.virtual-mode.state",
+                              &VCAMVirtualModeStateToken) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    if (VCAMVirtualModeStateReadyToken < 0 &&
+        notify_register_check("com.codex.vcam.ios18.virtual-mode.ready.state",
+                              &VCAMVirtualModeStateReadyToken) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    uint64_t ready = 0;
+    uint64_t state = 0;
+    if (VCAMVirtualModeStateReadyToken < 0 ||
+        notify_get_state(VCAMVirtualModeStateReadyToken, &ready) != NOTIFY_STATUS_OK ||
+        ready == 0 || VCAMVirtualModeStateToken < 0 ||
+        notify_get_state(VCAMVirtualModeStateToken, &state) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    *enabledOut = state != 0;
+    return YES;
+}
+
 void VCAMRefLog(const char *message) {
     struct timeval value = {0};
     gettimeofday(&value, NULL);
@@ -400,7 +431,8 @@ void loadReplacementMedia(void) {
         }
         VCAMReloadConfiguredMode();
         CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            &VCAMPreferencesObserverToken,
             VCAMPreferencesChanged, CFSTR("com.codex.vcam/preferences.changed"),
             NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
         VCAMRefLog(result == kCVReturnSuccess
@@ -424,6 +456,10 @@ void loadReplacementMedia(void) {
 }
 
 static BOOL VCAMEffectiveVirtualModeIsEnabledLocked(void) {
+    BOOL publishedActive = NO;
+    if (VCAMReadPublishedRequestedMode(&publishedActive)) {
+        return publishedActive;
+    }
     bool sharedActive = false;
     BOOL sharedAvailable = VCAMSharedFrameReaderGetActiveState(
         VCAMReader, &sharedActive);

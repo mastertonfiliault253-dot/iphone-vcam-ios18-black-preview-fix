@@ -154,6 +154,18 @@ class MediaServerTargetFillTests(unittest.TestCase):
                 self.assertGreaterEqual(source_width * scale, target_width)
                 self.assertGreaterEqual(source_height * scale, target_height)
 
+    def test_darwin_notification_observer_is_a_stable_nonnull_token(self) -> None:
+        # iOS 18 cameracaptured crashes inside CoreFoundation while hashing the
+        # Darwin notification observer when the historical NULL observer is
+        # registered. Keep the observer identity in static storage so it is
+        # valid for the lifetime of the process and safe for arm64e PAC.
+        self.assertIn("static uint8_t VCAMPreferencesObserverToken;", self.implementation)
+        observer_call = self.implementation.split(
+            "CFNotificationCenterAddObserver(", 1
+        )[1].split(");", 1)[0]
+        self.assertIn("&VCAMPreferencesObserverToken", observer_call)
+        self.assertNotIn("CFNotificationCenterGetDarwinNotifyCenter(), NULL,", observer_call)
+
     def test_webkit_reuses_the_real_camera_negotiation_shell(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"

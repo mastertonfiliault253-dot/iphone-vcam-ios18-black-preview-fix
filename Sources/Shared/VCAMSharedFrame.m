@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <notify.h>
 
 // The iPhoneOS 16.5 SDK exposes IOSurface-backed CVPixelBuffers through
 // CoreVideo but does not ship IOSurface framework headers. Keep the narrow
@@ -45,6 +46,31 @@ static const size_t VCAMSharedFrameSlotStride = VCAMSharedFrameSlotBytes;
 static const size_t VCAMSharedFrameNV12RowBytes = VCAMSharedFrameWidth;
 static const size_t VCAMSharedFrameNV12YPlaneBytes = VCAMSharedFrameWidth * VCAMSharedFrameHeight;
 static const size_t VCAMSharedFrameNV12UVHeight = VCAMSharedFrameHeight / 2;
+
+// cameracaptured cannot rely on reading the mobile-owned plist or /var/tmp
+// under its sandbox. Publish the control-plane mode through notifyd as well;
+// the shared-frame state remains the authoritative data-plane fallback for
+// hosts that can map it.
+static int VCAMRequestedActiveStateToken = -1;
+static int VCAMRequestedActiveReadyToken = -1;
+
+static void VCAMPublishRequestedActiveState(bool active) {
+    if (VCAMRequestedActiveStateToken < 0) {
+        notify_register_check("com.codex.vcam.ios18.virtual-mode.state",
+                              &VCAMRequestedActiveStateToken);
+    }
+    if (VCAMRequestedActiveReadyToken < 0) {
+        notify_register_check("com.codex.vcam.ios18.virtual-mode.ready.state",
+                              &VCAMRequestedActiveReadyToken);
+    }
+    if (VCAMRequestedActiveStateToken >= 0) {
+        notify_set_state(VCAMRequestedActiveStateToken, active ? 1 : 0);
+    }
+    if (VCAMRequestedActiveReadyToken >= 0) {
+        notify_set_state(VCAMRequestedActiveReadyToken, 1);
+    }
+    notify_post("com.codex.vcam.ios18.virtual-mode.changed");
+}
 
 typedef struct {
     uint32_t magic;
@@ -532,6 +558,7 @@ bool VCAMSharedFrameSetRequestedActive(bool active) {
     VCAMSharedFrameUnlock(descriptor);
     munmap(mapping, sizeof(VCAMSharedFrameHeader));
     close(descriptor);
+    if (valid) VCAMPublishRequestedActiveState(active);
     return valid;
 }
 
