@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <mach-o/dyld.h>
 #include <sys/time.h>
 
 static const char *g_log_paths[] = {
@@ -40,6 +41,16 @@ enum {
     VCAMProbeFlagSwizzled = 1 << 5,
     VCAMProbeFlagDone = 1 << 6,
     VCAMProbeFlagEmit = 1 << 7,
+    VCAMProbeFlagProductionImage = 1 << 8,
+    VCAMProbeFlagSubstrateImage = 1 << 9,
+    VCAMProbeFlagRemoteClassFound = 1 << 10,
+    VCAMProbeFlagRemoteMethodFound = 1 << 11,
+    VCAMProbeFlagRemoteSwizzled = 1 << 12,
+    VCAMProbeFlagRemoteCalled = 1 << 13,
+    VCAMProbeFlagPhotoClassFound = 1 << 14,
+    VCAMProbeFlagPhotoMethodFound = 1 << 15,
+    VCAMProbeFlagPhotoSwizzled = 1 << 16,
+    VCAMProbeFlagPhotoCalled = 1 << 17,
 };
 
 typedef struct {
@@ -163,7 +174,26 @@ static void probe_logf(const char *fmt, ...) {
 }
 
 static void (*orig_emitSampleBuffer)(id, SEL, void *) = NULL;
+static void (*orig_remoteRender)(id, SEL, void *, id) = NULL;
+static void (*orig_photoRender)(id, SEL, void *, id) = NULL;
 static int g_probed = 0;
+
+static void probe_publish_call(uint64_t flag, void *sampleBuffer) {
+    size_t width = 0;
+    size_t height = 0;
+    OSType format = 0;
+    CMSampleBufferRef sb = (CMSampleBufferRef)sampleBuffer;
+    CVPixelBufferRef pb = sb ? CMSampleBufferGetImageBuffer(sb) : NULL;
+    if (pb != NULL) {
+        width = CVPixelBufferGetWidth(pb);
+        height = CVPixelBufferGetHeight(pb);
+        format = CVPixelBufferGetPixelFormatType(pb);
+    }
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(flag);
+    probe_publish_emit_unlocked(1, width, height, format);
+    pthread_mutex_unlock(&g_notify_mutex);
+}
 
 static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
     static volatile long s_count = 0;
@@ -190,13 +220,72 @@ static void hooked_emitSampleBuffer(id self, SEL _cmd, void *sampleBuffer) {
     }
 }
 
+static void hooked_remoteRender(id self, SEL _cmd, void *sampleBuffer, id input) {
+    (void)self;
+    (void)input;
+    probe_publish_call(VCAMProbeFlagRemoteCalled, sampleBuffer);
+    if (orig_remoteRender) orig_remoteRender(self, _cmd, sampleBuffer, input);
+}
+
+static void hooked_photoRender(id self, SEL _cmd, void *sampleBuffer, id input) {
+    (void)self;
+    (void)input;
+    probe_publish_call(VCAMProbeFlagPhotoCalled, sampleBuffer);
+    if (orig_photoRender) orig_photoRender(self, _cmd, sampleBuffer, input);
+}
+
+static void probe_publish_loaded_image_flags(void) {
+    BOOL production = NO;
+    BOOL substrate = NO;
+    for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+        const char *name = _dyld_get_image_name(index);
+        if (name == NULL) continue;
+        if (strstr(name, "VCAMMediaServerClient") != NULL) production = YES;
+        if (strstr(name, "substrate") != NULL ||
+            strstr(name, "ElleKit") != NULL) substrate = YES;
+    }
+    pthread_mutex_lock(&g_notify_mutex);
+    if (production) probe_publish_flag_unlocked(VCAMProbeFlagProductionImage);
+    if (substrate) probe_publish_flag_unlocked(VCAMProbeFlagSubstrateImage);
+    pthread_mutex_unlock(&g_notify_mutex);
+}
+
+static void probe_hook_class(Class cls, SEL sel, IMP replacement, IMP *original,
+                             uint64_t classFlag, uint64_t methodFlag,
+                             uint64_t swizzledFlag) {
+    if (cls == Nil) return;
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(classFlag);
+    pthread_mutex_unlock(&g_notify_mutex);
+    Method method = class_getInstanceMethod(cls, sel);
+    if (method == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(methodFlag);
+    pthread_mutex_unlock(&g_notify_mutex);
+    IMP old = method_setImplementation(method, replacement);
+    *original = old;
+    pthread_mutex_lock(&g_notify_mutex);
+    probe_publish_flag_unlocked(swizzledFlag);
+    pthread_mutex_unlock(&g_notify_mutex);
+}
+
 static void do_probe(void) {
     if (g_probed) return;
     g_probed = 1;
 
     pthread_mutex_lock(&g_notify_mutex);
+    // Reset process-global notify state so a newly injected probe is not
+    // mistaken for the previous process instance by the root listener.
+    probe_set_state_unlocked(&g_probe_flags_token,
+                             "com.codex.vcam.ios18.probe.flags.state", 0);
+    probe_set_state_unlocked(&g_probe_count_token,
+                             "com.codex.vcam.ios18.probe.count.state", 0);
     probe_publish_flag_unlocked(VCAMProbeFlagStarted);
     pthread_mutex_unlock(&g_notify_mutex);
+
+    probe_publish_loaded_image_flags();
 
     struct timeval tv = {0};
     gettimeofday(&tv, NULL);
@@ -236,6 +325,19 @@ static void do_probe(void) {
         probe_publish_flag_unlocked(VCAMProbeFlagClassMissing);
         pthread_mutex_unlock(&g_notify_mutex);
     }
+
+    probe_hook_class(objc_getClass("BWRemoteQueueSinkNode"),
+                     sel_registerName("renderSampleBuffer:forInput:"),
+                     (IMP)hooked_remoteRender, (IMP *)&orig_remoteRender,
+                     VCAMProbeFlagRemoteClassFound,
+                     VCAMProbeFlagRemoteMethodFound,
+                     VCAMProbeFlagRemoteSwizzled);
+    probe_hook_class(objc_getClass("BWPhotoEncoderNode"),
+                     sel_registerName("renderSampleBuffer:forInput:"),
+                     (IMP)hooked_photoRender, (IMP *)&orig_photoRender,
+                     VCAMProbeFlagPhotoClassFound,
+                     VCAMProbeFlagPhotoMethodFound,
+                     VCAMProbeFlagPhotoSwizzled);
     pthread_mutex_lock(&g_notify_mutex);
     probe_publish_flag_unlocked(VCAMProbeFlagDone);
     pthread_mutex_unlock(&g_notify_mutex);

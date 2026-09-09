@@ -24,6 +24,16 @@ enum {
     VCAMProbeFlagSwizzled = 1 << 5,
     VCAMProbeFlagDone = 1 << 6,
     VCAMProbeFlagEmit = 1 << 7,
+    VCAMProbeFlagProductionImage = 1 << 8,
+    VCAMProbeFlagSubstrateImage = 1 << 9,
+    VCAMProbeFlagRemoteClassFound = 1 << 10,
+    VCAMProbeFlagRemoteMethodFound = 1 << 11,
+    VCAMProbeFlagRemoteSwizzled = 1 << 12,
+    VCAMProbeFlagRemoteCalled = 1 << 13,
+    VCAMProbeFlagPhotoClassFound = 1 << 14,
+    VCAMProbeFlagPhotoMethodFound = 1 << 15,
+    VCAMProbeFlagPhotoSwizzled = 1 << 16,
+    VCAMProbeFlagPhotoCalled = 1 << 17,
 };
 
 typedef struct {
@@ -65,6 +75,16 @@ static void record_probe_flags(uint64_t flags, uint64_t previous) {
         {VCAMProbeFlagSwizzled, "emitSampleBuffer-swizzled"},
         {VCAMProbeFlagDone, "constructor-done"},
         {VCAMProbeFlagEmit, "emitSampleBuffer-called"},
+        {VCAMProbeFlagProductionImage, "production-VCAMMediaServerClient-loaded"},
+        {VCAMProbeFlagSubstrateImage, "substrate-or-ellekit-loaded"},
+        {VCAMProbeFlagRemoteClassFound, "BWRemoteQueueSinkNode-class-found"},
+        {VCAMProbeFlagRemoteMethodFound, "remote-renderSampleBuffer-method-found"},
+        {VCAMProbeFlagRemoteSwizzled, "remote-renderSampleBuffer-swizzled"},
+        {VCAMProbeFlagRemoteCalled, "remote-renderSampleBuffer-called"},
+        {VCAMProbeFlagPhotoClassFound, "BWPhotoEncoderNode-class-found"},
+        {VCAMProbeFlagPhotoMethodFound, "photo-renderSampleBuffer-method-found"},
+        {VCAMProbeFlagPhotoSwizzled, "photo-renderSampleBuffer-swizzled"},
+        {VCAMProbeFlagPhotoCalled, "photo-renderSampleBuffer-called"},
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if ((flags & names[i].flag) != 0 &&
