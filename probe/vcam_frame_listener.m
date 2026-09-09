@@ -140,6 +140,18 @@ int main(void) {
     int probeCountToken = -1;
     int probeDimensionsToken = -1;
     int probeFormatToken = -1;
+    int productionCtorToken = -1;
+    int productionPIDToken = -1;
+    int productionStartToken = -1;
+    int productionOutputCountToken = -1;
+    int productionRemoteCountToken = -1;
+    int productionPhotoCountToken = -1;
+    int productionReplacementCountToken = -1;
+    int productionReplacementRouteToken = -1;
+    int productionLastKindToken = -1;
+    int productionLastCountToken = -1;
+    int productionLastDimensionsToken = -1;
+    int productionLastFormatToken = -1;
     int vcamEventTokens[sizeof(g_vcam_event_names) /
                         sizeof(g_vcam_event_names[0])] = {0};
     if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK ||
@@ -152,6 +164,21 @@ int main(void) {
         notify_register_check("com.codex.vcam.ios18.probe.dimensions.state", &probeDimensionsToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.probe.format.state", &probeFormatToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed\n");
+        return 1;
+    }
+    if (notify_register_check("com.codex.vcam.ios18.production.ctor.state", &productionCtorToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.pid.state", &productionPIDToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.start.state", &productionStartToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.output-count.state", &productionOutputCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.remote-count.state", &productionRemoteCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.photo-count.state", &productionPhotoCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.replacement-count.state", &productionReplacementCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.replacement-route.state", &productionReplacementRouteToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.last-kind.state", &productionLastKindToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.last-count.state", &productionLastCountToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.last-dimensions.state", &productionLastDimensionsToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.last-format.state", &productionLastFormatToken) != NOTIFY_STATUS_OK) {
+        printf("notify_register_check failed for production telemetry\n");
         return 1;
     }
     for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
@@ -182,6 +209,18 @@ int main(void) {
         uint64_t probeCount = 0;
         uint64_t probeDimensions = 0;
         uint64_t probeFormat = 0;
+        uint64_t productionCtor = 0;
+        uint64_t productionPID = 0;
+        uint64_t productionStart = 0;
+        uint64_t productionOutputCount = 0;
+        uint64_t productionRemoteCount = 0;
+        uint64_t productionPhotoCount = 0;
+        uint64_t productionReplacementCount = 0;
+        uint64_t productionReplacementRoute = 0;
+        uint64_t productionLastKind = 0;
+        uint64_t productionLastCount = 0;
+        uint64_t productionLastDimensions = 0;
+        uint64_t productionLastFormat = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
@@ -189,6 +228,18 @@ int main(void) {
         notify_get_state(probeCountToken, &probeCount);
         notify_get_state(probeDimensionsToken, &probeDimensions);
         notify_get_state(probeFormatToken, &probeFormat);
+        notify_get_state(productionCtorToken, &productionCtor);
+        notify_get_state(productionPIDToken, &productionPID);
+        notify_get_state(productionStartToken, &productionStart);
+        notify_get_state(productionOutputCountToken, &productionOutputCount);
+        notify_get_state(productionRemoteCountToken, &productionRemoteCount);
+        notify_get_state(productionPhotoCountToken, &productionPhotoCount);
+        notify_get_state(productionReplacementCountToken, &productionReplacementCount);
+        notify_get_state(productionReplacementRouteToken, &productionReplacementRoute);
+        notify_get_state(productionLastKindToken, &productionLastKind);
+        notify_get_state(productionLastCountToken, &productionLastCount);
+        notify_get_state(productionLastDimensionsToken, &productionLastDimensions);
+        notify_get_state(productionLastFormatToken, &productionLastFormat);
         for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
             int eventCheck = 0;
             if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
@@ -198,13 +249,64 @@ int main(void) {
             }
         }
         if (!reportedInitialState) {
-            printf("listener state sigAddr=%llu probeAddr=%llu probeSeq=%llu probeFlags=%llu\n",
+            printf("listener state sigAddr=%llu probeAddr=%llu probeSeq=%llu probeFlags=%llu productionCtor=%llu productionPID=%llu productionStart=%llu output=%llu remote=%llu photo=%llu replacement=%llu lastKind=%llu lastCount=%llu lastDimensions=%ux%u lastFormat=0x%llx\n",
                    (unsigned long long)sigAddr,
                    (unsigned long long)probeAddr,
                    (unsigned long long)probeSequence,
-                   (unsigned long long)probeFlags);
+                   (unsigned long long)probeFlags,
+                   (unsigned long long)productionCtor,
+                   (unsigned long long)productionPID,
+                   (unsigned long long)productionStart,
+                   (unsigned long long)productionOutputCount,
+                   (unsigned long long)productionRemoteCount,
+                   (unsigned long long)productionPhotoCount,
+                   (unsigned long long)productionReplacementCount,
+                   (unsigned long long)productionLastKind,
+                   (unsigned long long)productionLastCount,
+                   (unsigned int)(productionLastDimensions >> 32),
+                   (unsigned int)productionLastDimensions,
+                   (unsigned long long)productionLastFormat);
             fflush(stdout);
             reportedInitialState = 1;
+        }
+        static uint64_t lastProductionPID = 0;
+        static uint64_t lastProductionStart = 0;
+        static uint64_t lastProductionOutput = 0;
+        static uint64_t lastProductionRemote = 0;
+        static uint64_t lastProductionPhoto = 0;
+        static uint64_t lastProductionReplacement = 0;
+        if (productionPID != lastProductionPID || productionStart != lastProductionStart) {
+            record_line("/var/tmp/vcam-ios18-probe-events.log", "VCAM-PRODUCTION",
+                        productionPID, productionCtor != 0 ? "constructor-loaded" : "not-loaded");
+            printf("production identity pid=%llu start=%llu ctor=%llu\n",
+                   (unsigned long long)productionPID,
+                   (unsigned long long)productionStart,
+                   (unsigned long long)productionCtor);
+            fflush(stdout);
+            lastProductionPID = productionPID;
+            lastProductionStart = productionStart;
+        }
+        if (productionOutputCount != lastProductionOutput) {
+            printf("production output-count=%llu\n", (unsigned long long)productionOutputCount);
+            fflush(stdout);
+            lastProductionOutput = productionOutputCount;
+        }
+        if (productionRemoteCount != lastProductionRemote) {
+            printf("production remote-count=%llu\n", (unsigned long long)productionRemoteCount);
+            fflush(stdout);
+            lastProductionRemote = productionRemoteCount;
+        }
+        if (productionPhotoCount != lastProductionPhoto) {
+            printf("production photo-count=%llu\n", (unsigned long long)productionPhotoCount);
+            fflush(stdout);
+            lastProductionPhoto = productionPhotoCount;
+        }
+        if (productionReplacementCount != lastProductionReplacement) {
+            printf("production replacement-count=%llu route=%llu\n",
+                   (unsigned long long)productionReplacementCount,
+                   (unsigned long long)productionReplacementRoute);
+            fflush(stdout);
+            lastProductionReplacement = productionReplacementCount;
         }
         if (probeFlags != lastProbeFlags) {
             record_probe_flags(probeFlags, lastProbeFlags);

@@ -1,4 +1,5 @@
 #import "VCAMMediaServerRefImageUtils.h"
+#import "../Shared/VCAMProcessIdentity.h"
 #import <CoreVideo/CoreVideo.h>
 #import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <notify.h>
+#include <unistd.h>
 
 static char g_lastOutputSignature[768] = {0};
 static int g_sigaddrToken = -1;
@@ -104,6 +106,96 @@ typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
     // this node instead of reopening the historically unsafe raw-camera route.
     VCAMReplacementRoutePhotoEncoder,
 };
+
+// cameracaptured cannot reliably write the normal process log locations.
+// Publish bounded scalar state instead so a root listener can prove that the
+// production dylib loaded in this exact PID and which graph entry receives
+// samples, without reading target memory or trusting injector exit status.
+typedef NS_ENUM(uint64_t, VCAMRuntimeSampleKind) {
+    VCAMRuntimeSampleKindNone = 0,
+    VCAMRuntimeSampleKindOutput = 1,
+    VCAMRuntimeSampleKindRemoteQueue = 2,
+    VCAMRuntimeSampleKindPhotoEncoder = 3,
+};
+
+static int g_runtimeCtorToken = -1;
+static int g_runtimePIDToken = -1;
+static int g_runtimeStartToken = -1;
+static int g_runtimeOutputCountToken = -1;
+static int g_runtimeRemoteCountToken = -1;
+static int g_runtimePhotoCountToken = -1;
+static int g_runtimeReplacementCountToken = -1;
+static int g_runtimeReplacementRouteToken = -1;
+static int g_runtimeLastKindToken = -1;
+static int g_runtimeLastCountToken = -1;
+static int g_runtimeLastDimensionsToken = -1;
+static int g_runtimeLastFormatToken = -1;
+
+static void VCAMRuntimeSetState(int *token, const char *name,
+                                uint64_t value) {
+    if (*token < 0) {
+        notify_register_check(name, token);
+    }
+    if (*token >= 0) notify_set_state(*token, value);
+}
+
+static void VCAMRuntimePublishSample(VCAMRuntimeSampleKind kind,
+                                     uint64_t count,
+                                     CMSampleBufferRef sampleBuffer) {
+    if (count > 8 && count % 30 != 0) return;
+    CVPixelBufferRef imageBuffer = sampleBuffer == NULL
+        ? NULL : CMSampleBufferGetImageBuffer(sampleBuffer);
+    size_t width = imageBuffer == NULL ? 0 : CVPixelBufferGetWidth(imageBuffer);
+    size_t height = imageBuffer == NULL ? 0 : CVPixelBufferGetHeight(imageBuffer);
+    OSType format = imageBuffer == NULL
+        ? 0 : CVPixelBufferGetPixelFormatType(imageBuffer);
+    VCAMRuntimeSetState(&g_runtimeLastKindToken,
+                        "com.codex.vcam.ios18.production.last-kind.state", kind);
+    VCAMRuntimeSetState(&g_runtimeLastCountToken,
+                        "com.codex.vcam.ios18.production.last-count.state", count);
+    VCAMRuntimeSetState(&g_runtimeLastDimensionsToken,
+                        "com.codex.vcam.ios18.production.last-dimensions.state",
+                        ((uint64_t)(uint32_t)width << 32) |
+                        (uint64_t)(uint32_t)height);
+    VCAMRuntimeSetState(&g_runtimeLastFormatToken,
+                        "com.codex.vcam.ios18.production.last-format.state",
+                        (uint64_t)format);
+    notify_post("com.codex.vcam.ios18.production.sample");
+}
+
+static void VCAMRuntimePublishConstructor(void) {
+    VCAMRuntimeSetState(&g_runtimeCtorToken,
+                        "com.codex.vcam.ios18.production.ctor.state", 1);
+    VCAMRuntimeSetState(&g_runtimePIDToken,
+                        "com.codex.vcam.ios18.production.pid.state",
+                        (uint64_t)(uint32_t)getpid());
+    VCAMRuntimeSetState(&g_runtimeStartToken,
+                        "com.codex.vcam.ios18.production.start.state",
+                        VCAMProcessStartToken(getpid()));
+    VCAMRuntimeSetState(&g_runtimeOutputCountToken,
+                        "com.codex.vcam.ios18.production.output-count.state", 0);
+    VCAMRuntimeSetState(&g_runtimeRemoteCountToken,
+                        "com.codex.vcam.ios18.production.remote-count.state", 0);
+    VCAMRuntimeSetState(&g_runtimePhotoCountToken,
+                        "com.codex.vcam.ios18.production.photo-count.state", 0);
+    VCAMRuntimeSetState(&g_runtimeReplacementCountToken,
+                        "com.codex.vcam.ios18.production.replacement-count.state", 0);
+    VCAMRuntimeSetState(&g_runtimeReplacementRouteToken,
+                        "com.codex.vcam.ios18.production.replacement-route.state", 0);
+    notify_post("com.codex.vcam.ios18.production.loaded");
+}
+
+static void VCAMRuntimePublishReplacement(VCAMReplacementRoute route) {
+    static uint64_t replacementCount = 0;
+    uint64_t count = __sync_add_and_fetch(&replacementCount, 1);
+    VCAMRuntimeSetState(&g_runtimeReplacementCountToken,
+                        "com.codex.vcam.ios18.production.replacement-count.state",
+                        count);
+    VCAMRuntimeSetState(&g_runtimeReplacementRouteToken,
+                        "com.codex.vcam.ios18.production.replacement-route.state",
+                        (uint64_t)route);
+    notify_post("com.codex.vcam.ios18.production.replacement");
+}
 
 static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
     switch (route) {
@@ -943,6 +1035,7 @@ static BOOL VCAMReplaceSampleBufferInPlace(
         VCAMSetStillPhotoDisplayOrientationIfMissing(
             sampleBuffer, imageBuffer, requiresRightOrientation);
     }
+    if (inPlace) VCAMRuntimePublishReplacement(route);
     return inPlace;
 }
 
@@ -976,8 +1069,13 @@ static BOOL VCAMReplaceSampleBufferInPlace(
                  imageBuffer == NULL ? 0 : CVPixelBufferGetWidth(imageBuffer),
                  imageBuffer == NULL ? 0 : CVPixelBufferGetHeight(imageBuffer),
                  inputClass.UTF8String, inputName.UTF8String);
-        VCAMRefLog(message);
-    }
+         VCAMRefLog(message);
+     }
+    VCAMRuntimeSetState(&g_runtimePhotoCountToken,
+                        "com.codex.vcam.ios18.production.photo-count.state",
+                        (uint64_t)sampleCount);
+    VCAMRuntimePublishSample(VCAMRuntimeSampleKindPhotoEncoder,
+                             (uint64_t)sampleCount, sampleBuffer);
     if (sampleBuffer != NULL && enabled) {
         if (imageBuffer != NULL) {
             BOOL replaced = VCAMReplaceSampleBufferInPlace(
@@ -1012,6 +1110,11 @@ static BOOL VCAMReplaceSampleBufferInPlace(
     if (mediaType == kCMMediaType_Video) {
         static volatile int remoteVideoSamples = 0;
         int sampleCount = __sync_add_and_fetch(&remoteVideoSamples, 1);
+        VCAMRuntimeSetState(&g_runtimeRemoteCountToken,
+                            "com.codex.vcam.ios18.production.remote-count.state",
+                            (uint64_t)sampleCount);
+        VCAMRuntimePublishSample(VCAMRuntimeSampleKindRemoteQueue,
+                                 (uint64_t)sampleCount, sampleBuffer);
         if (sampleCount <= 12 || sampleCount % 300 == 0) {
             CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
             OSType subtype = CMFormatDescriptionGetMediaSubType(description);
@@ -1089,6 +1192,13 @@ static BOOL VCAMReplaceSampleBufferInPlace(
     }
 
     notify_post("com.codex.vcam.ios18.frame");
+    static volatile int outputVideoSamples = 0;
+    int outputSampleCount = __sync_add_and_fetch(&outputVideoSamples, 1);
+    VCAMRuntimeSetState(&g_runtimeOutputCountToken,
+                        "com.codex.vcam.ios18.production.output-count.state",
+                        (uint64_t)outputSampleCount);
+    VCAMRuntimePublishSample(VCAMRuntimeSampleKindOutput,
+                             (uint64_t)outputSampleCount, sampleBuffer);
 
     // Usually completed by the constructor warm-up. dispatch_once inside the
     // renderer makes this a no-op; an unusually early first frame waits for the
@@ -1221,6 +1331,7 @@ static BOOL VCAMReplaceSampleBufferInPlace(
 %end
 
 %ctor {
+    VCAMRuntimePublishConstructor();
     VCAMRefLog("ctor: VCAMMediaServerRefEntry loaded");
     char message[160] = {0};
     snprintf(message, sizeof(message),
