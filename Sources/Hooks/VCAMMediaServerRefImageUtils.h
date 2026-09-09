@@ -25,6 +25,12 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                CVPixelBufferRef *replacementBufferOut,
                                BOOL *stillPhotoRequiresRightOrientationOut);
 
+// iOS 18 cameracaptured does not accept a VCAM-created CMSampleBuffer in the
+// BWNodeOutput callback. Copy a compressed replacement back into the original
+// graph-owned pixel buffer so the caller can forward the original sample.
+BOOL VCAMCopyReplacementBufferIntoTarget(CVPixelBufferRef replacementBuffer,
+                                         CVPixelBufferRef targetBuffer);
+
 #ifdef __cplusplus
 }
 #endif

@@ -526,6 +526,44 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     return YES;
 }
 
+BOOL VCAMCopyReplacementBufferIntoTarget(CVPixelBufferRef replacementBuffer,
+                                         CVPixelBufferRef targetBuffer) {
+    if (replacementBuffer == NULL || targetBuffer == NULL ||
+        VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) {
+        return NO;
+    }
+    if (CVPixelBufferGetWidth(replacementBuffer) != CVPixelBufferGetWidth(targetBuffer) ||
+        CVPixelBufferGetHeight(replacementBuffer) != CVPixelBufferGetHeight(targetBuffer) ||
+        CVPixelBufferGetPixelFormatType(replacementBuffer) !=
+            CVPixelBufferGetPixelFormatType(targetBuffer)) {
+        return NO;
+    }
+
+    [VCAMPixelTransferLock lock];
+    OSStatus status = kCVReturnUnsupported;
+    if (@available(iOS 16.0, *)) {
+        // Keep the graph-owned target buffer and its attachments. Only the
+        // pixels are transferred; no new CMSampleBuffer crosses the hook.
+        status = VTPixelTransferSessionTransferImage(
+            (VTPixelTransferSessionRef)VCAMPixelTransferSession,
+            replacementBuffer, targetBuffer);
+    }
+    [VCAMPixelTransferLock unlock];
+    if (status == noErr) return YES;
+
+    static volatile int failures = 0;
+    int failureCount = __sync_add_and_fetch(&failures, 1);
+    if (failureCount <= 8 || failureCount % 300 == 0) {
+        char message[224] = {0};
+        snprintf(message, sizeof(message),
+                 "in-place replacement transfer failed count=%d status=%d format=%08x",
+                 failureCount, (int)status,
+                 CVPixelBufferGetPixelFormatType(targetBuffer));
+        VCAMRefLog(message);
+    }
+    return NO;
+}
+
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                VCAMFramePresentation presentation,
                                CVPixelBufferRef *replacementBufferOut,

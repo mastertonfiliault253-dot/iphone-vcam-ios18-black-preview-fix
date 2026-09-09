@@ -85,8 +85,39 @@ iOS18 cameracaptured 的节点名/图拓扑可能不同
 
 ---
 
+## 补充验证（2026-08-19）
+
+- 加 camsrc-only 守卫后：cameracaptured 不再崩溃循环（负载从 147+ 回到 ~5，无新 .ips）。
+- 但用户实测：**相机仍显示真实画面**（虚拟画面没显示）。
+- 加 camsrc+preview 守卫后：仍是真实画面。
+
+定位到的关键链路：
+
+```text
+frame=1 vmode=1 route(全部命中)=1 rendered=1 sbcreated=1
+    ↓
+%orig(replacementSampleBuffer) 传新建 sample buffer → iOS18 cameracaptured 挂起/被杀
+```
+
+结论更新：
+
+1. 路由不是问题（所有路由都命中）。
+2. 软件渲染也能完成（rendered=1）。
+3. 真正的兼容性问题在**新建 CMSampleBuffer 传给 iOS18 的 `%orig` 不被接受**，以及 **camsrc 原地渲染没有传播到可见预览**。
+
+## 代码适配状态（2026-09-08）
+
+针对上述兼容性问题，iOS18 分支已完成代码级适配：
+
+- `BWNodeOutput` 现在只操作原始、由图拥有的 `CVPixelBuffer`；压缩/私有格式需要克隆时，先渲染到克隆，再用 `VTPixelTransferSessionTransferImage` 复制回原目标。
+- 回调最后始终转发原始 `CMSampleBuffer`，不再创建或转发 `CMSampleBufferCreateReadyWithImageBuffer` 生成的新 sample。
+- 已移植并启用 `BWPhotoEncoderNode`、`BWRemoteQueueSinkNode` 的窄范围终端处理；替换失败时保持 fail-closed，不把真实帧继续送入已选中的虚拟终端。
+- 静态图片的 SpringBoard 传输改为保留一个 bootstrap buffer，并用 0.5 秒 `NSTimer` 心跳刷新，避免依赖屏幕重绘导致 reader TTL 过期。
+
+验证状态：主机测试 `188` 项全部通过；WSL/Theos arm64 编译检查通过。上述结果只证明静态契约和可构建性，**尚未替代 iOS18.3.1 真机重新部署后的画面、拍照和视频验收**。
+
 ## 下一步（按优先级）
 
-1. 用沙箱无关通道 dump cameracaptured 里 `emitSampleBuffer:` 的 output/node 签名，更新 `VCAMReplacementRouteForOutput` 路由表。
-2. 确认虚拟模式配置与 broker/源就绪后，重新注入验证帧替换。
-3. SpringBoard 恢复后，可做相机 App 端到端验证。
+1. 用最新 arm64e 产物重新部署到 iOS18.3.1，确认 `vmode`、路由、render/copy-back 和 `passing propagated virtual frame` 通知均出现。
+2. 分别验收 Camera 预览、Safari/WebKit、录制、拍照及远程 VideoDataOutput；重点观察是否仍有 `cameracaptured` 挂起、真实帧泄漏或静态源 TTL 过期。
+3. 若路由通知仍为 `none`，再用沙箱无关通道导出真实 output/node 签名，并只补充有设备证据的精确匹配。

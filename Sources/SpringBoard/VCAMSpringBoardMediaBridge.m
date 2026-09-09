@@ -126,6 +126,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic, strong, nullable) AVPlayerItemVideoOutput *output;
 @property(nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
+@property(nonatomic, strong, nullable) NSTimer *staticRefreshTimer;
+@property(nonatomic) CVPixelBufferRef staticBootstrapFrame;
 @property(nonatomic, strong, nullable) id playbackEndObserver;
 @property(nonatomic, strong, nullable) CIContext *context;
 @property(nonatomic, strong, nullable) id<MTLDevice> metalDevice;
@@ -234,6 +236,12 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     AVPlayerLayer *retiredLayer = self.playerLayer;
     [self.displayLink invalidate];
     self.displayLink = nil;
+    [self.staticRefreshTimer invalidate];
+    self.staticRefreshTimer = nil;
+    if (self.staticBootstrapFrame != NULL) {
+        CVPixelBufferRelease(self.staticBootstrapFrame);
+        self.staticBootstrapFrame = NULL;
+    }
     if (self.playbackEndObserver != nil) {
         [NSNotificationCenter.defaultCenter removeObserver:self.playbackEndObserver];
         self.playbackEndObserver = nil;
@@ -350,20 +358,27 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 - (BOOL)publishStaticBootstrap {
     if (self.staticRenderImage == nil || self.writer == NULL ||
         self.outputPool == NULL || self.surfaceWriter == NULL) return NO;
-    CVPixelBufferRef bootstrap = NULL;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, self.outputPool,
-                                           &bootstrap) != kCVReturnSuccess ||
-        bootstrap == NULL) return NO;
-    CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
-    CIImage *image = [self legacyCanvasImageFromOrientedImage:self.staticRenderImage];
-    [self.context render:image toCVPixelBuffer:bootstrap bounds:target
-              colorSpace:self.colorSpace];
-    VCAMSetRGBColorAttachments(bootstrap);
-    BOOL published = VCAMSharedFrameWriterPublishForSurfaceGeneration(
-        self.writer, bootstrap,
+    // Static pixels do not change between ticks. Retain one fixed-size frame
+    // so background refreshes only copy bytes, without another GPU render.
+    if (self.staticBootstrapFrame == NULL) {
+        CVPixelBufferRef bootstrap = NULL;
+        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, self.outputPool,
+                                               &bootstrap) != kCVReturnSuccess ||
+            bootstrap == NULL) return NO;
+        @try {
+            CGRect target = CGRectMake(0, 0, VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+            CIImage *image = [self legacyCanvasImageFromOrientedImage:self.staticRenderImage];
+            [self.context render:image toCVPixelBuffer:bootstrap bounds:target
+                      colorSpace:self.colorSpace];
+            VCAMSetRGBColorAttachments(bootstrap);
+            self.staticBootstrapFrame = CVPixelBufferRetain(bootstrap);
+        } @finally {
+            CVPixelBufferRelease(bootstrap);
+        }
+    }
+    return VCAMSharedFrameWriterPublishForSurfaceGeneration(
+        self.writer, self.staticBootstrapFrame,
         VCAMSharedSurfaceWriterGeneration(self.surfaceWriter));
-    CVPixelBufferRelease(bootstrap);
-    return published;
 }
 
 - (BOOL)startStaticImage:(VCAMConfiguration *)configuration {
@@ -451,10 +466,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     }
     self.publishedFrames = 1;
     self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
-    self.displayLink = [CADisplayLink displayLinkWithTarget:self
-                                                   selector:@selector(refreshStaticImage:)];
-    self.displayLink.preferredFramesPerSecond = 1;
-    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    // A transport heartbeat must not depend on SpringBoard screen redraws.
+    // Half a second leaves scheduling margin below the reader's one-second TTL.
+    self.staticRefreshTimer = [NSTimer timerWithTimeInterval:0.5 target:self
+        selector:@selector(refreshStaticImage:) userInfo:nil repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:self.staticRefreshTimer forMode:NSRunLoopCommonModes];
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
         @"springboard static image published size=%ux%u slots=1 generation=%llu",
         outputWidth, outputHeight,
@@ -494,8 +510,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     });
 }
 
-- (void)refreshStaticImage:(CADisplayLink *)displayLink {
-    (void)displayLink;
+- (void)refreshStaticImage:(NSTimer *)timer {
+    (void)timer;
     if (!self.staticImage || self.surfaceWriter == NULL) return;
     if (!VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter)) {
         [self reload];

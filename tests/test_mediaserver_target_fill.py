@@ -63,7 +63,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
         render_call = entry.split(
-            "replacementSucceeded = drawReplacementOntoBuffer", 1
+            "replacementSucceeded = VCAMReplaceSampleBufferInPlace(", 1
         )[1].split(");", 1)[0]
         self.assertIn(
             "VCAMPresentationForReplacementRoute(replacementRoute)", render_call
@@ -87,7 +87,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
         render_call = entry.split(
-            "replacementSucceeded = drawReplacementOntoBuffer", 1
+            "replacementSucceeded = VCAMReplaceSampleBufferInPlace(", 1
         )[1].split(");", 1)[0]
 
         # WebKit still owns the target profile (480p/720p/1080p), pixel format
@@ -158,26 +158,22 @@ class MediaServerTargetFillTests(unittest.TestCase):
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
         ).read_text(encoding="utf-8")
-        sample_adapter = entry.split(
-            "static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage", 1
-        )[1].split("static BOOL VCAMRouteUsesPropagationMarker", 1)[0]
-        render_call = entry.split(
-            "replacementSucceeded = drawReplacementOntoBuffer", 1
+        in_place = entry.split(
+            "static BOOL VCAMReplaceSampleBufferInPlace", 1
+        )[1].split("// SumUp's final still encoder", 1)[0]
+        render_call = in_place.split(
+            "BOOL rendered = drawReplacementOntoBuffer", 1
         )[1].split(");", 1)[0]
 
-        self.assertIn("originalImageBuffer", render_call)
-        self.assertRegex(
-            sample_adapter,
-            r"CMSampleBufferGetFormatDescription\(\s*originalSampleBuffer\s*\)",
-        )
-        self.assertIn(
-            "CMSampleBufferGetSampleTimingInfo(originalSampleBuffer", sample_adapter
-        )
-        self.assertIn("CMSampleBufferCreateReadyWithImageBuffer", sample_adapter)
-        self.assertIn(
-            "VCAMCopyAttachmentMode(originalSampleBuffer", sample_adapter
-        )
-        self.assertIn("CMSampleBufferGetSampleAttachmentsArray", sample_adapter)
+        self.assertIn("imageBuffer", render_call)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget", in_place)
+        self.assertIn("CVPixelBufferRelease(replacementBuffer)", in_place)
+        self.assertNotIn("CMSampleBufferCreateReadyWithImageBuffer", entry)
+        self.assertNotIn("CMSampleBufferGetSampleTimingInfo", in_place)
+
+        hook = entry.split("%hook BWNodeOutput", 1)[1].split("%end", 1)[0]
+        self.assertIn("%orig(sampleBuffer);", hook)
+        self.assertNotIn("%orig(replacementSampleBuffer)", hook)
 
 
 if __name__ == "__main__":

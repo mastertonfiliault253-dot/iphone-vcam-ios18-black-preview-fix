@@ -87,7 +87,12 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMCreateCompressedStagingBuffer", implementation)
         self.assertIn("CVPixelBufferCopyCreationAttributes", implementation)
         self.assertIn("VCAMCreateCompressedTargetBuffer", implementation)
-        self.assertIn("CMSampleBufferCreateReadyWithImageBuffer", entry)
+        # iOS 18 cameracaptured rejects a VCAM-created CMSampleBuffer. The
+        # hook preserves the graph-owned sample and only replaces its pixels.
+        self.assertNotIn("CMSampleBufferCreateReadyWithImageBuffer", entry)
+        self.assertNotIn("VCAMCreateSampleBufferWithReplacementImage", entry)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget", entry)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget", implementation)
         self.assertIn("CMCopyDictionaryOfAttachments", entry)
         self.assertIn("CVBufferRemoveAllAttachments", implementation)
         self.assertIn("VCAMMergeGraphAttachments", implementation)
@@ -140,6 +145,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMAdoptedSurfaceGeneration", implementation)
         self.assertIn("BWNodeOutput", entry)
         self.assertIn("%orig(sampleBuffer)", entry)
+        self.assertNotIn("%orig(replacementSampleBuffer)", entry)
         self.assertIn("output signature", entry)
         self.assertIn("VCAMReplacementRouteForOutput", entry)
         self.assertIn("[value isKindOfClass:NSString.class]", entry)
@@ -181,11 +187,13 @@ class InjectionSafetyTests(unittest.TestCase):
             "kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange",
             implementation,
         )
-        self.assertIn("sourceSubtype == (OSType)0x26787630", entry)
-        self.assertIn("sourceSubtype == (OSType)0x2d787630", entry)
         self.assertNotIn('@"BWFanOutNode"', entry)
         self.assertNotIn('@"BWInferenceNode"', entry)
-        self.assertNotIn('@"BWPhotoEncoderNode"', entry)
+        self.assertIn('@"BWPhotoEncoderNode"', entry)
+        self.assertIn('@"Encoder"', entry)
+        self.assertIn("VCAMReplacementRoutePhotoEncoder", entry)
+        self.assertIn("%hook BWPhotoEncoderNode", entry)
+        self.assertIn("%hook BWRemoteQueueSinkNode", entry)
         self.assertNotIn('@"Front Camera"', entry)
         self.assertNotIn('@"Back Camera"', entry)
         self.assertIn("NSPointerFunctionsObjectPointerPersonality", entry)

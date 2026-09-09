@@ -39,20 +39,49 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             re.compile(
                 r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
                 r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
-                r'\s*&&\s*VCAMTargetBufferIsSupported\(pixelBuffer\)'
-                r'\s*\)\s*\{\s*return VCAMReplacementRouteNone;',
+                r'.*?pixelFormat\s*==\s*\(OSType\)0x26786630'
+                r'.*?return VCAMReplacementRouteStillPhoto;',
                 re.DOTALL,
             ),
         )
 
     def test_private_still_source_reaches_supported_downstream_photo_route(self) -> None:
         self.assertIn(
-            'VCAMStringMatches(outputName, @"StillImage") &&\n'
-            '        VCAMTargetBufferIsSupported(pixelBuffer)',
+            'VCAMStringMatches(outputName, @"StillImage")',
             self.route_function,
         )
+        self.assertIn("(OSType)0x26786630", self.route_function)
+        self.assertIn("return VCAMReplacementRouteStillPhoto;", self.route_function)
         self.assertIn('VCAMStringMatches(nodeClass, @"BWMeteorHeadroomNode")', self.route_function)
         self.assertIn('VCAMStringMatches(nodeName, @"Meteor Headroom")', self.route_function)
+
+    def test_photo_encoder_is_a_narrow_still_photo_route(self) -> None:
+        self.assertRegex(
+            self.route_function,
+            re.compile(
+                r'VCAMStringMatches\(nodeClass,\s*@"BWPhotoEncoderNode"\)'
+                r'.*?VCAMStringMatches\(nodeName,\s*@"Encoder"\)'
+                r'.*?return VCAMReplacementRoutePhotoEncoder;',
+                re.DOTALL,
+            ),
+        )
+
+    def test_photo_encoder_rewrites_supported_encoded_surface_attachment(self) -> None:
+        helper = _between(
+            self.entry,
+            "static BOOL VCAMReplacePhotoEncodedSurface",
+            "static const CFStringRef VCAMPropagationMarkerKey",
+        )
+        self.assertIn('CFSTR("DeferredPhotoProxyEncodedImageSurface")', helper)
+        self.assertIn('CFSTR("EncodedImageSurface")', helper)
+        self.assertIn("CVPixelBufferCreateWithIOSurface", helper)
+        self.assertIn("VCAMReplaceEncodedPhotoBytes", self.entry)
+        self.assertIn("DeferredPhotoProxyEncodedImageSurfaceSize", self.entry)
+        self.assertIn("photo encoded-bytes replacement", self.entry)
+        self.assertIn("VCAMTargetBufferIsSupported", helper)
+        self.assertIn("VCAMFramePresentationStillPhotoFill", helper)
+        self.assertIn("VCAMSetStillPhotoDisplayOrientationIfMissing", helper)
+        self.assertIn("photoEncodedSurfaceReplaced", self.hook)
 
     def test_terminal_routes_remain_fail_closed_for_missing_buffers(self) -> None:
         null_buffer_path = _between(
@@ -63,8 +92,9 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertRegex(
             null_buffer_path,
             re.compile(
-                r'if\s*\(replacementAllowed\s*&&\s*VCAMVirtualModeIsEnabled\(\)\)'
-                r'\s*\{.*?return;\s*\}.*?%orig\(sampleBuffer\);',
+                r'if\s*\(replacementAllowed\s*&&\s*VCAMVirtualModeIsEnabled\(\)'
+                r'\s*&&\s*!photoEncodedSurfaceReplaced'
+                r'\s*\)\s*\{.*?return;\s*\}.*?%orig\(sampleBuffer\);',
                 re.DOTALL,
             ),
         )
@@ -120,116 +150,48 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             self.assertIn(f'@"{field}"', self.entry)
         self.assertIn("kCMAttachmentMode_ShouldPropagate", self.entry)
         self.assertIn("kCVAttachmentMode_ShouldPropagate", self.entry)
-        self.assertRegex(
-            self.hook,
-            re.compile(
-                r'if\s*\(replacementSucceeded\s*&&\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo'
-                r'.*?markerSampleBuffer\s*=\s*replacementSampleBuffer\s*!=\s*NULL'
-                r'\s*\?\s*replacementSampleBuffer\s*:\s*sampleBuffer;'
-                r'.*?markerImageBuffer\s*=\s*replacementImageBuffer\s*!=\s*NULL'
-                r'\s*\?\s*replacementImageBuffer\s*:\s*originalImageBuffer;'
-                r'.*?VCAMWritePropagationMarker\('
-                r'\s*markerSampleBuffer,\s*markerImageBuffer\s*\)',
-                re.DOTALL,
-            ),
-        )
-
-    def test_uncompressed_source_marker_does_not_require_a_clone(self) -> None:
-        source_marker_path = _between(
-            self.hook,
-            "replacementRoute == VCAMReplacementRouteCameraSourceVideo",
-            "} @catch (NSException *exception)",
-        )
-        self.assertIn(": sampleBuffer", source_marker_path)
-        self.assertIn(": originalImageBuffer", source_marker_path)
-        self.assertIn("replacementSampleBuffer != NULL", source_marker_path)
-        self.assertIn("replacementImageBuffer != NULL", source_marker_path)
-        self.assertNotIn(
-            "VCAMWritePropagationMarker(\n                    replacementSampleBuffer, replacementImageBuffer)",
-            source_marker_path,
-        )
-
-    def test_invalid_private_format_retries_with_buffer_derived_description(self) -> None:
-        sample_builder = _between(
+        in_place = _between(
             self.entry,
-            "static CMSampleBufferRef VCAMCreateSampleBufferWithReplacementImage",
-            "static CFStringRef const VCAMPropagationMarkerKey",
+            "static BOOL VCAMReplaceSampleBufferInPlace",
+            "// SumUp's final still encoder",
         )
-        original_create = "CMSampleBufferCreateReadyWithImageBuffer("
-        retry_guard = "createStatus == kCMSampleBufferError_InvalidMediaFormat"
-        derived_create = "CMVideoFormatDescriptionCreateForImageBuffer("
-        retry_region = _between(
-            sample_builder,
-            "if (createStatus == kCMSampleBufferError_InvalidMediaFormat) {",
-            "if (createStatus != noErr || replacementSampleBuffer == NULL)",
-        )
-
-        self.assertEqual(sample_builder.count(original_create), 2)
-        self.assertEqual(sample_builder.count(derived_create), 1)
-        self.assertEqual(retry_region.count(original_create), 1)
-        self.assertEqual(retry_region.count(derived_create), 1)
-        self.assertIn(retry_guard, sample_builder)
-        self.assertIn("sourceSubtype == (OSType)0x5b387630", sample_builder)
-        self.assertIn("sourceSubtype == (OSType)0x7d387630", sample_builder)
-        self.assertIn("sourceSubtype == (OSType)0x26786630", sample_builder)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget", in_place)
         self.assertRegex(
-            self.hook,
+            in_place,
             re.compile(
-                r'VCAMCreateSampleBufferWithReplacementImage\('
-                r'\s*sampleBuffer,\s*replacementImageBuffer,\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo\s*\|\|\s*'
-                r'replacementRoute\s*==\s*VCAMReplacementRouteStillPhoto\)',
+                r'if\s*\(route\s*==\s*VCAMReplacementRouteCameraSourceVideo'
+                r'.*?VCAMWritePropagationMarker\(sampleBuffer,\s*imageBuffer\)',
                 re.DOTALL,
             ),
         )
-        self.assertIn("replacementImageBuffer, &derivedFormat", sample_builder)
-        self.assertIn("replacementImageBuffer, derivedFormat", sample_builder)
-        self.assertIn("derivedFormatMatchesSource", sample_builder)
-        self.assertIn("derivedDimensions.width == dimensions.width", sample_builder)
-        self.assertIn("derivedDimensions.height == dimensions.height", sample_builder)
-        # The derived description is accepted on matching dimensions only: it is
-        # created from the replacement buffer itself, so its subtype always
-        # matches the pixels even when the source description (e.g. 10-bit
-        # p420 vs 8-bit 420f) disagrees with the clone.
-        self.assertNotIn(
-            "CMFormatDescriptionGetMediaSubType(derivedFormat) ==",
-            sample_builder,
+
+    def test_source_marker_uses_the_original_sample_without_a_clone(self) -> None:
+        in_place = _between(
+            self.entry,
+            "static BOOL VCAMReplaceSampleBufferInPlace",
+            "// SumUp's final still encoder",
         )
-        self.assertIn("sourceSubtype", sample_builder)
-        self.assertLess(
-            retry_region.index("if (derivedFormatMatchesSource)"),
-            retry_region.index("replacementImageBuffer, derivedFormat"),
+        self.assertIn("CVPixelBufferRef replacementBuffer = NULL", in_place)
+        self.assertIn("if (rendered && replacementBuffer != NULL)", in_place)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget", in_place)
+        self.assertIn("VCAMWritePropagationMarker(sampleBuffer, imageBuffer)", in_place)
+        self.assertNotIn("replacementSampleBuffer", in_place)
+
+    def test_ios18_forwards_original_sample_after_in_place_copy(self) -> None:
+        in_place = _between(
+            self.entry,
+            "static BOOL VCAMReplaceSampleBufferInPlace",
+            "// SumUp's final still encoder",
         )
-        self.assertIn("if (derivedFormat != NULL)", sample_builder)
-        self.assertIn("CFRelease(derivedFormat);", sample_builder)
-        derived_declaration = sample_builder.index(
-            "CMVideoFormatDescriptionRef derivedFormat = NULL"
-        )
-        derived_release = sample_builder.index("CFRelease(derivedFormat);")
-        self.assertNotIn("return", sample_builder[derived_declaration:derived_release])
-        self.assertGreater(
-            derived_release,
-            sample_builder.index("replacementImageBuffer, derivedFormat"),
-        )
-        self.assertIn("if (createStatus != noErr || replacementSampleBuffer == NULL)", sample_builder)
-        failure_path = _between(
-            sample_builder,
-            "if (createStatus != noErr || replacementSampleBuffer == NULL)",
-            "if (attemptedDerivedFormat)",
-        )
-        self.assertIn(
-            "if (replacementSampleBuffer != NULL)",
-            failure_path,
-        )
-        self.assertIn("CFRelease(replacementSampleBuffer);", failure_path)
-        self.assertLess(
-            failure_path.index("CFRelease(replacementSampleBuffer);"),
-            failure_path.index("return NULL;"),
-        )
-        self.assertLess(sample_builder.index(original_create), sample_builder.index(retry_guard))
-        self.assertLess(sample_builder.index(retry_guard), sample_builder.index(derived_create))
-        self.assertIn("compressed replacement sample used derived format", sample_builder)
+        self.assertIn("BOOL rendered = drawReplacementOntoBuffer", in_place)
+        self.assertIn("VCAMCopyReplacementBufferIntoTarget(", in_place)
+        self.assertIn("CVPixelBufferRelease(replacementBuffer)", in_place)
+        self.assertNotIn("VCAMCreateSampleBufferWithReplacementImage", self.entry)
+        self.assertNotIn("CMSampleBufferCreateReadyWithImageBuffer", self.entry)
+
+        self.assertIn("%orig(sampleBuffer);", self.hook)
+        self.assertNotIn("%orig(replacementSampleBuffer)", self.hook)
+        self.assertIn("cameracaptured accepts the original graph-owned sample", self.entry)
 
     def test_ios16_observed_p420_preview_does_not_depend_on_capability_probe(self) -> None:
         utils = UTILS_PATH.read_text(encoding="utf-8")
@@ -300,15 +262,15 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "static BOOL VCAMRouteUsesPropagationMarker",
             "static BOOL VCAMWritePropagationMarker",
         )
-        self.assertNotIn("VCAMReplacementRouteCameraSourceVideo", route_helper)
-        self.assertRegex(
-            self.hook,
-            re.compile(
-                r'replacementRoute\s*==\s*VCAMReplacementRouteCameraSourceVideo'
-                r'.*?VCAMWritePropagationMarker',
-                re.DOTALL,
-            ),
+        self.assertIn("VCAMReplacementRouteCameraSourceVideo", route_helper)
+        self.assertNotIn("VCAMReplacementRouteStillPhoto", route_helper)
+        self.assertNotIn("VCAMReplacementRoutePhotoEncoder", route_helper)
+        in_place = _between(
+            self.entry,
+            "static BOOL VCAMReplaceSampleBufferInPlace",
+            "// SumUp's final still encoder",
         )
+        self.assertIn("VCAMWritePropagationMarker(sampleBuffer, imageBuffer)", in_place)
 
     def test_webkit_terminal_rerenders_from_uncompressed_shared_frame(self) -> None:
         route_helper = _between(
@@ -319,13 +281,13 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("VCAMReplacementRouteVideoConverter", route_helper)
         self.assertIn("VCAMReplacementRouteCameraPreview", route_helper)
         self.assertIn("VCAMReplacementRouteVideoRecording", route_helper)
-        redraw_path = _between(
-            self.hook,
-            "replacementSucceeded = drawReplacementOntoBuffer(",
-            "} @catch (NSException *exception)",
+        in_place = _between(
+            self.entry,
+            "static BOOL VCAMReplaceSampleBufferInPlace",
+            "// SumUp's final still encoder",
         )
-        self.assertIn("VCAMPresentationForReplacementRoute(replacementRoute)", redraw_path)
-        self.assertIn("VCAMClearPropagationMarker", redraw_path)
+        self.assertIn("VCAMPresentationForReplacementRoute(replacementRoute)", self.entry)
+        self.assertIn("VCAMClearPropagationMarker", in_place)
 
     def test_marked_recording_frame_reaches_system_encoder_without_second_guard(self) -> None:
         fast_path = _between(
@@ -353,17 +315,17 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("VCAMRecordingFrameOutcomes", propagated_assignment)
 
         after_fast_path = self.hook.split("if (propagatedReplacement)", 1)[1]
-        self.assertIn("drawReplacementOntoBuffer", after_fast_path)
-        self.assertIn("if (!replacementSucceeded && virtualModeEnabled)", after_fast_path)
+        self.assertIn("VCAMReplaceSampleBufferInPlace", after_fast_path)
+        self.assertIn("if (!replacementSucceeded && virtualModeEnabled &&", after_fast_path)
         failure_path = _between(
             after_fast_path,
-            "if (!replacementSucceeded && virtualModeEnabled)",
-            "if (replacementSucceeded && replacementSampleBuffer != NULL)",
+            "if (!replacementSucceeded && virtualModeEnabled &&",
+            "// cameracaptured accepts the original graph-owned sample",
         )
         self.assertLess(failure_path.index("return;"), len(failure_path))
         self.assertNotIn("%orig(", failure_path)
 
-    def test_remote_queue_sink_probe_is_diagnostic_only(self) -> None:
+    def test_remote_queue_sink_replaces_video_data_boundary(self) -> None:
         remote_sink = _between(
             self.entry,
             "%hook BWRemoteQueueSinkNode",
@@ -377,10 +339,11 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn("kCMMediaType_Video", remote_sink)
         self.assertIn("remote queue sink diagnostic", remote_sink)
         self.assertIn("%orig(sampleBuffer, input);", remote_sink)
-        self.assertNotIn("drawReplacementOntoBuffer", remote_sink)
-        self.assertNotIn("VCAMCreateSampleBufferWithReplacementImage", remote_sink)
-        self.assertNotIn("VCAMVirtualModeIsEnabled", remote_sink)
-        self.assertNotIn("return;", remote_sink)
+        self.assertIn("VCAMReplaceSampleBufferInPlace", remote_sink)
+        self.assertIn("VCAMFramePresentationCameraPreviewFit", remote_sink)
+        self.assertIn("VCAMVirtualModeIsEnabled", remote_sink)
+        self.assertIn("suppressing remote queue real sample", remote_sink)
+        self.assertIn("return;", remote_sink)
 
 
 if __name__ == "__main__":

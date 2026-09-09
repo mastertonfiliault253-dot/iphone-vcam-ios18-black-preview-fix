@@ -274,6 +274,8 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
             "- (BOOL)startStaticImage", 1
         )[0]
         self.assertIn("VCAMSetRGBColorAttachments(bootstrap)", bootstrap)
+        self.assertIn("self.staticBootstrapFrame = CVPixelBufferRetain(bootstrap)", bootstrap)
+        self.assertIn("CVPixelBufferRelease(bootstrap)", bootstrap)
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
             encoding="utf-8"
         )
@@ -291,6 +293,8 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("scheduleStaticImageStartRetryForConfiguration", bridge)
         self.assertIn("self.staticImageStartRetryable = YES;", static_path)
         self.assertIn("static bootstrap deferred until refresh", static_path)
+        self.assertIn("self.staticRefreshTimer = [NSTimer timerWithTimeInterval:0.5", static_path)
+        self.assertIn("forMode:NSRunLoopCommonModes", static_path)
         self.assertNotIn("!surfacePublished || !bootstrapPublished", static_path)
         self.assertIn("BOOL transportCurrent = !self.staticImage", bridge)
         self.assertIn("if (!VCAMSharedSurfaceWriterIsCurrent(self.surfaceWriter))", bridge)
