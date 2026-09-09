@@ -81,7 +81,9 @@ int main(void) {
     uint64_t lastProbeSequence = 0;
     while (1) {
         int check = 0;
+        int probeCheck = 0;
         (void)notify_check(sigtoken, &check);
+        (void)notify_check(probeToken, &probeCheck);
 
         uint64_t sigAddr = 0;
         uint64_t probeAddr = 0;
@@ -89,7 +91,8 @@ int main(void) {
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
-        if ((check != 0 || probeSequence > lastProbeSequence) &&
+        if ((check != 0 || probeCheck != 0 ||
+             probeSequence > lastProbeSequence) &&
             (sigAddr != 0 || probeAddr != 0)) {
             pid_t pid = find_cameracaptured();
             mach_port_t task = MACH_PORT_NULL;
