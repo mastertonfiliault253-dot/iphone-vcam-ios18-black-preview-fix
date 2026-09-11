@@ -159,6 +159,13 @@ int main(void) {
     int productionSourceSummaryToken = -1;
     int productionStagingSummaryToken = -1;
     int productionTargetSummaryToken = -1;
+    int productionDirectStatusToken = -1;
+    int productionDirectBeforeToken = -1;
+    int productionDirectAfterToken = -1;
+    int productionDirectRelockToken = -1;
+    int productionDirectSurfaceToken = -1;
+    int productionDirectLumaAddressToken = -1;
+    int productionDirectChromaAddressToken = -1;
     int productionPixelsToken = -1;
     int vcamEventTokens[sizeof(g_vcam_event_names) /
                         sizeof(g_vcam_event_names[0])] = {0};
@@ -196,6 +203,13 @@ int main(void) {
         notify_register_check("com.codex.vcam.ios18.production.source-summary.state", &productionSourceSummaryToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.staging-summary.state", &productionStagingSummaryToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.target-summary.state", &productionTargetSummaryToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-status.state", &productionDirectStatusToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-before.state", &productionDirectBeforeToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-after.state", &productionDirectAfterToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-relock.state", &productionDirectRelockToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-surface.state", &productionDirectSurfaceToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-luma-addr.state", &productionDirectLumaAddressToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.direct-write-chroma-addr.state", &productionDirectChromaAddressToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.pixels", &productionPixelsToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed for production pixel telemetry\n");
         return 1;
@@ -247,6 +261,13 @@ int main(void) {
         uint64_t productionSourceSummary = 0;
         uint64_t productionStagingSummary = 0;
         uint64_t productionTargetSummary = 0;
+        uint64_t productionDirectStatus = 0;
+        uint64_t productionDirectBefore = 0;
+        uint64_t productionDirectAfter = 0;
+        uint64_t productionDirectRelock = 0;
+        uint64_t productionDirectSurface = 0;
+        uint64_t productionDirectLumaAddress = 0;
+        uint64_t productionDirectChromaAddress = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
@@ -273,6 +294,13 @@ int main(void) {
         notify_get_state(productionSourceSummaryToken, &productionSourceSummary);
         notify_get_state(productionStagingSummaryToken, &productionStagingSummary);
         notify_get_state(productionTargetSummaryToken, &productionTargetSummary);
+        notify_get_state(productionDirectStatusToken, &productionDirectStatus);
+        notify_get_state(productionDirectBeforeToken, &productionDirectBefore);
+        notify_get_state(productionDirectAfterToken, &productionDirectAfter);
+        notify_get_state(productionDirectRelockToken, &productionDirectRelock);
+        notify_get_state(productionDirectSurfaceToken, &productionDirectSurface);
+        notify_get_state(productionDirectLumaAddressToken, &productionDirectLumaAddress);
+        notify_get_state(productionDirectChromaAddressToken, &productionDirectChromaAddress);
         for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
             int eventCheck = 0;
             if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
@@ -347,14 +375,21 @@ int main(void) {
         if (pixelCheck != 0 || productionPixelSequence != lastProductionPixelSequence) {
             char message[512] = {0};
             snprintf(message, sizeof(message),
-                     "sequence=%llu source=0x%llx/%llu staging=0x%llx/%llu target=0x%llx/%llu",
+                     "sequence=%llu source=0x%llx/%llu staging=0x%llx/%llu target=0x%llx/%llu directStatus=0x%llx before=0x%llx after=0x%llx relock=0x%llx surface=%llu luma=0x%llx chroma=0x%llx",
                      (unsigned long long)productionPixelSequence,
                      (unsigned long long)productionSourceSignature,
                      (unsigned long long)productionSourceSummary,
                      (unsigned long long)productionStagingSignature,
                      (unsigned long long)productionStagingSummary,
                      (unsigned long long)productionTargetSignature,
-                     (unsigned long long)productionTargetSummary);
+                     (unsigned long long)productionTargetSummary,
+                     (unsigned long long)productionDirectStatus,
+                     (unsigned long long)productionDirectBefore,
+                     (unsigned long long)productionDirectAfter,
+                     (unsigned long long)productionDirectRelock,
+                     (unsigned long long)productionDirectSurface,
+                     (unsigned long long)productionDirectLumaAddress,
+                     (unsigned long long)productionDirectChromaAddress);
             record_line("/var/tmp/vcam-ios18-probe-events.log",
                         "VCAM-PIXELS", productionPixelSequence, message);
             lastProductionPixelSequence = productionPixelSequence;

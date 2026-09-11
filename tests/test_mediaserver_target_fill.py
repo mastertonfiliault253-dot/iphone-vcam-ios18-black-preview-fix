@@ -225,6 +225,19 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)", self.implementation)
         self.assertIn("IOSurfaceUnlock(targetSurface, 0, NULL)", self.implementation)
 
+    def test_planar_writer_reports_before_after_and_relock_samples(self) -> None:
+        # A post-unlock read through Core Video alone cannot distinguish an
+        # ineffective write from a surface/cache hand-off that discards it.
+        # Keep the three observations in the production probe contract.
+        for state_name in (
+            "direct-write-before.state",
+            "direct-write-after.state",
+            "direct-write-relock.state",
+        ):
+            self.assertIn(state_name, self.implementation)
+        self.assertIn("IOSurfaceGetID(targetSurface)", self.implementation)
+        self.assertIn("IOSurfaceLock(targetSurface, 0, NULL) == 0", self.implementation)
+
     def test_common_camera_output_defaults_to_universal_replacement(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"

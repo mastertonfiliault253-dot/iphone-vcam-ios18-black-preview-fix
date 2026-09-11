@@ -76,6 +76,13 @@ static int VCAMPixelDiagnosticTargetToken = -1;
 static int VCAMPixelDiagnosticSourceSummaryToken = -1;
 static int VCAMPixelDiagnosticStagingSummaryToken = -1;
 static int VCAMPixelDiagnosticTargetSummaryToken = -1;
+static int VCAMPixelDiagnosticDirectStatusToken = -1;
+static int VCAMPixelDiagnosticDirectBeforeToken = -1;
+static int VCAMPixelDiagnosticDirectAfterToken = -1;
+static int VCAMPixelDiagnosticDirectRelockToken = -1;
+static int VCAMPixelDiagnosticDirectSurfaceToken = -1;
+static int VCAMPixelDiagnosticDirectLumaAddressToken = -1;
+static int VCAMPixelDiagnosticDirectChromaAddressToken = -1;
 
 static uint64_t VCAMPixelDiagnosticSignature(
     CVPixelBufferRef pixelBuffer, uint64_t *summaryOut) {
@@ -144,6 +151,61 @@ static void VCAMPixelDiagnosticSetState(int *token, const char *name,
                                          uint64_t value) {
     if (*token < 0) notify_register_check(name, token);
     if (*token >= 0) notify_set_state(*token, value);
+}
+
+// Four bytes are enough to compare the same two planes at the top-left and
+// center samples without copying image data out of cameracaptured:
+// y(0,0), y(center), uv(0,0), uv(center). The values are deliberately kept as
+// separate notify states so the listener can report the exact transition.
+static uint64_t VCAMPackDirectSamples(uint8_t topLuma, uint8_t centerLuma,
+                                      uint8_t topChroma, uint8_t centerChroma) {
+    return (uint64_t)topLuma |
+        ((uint64_t)centerLuma << 8) |
+        ((uint64_t)topChroma << 16) |
+        ((uint64_t)centerChroma << 24);
+}
+
+static void VCAMPublishDirectWriteDiagnostics(
+    BOOL copied, BOOL targetSurfaceLocked, uint8_t beforeTopLuma,
+    uint8_t beforeCenterLuma, uint8_t beforeTopChroma,
+    uint8_t beforeCenterChroma, uint8_t afterTopLuma,
+    uint8_t afterCenterLuma, uint8_t afterTopChroma,
+    uint8_t afterCenterChroma, uint8_t relockTopLuma,
+    uint8_t relockCenterLuma, uint8_t relockTopChroma,
+    uint8_t relockCenterChroma, IOSurfaceRef targetSurface,
+    uint8_t *lumaBase, uint8_t *chromaBase) {
+    uint64_t status = (copied ? 1ULL : 0ULL) |
+        (targetSurfaceLocked ? 2ULL : 0ULL);
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectStatusToken,
+        "com.codex.vcam.ios18.production.direct-write-status.state", status);
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectBeforeToken,
+        "com.codex.vcam.ios18.production.direct-write-before.state",
+        VCAMPackDirectSamples(beforeTopLuma, beforeCenterLuma,
+                              beforeTopChroma, beforeCenterChroma));
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectAfterToken,
+        "com.codex.vcam.ios18.production.direct-write-after.state",
+        VCAMPackDirectSamples(afterTopLuma, afterCenterLuma,
+                              afterTopChroma, afterCenterChroma));
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectRelockToken,
+        "com.codex.vcam.ios18.production.direct-write-relock.state",
+        VCAMPackDirectSamples(relockTopLuma, relockCenterLuma,
+                              relockTopChroma, relockCenterChroma));
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectSurfaceToken,
+        "com.codex.vcam.ios18.production.direct-write-surface.state",
+        targetSurface == NULL ? 0 : (uint64_t)IOSurfaceGetID(targetSurface));
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectLumaAddressToken,
+        "com.codex.vcam.ios18.production.direct-write-luma-addr.state",
+        (uint64_t)(uintptr_t)lumaBase);
+    VCAMPixelDiagnosticSetState(
+        &VCAMPixelDiagnosticDirectChromaAddressToken,
+        "com.codex.vcam.ios18.production.direct-write-chroma-addr.state",
+        (uint64_t)(uintptr_t)chromaBase);
 }
 
 static void VCAMPublishPixelDiagnostics(CVPixelBufferRef sourceBuffer,
@@ -835,16 +897,36 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
         ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)
         : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
     BOOL copied = sourceBase != NULL && lumaBase != NULL && chromaBase != NULL;
+    size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(stagingBuffer);
+    size_t lumaBytesPerRow = targetSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0)
+        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
+    size_t chromaBytesPerRow = targetSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1)
+        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+    copied = copied && lumaBytesPerRow >= width && chromaBytesPerRow >= width;
     BOOL fullRange = CVPixelBufferGetPixelFormatType(targetBuffer) ==
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+
+    uint8_t beforeTopLuma = 0;
+    uint8_t beforeCenterLuma = 0;
+    uint8_t beforeTopChroma = 0;
+    uint8_t beforeCenterChroma = 0;
+    uint8_t afterTopLuma = 0;
+    uint8_t afterCenterLuma = 0;
+    uint8_t afterTopChroma = 0;
+    uint8_t afterCenterChroma = 0;
+    uint8_t relockTopLuma = 0;
+    uint8_t relockCenterLuma = 0;
+    uint8_t relockTopChroma = 0;
+    uint8_t relockCenterChroma = 0;
+    size_t centerRow = (height / 2) & ~(size_t)1;
+    size_t centerColumn = (width / 2) & ~(size_t)1;
     if (copied) {
-        size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(stagingBuffer);
-        size_t lumaBytesPerRow = targetSurfaceLocked
-            ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0)
-            : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
-        size_t chromaBytesPerRow = targetSurfaceLocked
-            ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1)
-            : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+        beforeTopLuma = lumaBase[0];
+        beforeCenterLuma = lumaBase[centerRow * lumaBytesPerRow + centerColumn];
+        beforeTopChroma = chromaBase[0];
+        beforeCenterChroma = chromaBase[(centerRow / 2) * chromaBytesPerRow + centerColumn];
         for (size_t row = 0; row < height; row++) {
             const uint8_t *sourceLine = sourceBase + row * sourceBytesPerRow;
             uint8_t *lumaLine = lumaBase + row * lumaBytesPerRow;
@@ -883,6 +965,10 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
                 chromaLine[column + 1] = VCAMClampByte((vSum + 2) / 4);
             }
         }
+        afterTopLuma = lumaBase[0];
+        afterCenterLuma = lumaBase[centerRow * lumaBytesPerRow + centerColumn];
+        afterTopChroma = chromaBase[0];
+        afterCenterChroma = chromaBase[(centerRow / 2) * chromaBytesPerRow + centerColumn];
     }
     if (targetSurfaceLocked) {
         IOSurfaceUnlock(targetSurface, 0, NULL);
@@ -890,6 +976,41 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
         CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
     }
     CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
+    if (targetSurfaceLocked && IOSurfaceLock(targetSurface, 0, NULL) == 0) {
+        uint8_t *relockLuma = IOSurfaceGetBaseAddressOfPlane(targetSurface, 0);
+        uint8_t *relockChroma = IOSurfaceGetBaseAddressOfPlane(targetSurface, 1);
+        size_t relockLumaBytesPerRow = IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0);
+        size_t relockChromaBytesPerRow = IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1);
+        if (relockLuma != NULL && relockChroma != NULL &&
+            relockLumaBytesPerRow >= width && relockChromaBytesPerRow >= width) {
+            relockTopLuma = relockLuma[0];
+            relockCenterLuma = relockLuma[centerRow * relockLumaBytesPerRow + centerColumn];
+            relockTopChroma = relockChroma[0];
+            relockCenterChroma = relockChroma[(centerRow / 2) * relockChromaBytesPerRow + centerColumn];
+        }
+        IOSurfaceUnlock(targetSurface, 0, NULL);
+    } else if (!targetSurfaceLocked &&
+               CVPixelBufferLockBaseAddress(targetBuffer, kCVPixelBufferLock_ReadOnly) ==
+                   kCVReturnSuccess) {
+        uint8_t *relockLuma = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
+        uint8_t *relockChroma = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
+        size_t relockLumaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
+        size_t relockChromaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+        if (relockLuma != NULL && relockChroma != NULL &&
+            relockLumaBytesPerRow >= width && relockChromaBytesPerRow >= width) {
+            relockTopLuma = relockLuma[0];
+            relockCenterLuma = relockLuma[centerRow * relockLumaBytesPerRow + centerColumn];
+            relockTopChroma = relockChroma[0];
+            relockCenterChroma = relockChroma[(centerRow / 2) * relockChromaBytesPerRow + centerColumn];
+        }
+        CVPixelBufferUnlockBaseAddress(targetBuffer, kCVPixelBufferLock_ReadOnly);
+    }
+    VCAMPublishDirectWriteDiagnostics(
+        copied, targetSurfaceLocked, beforeTopLuma, beforeCenterLuma,
+        beforeTopChroma, beforeCenterChroma, afterTopLuma, afterCenterLuma,
+        afterTopChroma, afterCenterChroma, relockTopLuma, relockCenterLuma,
+        relockTopChroma, relockCenterChroma, targetSurface, lumaBase,
+        chromaBase);
     if (copied) VCAMSetStandardColorAttachments(targetBuffer);
     return copied;
 }
