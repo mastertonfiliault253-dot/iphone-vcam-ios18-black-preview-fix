@@ -183,6 +183,9 @@ class MediaServerTargetFillTests(unittest.TestCase):
 
         self.assertIn("imageBuffer", render_call)
         self.assertIn("VCAMCopyReplacementBufferIntoTarget", in_place)
+        self.assertIn("VCAMCreatePlanarRenderBuffer", self.implementation)
+        self.assertIn("VCAMTransferBGRAIntoPlanarTarget", self.implementation)
+        self.assertIn("BOOL planarTarget", self.implementation)
         self.assertIn("CVPixelBufferRelease(replacementBuffer)", in_place)
         self.assertNotIn("CMSampleBufferCreateReadyWithImageBuffer", entry)
         self.assertNotIn("CMSampleBufferGetSampleTimingInfo", in_place)

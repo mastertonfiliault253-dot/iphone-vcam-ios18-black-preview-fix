@@ -34,6 +34,9 @@ static uint64_t VCAMAdoptedSurfaceGeneration;
 static uint64_t VCAMLegacyMmapCutoffNanoseconds;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CVPixelBufferPoolRef VCAMNV12ScratchPool;
+static CVPixelBufferPoolRef VCAMPlanarRenderPool;
+static size_t VCAMPlanarRenderWidth;
+static size_t VCAMPlanarRenderHeight;
 static CVPixelBufferPoolRef VCAMCompressedStagingPool;
 static size_t VCAMCompressedStagingWidth;
 static size_t VCAMCompressedStagingHeight;
@@ -120,6 +123,40 @@ static CVReturn VCAMCreateCompressedStagingBuffer(size_t width, size_t height,
     }
     CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
         kCFAllocatorDefault, VCAMCompressedStagingPool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    return bufferStatus;
+}
+
+// Core Image can report a completed render while a software context cannot
+// reliably write a graph-owned planar 420f/420v IOSurface on iOS 18. Render
+// the replacement into a normal BGRA IOSurface first, then let VideoToolbox
+// perform the format conversion into the original graph-owned target.
+static CVReturn VCAMCreatePlanarRenderBuffer(size_t width, size_t height,
+                                             CVPixelBufferRef *bufferOut) {
+    if (bufferOut == NULL || VCAMPixelTransferLock == nil) {
+        return kCVReturnInvalidArgument;
+    }
+    *bufferOut = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMPlanarRenderPool == NULL ||
+        VCAMPlanarRenderWidth != width ||
+        VCAMPlanarRenderHeight != height) {
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = VCAMCreateStagingPool(
+            kCVPixelFormatType_32BGRA, width, height, &replacementPool);
+        if (poolStatus != kCVReturnSuccess) {
+            [VCAMPixelTransferLock unlock];
+            return poolStatus;
+        }
+        if (VCAMPlanarRenderPool != NULL) {
+            CVPixelBufferPoolRelease(VCAMPlanarRenderPool);
+        }
+        VCAMPlanarRenderPool = replacementPool;
+        VCAMPlanarRenderWidth = width;
+        VCAMPlanarRenderHeight = height;
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMPlanarRenderPool, bufferOut);
     [VCAMPixelTransferLock unlock];
     return bufferStatus;
 }
@@ -617,6 +654,40 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     return YES;
 }
 
+static BOOL VCAMTransferBGRAIntoPlanarTarget(CVPixelBufferRef stagingBuffer,
+                                             CVPixelBufferRef targetBuffer) {
+    if (stagingBuffer == NULL || targetBuffer == NULL ||
+        VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) {
+        return NO;
+    }
+
+    CVBufferRemoveAllAttachments(stagingBuffer);
+    VCAMSetStandardColorAttachments(stagingBuffer);
+    OSStatus transferStatus = kCVReturnUnsupported;
+    if (@available(iOS 16.0, *)) {
+        [VCAMPixelTransferLock lock];
+        transferStatus = VTPixelTransferSessionTransferImage(
+            (VTPixelTransferSessionRef)VCAMPixelTransferSession,
+            stagingBuffer, targetBuffer);
+        [VCAMPixelTransferLock unlock];
+    }
+    if (transferStatus != noErr) {
+        static volatile int transferFailures = 0;
+        int failureCount = __sync_add_and_fetch(&transferFailures, 1);
+        if (failureCount <= 8 || failureCount % 300 == 0) {
+            char message[224] = {0};
+            snprintf(message, sizeof(message),
+                     "planar BGRA pixel transfer failed count=%d status=%d format=%08x",
+                     failureCount, (int)transferStatus,
+                     CVPixelBufferGetPixelFormatType(targetBuffer));
+            VCAMRefLog(message);
+        }
+        return NO;
+    }
+    VCAMSetStandardColorAttachments(targetBuffer);
+    return YES;
+}
+
 BOOL VCAMCopyReplacementBufferIntoTarget(CVPixelBufferRef replacementBuffer,
                                          CVPixelBufferRef targetBuffer) {
     if (replacementBuffer == NULL || targetBuffer == NULL ||
@@ -676,6 +747,9 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     BOOL webKitLandscapeStorage =
         presentation == VCAMFramePresentationWebKitFill;
     BOOL compressedTarget = VCAMFormatIsCompressedVideoRange(targetFormat);
+    BOOL planarTarget = !compressedTarget && CVPixelBufferIsPlanar(targetBuffer) &&
+        (targetFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+         targetFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
     if (compressedTarget && replacementBufferOut == NULL) return NO;
     CVPixelBufferRef scratch = NULL;
     CVPixelBufferRef stagingBuffer = NULL;
@@ -860,6 +934,24 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             renderBuffer = stagingBuffer;
             renderWidth = CVPixelBufferGetWidth(stagingBuffer);
             renderHeight = CVPixelBufferGetHeight(stagingBuffer);
+        } else if (planarTarget) {
+            CVReturn stagingStatus = VCAMCreatePlanarRenderBuffer(
+                targetWidth, targetHeight, &stagingBuffer);
+            if (stagingStatus != kCVReturnSuccess || stagingBuffer == NULL) {
+                static volatile int allocationFailures = 0;
+                int failureCount = __sync_add_and_fetch(&allocationFailures, 1);
+                if (failureCount <= 8 || failureCount % 300 == 0) {
+                    char message[224] = {0};
+                    snprintf(message, sizeof(message),
+                             "planar BGRA render buffer allocation failed count=%d status=%d format=%08x",
+                             failureCount, stagingStatus, targetFormat);
+                    VCAMRefLog(message);
+                }
+                return NO;
+            }
+            renderBuffer = stagingBuffer;
+            renderWidth = CVPixelBufferGetWidth(stagingBuffer);
+            renderHeight = CVPixelBufferGetHeight(stagingBuffer);
         }
 
         CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
@@ -927,9 +1019,12 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         notify_post(coreImageRendered
             ? "com.codex.vcam.ios18.rendered"
             : "com.codex.vcam.ios18.renderfail");
-        rendered = coreImageRendered && (!compressedTarget ||
-            VCAMTransferIntoCompressedTarget(stagingBuffer, targetBuffer,
-                                             compressedReplacementBuffer));
+        rendered = coreImageRendered &&
+            (compressedTarget
+                ? VCAMTransferIntoCompressedTarget(
+                    stagingBuffer, targetBuffer, compressedReplacementBuffer)
+                : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
+                    stagingBuffer, targetBuffer)));
         if (rendered && compressedTarget) {
             VCAMRememberCompressedVirtualFrame(compressedReplacementBuffer,
                                                targetBuffer);
