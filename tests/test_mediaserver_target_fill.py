@@ -194,6 +194,44 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("%orig(sampleBuffer);", hook)
         self.assertNotIn("%orig(replacementSampleBuffer)", hook)
 
+    def test_planar_target_has_cpu_fallback_and_reports_after_final_write(self) -> None:
+        # iOS 18 can return success from Core Image/VideoToolbox while the
+        # graph-owned 420f/420v target remains black. Keep a deterministic CPU
+        # writer at this seam, and only publish rendered after the final target
+        # write has completed.
+        self.assertIn("VCAMCopyBGRAToPlanarTarget", self.implementation)
+        planar_transfer = self.implementation.split(
+            "static BOOL VCAMTransferBGRAIntoPlanarTarget", 1
+        )[1].split("BOOL VCAMCopyReplacementBufferIntoTarget", 1)[0]
+        self.assertIn("VCAMCopyBGRAToPlanarTarget(stagingBuffer, targetBuffer)", planar_transfer)
+        self.assertLess(
+            planar_transfer.index("VCAMCopyBGRAToPlanarTarget"),
+            planar_transfer.index("VTPixelTransferSessionTransferImage"),
+        )
+
+        draw = self.implementation.split("BOOL drawReplacementOntoBuffer", 1)[1]
+        self.assertNotIn('notify_post(coreImageRendered', draw)
+        self.assertIn("notify_post(rendered", draw)
+
+    def test_common_camera_output_defaults_to_universal_replacement(self) -> None:
+        entry = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMReplacementRouteUniversalVideo", entry)
+        route = entry.split(
+            "static VCAMReplacementRoute VCAMReplacementRouteForOutput", 1
+        )[1].split("static void VCAMLogOutputSignature", 1)[0]
+        self.assertIn("return VCAMReplacementRouteUniversalVideo;", route)
+
+        presentation = entry.split(
+            "static VCAMFramePresentation VCAMPresentationForReplacementRoute", 1
+        )[1].split("static BOOL VCAMStringMatches", 1)[0]
+        self.assertRegex(
+            presentation,
+            r"case VCAMReplacementRouteUniversalVideo:\s*"
+            r"return VCAMFramePresentationRealtimeFill;",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

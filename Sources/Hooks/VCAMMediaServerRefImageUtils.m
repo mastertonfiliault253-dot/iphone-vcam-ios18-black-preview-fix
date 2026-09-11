@@ -129,8 +129,8 @@ static CVReturn VCAMCreateCompressedStagingBuffer(size_t width, size_t height,
 
 // Core Image can report a completed render while a software context cannot
 // reliably write a graph-owned planar 420f/420v IOSurface on iOS 18. Render
-// the replacement into a normal BGRA IOSurface first, then let VideoToolbox
-// perform the format conversion into the original graph-owned target.
+// the replacement into a normal BGRA IOSurface first, then convert it into the
+// original graph-owned target without replacing the graph's buffer contract.
 static CVReturn VCAMCreatePlanarRenderBuffer(size_t width, size_t height,
                                              CVPixelBufferRef *bufferOut) {
     if (bufferOut == NULL || VCAMPixelTransferLock == nil) {
@@ -615,8 +615,8 @@ static void VCAMMergeGraphAttachments(CVPixelBufferRef sourceBuffer,
 }
 
 static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
-                                             CVPixelBufferRef originalTargetBuffer,
-                                             CVPixelBufferRef replacementTargetBuffer) {
+                                              CVPixelBufferRef originalTargetBuffer,
+                                              CVPixelBufferRef replacementTargetBuffer) {
     if (stagingBuffer == NULL || originalTargetBuffer == NULL ||
         replacementTargetBuffer == NULL ||
         VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) return NO;
@@ -654,12 +654,133 @@ static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
     return YES;
 }
 
-static BOOL VCAMTransferBGRAIntoPlanarTarget(CVPixelBufferRef stagingBuffer,
-                                             CVPixelBufferRef targetBuffer) {
+static uint8_t VCAMClampByte(int value) {
+    if (value < 0) return 0;
+    if (value > 255) return 255;
+    return (uint8_t)value;
+}
+
+static void VCAMConvertBGRARec709(const uint8_t *pixel, BOOL fullRange,
+                                  uint8_t *yOut, int *uOut, int *vOut) {
+    int red = pixel[2];
+    int green = pixel[1];
+    int blue = pixel[0];
+    if (fullRange) {
+        *yOut = VCAMClampByte((54 * red + 183 * green + 19 * blue + 128) >> 8);
+        *uOut = ((-29 * red - 99 * green + 128 * blue + 128) >> 8) + 128;
+        *vOut = ((128 * red - 116 * green - 12 * blue + 128) >> 8) + 128;
+    } else {
+        *yOut = VCAMClampByte(
+            ((47 * red + 157 * green + 16 * blue + 128) >> 8) + 16);
+        *uOut = ((-26 * red - 87 * green + 112 * blue + 128) >> 8) + 128;
+        *vOut = ((112 * red - 102 * green - 10 * blue + 128) >> 8) + 128;
+    }
+}
+
+static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
+                                       CVPixelBufferRef targetBuffer) {
     if (stagingBuffer == NULL || targetBuffer == NULL ||
-        VCAMPixelTransferSession == NULL || VCAMPixelTransferLock == nil) {
+        CVPixelBufferGetPixelFormatType(stagingBuffer) != kCVPixelFormatType_32BGRA ||
+        !CVPixelBufferIsPlanar(targetBuffer) ||
+        CVPixelBufferGetPlaneCount(targetBuffer) != 2 ||
+        (CVPixelBufferGetPixelFormatType(targetBuffer) !=
+             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+         CVPixelBufferGetPixelFormatType(targetBuffer) !=
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) ||
+        CVPixelBufferGetWidth(stagingBuffer) != CVPixelBufferGetWidth(targetBuffer) ||
+        CVPixelBufferGetHeight(stagingBuffer) != CVPixelBufferGetHeight(targetBuffer)) {
         return NO;
     }
+
+    size_t width = CVPixelBufferGetWidth(targetBuffer);
+    size_t height = CVPixelBufferGetHeight(targetBuffer);
+    if ((width & 1) != 0 || (height & 1) != 0 ||
+        CVPixelBufferGetBytesPerRow(stagingBuffer) < width * 4 ||
+        CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0) < width ||
+        CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1) < width) {
+        return NO;
+    }
+
+    CVReturn sourceLockStatus = CVPixelBufferLockBaseAddress(
+        stagingBuffer, kCVPixelBufferLock_ReadOnly);
+    if (sourceLockStatus != kCVReturnSuccess) return NO;
+    CVReturn targetLockStatus = CVPixelBufferLockBaseAddress(targetBuffer, 0);
+    if (targetLockStatus != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+
+    uint8_t *sourceBase = CVPixelBufferGetBaseAddress(stagingBuffer);
+    uint8_t *lumaBase = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
+    uint8_t *chromaBase = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
+    BOOL copied = sourceBase != NULL && lumaBase != NULL && chromaBase != NULL;
+    BOOL fullRange = CVPixelBufferGetPixelFormatType(targetBuffer) ==
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+    if (copied) {
+        size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(stagingBuffer);
+        size_t lumaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
+        size_t chromaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+        for (size_t row = 0; row < height; row++) {
+            const uint8_t *sourceLine = sourceBase + row * sourceBytesPerRow;
+            uint8_t *lumaLine = lumaBase + row * lumaBytesPerRow;
+            for (size_t column = 0; column < width; column++) {
+                uint8_t luma = 0;
+                int unusedU = 0;
+                int unusedV = 0;
+                VCAMConvertBGRARec709(sourceLine + column * 4, fullRange,
+                                      &luma, &unusedU, &unusedV);
+                lumaLine[column] = luma;
+            }
+        }
+        for (size_t row = 0; row < height; row += 2) {
+            const uint8_t *sourceLine0 = sourceBase + row * sourceBytesPerRow;
+            const uint8_t *sourceLine1 = sourceBase + (row + 1) * sourceBytesPerRow;
+            uint8_t *chromaLine = chromaBase + (row / 2) * chromaBytesPerRow;
+            for (size_t column = 0; column < width; column += 2) {
+                int uSum = 0;
+                int vSum = 0;
+                for (size_t offset = 0; offset < 2; offset++) {
+                    uint8_t unusedY = 0;
+                    int u = 0;
+                    int v = 0;
+                    VCAMConvertBGRARec709(
+                        sourceLine0 + (column + offset) * 4, fullRange,
+                        &unusedY, &u, &v);
+                    uSum += u;
+                    vSum += v;
+                    VCAMConvertBGRARec709(
+                        sourceLine1 + (column + offset) * 4, fullRange,
+                        &unusedY, &u, &v);
+                    uSum += u;
+                    vSum += v;
+                }
+                chromaLine[column] = VCAMClampByte((uSum + 2) / 4);
+                chromaLine[column + 1] = VCAMClampByte((vSum + 2) / 4);
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
+    CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
+    if (copied) VCAMSetStandardColorAttachments(targetBuffer);
+    return copied;
+}
+
+static BOOL VCAMTransferBGRAIntoPlanarTarget(CVPixelBufferRef stagingBuffer,
+                                              CVPixelBufferRef targetBuffer) {
+    if (stagingBuffer == NULL || targetBuffer == NULL ||
+        VCAMPixelTransferLock == nil) {
+        return NO;
+    }
+
+    // On iOS 18, the graph-owned 420f/420v IOSurface can accept a successful
+    // VideoToolbox transfer without exposing the written planes to the next
+    // graph stage. Write the public two-plane formats directly first; retain
+    // VideoToolbox only as a compatibility fallback for targets whose base
+    // addresses are not CPU-accessible.
+    if (VCAMCopyBGRAToPlanarTarget(stagingBuffer, targetBuffer)) {
+        return YES;
+    }
+    if (VCAMPixelTransferSession == NULL) return NO;
 
     CVBufferRemoveAllAttachments(stagingBuffer);
     VCAMSetStandardColorAttachments(stagingBuffer);
@@ -1016,15 +1137,17 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             : [task waitUntilCompletedAndReturnError:&completionError];
         BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
-        notify_post(coreImageRendered
-            ? "com.codex.vcam.ios18.rendered"
-            : "com.codex.vcam.ios18.renderfail");
         rendered = coreImageRendered &&
             (compressedTarget
                 ? VCAMTransferIntoCompressedTarget(
                     stagingBuffer, targetBuffer, compressedReplacementBuffer)
                 : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
                     stagingBuffer, targetBuffer)));
+        // This notification is the production success boundary: it is emitted
+        // only after the final planar/compressed target write has succeeded.
+        notify_post(rendered
+            ? "com.codex.vcam.ios18.rendered"
+            : "com.codex.vcam.ios18.renderfail");
         if (rendered && compressedTarget) {
             VCAMRememberCompressedVirtualFrame(compressedReplacementBuffer,
                                                targetBuffer);

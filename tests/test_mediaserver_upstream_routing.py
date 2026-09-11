@@ -26,12 +26,13 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         )
         self.hook = _between(self.entry, "%hook BWNodeOutput", "%end")
 
-    def test_raw_camera_video_stays_internal_until_observed_terminal_routes(self) -> None:
+    def test_unknown_camera_outputs_use_the_common_universal_route(self) -> None:
         # Shared pixels are already in the source's presentation orientation.
-        # Injecting them into the raw sensor branch makes Camera and WebKit apply
-        # their different physical-camera transforms a second time.
+        # Known terminals retain their route-specific composition, while an
+        # unrecognized video output must still be replaced at BWNodeOutput so
+        # a new app cannot silently receive the physical camera.
         self.assertIn(
-            "return VCAMReplacementRouteNone;", self.route_function
+            "return VCAMReplacementRouteUniversalVideo;", self.route_function
         )
         self.assertNotIn('@"Preview"', self.route_function)
         self.assertRegex(

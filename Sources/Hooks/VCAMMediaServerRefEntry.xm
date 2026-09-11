@@ -96,6 +96,10 @@ static BOOL VCAMBasicOutputSignatureWasSeen(id output, NSString *basicSignature)
 
 typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
     VCAMReplacementRouteNone = 0,
+    // Fallback for every other video output. This keeps the replacement at
+    // the cameracaptured boundary even when a future app creates a graph
+    // terminal whose private node/name is not in the route table.
+    VCAMReplacementRouteUniversalVideo,
     VCAMReplacementRouteCameraSourceVideo,
     VCAMReplacementRouteVideoConverter,
     VCAMReplacementRouteCameraPreview,
@@ -199,6 +203,7 @@ static void VCAMRuntimePublishReplacement(VCAMReplacementRoute route) {
 
 static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
     switch (route) {
+        case VCAMReplacementRouteUniversalVideo: return "universal-video";
         case VCAMReplacementRouteCameraSourceVideo: return "camera-source-video";
         case VCAMReplacementRouteVideoConverter: return "video-converter";
         case VCAMReplacementRouteCameraPreview: return "camera-preview";
@@ -213,6 +218,8 @@ static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
 static VCAMFramePresentation VCAMPresentationForReplacementRoute(
     VCAMReplacementRoute route) {
     switch (route) {
+        case VCAMReplacementRouteUniversalVideo:
+            return VCAMFramePresentationRealtimeFill;
         case VCAMReplacementRouteVideoConverter:
             return VCAMFramePresentationWebKitFill;
         case VCAMReplacementRouteCameraPreview:
@@ -867,7 +874,7 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
             VCAMTargetBufferIsSupported(pixelBuffer)) {
             return VCAMReplacementRouteStillPhoto;
         }
-        return VCAMReplacementRouteNone;
+        return VCAMReplacementRouteUniversalVideo;
     }
 
     // These are the terminal conversion roles observed for Safari getUserMedia
@@ -921,7 +928,10 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         return VCAMReplacementRoutePhotoEncoder;
     }
 
-    return VCAMReplacementRouteNone;
+    // BWNodeOutput is the common cameracaptured boundary. Known terminals keep
+    // their route-specific composition above; every other video terminal uses
+    // the same canonical replacement and never silently receives the camera.
+    return VCAMReplacementRouteUniversalVideo;
 }
 
 static void VCAMLogOutputSignature(id output, CMSampleBufferRef sampleBuffer,
