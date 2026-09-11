@@ -2,6 +2,7 @@
 #import "../Shared/VCAMProcessIdentity.h"
 
 #import <CoreImage/CoreImage.h>
+#import <CoreVideo/CVPixelBufferIOSurface.h>
 #import <CoreVideo/CVPixelFormatDescription.h>
 #import <ImageIO/CGImageProperties.h>
 #import <Metal/Metal.h>
@@ -816,22 +817,34 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
     CVReturn sourceLockStatus = CVPixelBufferLockBaseAddress(
         stagingBuffer, kCVPixelBufferLock_ReadOnly);
     if (sourceLockStatus != kCVReturnSuccess) return NO;
-    CVReturn targetLockStatus = CVPixelBufferLockBaseAddress(targetBuffer, 0);
+    IOSurfaceRef targetSurface = CVPixelBufferGetIOSurface(targetBuffer);
+    BOOL targetSurfaceLocked = targetSurface != NULL &&
+        IOSurfaceLock(targetSurface, 0, NULL) == 0;
+    CVReturn targetLockStatus = targetSurfaceLocked
+        ? kCVReturnSuccess : CVPixelBufferLockBaseAddress(targetBuffer, 0);
     if (targetLockStatus != kCVReturnSuccess) {
         CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
         return NO;
     }
 
     uint8_t *sourceBase = CVPixelBufferGetBaseAddress(stagingBuffer);
-    uint8_t *lumaBase = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
-    uint8_t *chromaBase = CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
+    uint8_t *lumaBase = targetSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 0)
+        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
+    uint8_t *chromaBase = targetSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)
+        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
     BOOL copied = sourceBase != NULL && lumaBase != NULL && chromaBase != NULL;
     BOOL fullRange = CVPixelBufferGetPixelFormatType(targetBuffer) ==
         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
     if (copied) {
         size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(stagingBuffer);
-        size_t lumaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
-        size_t chromaBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+        size_t lumaBytesPerRow = targetSurfaceLocked
+            ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0)
+            : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
+        size_t chromaBytesPerRow = targetSurfaceLocked
+            ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1)
+            : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
         for (size_t row = 0; row < height; row++) {
             const uint8_t *sourceLine = sourceBase + row * sourceBytesPerRow;
             uint8_t *lumaLine = lumaBase + row * lumaBytesPerRow;
@@ -871,7 +884,11 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
             }
         }
     }
-    CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
+    if (targetSurfaceLocked) {
+        IOSurfaceUnlock(targetSurface, 0, NULL);
+    } else {
+        CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
+    }
     CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
     if (copied) VCAMSetStandardColorAttachments(targetBuffer);
     return copied;

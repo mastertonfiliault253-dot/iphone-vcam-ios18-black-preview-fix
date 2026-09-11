@@ -213,6 +213,18 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertNotIn('notify_post(coreImageRendered', draw)
         self.assertIn("notify_post(rendered", draw)
 
+    def test_planar_target_writer_uses_the_backing_iosurface(self) -> None:
+        # The iOS 18 graph-owned 420f target read back as video-range black
+        # even though the BGRA staging buffer was non-black. Use the actual
+        # IOSurface planes under an explicit synchronized surface lock so the
+        # bytes handed to the graph are the bytes that were written.
+        self.assertIn("#import <CoreVideo/CVPixelBufferIOSurface.h>", self.implementation)
+        self.assertIn("CVPixelBufferGetIOSurface(targetBuffer)", self.implementation)
+        self.assertIn("IOSurfaceLock(targetSurface, 0, NULL)", self.implementation)
+        self.assertIn("IOSurfaceGetBaseAddressOfPlane(targetSurface, 0)", self.implementation)
+        self.assertIn("IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)", self.implementation)
+        self.assertIn("IOSurfaceUnlock(targetSurface, 0, NULL)", self.implementation)
+
     def test_common_camera_output_defaults_to_universal_replacement(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
