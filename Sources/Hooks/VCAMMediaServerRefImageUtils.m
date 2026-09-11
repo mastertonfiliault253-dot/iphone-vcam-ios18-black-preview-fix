@@ -321,9 +321,13 @@ static void VCAMPreferencesChanged(__unused CFNotificationCenterRef center,
 }
 
 // Darwin notification registration hashes the observer identity inside
-// CoreFoundation. A NULL observer is not stable on iOS 18 arm64e and can
-// trigger a pointer-authentication trap while cameracaptured initializes.
-static uint8_t VCAMPreferencesObserverToken;
+// CoreFoundation. The iOS 18 arm64e implementation expects that identity to
+// be a real CF/ObjC object; NULL and an address of arbitrary static storage
+// both trigger a pointer-authentication trap while cameracaptured initializes.
+// A CFSTR has process lifetime and is never released, which makes it a stable
+// observer identity without adding an Objective-C allocation to this hook.
+static CFStringRef VCAMPreferencesObserverToken =
+    CFSTR("com.codex.vcam.preferences.observer");
 
 static BOOL VCAMReadPublishedRequestedMode(BOOL *enabledOut) {
     if (enabledOut == NULL) return NO;
@@ -432,7 +436,7 @@ void loadReplacementMedia(void) {
         VCAMReloadConfiguredMode();
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
-            &VCAMPreferencesObserverToken,
+            (__bridge const void *)VCAMPreferencesObserverToken,
             VCAMPreferencesChanged, CFSTR("com.codex.vcam/preferences.changed"),
             NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
         VCAMRefLog(result == kCVReturnSuccess
