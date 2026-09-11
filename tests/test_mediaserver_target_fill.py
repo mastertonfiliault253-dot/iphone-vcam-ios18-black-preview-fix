@@ -166,7 +166,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         observer_call = self.implementation.split(
             "CFNotificationCenterAddObserver(", 1
         )[1].split(");", 1)[0]
-        self.assertIn("(__bridge const void *)VCAMPreferencesObserverToken", observer_call)
+        self.assertIn("VCAMPreferencesObserverToken", observer_call)
         self.assertNotIn("&VCAMPreferencesObserverToken", observer_call)
         self.assertNotIn("CFNotificationCenterGetDarwinNotifyCenter(), NULL,", observer_call)
 

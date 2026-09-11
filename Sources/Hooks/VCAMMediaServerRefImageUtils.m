@@ -436,7 +436,7 @@ void loadReplacementMedia(void) {
         VCAMReloadConfiguredMode();
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
-            (__bridge const void *)VCAMPreferencesObserverToken,
+            VCAMPreferencesObserverToken,
             VCAMPreferencesChanged, CFSTR("com.codex.vcam/preferences.changed"),
             NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
         VCAMRefLog(result == kCVReturnSuccess
