@@ -64,6 +64,118 @@ static volatile int VCAMConsecutiveSlowRenders;
 // transient read failures retain that last value in VCAMReloadConfiguredMode.
 static volatile int VCAMConfiguredMode = 0;
 
+// Bounded pixel telemetry for the iOS 18 black-preview investigation. The
+// values are scalar Darwin-notify state so a root probe can read them without
+// dereferencing objects in cameracaptured. A signature is taken from a small,
+// evenly-spaced sample of each plane; it is not a frame dump.
+static int VCAMPixelDiagnosticSequenceToken = -1;
+static int VCAMPixelDiagnosticSourceToken = -1;
+static int VCAMPixelDiagnosticStagingToken = -1;
+static int VCAMPixelDiagnosticTargetToken = -1;
+static int VCAMPixelDiagnosticSourceSummaryToken = -1;
+static int VCAMPixelDiagnosticStagingSummaryToken = -1;
+static int VCAMPixelDiagnosticTargetSummaryToken = -1;
+
+static uint64_t VCAMPixelDiagnosticSignature(
+    CVPixelBufferRef pixelBuffer, uint64_t *summaryOut) {
+    if (summaryOut != NULL) *summaryOut = 0;
+    if (pixelBuffer == NULL) return 0;
+    if (CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) !=
+        kCVReturnSuccess) return 0;
+
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t sum = 0;
+    uint64_t sampleCount = 0;
+    uint64_t nonzero = 0;
+    uint8_t minimum = 255;
+    uint8_t maximum = 0;
+    size_t planeCount = CVPixelBufferIsPlanar(pixelBuffer)
+        ? CVPixelBufferGetPlaneCount(pixelBuffer) : 1;
+    for (size_t plane = 0; plane < planeCount; plane++) {
+        uint8_t *base = CVPixelBufferIsPlanar(pixelBuffer)
+            ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane)
+            : CVPixelBufferGetBaseAddress(pixelBuffer);
+        size_t rows = CVPixelBufferIsPlanar(pixelBuffer)
+            ? CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+            : CVPixelBufferGetHeight(pixelBuffer);
+        size_t rowBytes = CVPixelBufferIsPlanar(pixelBuffer)
+            ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+            : CVPixelBufferGetBytesPerRow(pixelBuffer);
+        size_t usefulBytes = CVPixelBufferIsPlanar(pixelBuffer)
+            ? CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
+            : CVPixelBufferGetWidth(pixelBuffer) * 4;
+        if (base == NULL || rows == 0 || rowBytes == 0 || usefulBytes == 0) {
+            continue;
+        }
+        if (usefulBytes > rowBytes) usefulBytes = rowBytes;
+        for (size_t rowSample = 0; rowSample < 8; rowSample++) {
+            size_t row = rows == 1 ? 0 : (rowSample * (rows - 1)) / 7;
+            const uint8_t *line = base + row * rowBytes;
+            for (size_t byteSample = 0; byteSample < 32; byteSample++) {
+                size_t offset = usefulBytes == 1 ? 0
+                    : (byteSample * (usefulBytes - 1)) / 31;
+                uint8_t value = line[offset];
+                hash ^= value;
+                hash *= 1099511628211ULL;
+                sum += value;
+                if (value != 0) nonzero++;
+                if (value < minimum) minimum = value;
+                if (value > maximum) maximum = value;
+                sampleCount++;
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    if (summaryOut != NULL && sampleCount != 0) {
+        // low 16 bits: sampled mean; next bytes: min/max; high 32 bits:
+        // sampled nonzero count. Video-range black (Y=16, UV=128) is thus
+        // distinguishable from an all-zero or unwritten surface.
+        uint64_t mean = sum / sampleCount;
+        *summaryOut = (mean & 0xffffULL) |
+            ((uint64_t)minimum << 16) |
+            ((uint64_t)maximum << 24) |
+            ((nonzero & 0xffffffffULL) << 32);
+    }
+    return hash;
+}
+
+static void VCAMPixelDiagnosticSetState(int *token, const char *name,
+                                         uint64_t value) {
+    if (*token < 0) notify_register_check(name, token);
+    if (*token >= 0) notify_set_state(*token, value);
+}
+
+static void VCAMPublishPixelDiagnostics(CVPixelBufferRef sourceBuffer,
+                                        CVPixelBufferRef stagingBuffer,
+                                        CVPixelBufferRef targetBuffer) {
+    uint64_t sourceSummary = 0;
+    uint64_t stagingSummary = 0;
+    uint64_t targetSummary = 0;
+    uint64_t sourceSignature = VCAMPixelDiagnosticSignature(
+        sourceBuffer, &sourceSummary);
+    uint64_t stagingSignature = VCAMPixelDiagnosticSignature(
+        stagingBuffer, &stagingSummary);
+    uint64_t targetSignature = VCAMPixelDiagnosticSignature(
+        targetBuffer, &targetSummary);
+    static volatile uint64_t sequence = 0;
+    uint64_t next = __sync_add_and_fetch(&sequence, 1);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticSourceToken,
+        "com.codex.vcam.ios18.production.source-sig.state", sourceSignature);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticStagingToken,
+        "com.codex.vcam.ios18.production.staging-sig.state", stagingSignature);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticTargetToken,
+        "com.codex.vcam.ios18.production.target-sig.state", targetSignature);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticSourceSummaryToken,
+        "com.codex.vcam.ios18.production.source-summary.state", sourceSummary);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticStagingSummaryToken,
+        "com.codex.vcam.ios18.production.staging-summary.state", stagingSummary);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticTargetSummaryToken,
+        "com.codex.vcam.ios18.production.target-summary.state", targetSummary);
+    VCAMPixelDiagnosticSetState(&VCAMPixelDiagnosticSequenceToken,
+        "com.codex.vcam.ios18.production.pixel-seq.state", next);
+    notify_post("com.codex.vcam.ios18.production.pixels");
+}
+
 static int VCAMCompareRenderMilliseconds(const void *left, const void *right) {
     double a = *(const double *)left;
     double b = *(const double *)right;
@@ -880,6 +992,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     BOOL readerLocked = NO;
     BOOL rendered = NO;
     CFAbsoluteTime elapsed = 0;
+    static volatile int pixelDiagnosticFrames = 0;
+    int pixelDiagnosticCount = __sync_add_and_fetch(&pixelDiagnosticFrames, 1);
+    BOOL publishPixelDiagnostics = pixelDiagnosticCount <= 3 ||
+        pixelDiagnosticCount % 30 == 0;
     @try {
         [VCAMReaderLock lock];
         readerLocked = YES;
@@ -1143,6 +1259,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     stagingBuffer, targetBuffer, compressedReplacementBuffer)
                 : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
                     stagingBuffer, targetBuffer)));
+        if (rendered && publishPixelDiagnostics) {
+            VCAMPublishPixelDiagnostics(
+                scratch, renderBuffer,
+                compressedTarget ? compressedReplacementBuffer : targetBuffer);
+        }
         // This notification is the production success boundary: it is emitted
         // only after the final planar/compressed target write has succeeded.
         notify_post(rendered

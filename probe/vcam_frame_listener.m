@@ -152,6 +152,14 @@ int main(void) {
     int productionLastCountToken = -1;
     int productionLastDimensionsToken = -1;
     int productionLastFormatToken = -1;
+    int productionPixelSequenceToken = -1;
+    int productionSourceSignatureToken = -1;
+    int productionStagingSignatureToken = -1;
+    int productionTargetSignatureToken = -1;
+    int productionSourceSummaryToken = -1;
+    int productionStagingSummaryToken = -1;
+    int productionTargetSummaryToken = -1;
+    int productionPixelsToken = -1;
     int vcamEventTokens[sizeof(g_vcam_event_names) /
                         sizeof(g_vcam_event_names[0])] = {0};
     if (notify_register_check("com.codex.vcam.ios18.signew", &sigtoken) != NOTIFY_STATUS_OK ||
@@ -179,6 +187,17 @@ int main(void) {
         notify_register_check("com.codex.vcam.ios18.production.last-dimensions.state", &productionLastDimensionsToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.last-format.state", &productionLastFormatToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed for production telemetry\n");
+        return 1;
+    }
+    if (notify_register_check("com.codex.vcam.ios18.production.pixel-seq.state", &productionPixelSequenceToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.source-sig.state", &productionSourceSignatureToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.staging-sig.state", &productionStagingSignatureToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.target-sig.state", &productionTargetSignatureToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.source-summary.state", &productionSourceSummaryToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.staging-summary.state", &productionStagingSummaryToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.target-summary.state", &productionTargetSummaryToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.production.pixels", &productionPixelsToken) != NOTIFY_STATUS_OK) {
+        printf("notify_register_check failed for production pixel telemetry\n");
         return 1;
     }
     for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
@@ -221,6 +240,13 @@ int main(void) {
         uint64_t productionLastCount = 0;
         uint64_t productionLastDimensions = 0;
         uint64_t productionLastFormat = 0;
+        uint64_t productionPixelSequence = 0;
+        uint64_t productionSourceSignature = 0;
+        uint64_t productionStagingSignature = 0;
+        uint64_t productionTargetSignature = 0;
+        uint64_t productionSourceSummary = 0;
+        uint64_t productionStagingSummary = 0;
+        uint64_t productionTargetSummary = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
@@ -240,6 +266,13 @@ int main(void) {
         notify_get_state(productionLastCountToken, &productionLastCount);
         notify_get_state(productionLastDimensionsToken, &productionLastDimensions);
         notify_get_state(productionLastFormatToken, &productionLastFormat);
+        notify_get_state(productionPixelSequenceToken, &productionPixelSequence);
+        notify_get_state(productionSourceSignatureToken, &productionSourceSignature);
+        notify_get_state(productionStagingSignatureToken, &productionStagingSignature);
+        notify_get_state(productionTargetSignatureToken, &productionTargetSignature);
+        notify_get_state(productionSourceSummaryToken, &productionSourceSummary);
+        notify_get_state(productionStagingSummaryToken, &productionStagingSummary);
+        notify_get_state(productionTargetSummaryToken, &productionTargetSummary);
         for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
             int eventCheck = 0;
             if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
@@ -307,6 +340,24 @@ int main(void) {
                    (unsigned long long)productionReplacementRoute);
             fflush(stdout);
             lastProductionReplacement = productionReplacementCount;
+        }
+        static uint64_t lastProductionPixelSequence = 0;
+        int pixelCheck = 0;
+        (void)notify_check(productionPixelsToken, &pixelCheck);
+        if (pixelCheck != 0 || productionPixelSequence != lastProductionPixelSequence) {
+            char message[512] = {0};
+            snprintf(message, sizeof(message),
+                     "sequence=%llu source=0x%llx/%llu staging=0x%llx/%llu target=0x%llx/%llu",
+                     (unsigned long long)productionPixelSequence,
+                     (unsigned long long)productionSourceSignature,
+                     (unsigned long long)productionSourceSummary,
+                     (unsigned long long)productionStagingSignature,
+                     (unsigned long long)productionStagingSummary,
+                     (unsigned long long)productionTargetSignature,
+                     (unsigned long long)productionTargetSummary);
+            record_line("/var/tmp/vcam-ios18-probe-events.log",
+                        "VCAM-PIXELS", productionPixelSequence, message);
+            lastProductionPixelSequence = productionPixelSequence;
         }
         if (probeFlags != lastProbeFlags) {
             record_probe_flags(probeFlags, lastProbeFlags);
