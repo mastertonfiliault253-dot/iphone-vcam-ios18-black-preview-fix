@@ -921,11 +921,11 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     configuration.filter = [PHPickerFilter anyFilterMatchingSubfilters:
         @[PHPickerFilter.imagesFilter, PHPickerFilter.videosFilter]];
     configuration.selectionLimit = 1;
-    // SpringBoard AVPlayer and ImageIO consume the original Photos asset.
-    // Asking for a compatible copy silently transcodes HEVC/HEIF and strips
-    // image color metadata before VCAM ever sees the file.
+    // Images are requested as UIImage objects below and flattened to JPEG.
+    // This avoids handing an iOS 18 Photos HEIF/proxy representation directly
+    // to ImageIO, which can decode as black even when Photos displays it.
     configuration.preferredAssetRepresentationMode =
-        PHPickerConfigurationAssetRepresentationModeCurrent;
+        PHPickerConfigurationAssetRepresentationModeCompatible;
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
     picker.delegate = self;
     [[self presentingViewController] presentViewController:picker animated:YES completion:nil];
@@ -966,6 +966,64 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     }
     NSUInteger generation = [self beginMediaSelection];
     NSString *suggestedName = provider.suggestedName;
+    if (!isMovie) {
+        [provider loadObjectOfClass:UIImage.class completionHandler:^(id<NSItemProviderReading> object,
+                                                                       NSError *error) {
+            UIImage *image = [object isKindOfClass:UIImage.class] ? (UIImage *)object : nil;
+            if (image == nil || error != nil) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation == self.mediaSelectionGeneration) {
+                        [self showMessage:error.localizedDescription ?: @"读取相册图片失败" error:YES];
+                    }
+                });
+                return;
+            }
+
+            CGSize pixelSize = image.CGImage == NULL
+                ? CGSizeMake(image.size.width * MAX(image.scale, 1.0),
+                             image.size.height * MAX(image.scale, 1.0))
+                : CGSizeMake(CGImageGetWidth(image.CGImage), CGImageGetHeight(image.CGImage));
+            if (pixelSize.width < 1.0 || pixelSize.height < 1.0) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation == self.mediaSelectionGeneration) {
+                        [self showMessage:@"相册图片没有有效像素" error:YES];
+                    }
+                });
+                return;
+            }
+
+            UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+            format.scale = 1.0;
+            format.opaque = YES;
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+                initWithSize:pixelSize format:format];
+            UIImage *normalized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+                [image drawInRect:(CGRect){CGPointZero, pixelSize}];
+            }];
+            NSData *data = UIImageJPEGRepresentation(normalized, 0.95);
+            NSError *writeError = nil;
+            NSURL *temporaryURL = [NSURL fileURLWithPath:[NSTemporaryDirectory()
+                stringByAppendingPathComponent:[NSString stringWithFormat:
+                    @"vcam-photo-%@.jpg", NSUUID.UUID.UUIDString]]];
+            if (data.length == 0 || ![data writeToURL:temporaryURL
+                                              options:NSDataWritingAtomic
+                                                error:&writeError]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation == self.mediaSelectionGeneration) {
+                        [self showMessage:writeError.localizedDescription ?: @"转换相册图片失败" error:YES];
+                    }
+                });
+                return;
+            }
+
+            // The broker copies the file synchronously; remove the app-local
+            // staging file after the import request has completed.
+            [self importMediaFromURL:temporaryURL suggestedName:@"selected.jpg"
+                           generation:generation];
+            [[NSFileManager defaultManager] removeItemAtURL:temporaryURL error:nil];
+        }];
+        return;
+    }
     [provider loadFileRepresentationForTypeIdentifier:mediaType completionHandler:^(NSURL *url, NSError *error) {
         if (url == nil || error != nil) {
             dispatch_async(dispatch_get_main_queue(), ^{

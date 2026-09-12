@@ -15,6 +15,25 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("importMediaFromURL", picker)
         self.assertIn("loadFileRepresentationForTypeIdentifier", picker)
 
+    def test_photo_picker_normalizes_image_objects_before_broker_import(self) -> None:
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        callback = picker.split("didFinishPicking:", 1)[1].split(
+            "- (void)promptForOnlineVideo", 1
+        )[0]
+
+        self.assertIn("loadObjectOfClass:UIImage.class", callback)
+        self.assertIn("UIGraphicsImageRenderer", callback)
+        self.assertIn("UIImageJPEGRepresentation", callback)
+        self.assertIn('vcam-photo-%@.jpg', callback)
+        self.assertIn('selected.jpg', callback)
+        self.assertIn("loadFileRepresentationForTypeIdentifier", callback)
+        self.assertLess(
+            callback.index("loadObjectOfClass:UIImage.class"),
+            callback.index("loadFileRepresentationForTypeIdentifier"),
+        )
+
     def test_import_is_brokered_and_activates_single_decoder(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(encoding="utf-8")
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(encoding="utf-8")
@@ -303,7 +322,7 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", daemon)
         self.assertIn("VCAMSharedFrameWriterPublishForSurfaceGeneration", bridge)
 
-    def test_photo_picker_preserves_the_original_file_representation(self) -> None:
+    def test_photo_picker_normalizes_images_and_preserves_video_file_representation(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"
         )
@@ -313,11 +332,11 @@ class MediaPickerIntegrationTests(unittest.TestCase):
 
         self.assertIn("loadFileRepresentationForTypeIdentifier", callback)
         self.assertIn("VCAMNormalizedMediaName(suggestedName, url, mediaType)", callback)
-        self.assertNotIn("loadObjectOfClass:UIImage.class", callback)
-        self.assertNotIn("UIGraphicsImageRenderer", callback)
-        self.assertNotIn("UIImageJPEGRepresentation", callback)
-        self.assertIn("PHPickerConfigurationAssetRepresentationModeCurrent", picker)
-        self.assertNotIn("PHPickerConfigurationAssetRepresentationModeCompatible", picker)
+        self.assertIn("loadObjectOfClass:UIImage.class", callback)
+        self.assertIn("UIGraphicsImageRenderer", callback)
+        self.assertIn("UIImageJPEGRepresentation", callback)
+        self.assertIn("PHPickerConfigurationAssetRepresentationModeCompatible", picker)
+        self.assertNotIn("PHPickerConfigurationAssetRepresentationModeCurrent", picker)
 
     def test_each_import_gets_a_new_path_and_old_imports_are_bounded(self) -> None:
         configuration = (ROOT / "Sources" / "Core" / "VCAMConfiguration.m").read_text(
@@ -431,10 +450,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(action, picker)
         self.assertIn(
-            "PHPickerConfigurationAssetRepresentationModeCurrent", picker
+            "PHPickerConfigurationAssetRepresentationModeCompatible", picker
         )
         self.assertNotIn(
-            "PHPickerConfigurationAssetRepresentationModeCompatible", picker
+            "PHPickerConfigurationAssetRepresentationModeCurrent", picker
         )
         for title in (
             "从相册选择",

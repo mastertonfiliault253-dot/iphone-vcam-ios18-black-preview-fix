@@ -64,10 +64,12 @@ when enabled, without pre-decoding the entire asset into memory.
 
 ## Sources
 
-- Photos or Files: both pickers broker-copy the original selected representation
-  and preserve its extension and bytes. PNG, JPEG and HEIC/HEIF use SpringBoard
-  ImageIO normalization and a source-sized one-slot BGRA IOSurface. MOV, MP4
-  and M4V use SpringBoard's
+- Photos picker images are loaded as `UIImage`, orientation-rendered once, and
+  flattened to an opaque JPEG before broker import. This avoids handing an iOS
+  18 Photos HEIF/proxy representation directly to ImageIO. Photos picker
+  videos and Files picker media broker-copy the selected file representation.
+  PNG, JPEG and HEIC/HEIF use SpringBoard ImageIO normalization and a
+  source-sized one-slot BGRA IOSurface. MOV, MP4 and M4V use SpringBoard's
   system `AVPlayer`, output NV12, and loop without pre-decoding the asset.
 - HTTP/HTTPS direct download of the same media types.
 - OBS: run `desktop/obs_bridge.py` on the trusted LAN and enter its `ws://` or
