@@ -79,7 +79,7 @@ static void VCAMSetRGBColorAttachments(CVPixelBufferRef pixelBuffer) {
 }
 
 static BOOL VCAMCopyNV12PixelBuffer(CVPixelBufferRef source,
-                                     CVPixelBufferRef destination) {
+                                    CVPixelBufferRef destination) {
     if (source == NULL || destination == NULL) return NO;
     size_t width = CVPixelBufferGetWidth(source);
     size_t height = CVPixelBufferGetHeight(source);
@@ -109,6 +109,109 @@ static BOOL VCAMCopyNV12PixelBuffer(CVPixelBufferRef source,
     CVPixelBufferUnlockBaseAddress(destination, 0);
     CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
     return YES;
+}
+
+// Keep the still-image diagnosis scalar-only. These summaries never leave the
+// device as image data; they only distinguish a black decode from a black
+// Core Image render/transport.
+static uint64_t VCAMStaticImageDiagnosticSummary(CGImageRef image,
+                                                 uint64_t *summaryOut) {
+    if (summaryOut != NULL) *summaryOut = 0;
+    if (image == NULL) return 0;
+    CGDataProviderRef provider = CGImageGetDataProvider(image);
+    if (provider == NULL) return 0;
+    CFDataRef data = CGDataProviderCopyData(provider);
+    if (data == NULL) return 0;
+    size_t width = CGImageGetWidth(image);
+    size_t height = CGImageGetHeight(image);
+    size_t bytesPerPixel = (CGImageGetBitsPerPixel(image) + 7) / 8;
+    size_t rowBytes = CGImageGetBytesPerRow(image);
+    size_t dataLength = CFDataGetLength(data);
+    if (width == 0 || height == 0 || bytesPerPixel == 0 ||
+        rowBytes < width * bytesPerPixel ||
+        dataLength < rowBytes * height) {
+        CFRelease(data);
+        return 0;
+    }
+    const uint8_t *base = CFDataGetBytePtr(data);
+
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t sum = 0;
+    uint64_t nonzero = 0;
+    uint8_t minimum = 255;
+    uint8_t maximum = 0;
+    const size_t sampleCount = 8 * 32 * bytesPerPixel;
+    for (size_t rowSample = 0; rowSample < 8; rowSample++) {
+        size_t row = height == 1 ? 0 : (rowSample * (height - 1)) / 7;
+        const uint8_t *line = base + row * rowBytes;
+        for (size_t pixelSample = 0; pixelSample < 32; pixelSample++) {
+            size_t pixel = width == 1 ? 0 : (pixelSample * (width - 1)) / 31;
+            for (size_t channel = 0; channel < bytesPerPixel; channel++) {
+                uint8_t value = line[pixel * bytesPerPixel + channel];
+                hash ^= value;
+                hash *= 1099511628211ULL;
+                sum += value;
+                if (value != 0) nonzero += 1;
+                if (value < minimum) minimum = value;
+                if (value > maximum) maximum = value;
+            }
+        }
+    }
+    CFRelease(data);
+    if (summaryOut != NULL) {
+        *summaryOut = (sum / sampleCount) |
+            ((uint64_t)minimum << 16) |
+            ((uint64_t)maximum << 24) |
+            ((nonzero & 0xffffffffULL) << 32);
+    }
+    return hash;
+}
+
+static uint64_t VCAMStaticPixelBufferDiagnosticSummary(
+    CVPixelBufferRef pixelBuffer, uint64_t *summaryOut) {
+    if (summaryOut != NULL) *summaryOut = 0;
+    if (pixelBuffer == NULL || CVPixelBufferIsPlanar(pixelBuffer) ||
+        CVPixelBufferGetPixelFormatType(pixelBuffer) != kCVPixelFormatType_32BGRA ||
+        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) !=
+            kCVReturnSuccess) return 0;
+    const uint8_t *base = (const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    size_t rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    if (base == NULL || width == 0 || height == 0 || rowBytes < width * 4) {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        return 0;
+    }
+    uint64_t hash = 1469598103934665603ULL;
+    uint64_t sum = 0;
+    uint64_t nonzero = 0;
+    uint8_t minimum = 255;
+    uint8_t maximum = 0;
+    for (size_t rowSample = 0; rowSample < 8; rowSample++) {
+        size_t row = height == 1 ? 0 : (rowSample * (height - 1)) / 7;
+        const uint8_t *line = base + row * rowBytes;
+        for (size_t byteSample = 0; byteSample < 32; byteSample++) {
+            size_t pixel = width == 1 ? 0 : (byteSample * (width - 1)) / 31;
+            for (size_t channel = 0; channel < 4; channel++) {
+                uint8_t value = line[pixel * 4 + channel];
+                hash ^= value;
+                hash *= 1099511628211ULL;
+                sum += value;
+                if (value != 0) nonzero += 1;
+                if (value < minimum) minimum = value;
+                if (value > maximum) maximum = value;
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    const uint64_t sampleCount = 8 * 32 * 4;
+    if (summaryOut != NULL) {
+        *summaryOut = (sum / sampleCount) |
+            ((uint64_t)minimum << 16) |
+            ((uint64_t)maximum << 24) |
+            ((nonzero & 0xffffffffULL) << 32);
+    }
+    return hash;
 }
 
 static void VCAMSpringBoardMediaPreferencesChanged(
@@ -415,6 +518,9 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         self.lastError = @"static image decode failed";
         return NO;
     }
+    uint64_t decodedSummary = 0;
+    uint64_t decodedSignature = VCAMStaticImageDiagnosticSummary(
+        decoded, &decodedSummary);
     CIImage *image = [self imageByApplyingConfiguredTransform:
         [CIImage imageWithCGImage:decoded]];
     CGImageRelease(decoded);
@@ -450,6 +556,15 @@ static void VCAMSpringBoardMediaPreferencesChanged(
                  colorSpace:self.colorSpace];
         VCAMSetRGBColorAttachments(destination);
         surfacePublished = VCAMSharedSurfaceWriterPublish(self.surfaceWriter, destination);
+        uint64_t renderedSummary = 0;
+        uint64_t renderedSignature = VCAMStaticPixelBufferDiagnosticSummary(
+            destination, &renderedSummary);
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"springboard static image pixels decoded=0x%llx/%llu rendered=0x%llx/%llu",
+            (unsigned long long)decodedSignature,
+            (unsigned long long)decodedSummary,
+            (unsigned long long)renderedSignature,
+            (unsigned long long)renderedSummary]];
         CVPixelBufferRelease(destination);
     }
     if (!surfacePublished) {
