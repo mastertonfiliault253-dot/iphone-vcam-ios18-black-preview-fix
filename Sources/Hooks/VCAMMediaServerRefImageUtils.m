@@ -35,6 +35,9 @@ static uint64_t VCAMAdoptedSurfaceGeneration;
 static uint64_t VCAMLegacyMmapCutoffNanoseconds;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CVPixelBufferPoolRef VCAMNV12ScratchPool;
+static CVPixelBufferPoolRef VCAMLocalSourcePool;
+static size_t VCAMLocalSourceWidth;
+static size_t VCAMLocalSourceHeight;
 static CVPixelBufferPoolRef VCAMPlanarRenderPool;
 static size_t VCAMPlanarRenderWidth;
 static size_t VCAMPlanarRenderHeight;
@@ -789,6 +792,100 @@ static void VCAMMergeGraphAttachments(CVPixelBufferRef sourceBuffer,
     }
 }
 
+// A cameracaptured software Core Image context can complete a render while
+// reading an externally-created BGRA IOSurface as black. Copy the readable
+// bytes into a pool-owned buffer before constructing the CIImage so Core Image
+// consumes a process-local source surface.
+static CVReturn VCAMCreateLocalBGRASourceBuffer(size_t width, size_t height,
+                                                CVPixelBufferRef *bufferOut) {
+    if (bufferOut == NULL || VCAMPixelTransferLock == nil) {
+        return kCVReturnInvalidArgument;
+    }
+    *bufferOut = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMLocalSourcePool == NULL ||
+        VCAMLocalSourceWidth != width || VCAMLocalSourceHeight != height) {
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = VCAMCreateStagingPool(
+            kCVPixelFormatType_32BGRA, width, height, &replacementPool);
+        if (poolStatus != kCVReturnSuccess) {
+            [VCAMPixelTransferLock unlock];
+            return poolStatus;
+        }
+        if (VCAMLocalSourcePool != NULL) {
+            CVPixelBufferPoolRelease(VCAMLocalSourcePool);
+        }
+        VCAMLocalSourcePool = replacementPool;
+        VCAMLocalSourceWidth = width;
+        VCAMLocalSourceHeight = height;
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMLocalSourcePool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    return bufferStatus;
+}
+
+static BOOL VCAMCopyBGRASourceToLocal(CVPixelBufferRef sourceBuffer,
+                                      CVPixelBufferRef localBuffer) {
+    if (sourceBuffer == NULL || localBuffer == NULL ||
+        VCAMPixelTransferLock == nil ||
+        CVPixelBufferGetPixelFormatType(sourceBuffer) !=
+            kCVPixelFormatType_32BGRA ||
+        CVPixelBufferGetPixelFormatType(localBuffer) !=
+            kCVPixelFormatType_32BGRA ||
+        CVPixelBufferIsPlanar(sourceBuffer) ||
+        CVPixelBufferIsPlanar(localBuffer) ||
+        CVPixelBufferGetPlaneCount(sourceBuffer) != 0 ||
+        CVPixelBufferGetPlaneCount(localBuffer) != 0 ||
+        CVPixelBufferGetWidth(sourceBuffer) != CVPixelBufferGetWidth(localBuffer) ||
+        CVPixelBufferGetHeight(sourceBuffer) != CVPixelBufferGetHeight(localBuffer)) {
+        return NO;
+    }
+
+    size_t width = CVPixelBufferGetWidth(sourceBuffer);
+    size_t height = CVPixelBufferGetHeight(sourceBuffer);
+    size_t rowBytes = width * 4;
+    if (CVPixelBufferGetBytesPerRow(sourceBuffer) < rowBytes ||
+        CVPixelBufferGetBytesPerRow(localBuffer) < rowBytes) {
+        return NO;
+    }
+
+    [VCAMPixelTransferLock lock];
+    CVReturn sourceLockStatus = CVPixelBufferLockBaseAddress(
+        sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    if (sourceLockStatus != kCVReturnSuccess) {
+        [VCAMPixelTransferLock unlock];
+        return NO;
+    }
+    CVReturn localLockStatus = CVPixelBufferLockBaseAddress(localBuffer, 0);
+    if (localLockStatus != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        [VCAMPixelTransferLock unlock];
+        return NO;
+    }
+
+    uint8_t *sourceBase = CVPixelBufferGetBaseAddress(sourceBuffer);
+    uint8_t *localBase = CVPixelBufferGetBaseAddress(localBuffer);
+    BOOL copied = sourceBase != NULL && localBase != NULL;
+    size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(sourceBuffer);
+    size_t localBytesPerRow = CVPixelBufferGetBytesPerRow(localBuffer);
+    if (copied) {
+        for (size_t row = 0; row < height; row++) {
+            memcpy(localBase + row * localBytesPerRow,
+                   sourceBase + row * sourceBytesPerRow, rowBytes);
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(localBuffer, 0);
+    CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    [VCAMPixelTransferLock unlock];
+
+    if (copied) {
+        CVBufferRemoveAllAttachments(localBuffer);
+        VCAMMergeGraphAttachments(sourceBuffer, localBuffer);
+    }
+    return copied;
+}
+
 static BOOL VCAMTransferIntoCompressedTarget(CVPixelBufferRef stagingBuffer,
                                               CVPixelBufferRef originalTargetBuffer,
                                               CVPixelBufferRef replacementTargetBuffer) {
@@ -1123,6 +1220,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
          targetFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
     if (compressedTarget && replacementBufferOut == NULL) return NO;
     CVPixelBufferRef scratch = NULL;
+    CVPixelBufferRef localSourceBuffer = NULL;
     CVPixelBufferRef stagingBuffer = NULL;
     CVPixelBufferRef compressedReplacementBuffer = NULL;
     VCAMSharedFrameMetadata metadata = {0};
@@ -1329,7 +1427,17 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             renderHeight = CVPixelBufferGetHeight(stagingBuffer);
         }
 
-        CIImage *image = [CIImage imageWithCVPixelBuffer:scratch];
+        CVPixelBufferRef ciSourceBuffer = scratch;
+        if (!CVPixelBufferIsPlanar(scratch) &&
+            CVPixelBufferGetPixelFormatType(scratch) == kCVPixelFormatType_32BGRA) {
+            if (VCAMCreateLocalBGRASourceBuffer(
+                    CVPixelBufferGetWidth(scratch), CVPixelBufferGetHeight(scratch),
+                    &localSourceBuffer) == kCVReturnSuccess &&
+                VCAMCopyBGRASourceToLocal(scratch, localSourceBuffer)) {
+                ciSourceBuffer = localSourceBuffer;
+            }
+        }
+        CIImage *image = [CIImage imageWithCVPixelBuffer:ciSourceBuffer];
         BOOL sourceIsPortrait = CGRectGetHeight(image.extent) >
             CGRectGetWidth(image.extent);
         // Safari's iOS 16 getUserMedia terminal consumes a landscape 640x480
@@ -1437,6 +1545,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             CVPixelBufferRelease(compressedReplacementBuffer);
         }
         if (stagingBuffer != NULL) CVPixelBufferRelease(stagingBuffer);
+        if (localSourceBuffer != NULL) CVPixelBufferRelease(localSourceBuffer);
         if (scratch != NULL) CVPixelBufferRelease(scratch);
         VCAMSharedSurfaceFrameRelease(&surfaceFrame);
     }

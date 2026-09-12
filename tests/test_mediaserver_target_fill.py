@@ -238,6 +238,21 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("IOSurfaceGetID(targetSurface)", self.implementation)
         self.assertIn("IOSurfaceLock(targetSurface, 0, NULL) == 0", self.implementation)
 
+    def test_external_bgra_source_is_localized_before_core_image(self) -> None:
+        # cameracaptured's software Core Image context can complete a render
+        # while reading an externally-created IOSurface as black. Localize the
+        # BGRA source bytes before constructing the CIImage so the renderer
+        # consumes a process-owned pixel buffer.
+        self.assertIn("VCAMCreateLocalBGRASourceBuffer", self.implementation)
+        self.assertIn("VCAMCopyBGRASourceToLocal", self.implementation)
+        draw = self.implementation.split("BOOL drawReplacementOntoBuffer", 1)[1]
+        image_section = draw.split("CIImage *image =", 1)[1].split(
+            "BOOL sourceIsPortrait", 1
+        )[0]
+        self.assertIn("ciSourceBuffer", image_section)
+        self.assertIn("imageWithCVPixelBuffer:ciSourceBuffer", image_section)
+        self.assertNotIn("imageWithCVPixelBuffer:scratch", image_section)
+
     def test_common_camera_output_defaults_to_universal_replacement(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
