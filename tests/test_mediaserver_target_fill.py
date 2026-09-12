@@ -253,6 +253,16 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("imageWithCVPixelBuffer:ciSourceBuffer", image_section)
         self.assertNotIn("imageWithCVPixelBuffer:scratch", image_section)
 
+    def test_external_bgra_source_reads_the_imported_iosurface_under_lock(self) -> None:
+        # An XPC-imported IOSurface can expose a stale CoreVideo CPU mapping on
+        # iOS 18. The localization copy must use the synchronized surface
+        # address first and retain CoreVideo as a non-surface fallback.
+        self.assertIn("IOSurfaceLock(sourceSurface, 1, NULL) == 0", self.implementation)
+        self.assertIn("IOSurfaceGetBaseAddress(sourceSurface)", self.implementation)
+        self.assertIn("IOSurfaceGetBytesPerRow(sourceSurface)", self.implementation)
+        self.assertIn("IOSurfaceUnlock(sourceSurface, 1, NULL)", self.implementation)
+        self.assertIn("CVPixelBufferGetBaseAddress(sourceBuffer)", self.implementation)
+
     def test_common_camera_output_defaults_to_universal_replacement(self) -> None:
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"

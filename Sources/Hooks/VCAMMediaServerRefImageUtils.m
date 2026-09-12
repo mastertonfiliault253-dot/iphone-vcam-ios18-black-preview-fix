@@ -23,6 +23,16 @@
 #include <time.h>
 #include <unistd.h>
 
+// The iPhoneOS 16.5 SDK exposes IOSurface-backed CVPixelBuffers through
+// CoreVideo but does not ship the IOSurface framework header. Keep the small
+// byte-surface ABI local, as the shared-surface implementation does.
+extern int32_t IOSurfaceLock(IOSurfaceRef surface, uint32_t options,
+                             uint32_t *seed);
+extern int32_t IOSurfaceUnlock(IOSurfaceRef surface, uint32_t options,
+                               uint32_t *seed);
+extern void *IOSurfaceGetBaseAddress(IOSurfaceRef surface);
+extern size_t IOSurfaceGetBytesPerRow(IOSurfaceRef surface);
+
 static VCAMSharedFrameReader *VCAMReader;
 static VCAMSharedSurfaceReader *VCAMSurfaceReader;
 static VCAMSharedSurfaceFrame VCAMLastSurfaceFrame;
@@ -851,23 +861,41 @@ static BOOL VCAMCopyBGRASourceToLocal(CVPixelBufferRef sourceBuffer,
     }
 
     [VCAMPixelTransferLock lock];
-    CVReturn sourceLockStatus = CVPixelBufferLockBaseAddress(
-        sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    // On iOS 18, a CVPixelBuffer created around an IOSurface imported through
+    // XPC can expose a stale/black CPU mapping unless the IOSurface itself is
+    // explicitly locked. Read the shared surface bytes while holding its
+    // read-only lock; retain the CoreVideo lock path for non-IOSurface buffers.
+    IOSurfaceRef sourceSurface = CVPixelBufferGetIOSurface(sourceBuffer);
+    BOOL sourceSurfaceLocked = sourceSurface != NULL &&
+        IOSurfaceLock(sourceSurface, 1, NULL) == 0; // kIOSurfaceLockReadOnly
+    CVReturn sourceLockStatus = sourceSurfaceLocked
+        ? kCVReturnSuccess
+        : CVPixelBufferLockBaseAddress(sourceBuffer,
+                                       kCVPixelBufferLock_ReadOnly);
     if (sourceLockStatus != kCVReturnSuccess) {
         [VCAMPixelTransferLock unlock];
         return NO;
     }
     CVReturn localLockStatus = CVPixelBufferLockBaseAddress(localBuffer, 0);
     if (localLockStatus != kCVReturnSuccess) {
-        CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        if (sourceSurfaceLocked) {
+            IOSurfaceUnlock(sourceSurface, 1, NULL);
+        } else {
+            CVPixelBufferUnlockBaseAddress(sourceBuffer,
+                                           kCVPixelBufferLock_ReadOnly);
+        }
         [VCAMPixelTransferLock unlock];
         return NO;
     }
 
-    uint8_t *sourceBase = CVPixelBufferGetBaseAddress(sourceBuffer);
+    uint8_t *sourceBase = sourceSurfaceLocked
+        ? (uint8_t *)IOSurfaceGetBaseAddress(sourceSurface)
+        : CVPixelBufferGetBaseAddress(sourceBuffer);
     uint8_t *localBase = CVPixelBufferGetBaseAddress(localBuffer);
     BOOL copied = sourceBase != NULL && localBase != NULL;
-    size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(sourceBuffer);
+    size_t sourceBytesPerRow = sourceSurfaceLocked
+        ? IOSurfaceGetBytesPerRow(sourceSurface)
+        : CVPixelBufferGetBytesPerRow(sourceBuffer);
     size_t localBytesPerRow = CVPixelBufferGetBytesPerRow(localBuffer);
     if (copied) {
         for (size_t row = 0; row < height; row++) {
@@ -876,7 +904,12 @@ static BOOL VCAMCopyBGRASourceToLocal(CVPixelBufferRef sourceBuffer,
         }
     }
     CVPixelBufferUnlockBaseAddress(localBuffer, 0);
-    CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    if (sourceSurfaceLocked) {
+        IOSurfaceUnlock(sourceSurface, 1, NULL);
+    } else {
+        CVPixelBufferUnlockBaseAddress(sourceBuffer,
+                                       kCVPixelBufferLock_ReadOnly);
+    }
     [VCAMPixelTransferLock unlock];
 
     if (copied) {
