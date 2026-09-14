@@ -271,7 +271,15 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("debug-6f2c.fallback-state", self.implementation)
         self.assertIn("debug-6f2c.surface-rgb", self.implementation)
         self.assertIn("debug-6f2c.mmap-rgb", self.implementation)
+        self.assertIn("debug-6f2c.source-state", self.implementation)
         self.assertIn("!surfaceHasRGB || publishPixelDiagnostics", self.implementation)
+
+    def test_direct_mmap_path_publishes_source_selection_state(self) -> None:
+        self.assertIn("directMmapAttempted", self.implementation)
+        self.assertIn("directMmapCopied", self.implementation)
+        self.assertIn("debug6F2CSourceState", self.implementation)
+        self.assertIn("VCAMDebug6F2CRGBCoverageSummary", self.implementation)
+        self.assertIn("debug6F2CSourceState |= 1ULL << 19", self.implementation)
 
     def test_external_bgra_source_reads_the_imported_iosurface_under_lock(self) -> None:
         # An XPC-imported IOSurface can expose a stale CoreVideo CPU mapping on

@@ -104,6 +104,7 @@ static int VCAMDebug6F2CSurfaceRGBToken = -1;
 static int VCAMDebug6F2CMmapRGBToken = -1;
 static int VCAMDebug6F2CSurfaceGenerationToken = -1;
 static int VCAMDebug6F2CMmapGenerationToken = -1;
+static int VCAMDebug6F2CSourceStateToken = -1;
 
 static uint64_t VCAMPixelDiagnosticSignature(
     CVPixelBufferRef pixelBuffer, uint64_t *summaryOut) {
@@ -264,7 +265,8 @@ static void VCAMPixelDiagnosticSetState(int *token, const char *name,
 
 static void VCAMDebug6F2CPublishRGBGateDiagnostics(
     uint64_t fallbackState, uint64_t surfaceRGB, uint64_t mmapRGB,
-    uint64_t surfaceGeneration, uint64_t mmapGeneration) {
+    uint64_t surfaceGeneration, uint64_t mmapGeneration,
+    uint64_t sourceState) {
     VCAMPixelDiagnosticSetState(&VCAMDebug6F2CFallbackStateToken,
         "com.codex.vcam.ios18.debug-6f2c.fallback-state", fallbackState);
     VCAMPixelDiagnosticSetState(&VCAMDebug6F2CSurfaceRGBToken,
@@ -277,6 +279,8 @@ static void VCAMDebug6F2CPublishRGBGateDiagnostics(
     VCAMPixelDiagnosticSetState(&VCAMDebug6F2CMmapGenerationToken,
         "com.codex.vcam.ios18.debug-6f2c.mmap-generation",
         mmapGeneration);
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CSourceStateToken,
+        "com.codex.vcam.ios18.debug-6f2c.source-state", sourceState);
 }
 
 // Four bytes are enough to compare the same two planes at the top-left and
@@ -1422,6 +1426,15 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     uint64_t debug6F2CMmapRGB = 0;
     uint64_t debug6F2CSurfaceGeneration = 0;
     uint64_t debug6F2CMmapGeneration = 0;
+    // [DEBUG-6f2c] sourceState packs the source-selection path without pixels:
+    // low4=surface failure; b4=surface copied; b5=current surface metadata;
+    // b6=mmap allowed; b7=mmap metadata; b8=BGRA; b9=NV12; b10=scratch;
+    // b11=direct mmap attempted; b12=raw copy; b13=RGB summary valid;
+    // b14=legacy any-RGB; b15=copy accepted; b16=surface selected;
+    // b17=direct mmap selected; b18=cached frame; b19=fail-closed black;
+    // b20=adopted generation; b21=current/adopted match;
+    // b22=mmap generation bound; b23=mmap/current generation match.
+    uint64_t debug6F2CSourceState = 0;
     CFAbsoluteTime elapsed = 0;
     static volatile int pixelDiagnosticFrames = 0;
     int pixelDiagnosticCount = __sync_add_and_fetch(&pixelDiagnosticFrames, 1);
@@ -1448,6 +1461,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         }
         BOOL surfaceCopied = VCAMSharedSurfaceReaderCopyLatest(
             VCAMSurfaceReader, 1000000000ULL, &surfaceFrame);
+        VCAMSharedSurfaceReaderFailure surfaceFailure =
+            VCAMSharedSurfaceReaderLastFailure(VCAMSurfaceReader);
+        debug6F2CSourceState |= ((uint64_t)surfaceFailure & 0xfULL);
+        if (surfaceCopied) debug6F2CSourceState |= 1ULL << 4;
         BOOL copied = surfaceCopied;
         if (surfaceCopied) {
             scratch = CVPixelBufferRetain(surfaceFrame.pixelBuffer);
@@ -1484,6 +1501,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMSharedFrameMetadata currentSurface = {0};
             BOOL hasCurrentSurface = VCAMSharedSurfaceReaderGetLatestMetadata(
                 VCAMSurfaceReader, 0, &currentSurface);
+            if (hasCurrentSurface) {
+                debug6F2CSourceState |= 1ULL << 5;
+                debug6F2CSurfaceGeneration = currentSurface.surfaceGeneration;
+            }
             if (!hasCurrentSurface && VCAMAdoptedSurfaceGeneration != 0 &&
                 VCAMLegacyMmapCutoffNanoseconds == 0) {
                 VCAMLegacyMmapCutoffNanoseconds =
@@ -1495,9 +1516,29 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     VCAMAdoptedSurfaceGeneration) ||
                 (!hasCurrentSurface &&
                  VCAMLegacyMmapCutoffNanoseconds != 0);
+            if (allowMmapBootstrap) debug6F2CSourceState |= 1ULL << 6;
+            if (VCAMAdoptedSurfaceGeneration != 0) {
+                debug6F2CSourceState |= 1ULL << 20;
+                if (hasCurrentSurface && currentSurface.surfaceGeneration ==
+                        VCAMAdoptedSurfaceGeneration) {
+                    debug6F2CSourceState |= 1ULL << 21;
+                }
+            }
             VCAMSharedFrameMetadata mmapFormatMetadata = {0};
             BOOL hasMmapFormat = VCAMSharedFrameReaderGetLatestMetadata(
                 VCAMReader, 0, &mmapFormatMetadata);
+            if (hasMmapFormat) debug6F2CSourceState |= 1ULL << 7;
+            if (hasMmapFormat && mmapFormatMetadata.pixelFormat ==
+                    kCVPixelFormatType_32BGRA) {
+                debug6F2CSourceState |= 1ULL << 8;
+            }
+            if (hasMmapFormat &&
+                (mmapFormatMetadata.pixelFormat ==
+                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                 mmapFormatMetadata.pixelFormat ==
+                     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)) {
+                debug6F2CSourceState |= 1ULL << 9;
+            }
             CVPixelBufferPoolRef scratchPool = VCAMScratchPool;
             if (hasMmapFormat &&
                 (mmapFormatMetadata.pixelFormat ==
@@ -1506,16 +1547,45 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                      kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)) {
                 scratchPool = VCAMNV12ScratchPool;
             }
-            if (CVPixelBufferPoolCreatePixelBuffer(
-                    kCFAllocatorDefault, scratchPool,
-                    &scratch) != kCVReturnSuccess) {
+            BOOL scratchCreated = CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault, scratchPool,
+                &scratch) == kCVReturnSuccess;
+            if (scratchCreated) debug6F2CSourceState |= 1ULL << 10;
+            if (!scratchCreated) {
                 if (compressedTarget && VCAMCopyLastCompressedVirtualFrame(
                         targetBuffer, replacementBufferOut)) return YES;
                 return NO;
             }
-            copied = allowMmapBootstrap && VCAMSharedFrameReaderCopyLatest(
-                VCAMReader, scratch, 1000000000ULL, &metadata);
-            if (copied) {
+            BOOL directMmapAttempted = allowMmapBootstrap;
+            if (directMmapAttempted) debug6F2CSourceState |= 1ULL << 11;
+            BOOL directMmapCopied = directMmapAttempted &&
+                VCAMSharedFrameReaderCopyLatest(
+                    VCAMReader, scratch, 1000000000ULL, &metadata);
+            if (directMmapCopied) {
+                debug6F2CSourceState |= 1ULL << 12;
+                debug6F2CMmapGeneration = metadata.surfaceGeneration;
+                if (metadata.surfaceGeneration != 0) {
+                    debug6F2CSourceState |= 1ULL << 22;
+                }
+                if (hasCurrentSurface && metadata.surfaceGeneration != 0 &&
+                    metadata.surfaceGeneration ==
+                        currentSurface.surfaceGeneration) {
+                    debug6F2CSourceState |= 1ULL << 23;
+                }
+                if (publishPixelDiagnostics &&
+                    CVPixelBufferGetPixelFormatType(scratch) ==
+                        kCVPixelFormatType_32BGRA) {
+                    if (VCAMDebug6F2CRGBCoverageSummary(
+                            scratch, &debug6F2CMmapRGB)) {
+                        debug6F2CSourceState |= 1ULL << 13;
+                    }
+                    if (VCAMPixelBufferHasRGBContent(scratch)) {
+                        debug6F2CSourceState |= 1ULL << 14;
+                    }
+                }
+            }
+            copied = directMmapCopied;
+            if (directMmapCopied) {
                 if (metadata.surfaceGeneration != 0) {
                     copied = hasCurrentSurface &&
                         currentSurface.surfaceGeneration ==
@@ -1536,6 +1606,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     }
                 }
             }
+            if (copied) debug6F2CSourceState |= 1ULL << 15;
         }
         if (surfaceCopied) debug6F2CFallbackState |= 1ULL << 0;
         BOOL surfaceIsBGRA = surfaceCopied &&
@@ -1603,6 +1674,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             if (mmapScratch != NULL) CVPixelBufferRelease(mmapScratch);
         }
         if (copied) {
+            debug6F2CSourceState |= surfaceCopied
+                ? 1ULL << 16 : 1ULL << 17;
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
             VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
             if (surfaceCopied) {
@@ -1613,11 +1686,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMLastVirtualFrameHostTime = CFAbsoluteTimeGetCurrent();
         } else if (VCAMLastVirtualFrame != NULL &&
                    CFAbsoluteTimeGetCurrent() - VCAMLastVirtualFrameHostTime <= 2.5) {
+            debug6F2CSourceState |= 1ULL << 18;
             // Short stalls reuse the last good frame so the picture does not
             // blink on every producer hiccup.
             CVPixelBufferRelease(scratch);
             scratch = CVPixelBufferRetain(VCAMLastVirtualFrame);
         } else if (VCAMFillBlackSharedFrame(scratch)) {
+            debug6F2CSourceState |= 1ULL << 19;
             // The stream has been gone long enough that a frozen frame would
             // be mistaken for the live picture. Fail closed to black instead.
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
@@ -1769,7 +1844,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMDebug6F2CPublishRGBGateDiagnostics(
                 debug6F2CFallbackState, debug6F2CSurfaceRGB,
                 debug6F2CMmapRGB, debug6F2CSurfaceGeneration,
-                debug6F2CMmapGeneration);
+                debug6F2CMmapGeneration, debug6F2CSourceState);
             VCAMPublishPixelDiagnostics(
                 scratch, renderBuffer,
                 compressedTarget ? compressedReplacementBuffer : targetBuffer);

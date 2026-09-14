@@ -378,6 +378,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("surfaceHasRGB = surfaceIsBGRA &&", consumer)
         self.assertIn("VCAMPixelBufferHasRGBContent(scratch)", consumer)
         self.assertIn("!surfaceHasRGB", consumer)
+        self.assertIn("debug-6f2c.source-state", consumer)
         self.assertIn(
             "mmapMetadata.surfaceGeneration == metadata.surfaceGeneration",
             consumer,

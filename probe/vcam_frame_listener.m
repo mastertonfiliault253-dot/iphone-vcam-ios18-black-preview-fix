@@ -171,6 +171,7 @@ int main(void) {
     int debug6F2CMmapRGBToken = -1;
     int debug6F2CSurfaceGenerationToken = -1;
     int debug6F2CMmapGenerationToken = -1;
+    int debug6F2CSourceStateToken = -1;
     int productionPixelsToken = -1;
     int vcamEventTokens[sizeof(g_vcam_event_names) /
                         sizeof(g_vcam_event_names[0])] = {0};
@@ -220,6 +221,7 @@ int main(void) {
         notify_register_check("com.codex.vcam.ios18.debug-6f2c.mmap-rgb", &debug6F2CMmapRGBToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.debug-6f2c.surface-generation", &debug6F2CSurfaceGenerationToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.debug-6f2c.mmap-generation", &debug6F2CMmapGenerationToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.source-state", &debug6F2CSourceStateToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.pixels", &productionPixelsToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed for production pixel telemetry\n");
         return 1;
@@ -283,6 +285,7 @@ int main(void) {
         uint64_t debug6F2CMmapRGB = 0;
         uint64_t debug6F2CSurfaceGeneration = 0;
         uint64_t debug6F2CMmapGeneration = 0;
+        uint64_t debug6F2CSourceState = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
@@ -321,6 +324,7 @@ int main(void) {
         notify_get_state(debug6F2CMmapRGBToken, &debug6F2CMmapRGB);
         notify_get_state(debug6F2CSurfaceGenerationToken, &debug6F2CSurfaceGeneration);
         notify_get_state(debug6F2CMmapGenerationToken, &debug6F2CMmapGeneration);
+        notify_get_state(debug6F2CSourceStateToken, &debug6F2CSourceState);
         for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
             int eventCheck = 0;
             if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
@@ -412,10 +416,11 @@ int main(void) {
                      (unsigned long long)productionDirectChromaAddress);
             record_line("/var/tmp/vcam-ios18-probe-events.log",
                         "VCAM-PIXELS", productionPixelSequence, message);
-            char debugMessage[320] = {0};
+            char debugMessage[384] = {0};
             snprintf(debugMessage, sizeof(debugMessage),
-                     "[DEBUG-6f2c] gate=0x%llx surfaceRGB=0x%llx mmapRGB=0x%llx surfaceGen=%llu mmapGen=%llu",
+                     "[DEBUG-6f2c] gate=0x%llx sourceState=0x%llx surfaceRGB=0x%llx mmapRGB=0x%llx surfaceGen=%llu mmapGen=%llu",
                      (unsigned long long)debug6F2CFallbackState,
+                     (unsigned long long)debug6F2CSourceState,
                      (unsigned long long)debug6F2CSurfaceRGB,
                      (unsigned long long)debug6F2CMmapRGB,
                      (unsigned long long)debug6F2CSurfaceGeneration,
