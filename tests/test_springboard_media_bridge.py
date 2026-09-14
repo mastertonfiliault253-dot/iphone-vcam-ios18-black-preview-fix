@@ -369,6 +369,30 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, true)", shared)
         self.assertIn("VCAMSharedSurfaceReaderSetReady(reader, false)", shared)
 
+    def test_black_imported_surface_falls_back_to_same_generation_mmap(self) -> None:
+        consumer = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMPixelBufferHasRGBContent", consumer)
+        self.assertIn("surfaceCopied &&", consumer)
+        self.assertIn("!VCAMPixelBufferHasRGBContent(scratch)", consumer)
+        self.assertIn(
+            "mmapMetadata.surfaceGeneration == metadata.surfaceGeneration",
+            consumer,
+        )
+        self.assertIn("VCAMSharedFrameReaderCopyLatest", consumer)
+        self.assertIn(
+            "surface transport black; using same-generation mmap bootstrap",
+            consumer,
+        )
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        refresh = bridge.split("- (void)refreshStaticImage:", 1)[1].split(
+            "- (void)reload", 1
+        )[0]
+        self.assertIn("BOOL bootstrap = [self publishStaticBootstrap]", refresh)
+
 
     def test_native_player_frames_do_not_claim_unobservable_decoder_class(self) -> None:
         source = (

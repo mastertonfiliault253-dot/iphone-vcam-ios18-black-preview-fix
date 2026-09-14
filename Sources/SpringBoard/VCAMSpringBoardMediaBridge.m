@@ -633,8 +633,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         return;
     }
     BOOL refreshed = VCAMSharedSurfaceWriterRefreshLatest(self.surfaceWriter);
-    BOOL consumerReady = VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
-    BOOL bootstrap = consumerReady || [self publishStaticBootstrap];
+    // Keep the fixed mmap bootstrap fresh even after the IOSurface consumer
+    // announces readiness. iOS 18 can import the IOSurface right successfully
+    // while exposing a zeroed CPU mapping in cameracaptured; the consumer then
+    // needs a same-generation, fresh mmap copy as a coherence fallback.
+    BOOL bootstrap = [self publishStaticBootstrap];
     if (refreshed && bootstrap) {
         self.lastFrameTimestampNanoseconds = VCAMSharedFrameMonotonicNanoseconds();
     } else {

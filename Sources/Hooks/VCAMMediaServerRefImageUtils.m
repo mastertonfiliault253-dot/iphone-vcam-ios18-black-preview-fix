@@ -160,6 +160,36 @@ static uint64_t VCAMPixelDiagnosticSignature(
     return hash;
 }
 
+static BOOL VCAMPixelBufferHasRGBContent(CVPixelBufferRef pixelBuffer) {
+    if (pixelBuffer == NULL || CVPixelBufferIsPlanar(pixelBuffer) ||
+        CVPixelBufferGetPixelFormatType(pixelBuffer) !=
+            kCVPixelFormatType_32BGRA ||
+        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly) !=
+            kCVReturnSuccess) return NO;
+    const uint8_t *base = (const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    size_t rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    BOOL hasContent = NO;
+    if (base != NULL && width > 0 && height > 0 && rowBytes >= width * 4) {
+        for (size_t rowSample = 0; rowSample < 8 && !hasContent; rowSample++) {
+            size_t row = height == 1 ? 0 : (rowSample * (height - 1)) / 7;
+            const uint8_t *line = base + row * rowBytes;
+            for (size_t pixelSample = 0; pixelSample < 32; pixelSample++) {
+                size_t pixel = width == 1 ? 0
+                    : (pixelSample * (width - 1)) / 31;
+                const uint8_t *rgba = line + pixel * 4;
+                if (rgba[0] != 0 || rgba[1] != 0 || rgba[2] != 0) {
+                    hasContent = YES;
+                    break;
+                }
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    return hasContent;
+}
+
 static void VCAMPixelDiagnosticSetState(int *token, const char *name,
                                          uint64_t value) {
     if (*token < 0) notify_register_check(name, token);
@@ -1374,6 +1404,41 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     }
                 }
             }
+        }
+        if (surfaceCopied &&
+            CVPixelBufferGetPixelFormatType(scratch) ==
+                kCVPixelFormatType_32BGRA &&
+            !VCAMPixelBufferHasRGBContent(scratch)) {
+            VCAMSharedFrameMetadata mmapMetadata = {0};
+            BOOL sameGeneration =
+                VCAMSharedFrameReaderGetLatestMetadata(
+                    VCAMReader, 1000000000ULL, &mmapMetadata) &&
+                mmapMetadata.pixelFormat == kCVPixelFormatType_32BGRA &&
+                mmapMetadata.surfaceGeneration != 0 &&
+                mmapMetadata.surfaceGeneration == metadata.surfaceGeneration;
+            CVPixelBufferRef mmapScratch = NULL;
+            BOOL mmapCopied = sameGeneration &&
+                CVPixelBufferPoolCreatePixelBuffer(
+                    kCFAllocatorDefault, VCAMScratchPool, &mmapScratch) ==
+                kCVReturnSuccess &&
+                VCAMSharedFrameReaderCopyLatest(
+                    VCAMReader, mmapScratch, 1000000000ULL, &mmapMetadata);
+            if (mmapCopied &&
+                mmapMetadata.surfaceGeneration == metadata.surfaceGeneration &&
+                VCAMPixelBufferHasRGBContent(mmapScratch)) {
+                VCAMSharedSurfaceFrameRelease(&surfaceFrame);
+                CVPixelBufferRelease(scratch);
+                scratch = mmapScratch;
+                mmapScratch = NULL;
+                metadata = mmapMetadata;
+                surfaceCopied = NO;
+                copied = YES;
+                static dispatch_once_t surfaceFallbackLogToken;
+                dispatch_once(&surfaceFallbackLogToken, ^{
+                    VCAMRefLog("[DEBUG-ios18-surface-fallback] surface transport black; using same-generation mmap bootstrap");
+                });
+            }
+            if (mmapScratch != NULL) CVPixelBufferRelease(mmapScratch);
         }
         if (copied) {
             if (VCAMLastVirtualFrame != NULL) CVPixelBufferRelease(VCAMLastVirtualFrame);
