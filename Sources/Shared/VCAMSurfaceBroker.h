@@ -37,6 +37,16 @@ IOSurfaceRef _Nullable VCAMSurfaceBrokerCopySurface(uint32_t surfaceID)
 /// process-lifetime storage and never contains media or user data.
 const char *VCAMSurfaceBrokerSubscriberStatus(void);
 
+/// Returns a duplicated descriptor for the shared mmap data plane received
+/// from the authenticated broker, or -1 while the asynchronous registry
+/// handshake is incomplete. The caller owns the returned descriptor.
+int VCAMSurfaceBrokerCopySharedFrameFileDescriptor(void);
+
+/// Returns a duplicated read-write descriptor for the shared-surface header
+/// received from the authenticated broker, or -1 while unavailable. The
+/// caller owns the returned descriptor.
+int VCAMSurfaceBrokerCopySharedSurfaceFileDescriptor(void);
+
 /// Obtains a short-lived, single-use configuration token from the
 /// audit-identified XPC service. Returns false for non-UI peers.
 bool VCAMSurfaceBrokerCopyConfigurationToken(uint64_t *high, uint64_t *low);

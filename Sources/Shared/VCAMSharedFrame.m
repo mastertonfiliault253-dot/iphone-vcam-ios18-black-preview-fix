@@ -581,6 +581,10 @@ static bool VCAMSharedFrameReaderEnsureMapped(VCAMSharedFrameReader *reader) {
     if (reader->header != NULL && VCAMSharedFrameHeaderIsValid(reader->header)) return true;
     VCAMSharedFrameReaderUnmap(reader);
     reader->descriptor = open(VCAMSharedFramePath, O_RDONLY);
+    if (reader->descriptor < 0) {
+        reader->descriptor =
+            VCAMSurfaceBrokerCopySharedFrameFileDescriptor();
+    }
     reader->mappedBytes = VCAMSharedFrameMappedBytes();
     if (reader->descriptor < 0) return false;
     struct stat metadata = {0};
@@ -1208,6 +1212,10 @@ static bool VCAMSharedSurfaceReaderEnsureMapped(VCAMSharedSurfaceReader *reader)
     }
     VCAMSharedSurfaceReaderUnmap(reader);
     reader->descriptor = open(VCAMSharedSurfacePath, O_RDWR);
+    if (reader->descriptor < 0) {
+        reader->descriptor =
+            VCAMSurfaceBrokerCopySharedSurfaceFileDescriptor();
+    }
     if (reader->descriptor < 0) {
         reader->lastFailure = VCAMSharedSurfaceReaderFailureOpen;
         return false;

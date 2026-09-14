@@ -142,6 +142,42 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("surface-import-failed", client)
         self.assertIn("IOSurface registry request pid=", broker)
 
+    def test_cameracaptured_uses_brokered_shared_file_descriptors(self) -> None:
+        server = (ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m").read_text(
+            encoding="utf-8"
+        )
+        client = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.h").read_text(
+            encoding="utf-8"
+        )
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+
+        # cameracaptured can connect to the authenticated Mach service but its
+        # sandbox rejects path-based reads of /var/tmp. Pass already-open FDs
+        # only to the exact MediaServer identity; keep UI subscribers on the
+        # existing IOSurface-only registry response.
+        self.assertIn("xpc_dictionary_set_fd(reply, key, descriptor)", server)
+        self.assertIn(
+            'reply, "frameFD", VCAMSharedFrameFileSystemPath(), O_RDONLY', server
+        )
+        self.assertIn(
+            'reply, "surfaceFD", VCAMSharedSurfaceFileSystemPath(), O_RDWR', server
+        )
+        self.assertIn(
+            "peerIdentity == VCAMSurfaceBrokerPeerIdentityMediaServer", server
+        )
+        self.assertIn('xpc_dictionary_dup_fd(reply, "frameFD")', client)
+        self.assertIn('xpc_dictionary_dup_fd(reply, "surfaceFD")', client)
+        self.assertIn("VCAMSurfaceBrokerCopySharedFrameFileDescriptor", header)
+        self.assertIn("VCAMSurfaceBrokerCopySharedSurfaceFileDescriptor", header)
+        self.assertIn("VCAMSurfaceBrokerCopySharedFrameFileDescriptor()", shared)
+        self.assertIn("VCAMSurfaceBrokerCopySharedSurfaceFileDescriptor()", shared)
+        self.assertNotIn("fchmod(writer->descriptor, 0666)", shared)
+
     def test_hd_yuv_fallback_uses_bt709_instead_of_bt601(self) -> None:
         converter = (ROOT / "Sources" / "Daemon" / "VCAMPixelConverter.m").read_text(
             encoding="utf-8"

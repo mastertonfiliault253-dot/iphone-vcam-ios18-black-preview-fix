@@ -1,4 +1,5 @@
 #import "../Shared/VCAMSurfaceBroker.h"
+#import "../Shared/VCAMSharedFrame.h"
 #import "VCAMHLSLoopbackProxy.h"
 #import "../Shared/VCAMProcessIdentity.h"
 
@@ -6,12 +7,14 @@
 
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 // Prefer Xcode's XPC types. The Linux iPhoneOS 16.5 SDK omits this header, so
 // retain a narrow ABI fallback for WSL validation builds.
@@ -45,6 +48,8 @@ extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
                                       const char *value);
 extern void xpc_dictionary_set_uint64(xpc_object_t dictionary, const char *key,
                                       uint64_t value);
+extern void xpc_dictionary_set_fd(xpc_object_t dictionary, const char *key,
+                                  int descriptor);
 extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
                                      xpc_object_t value);
 extern void xpc_release(xpc_object_t object);
@@ -239,6 +244,25 @@ static bool VCAMSurfaceBrokerPeerCanSubscribe(xpc_connection_t peer) {
         identity == VCAMSurfaceBrokerPeerIdentityUIHost;
 }
 
+static void VCAMSurfaceBrokerAttachFileDescriptor(
+    xpc_object_t reply, const char *key, const char *path, int flags) {
+    int descriptor = open(path, flags);
+    if (descriptor < 0) return;
+    xpc_dictionary_set_fd(reply, key, descriptor);
+    close(descriptor);
+}
+
+static void VCAMSurfaceBrokerAttachMediaServerDescriptors(
+    xpc_object_t reply) {
+    // cameracaptured's sandbox rejects path-based access to /var/tmp even
+    // when the shared files are world-readable. The authenticated Mach peer
+    // receives already-open descriptors instead; UI subscribers never do.
+    VCAMSurfaceBrokerAttachFileDescriptor(
+        reply, "frameFD", VCAMSharedFrameFileSystemPath(), O_RDONLY);
+    VCAMSurfaceBrokerAttachFileDescriptor(
+        reply, "surfaceFD", VCAMSharedSurfaceFileSystemPath(), O_RDWR);
+}
+
 static xpc_object_t VCAMBrokerRegistry;
 static _Atomic(uint32_t) VCAMBrokerGetDiagnostics;
 
@@ -412,6 +436,9 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
     char peerName[64] = {0};
     if (peerPID > 0) proc_name(peerPID, peerName, sizeof(peerName));
     bool accepted = VCAMSurfaceBrokerPeerCanSubscribe(peer);
+    VCAMSurfaceBrokerPeerIdentity peerIdentity = accepted
+        ? VCAMSurfaceBrokerIdentityForPeer(peer)
+        : VCAMSurfaceBrokerPeerIdentityUnknown;
     uint32_t diagnostic = atomic_fetch_add_explicit(
         &VCAMBrokerGetDiagnostics, 1, memory_order_relaxed);
     if (diagnostic < 6) {
@@ -439,6 +466,9 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                 xpc_dictionary_set_value(reply, VCAMSurfaceKeys[slot], surface);
             }
         }
+    }
+    if (peerIdentity == VCAMSurfaceBrokerPeerIdentityMediaServer) {
+        VCAMSurfaceBrokerAttachMediaServerDescriptors(reply);
     }
     xpc_connection_send_message(peer, reply);
     VCAMXPCRelease(reply);

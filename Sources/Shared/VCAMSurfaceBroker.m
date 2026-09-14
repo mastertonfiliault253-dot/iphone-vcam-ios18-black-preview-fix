@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 // Xcode ships the private-on-iOS XPC declarations while the Linux iPhoneOS
 // 16.5 SDK does not. Use the system types where present and keep the narrow ABI
@@ -40,6 +41,7 @@ extern const char *_Nullable xpc_dictionary_get_string(xpc_object_t dictionary,
                                                         const char *key);
 extern uint64_t xpc_dictionary_get_uint64(xpc_object_t dictionary,
                                           const char *key);
+extern int xpc_dictionary_dup_fd(xpc_object_t dictionary, const char *key);
 extern xpc_object_t _Nullable xpc_dictionary_get_value(xpc_object_t dictionary,
                                                         const char *key);
 extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
@@ -133,6 +135,8 @@ void VCAMSurfaceBrokerPublish(IOSurfaceRef const *surfaces, uint32_t count) {
 
 static pthread_mutex_t VCAMSubscriberLock = PTHREAD_MUTEX_INITIALIZER;
 static IOSurfaceRef VCAMSubscriberSurfaces[VCAMSurfaceBrokerVideoSlotCount];
+static int VCAMSubscriberFrameDescriptor = -1;
+static int VCAMSubscriberSurfaceDescriptor = -1;
 static xpc_connection_t VCAMSubscriberConnection;
 static dispatch_queue_t VCAMSubscriberQueue;
 static dispatch_once_t VCAMSubscriberOnce;
@@ -200,6 +204,8 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
                                       memory_order_release);
                 return;
             }
+            int frameDescriptor = xpc_dictionary_dup_fd(reply, "frameFD");
+            int surfaceDescriptor = xpc_dictionary_dup_fd(reply, "surfaceFD");
             IOSurfaceRef replacements[VCAMSurfaceBrokerVideoSlotCount] = {0};
             uint32_t imported = 0;
             for (uint32_t slot = 0; slot < slotCount; slot++) {
@@ -216,6 +222,18 @@ void VCAMSurfaceBrokerRequestRegistry(void) {
                                       : VCAMSubscriberStatusImportFailed,
                                   memory_order_release);
             pthread_mutex_lock(&VCAMSubscriberLock);
+            if (frameDescriptor >= 0) {
+                if (VCAMSubscriberFrameDescriptor >= 0) {
+                    close(VCAMSubscriberFrameDescriptor);
+                }
+                VCAMSubscriberFrameDescriptor = frameDescriptor;
+            }
+            if (surfaceDescriptor >= 0) {
+                if (VCAMSubscriberSurfaceDescriptor >= 0) {
+                    close(VCAMSubscriberSurfaceDescriptor);
+                }
+                VCAMSubscriberSurfaceDescriptor = surfaceDescriptor;
+            }
             for (uint32_t slot = 0; slot < VCAMSurfaceBrokerVideoSlotCount; slot++) {
                 if (VCAMSubscriberSurfaces[slot] != NULL) {
                     CFRelease(VCAMSubscriberSurfaces[slot]);
@@ -261,6 +279,28 @@ const char *VCAMSurfaceBrokerSubscriberStatus(void) {
         case VCAMSubscriberStatusSurfaceMiss: return "surface-id-miss";
         default: return "waiting-for-reply";
     }
+}
+
+int VCAMSurfaceBrokerCopySharedFrameFileDescriptor(void) {
+    int result = -1;
+    pthread_mutex_lock(&VCAMSubscriberLock);
+    if (VCAMSubscriberFrameDescriptor >= 0) {
+        result = dup(VCAMSubscriberFrameDescriptor);
+    }
+    pthread_mutex_unlock(&VCAMSubscriberLock);
+    if (result < 0) VCAMSurfaceBrokerRequestRegistry();
+    return result;
+}
+
+int VCAMSurfaceBrokerCopySharedSurfaceFileDescriptor(void) {
+    int result = -1;
+    pthread_mutex_lock(&VCAMSubscriberLock);
+    if (VCAMSubscriberSurfaceDescriptor >= 0) {
+        result = dup(VCAMSubscriberSurfaceDescriptor);
+    }
+    pthread_mutex_unlock(&VCAMSubscriberLock);
+    if (result < 0) VCAMSurfaceBrokerRequestRegistry();
+    return result;
 }
 
 bool VCAMSurfaceBrokerCopyConfigurationToken(uint64_t *high, uint64_t *low) {
