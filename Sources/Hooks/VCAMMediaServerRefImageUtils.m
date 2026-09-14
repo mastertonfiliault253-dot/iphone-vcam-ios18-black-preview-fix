@@ -45,6 +45,9 @@ static uint64_t VCAMAdoptedSurfaceGeneration;
 static uint64_t VCAMLegacyMmapCutoffNanoseconds;
 static CVPixelBufferPoolRef VCAMScratchPool;
 static CVPixelBufferPoolRef VCAMNV12ScratchPool;
+static CVPixelBufferPoolRef VCAMCPUBGRAScratchPool;
+static size_t VCAMCPUBGRAScratchWidth;
+static size_t VCAMCPUBGRAScratchHeight;
 static CVPixelBufferPoolRef VCAMLocalSourcePool;
 static size_t VCAMLocalSourceWidth;
 static size_t VCAMLocalSourceHeight;
@@ -314,6 +317,49 @@ static CVReturn VCAMCreateStagingPool(OSType format, size_t width, size_t height
                                    (__bridge CFDictionaryRef)poolAttributes,
                                    (__bridge CFDictionaryRef)pixelAttributes,
                                    poolOut);
+}
+
+// A same-generation mmap bootstrap is already process-local data. Do not put
+// it back into an IOSurface-backed pool: on iOS 18 that can re-enter the same
+// stale/black CPU mapping that made the imported surface unusable. Omitting
+// IOSurfaceProperties keeps this hand-off in ordinary CoreVideo-owned memory.
+static CVReturn VCAMCreateCPUReadableBGRABuffer(
+    size_t width, size_t height, CVPixelBufferRef *bufferOut) {
+    if (bufferOut == NULL || VCAMPixelTransferLock == nil ||
+        width == 0 || height == 0) return kCVReturnInvalidArgument;
+    *bufferOut = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMCPUBGRAScratchPool == NULL ||
+        VCAMCPUBGRAScratchWidth != width ||
+        VCAMCPUBGRAScratchHeight != height) {
+        NSDictionary *poolAttributes = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @2,
+        };
+        NSDictionary *pixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey:
+                @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey: @(width),
+            (id)kCVPixelBufferHeightKey: @(height),
+        };
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault, (__bridge CFDictionaryRef)poolAttributes,
+            (__bridge CFDictionaryRef)pixelAttributes, &replacementPool);
+        if (poolStatus != kCVReturnSuccess || replacementPool == NULL) {
+            [VCAMPixelTransferLock unlock];
+            return poolStatus;
+        }
+        if (VCAMCPUBGRAScratchPool != NULL) {
+            CVPixelBufferPoolRelease(VCAMCPUBGRAScratchPool);
+        }
+        VCAMCPUBGRAScratchPool = replacementPool;
+        VCAMCPUBGRAScratchWidth = width;
+        VCAMCPUBGRAScratchHeight = height;
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMCPUBGRAScratchPool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    return bufferStatus;
 }
 
 static CVReturn VCAMCreateCompressedStagingBuffer(size_t width, size_t height,
@@ -1289,6 +1335,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     VCAMSharedFrameMetadata metadata = {0};
     VCAMSharedSurfaceFrame surfaceFrame = {0};
     BOOL readerLocked = NO;
+    BOOL usingMmapBootstrap = NO;
     BOOL rendered = NO;
     CFAbsoluteTime elapsed = 0;
     static volatile int pixelDiagnosticFrames = 0;
@@ -1410,20 +1457,16 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 kCVPixelFormatType_32BGRA &&
             !VCAMPixelBufferHasRGBContent(scratch)) {
             VCAMSharedFrameMetadata mmapMetadata = {0};
-            BOOL sameGeneration =
-                VCAMSharedFrameReaderGetLatestMetadata(
-                    VCAMReader, 1000000000ULL, &mmapMetadata) &&
-                mmapMetadata.pixelFormat == kCVPixelFormatType_32BGRA &&
-                mmapMetadata.surfaceGeneration != 0 &&
-                mmapMetadata.surfaceGeneration == metadata.surfaceGeneration;
             CVPixelBufferRef mmapScratch = NULL;
-            BOOL mmapCopied = sameGeneration &&
-                CVPixelBufferPoolCreatePixelBuffer(
-                    kCFAllocatorDefault, VCAMScratchPool, &mmapScratch) ==
-                kCVReturnSuccess &&
+            BOOL mmapCopied =
+                VCAMCreateCPUReadableBGRABuffer(
+                    VCAMSharedFrameWidth, VCAMSharedFrameHeight,
+                    &mmapScratch) == kCVReturnSuccess &&
                 VCAMSharedFrameReaderCopyLatest(
                     VCAMReader, mmapScratch, 1000000000ULL, &mmapMetadata);
             if (mmapCopied &&
+                mmapMetadata.pixelFormat == kCVPixelFormatType_32BGRA &&
+                mmapMetadata.surfaceGeneration != 0 &&
                 mmapMetadata.surfaceGeneration == metadata.surfaceGeneration &&
                 VCAMPixelBufferHasRGBContent(mmapScratch)) {
                 VCAMSharedSurfaceFrameRelease(&surfaceFrame);
@@ -1432,6 +1475,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 mmapScratch = NULL;
                 metadata = mmapMetadata;
                 surfaceCopied = NO;
+                usingMmapBootstrap = YES;
                 copied = YES;
                 static dispatch_once_t surfaceFallbackLogToken;
                 dispatch_once(&surfaceFallbackLogToken, ^{
@@ -1526,7 +1570,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         }
 
         CVPixelBufferRef ciSourceBuffer = scratch;
-        if (!CVPixelBufferIsPlanar(scratch) &&
+        if (!usingMmapBootstrap && !CVPixelBufferIsPlanar(scratch) &&
             CVPixelBufferGetPixelFormatType(scratch) == kCVPixelFormatType_32BGRA) {
             if (VCAMCreateLocalBGRASourceBuffer(
                     CVPixelBufferGetWidth(scratch), CVPixelBufferGetHeight(scratch),

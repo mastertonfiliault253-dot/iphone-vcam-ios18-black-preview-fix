@@ -253,6 +253,18 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("imageWithCVPixelBuffer:ciSourceBuffer", image_section)
         self.assertNotIn("imageWithCVPixelBuffer:scratch", image_section)
 
+    def test_black_surface_fallback_uses_cpu_readable_mmap_bootstrap(self) -> None:
+        # The mmap bootstrap is already local data; putting it through another
+        # IOSurface-backed pool can reproduce iOS 18's black CPU mapping.
+        self.assertIn("VCAMCreateCPUReadableBGRABuffer", self.implementation)
+        self.assertIn("usingMmapBootstrap", self.implementation)
+        fallback = self.implementation.split(
+            "if (surfaceCopied &&", 1
+        )[1].split("if (copied)", 1)[0]
+        self.assertIn("VCAMSharedFrameReaderCopyLatest", fallback)
+        self.assertIn("mmapMetadata.surfaceGeneration == metadata.surfaceGeneration", fallback)
+        self.assertIn("VCAMPixelBufferHasRGBContent(mmapScratch)", fallback)
+
     def test_external_bgra_source_reads_the_imported_iosurface_under_lock(self) -> None:
         # An XPC-imported IOSurface can expose a stale CoreVideo CPU mapping on
         # iOS 18. The localization copy must use the synchronized surface
