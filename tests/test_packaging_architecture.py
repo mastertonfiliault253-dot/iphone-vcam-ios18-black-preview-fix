@@ -256,6 +256,32 @@ class PackagingArchitectureTests(unittest.TestCase):
             writer_publish.rindex("VCAMSharedFrameUnlock(writer->descriptor)"),
         )
 
+    def test_shared_transport_uses_cameracaptured_allowed_directory(self) -> None:
+        implementation = (
+            ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m"
+        ).read_text(encoding="utf-8")
+        postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(
+            encoding="utf-8"
+        )
+        transport_directory = "/var/mobile/Library/VirtualCaptureCard/VCAM"
+
+        # iOS 18 cameracaptured explicitly grants read-write access to its
+        # home-relative /Library/VirtualCaptureCard/ directory. Its sandbox
+        # rejects both arbitrary /var/tmp files and lookup of VCAM's custom
+        # Mach service, so the shared mmap headers must live under that grant.
+        self.assertIn(
+            f'"{transport_directory}/com.codex.vcam.frames"', implementation
+        )
+        self.assertIn(
+            f'"{transport_directory}/com.codex.vcam.surfaces"', implementation
+        )
+        self.assertNotIn('"/var/tmp/com.codex.vcam.frames"', implementation)
+        self.assertNotIn('"/var/tmp/com.codex.vcam.surfaces"', implementation)
+        self.assertIn(
+            f"install -d -o mobile -g mobile -m 0700 {transport_directory}",
+            postinst,
+        )
+
     def test_worker_hides_source_selection_and_publication(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
         main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")

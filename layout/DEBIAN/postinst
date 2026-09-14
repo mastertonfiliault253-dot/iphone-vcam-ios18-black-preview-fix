@@ -3,6 +3,10 @@
 set -e
 
 install -d -o mobile -g mobile -m 0755 /var/mobile/Media/VCAM
+# iOS 18 cameracaptured's sandbox explicitly grants read-write access under
+# its home-relative /Library/VirtualCaptureCard/ directory. Keep the shared
+# mmap data plane private to uid mobile and outside unrestricted /var/tmp.
+install -d -o mobile -g mobile -m 0700 /var/mobile/Library/VirtualCaptureCard/VCAM
 if [ -e /var/mobile/Library/Preferences/com.codex.vcam.plist ] && [ ! -e /var/mobile/Media/VCAM/com.codex.vcam.plist ]; then
     cp /var/mobile/Library/Preferences/com.codex.vcam.plist /var/mobile/Media/VCAM/com.codex.vcam.plist
 fi

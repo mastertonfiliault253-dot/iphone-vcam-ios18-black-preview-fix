@@ -33,10 +33,12 @@ extern const CFStringRef kIOSurfacePixelFormat;
 
 static const uint32_t VCAMSharedFrameMagic = 0x5643414d;
 static const uint32_t VCAMSharedFrameVersion = 4;
-static const char *const VCAMSharedFramePath = "/var/tmp/com.codex.vcam.frames";
+static const char *const VCAMSharedFramePath =
+    "/var/mobile/Library/VirtualCaptureCard/VCAM/com.codex.vcam.frames";
 static const uint32_t VCAMSharedSurfaceMagic = 0x56435346;
 static const uint32_t VCAMSharedSurfaceVersion = 8;
-static const char *const VCAMSharedSurfacePath = "/var/tmp/com.codex.vcam.surfaces";
+static const char *const VCAMSharedSurfacePath =
+    "/var/mobile/Library/VirtualCaptureCard/VCAM/com.codex.vcam.surfaces";
 static const size_t VCAMSharedFrameBytesPerRow = VCAMSharedFrameWidth * 4;
 static const size_t VCAMSharedFrameSlotBytes = VCAMSharedFrameBytesPerRow * VCAMSharedFrameHeight;
 // Fixed slot stride keeps the mmap layout stable regardless of the active
