@@ -166,6 +166,11 @@ int main(void) {
     int productionDirectSurfaceToken = -1;
     int productionDirectLumaAddressToken = -1;
     int productionDirectChromaAddressToken = -1;
+    int debug6F2CFallbackStateToken = -1;
+    int debug6F2CSurfaceRGBToken = -1;
+    int debug6F2CMmapRGBToken = -1;
+    int debug6F2CSurfaceGenerationToken = -1;
+    int debug6F2CMmapGenerationToken = -1;
     int productionPixelsToken = -1;
     int vcamEventTokens[sizeof(g_vcam_event_names) /
                         sizeof(g_vcam_event_names[0])] = {0};
@@ -210,6 +215,11 @@ int main(void) {
         notify_register_check("com.codex.vcam.ios18.production.direct-write-surface.state", &productionDirectSurfaceToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.direct-write-luma-addr.state", &productionDirectLumaAddressToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.direct-write-chroma-addr.state", &productionDirectChromaAddressToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.fallback-state", &debug6F2CFallbackStateToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.surface-rgb", &debug6F2CSurfaceRGBToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.mmap-rgb", &debug6F2CMmapRGBToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.surface-generation", &debug6F2CSurfaceGenerationToken) != NOTIFY_STATUS_OK ||
+        notify_register_check("com.codex.vcam.ios18.debug-6f2c.mmap-generation", &debug6F2CMmapGenerationToken) != NOTIFY_STATUS_OK ||
         notify_register_check("com.codex.vcam.ios18.production.pixels", &productionPixelsToken) != NOTIFY_STATUS_OK) {
         printf("notify_register_check failed for production pixel telemetry\n");
         return 1;
@@ -268,6 +278,11 @@ int main(void) {
         uint64_t productionDirectSurface = 0;
         uint64_t productionDirectLumaAddress = 0;
         uint64_t productionDirectChromaAddress = 0;
+        uint64_t debug6F2CFallbackState = 0;
+        uint64_t debug6F2CSurfaceRGB = 0;
+        uint64_t debug6F2CMmapRGB = 0;
+        uint64_t debug6F2CSurfaceGeneration = 0;
+        uint64_t debug6F2CMmapGeneration = 0;
         notify_get_state(addrtoken, &sigAddr);
         notify_get_state(probeAddrToken, &probeAddr);
         notify_get_state(probeSequenceToken, &probeSequence);
@@ -301,6 +316,11 @@ int main(void) {
         notify_get_state(productionDirectSurfaceToken, &productionDirectSurface);
         notify_get_state(productionDirectLumaAddressToken, &productionDirectLumaAddress);
         notify_get_state(productionDirectChromaAddressToken, &productionDirectChromaAddress);
+        notify_get_state(debug6F2CFallbackStateToken, &debug6F2CFallbackState);
+        notify_get_state(debug6F2CSurfaceRGBToken, &debug6F2CSurfaceRGB);
+        notify_get_state(debug6F2CMmapRGBToken, &debug6F2CMmapRGB);
+        notify_get_state(debug6F2CSurfaceGenerationToken, &debug6F2CSurfaceGeneration);
+        notify_get_state(debug6F2CMmapGenerationToken, &debug6F2CMmapGeneration);
         for (size_t i = 0; i < sizeof(vcamEventTokens) / sizeof(vcamEventTokens[0]); i++) {
             int eventCheck = 0;
             if (notify_check(vcamEventTokens[i], &eventCheck) == NOTIFY_STATUS_OK &&
@@ -392,6 +412,16 @@ int main(void) {
                      (unsigned long long)productionDirectChromaAddress);
             record_line("/var/tmp/vcam-ios18-probe-events.log",
                         "VCAM-PIXELS", productionPixelSequence, message);
+            char debugMessage[320] = {0};
+            snprintf(debugMessage, sizeof(debugMessage),
+                     "[DEBUG-6f2c] gate=0x%llx surfaceRGB=0x%llx mmapRGB=0x%llx surfaceGen=%llu mmapGen=%llu",
+                     (unsigned long long)debug6F2CFallbackState,
+                     (unsigned long long)debug6F2CSurfaceRGB,
+                     (unsigned long long)debug6F2CMmapRGB,
+                     (unsigned long long)debug6F2CSurfaceGeneration,
+                     (unsigned long long)debug6F2CMmapGeneration);
+            record_line("/var/tmp/vcam-ios18-probe-events.log",
+                        "DEBUG-6F2C", productionPixelSequence, debugMessage);
             lastProductionPixelSequence = productionPixelSequence;
         }
         if (probeFlags != lastProbeFlags) {

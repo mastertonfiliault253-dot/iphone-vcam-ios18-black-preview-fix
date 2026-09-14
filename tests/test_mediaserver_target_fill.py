@@ -259,11 +259,19 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("VCAMCreateCPUReadableBGRABuffer", self.implementation)
         self.assertIn("usingMmapBootstrap", self.implementation)
         fallback = self.implementation.split(
-            "if (surfaceCopied &&", 1
+            "if (surfaceIsBGRA &&", 1
         )[1].split("if (copied)", 1)[0]
         self.assertIn("VCAMSharedFrameReaderCopyLatest", fallback)
         self.assertIn("mmapMetadata.surfaceGeneration == metadata.surfaceGeneration", fallback)
         self.assertIn("VCAMPixelBufferHasRGBContent(mmapScratch)", fallback)
+
+    def test_black_surface_fallback_publishes_bounded_rgb_gate_telemetry(self) -> None:
+        self.assertIn("[DEBUG-6f2c]", self.implementation)
+        self.assertIn("VCAMDebug6F2CRGBCoverageSummary", self.implementation)
+        self.assertIn("debug-6f2c.fallback-state", self.implementation)
+        self.assertIn("debug-6f2c.surface-rgb", self.implementation)
+        self.assertIn("debug-6f2c.mmap-rgb", self.implementation)
+        self.assertIn("!surfaceHasRGB || publishPixelDiagnostics", self.implementation)
 
     def test_external_bgra_source_reads_the_imported_iosurface_under_lock(self) -> None:
         # An XPC-imported IOSurface can expose a stale CoreVideo CPU mapping on

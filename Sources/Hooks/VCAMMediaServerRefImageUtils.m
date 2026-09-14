@@ -99,6 +99,11 @@ static int VCAMPixelDiagnosticDirectRelockToken = -1;
 static int VCAMPixelDiagnosticDirectSurfaceToken = -1;
 static int VCAMPixelDiagnosticDirectLumaAddressToken = -1;
 static int VCAMPixelDiagnosticDirectChromaAddressToken = -1;
+static int VCAMDebug6F2CFallbackStateToken = -1;
+static int VCAMDebug6F2CSurfaceRGBToken = -1;
+static int VCAMDebug6F2CMmapRGBToken = -1;
+static int VCAMDebug6F2CSurfaceGenerationToken = -1;
+static int VCAMDebug6F2CMmapGenerationToken = -1;
 
 static uint64_t VCAMPixelDiagnosticSignature(
     CVPixelBufferRef pixelBuffer, uint64_t *summaryOut) {
@@ -193,10 +198,85 @@ static BOOL VCAMPixelBufferHasRGBContent(CVPixelBufferRef pixelBuffer) {
     return hasContent;
 }
 
+// [DEBUG-6f2c] Pack an aligned 8x32 BGRA sample without exporting pixels.
+// low16=nonzero RGB pixels, next16=RGB max >= 16, next16=mean RGB max,
+// next8=min RGB max, high8=max RGB max. The boolean return distinguishes an
+// unreadable buffer from a valid all-black summary of zero.
+static BOOL VCAMDebug6F2CRGBCoverageSummary(CVPixelBufferRef pixelBuffer,
+                                            uint64_t *summaryOut) {
+    if (summaryOut == NULL) return NO;
+    *summaryOut = 0;
+    if (pixelBuffer == NULL || CVPixelBufferIsPlanar(pixelBuffer) ||
+        CVPixelBufferGetPixelFormatType(pixelBuffer) !=
+            kCVPixelFormatType_32BGRA ||
+        CVPixelBufferLockBaseAddress(pixelBuffer,
+                                     kCVPixelBufferLock_ReadOnly) !=
+            kCVReturnSuccess) return NO;
+    const uint8_t *base =
+        (const uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    size_t rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    uint64_t active = 0;
+    uint64_t strong = 0;
+    uint64_t intensitySum = 0;
+    uint64_t sampleCount = 0;
+    uint8_t minimum = 255;
+    uint8_t maximum = 0;
+    BOOL valid = base != NULL && width > 0 && height > 0 &&
+        rowBytes >= width * 4;
+    if (valid) {
+        for (size_t rowSample = 0; rowSample < 8; rowSample++) {
+            size_t row = height == 1 ? 0
+                : (rowSample * (height - 1)) / 7;
+            const uint8_t *line = base + row * rowBytes;
+            for (size_t pixelSample = 0; pixelSample < 32; pixelSample++) {
+                size_t pixel = width == 1 ? 0
+                    : (pixelSample * (width - 1)) / 31;
+                const uint8_t *bgra = line + pixel * 4;
+                uint8_t intensity = MAX(bgra[0], MAX(bgra[1], bgra[2]));
+                if (intensity != 0) active++;
+                if (intensity >= 16) strong++;
+                intensitySum += intensity;
+                if (intensity < minimum) minimum = intensity;
+                if (intensity > maximum) maximum = intensity;
+                sampleCount++;
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixelBuffer,
+                                   kCVPixelBufferLock_ReadOnly);
+    if (!valid || sampleCount == 0) return NO;
+    uint64_t mean = intensitySum / sampleCount;
+    *summaryOut = (active & 0xffffULL) |
+        ((strong & 0xffffULL) << 16) |
+        ((mean & 0xffffULL) << 32) |
+        ((uint64_t)minimum << 48) |
+        ((uint64_t)maximum << 56);
+    return YES;
+}
+
 static void VCAMPixelDiagnosticSetState(int *token, const char *name,
                                          uint64_t value) {
     if (*token < 0) notify_register_check(name, token);
     if (*token >= 0) notify_set_state(*token, value);
+}
+
+static void VCAMDebug6F2CPublishRGBGateDiagnostics(
+    uint64_t fallbackState, uint64_t surfaceRGB, uint64_t mmapRGB,
+    uint64_t surfaceGeneration, uint64_t mmapGeneration) {
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CFallbackStateToken,
+        "com.codex.vcam.ios18.debug-6f2c.fallback-state", fallbackState);
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CSurfaceRGBToken,
+        "com.codex.vcam.ios18.debug-6f2c.surface-rgb", surfaceRGB);
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CMmapRGBToken,
+        "com.codex.vcam.ios18.debug-6f2c.mmap-rgb", mmapRGB);
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CSurfaceGenerationToken,
+        "com.codex.vcam.ios18.debug-6f2c.surface-generation",
+        surfaceGeneration);
+    VCAMPixelDiagnosticSetState(&VCAMDebug6F2CMmapGenerationToken,
+        "com.codex.vcam.ios18.debug-6f2c.mmap-generation",
+        mmapGeneration);
 }
 
 // Four bytes are enough to compare the same two planes at the top-left and
@@ -1337,6 +1417,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     BOOL readerLocked = NO;
     BOOL usingMmapBootstrap = NO;
     BOOL rendered = NO;
+    uint64_t debug6F2CFallbackState = 0;
+    uint64_t debug6F2CSurfaceRGB = 0;
+    uint64_t debug6F2CMmapRGB = 0;
+    uint64_t debug6F2CSurfaceGeneration = 0;
+    uint64_t debug6F2CMmapGeneration = 0;
     CFAbsoluteTime elapsed = 0;
     static volatile int pixelDiagnosticFrames = 0;
     int pixelDiagnosticCount = __sync_add_and_fetch(&pixelDiagnosticFrames, 1);
@@ -1452,23 +1537,55 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 }
             }
         }
-        if (surfaceCopied &&
+        if (surfaceCopied) debug6F2CFallbackState |= 1ULL << 0;
+        BOOL surfaceIsBGRA = surfaceCopied &&
             CVPixelBufferGetPixelFormatType(scratch) ==
-                kCVPixelFormatType_32BGRA &&
-            !VCAMPixelBufferHasRGBContent(scratch)) {
+                kCVPixelFormatType_32BGRA;
+        if (surfaceIsBGRA) debug6F2CFallbackState |= 1ULL << 1;
+        BOOL surfaceHasRGB = surfaceIsBGRA &&
+            VCAMPixelBufferHasRGBContent(scratch);
+        if (surfaceHasRGB) debug6F2CFallbackState |= 1ULL << 3;
+        if (surfaceIsBGRA && publishPixelDiagnostics &&
+            VCAMDebug6F2CRGBCoverageSummary(
+                scratch, &debug6F2CSurfaceRGB)) {
+            debug6F2CFallbackState |= 1ULL << 2;
+        }
+        if (surfaceCopied) {
+            debug6F2CSurfaceGeneration = metadata.surfaceGeneration;
+        }
+        if (surfaceIsBGRA && (!surfaceHasRGB || publishPixelDiagnostics)) {
+            debug6F2CFallbackState |= 1ULL << 4;
             VCAMSharedFrameMetadata mmapMetadata = {0};
             CVPixelBufferRef mmapScratch = NULL;
-            BOOL mmapCopied =
-                VCAMCreateCPUReadableBGRABuffer(
-                    VCAMSharedFrameWidth, VCAMSharedFrameHeight,
-                    &mmapScratch) == kCVReturnSuccess &&
+            BOOL mmapBufferCreated = VCAMCreateCPUReadableBGRABuffer(
+                VCAMSharedFrameWidth, VCAMSharedFrameHeight,
+                &mmapScratch) == kCVReturnSuccess;
+            if (mmapBufferCreated) debug6F2CFallbackState |= 1ULL << 5;
+            BOOL mmapCopied = mmapBufferCreated &&
                 VCAMSharedFrameReaderCopyLatest(
                     VCAMReader, mmapScratch, 1000000000ULL, &mmapMetadata);
-            if (mmapCopied &&
-                mmapMetadata.pixelFormat == kCVPixelFormatType_32BGRA &&
-                mmapMetadata.surfaceGeneration != 0 &&
-                mmapMetadata.surfaceGeneration == metadata.surfaceGeneration &&
-                VCAMPixelBufferHasRGBContent(mmapScratch)) {
+            if (mmapCopied) debug6F2CFallbackState |= 1ULL << 6;
+            BOOL mmapIsBGRA = mmapCopied &&
+                mmapMetadata.pixelFormat == kCVPixelFormatType_32BGRA;
+            if (mmapIsBGRA) debug6F2CFallbackState |= 1ULL << 7;
+            BOOL mmapGenerationIsBound = mmapCopied &&
+                mmapMetadata.surfaceGeneration != 0;
+            if (mmapGenerationIsBound) debug6F2CFallbackState |= 1ULL << 8;
+            BOOL generationsMatch = mmapGenerationIsBound &&
+                mmapMetadata.surfaceGeneration == metadata.surfaceGeneration;
+            if (generationsMatch) debug6F2CFallbackState |= 1ULL << 9;
+            if (mmapCopied) {
+                debug6F2CMmapGeneration = mmapMetadata.surfaceGeneration;
+            }
+            BOOL mmapSummaryValid = mmapIsBGRA &&
+                VCAMDebug6F2CRGBCoverageSummary(
+                    mmapScratch, &debug6F2CMmapRGB);
+            if (mmapSummaryValid) debug6F2CFallbackState |= 1ULL << 10;
+            BOOL mmapHasRGB = mmapIsBGRA &&
+                VCAMPixelBufferHasRGBContent(mmapScratch);
+            if (mmapHasRGB) debug6F2CFallbackState |= 1ULL << 11;
+            if (!surfaceHasRGB && mmapCopied && mmapIsBGRA &&
+                mmapGenerationIsBound && generationsMatch && mmapHasRGB) {
                 VCAMSharedSurfaceFrameRelease(&surfaceFrame);
                 CVPixelBufferRelease(scratch);
                 scratch = mmapScratch;
@@ -1477,6 +1594,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 surfaceCopied = NO;
                 usingMmapBootstrap = YES;
                 copied = YES;
+                debug6F2CFallbackState |= 1ULL << 12;
                 static dispatch_once_t surfaceFallbackLogToken;
                 dispatch_once(&surfaceFallbackLogToken, ^{
                     VCAMRefLog("[DEBUG-ios18-surface-fallback] surface transport black; using same-generation mmap bootstrap");
@@ -1648,6 +1766,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                 : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
                     stagingBuffer, targetBuffer)));
         if (rendered && publishPixelDiagnostics) {
+            VCAMDebug6F2CPublishRGBGateDiagnostics(
+                debug6F2CFallbackState, debug6F2CSurfaceRGB,
+                debug6F2CMmapRGB, debug6F2CSurfaceGeneration,
+                debug6F2CMmapGeneration);
             VCAMPublishPixelDiagnostics(
                 scratch, renderBuffer,
                 compressedTarget ? compressedReplacementBuffer : targetBuffer);

@@ -375,7 +375,9 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("VCAMPixelBufferHasRGBContent", consumer)
         self.assertIn("surfaceCopied &&", consumer)
-        self.assertIn("!VCAMPixelBufferHasRGBContent(scratch)", consumer)
+        self.assertIn("surfaceHasRGB = surfaceIsBGRA &&", consumer)
+        self.assertIn("VCAMPixelBufferHasRGBContent(scratch)", consumer)
+        self.assertIn("!surfaceHasRGB", consumer)
         self.assertIn(
             "mmapMetadata.surfaceGeneration == metadata.surfaceGeneration",
             consumer,
