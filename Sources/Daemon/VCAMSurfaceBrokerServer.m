@@ -97,6 +97,8 @@ static xpc_type_t VCAMXPCTypeDictionary(void) {
 typedef xpc_connection_t (*VCAMXPCMachServiceCreateFunction)(
     const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
 typedef pid_t (*VCAMXPCConnectionGetPIDFunction)(xpc_connection_t connection);
+typedef const char *(*VCAMXPCConnectionGetNameFunction)(
+    xpc_connection_t connection);
 
 static xpc_connection_t VCAMXPCMachServiceCreate(
     const char *name, dispatch_queue_t queue, uint64_t flags) {
@@ -118,6 +120,23 @@ static pid_t VCAMXPCConnectionGetPID(xpc_connection_t connection) {
         memcpy(&getPIDFunction, &symbol, sizeof(getPIDFunction));
     });
     return getPIDFunction != NULL ? getPIDFunction(connection) : -1;
+}
+
+static const char *VCAMXPCConnectionGetName(xpc_connection_t connection) {
+    static VCAMXPCConnectionGetNameFunction getNameFunction;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *symbol = dlsym(RTLD_DEFAULT, "xpc_connection_get_name");
+        memcpy(&getNameFunction, &symbol, sizeof(getNameFunction));
+    });
+    return getNameFunction != NULL ? getNameFunction(connection) : NULL;
+}
+
+static BOOL VCAMXPCNameIsCameraCaptured(const char *name) {
+    return name != NULL &&
+        (strcmp(name, "cameracaptured") == 0 ||
+         strcmp(name, "/usr/libexec/cameracaptured") == 0 ||
+         strcmp(name, "com.apple.cameracaptured") == 0);
 }
 
 typedef NS_ENUM(NSInteger, VCAMSurfaceBrokerPeerIdentity) {
@@ -149,7 +168,16 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
     char pathBuffer[4096] = {0};
     if (pid <= 0 || proc_name(pid, name, sizeof(name)) <= 0 ||
         proc_pidpath(pid, pathBuffer, sizeof(pathBuffer)) <= 0) {
-        fprintf(stderr, "vcamd identity unknown pid=%d (proc_name/proc_pidpath unavailable)\n", pid);
+        const char *xpcName = VCAMXPCConnectionGetName(peer);
+        if (VCAMXPCNameIsCameraCaptured(xpcName)) {
+            fprintf(stderr,
+                    "vcamd identity cameracaptured via XPC peer name=%s pid=%d\n",
+                    xpcName, pid);
+            return VCAMSurfaceBrokerPeerIdentityMediaServer;
+        }
+        fprintf(stderr,
+                "vcamd identity unknown pid=%d (proc_name/proc_pidpath unavailable, xpc_name=%s)\n",
+                pid, xpcName == NULL ? "(unknown)" : xpcName);
         return VCAMSurfaceBrokerPeerIdentityUnknown;
     }
     NSString *path = [NSString stringWithUTF8String:pathBuffer];

@@ -95,6 +95,17 @@ class HardwareDecoderTests(unittest.TestCase):
         )
         self.assertIn("VCAMSurfaceBrokerIdentityForPeer", broker)
         self.assertIn("proc_pidpath(pid, pathBuffer", broker)
+        self.assertIn("xpc_connection_get_name", broker)
+        self.assertIn("VCAMXPCNameIsCameraCaptured", broker)
+        camera_name_gate = broker.split(
+            "static BOOL VCAMXPCNameIsCameraCaptured", 1
+        )[1].split("typedef NS_ENUM", 1)[0]
+        for camera_peer_name in (
+            '"cameracaptured"',
+            '"/usr/libexec/cameracaptured"',
+            '"com.apple.cameracaptured"',
+        ):
+            self.assertIn(f"strcmp(name, {camera_peer_name})", camera_name_gate)
         # csops is not part of the auth decision under a jailbreak; the exact
         # path/name/bundle allow-list is the boundary.
         self.assertIn("VCAMPeerIsPlatformBinary", broker)
