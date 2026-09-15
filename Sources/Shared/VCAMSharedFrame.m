@@ -708,6 +708,7 @@ static bool VCAMSharedFrameReaderGetSnapshot(
         metadata->yCbCrMatrix = atomic_load_explicit(
             &reader->header->slotYCbCrMatrix[snapshot->slot],
             memory_order_relaxed);
+        metadata->surfaceSlotCount = 0;
     }
     return success;
 }
@@ -787,6 +788,7 @@ bool VCAMSharedFrameReaderCopyLatest(VCAMSharedFrameReader *reader,
             &reader->header->slotTransferFunction[slot], memory_order_relaxed);
         metadata->yCbCrMatrix = atomic_load_explicit(
             &reader->header->slotYCbCrMatrix[slot], memory_order_relaxed);
+        metadata->surfaceSlotCount = 0;
     }
     return true;
 }
@@ -1282,6 +1284,7 @@ static bool VCAMSharedSurfaceReaderGetSnapshot(
             metadata->colorPrimaries = primaries;
             metadata->transferFunction = transfer;
             metadata->yCbCrMatrix = matrix;
+            metadata->surfaceSlotCount = reader->header->slotCount;
         }
     }
     return success;

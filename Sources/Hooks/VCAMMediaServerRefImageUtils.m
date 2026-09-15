@@ -70,6 +70,13 @@ static CIContext *VCAMContext;
 static CGColorSpaceRef VCAMStandardColorSpace;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
+static NSLock *VCAMPreviewCacheLock;
+static CVPixelBufferRef VCAMPreviewCacheBuffer;
+static uint64_t VCAMPreviewCacheSequence;
+static uint64_t VCAMPreviewCacheGeneration;
+static size_t VCAMPreviewCacheWidth;
+static size_t VCAMPreviewCacheHeight;
+static OSType VCAMPreviewCacheFormat;
 static int VCAMVirtualModeStateToken = -1;
 static int VCAMVirtualModeStateReadyToken = -1;
 // VTPixelTransferSession is available throughout the supported iOS 16.0-16.5
@@ -402,6 +409,46 @@ static CVReturn VCAMCreateStagingPool(OSType format, size_t width, size_t height
                                    (__bridge CFDictionaryRef)poolAttributes,
                                    (__bridge CFDictionaryRef)pixelAttributes,
                                    poolOut);
+}
+
+static void VCAMRecordPreviewPerformance(BOOL cacheHit, BOOL fullRender,
+                                         double elapsedMilliseconds) {
+    static double durations[120] = {0};
+    static NSUInteger count = 0;
+    static NSUInteger cacheHits = 0;
+    static NSUInteger renders = 0;
+    BOOL report = NO;
+    double p50 = 0;
+    double p95 = 0;
+    double maximum = 0;
+    NSUInteger reportHits = 0;
+    NSUInteger reportRenders = 0;
+    @synchronized (VCAMContext) {
+        durations[count++] = elapsedMilliseconds;
+        if (cacheHit) cacheHits++;
+        if (fullRender) renders++;
+        if (count == 120) {
+            qsort(durations, count, sizeof(durations[0]),
+                  VCAMCompareRenderMilliseconds);
+            p50 = durations[59];
+            p95 = durations[113];
+            maximum = durations[119];
+            reportHits = cacheHits;
+            reportRenders = renders;
+            count = 0;
+            cacheHits = 0;
+            renders = 0;
+            report = YES;
+        }
+    }
+    if (report) {
+        char metrics[256] = {0};
+        snprintf(metrics, sizeof(metrics),
+                 "preview replacement performance window count=120 cacheHits=%lu renders=%lu p50Ms=%.2f p95Ms=%.2f maxMs=%.2f",
+                 (unsigned long)reportHits, (unsigned long)reportRenders,
+                 p50, p95, maximum);
+        VCAMRefLog(metrics);
+    }
 }
 
 // A same-generation mmap bootstrap is already process-local data. Do not put
@@ -798,6 +845,7 @@ void loadReplacementMedia(void) {
         VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         VCAMReaderLock = [NSLock new];
         VCAMPixelTransferLock = [NSLock new];
+        VCAMPreviewCacheLock = [NSLock new];
         CVReturn result = VCAMCreateStagingPool(
             kCVPixelFormatType_32BGRA,
             VCAMSharedFrameWidth, VCAMSharedFrameHeight, &VCAMScratchPool);
@@ -936,6 +984,178 @@ static void VCAMSetStandardColorAttachments(CVPixelBufferRef buffer) {
     CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
                           kCVImageBufferYCbCrMatrix_ITU_R_709_2,
                           kCVAttachmentMode_ShouldPropagate);
+}
+
+static BOOL VCAMRuntimeSupportsPreviewCache(void) {
+    static dispatch_once_t onceToken;
+    static BOOL supported = NO;
+    dispatch_once(&onceToken, ^{
+        supported = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
+    });
+    return supported;
+}
+
+static BOOL VCAMCopyPlanarPixels(CVPixelBufferRef sourceBuffer,
+                                 CVPixelBufferRef destinationBuffer) {
+    if (sourceBuffer == NULL || destinationBuffer == NULL ||
+        !CVPixelBufferIsPlanar(sourceBuffer) ||
+        !CVPixelBufferIsPlanar(destinationBuffer) ||
+        CVPixelBufferGetPlaneCount(sourceBuffer) != 2 ||
+        CVPixelBufferGetPlaneCount(destinationBuffer) != 2 ||
+        CVPixelBufferGetWidth(sourceBuffer) !=
+            CVPixelBufferGetWidth(destinationBuffer) ||
+        CVPixelBufferGetHeight(sourceBuffer) !=
+            CVPixelBufferGetHeight(destinationBuffer) ||
+        CVPixelBufferGetPixelFormatType(sourceBuffer) !=
+            CVPixelBufferGetPixelFormatType(destinationBuffer)) return NO;
+
+    size_t width = CVPixelBufferGetWidth(sourceBuffer);
+    OSType format = CVPixelBufferGetPixelFormatType(sourceBuffer);
+    if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
+
+    IOSurfaceRef sourceSurface = CVPixelBufferGetIOSurface(sourceBuffer);
+    IOSurfaceRef destinationSurface =
+        CVPixelBufferGetIOSurface(destinationBuffer);
+    BOOL sourceSurfaceLocked = sourceSurface != NULL &&
+        IOSurfaceLock(sourceSurface, 1, NULL) == 0;
+    CVReturn sourceStatus = sourceSurfaceLocked ? kCVReturnSuccess
+        : CVPixelBufferLockBaseAddress(
+            sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    if (sourceStatus != kCVReturnSuccess) return NO;
+
+    BOOL destinationSurfaceLocked = destinationSurface != NULL &&
+        IOSurfaceLock(destinationSurface, 0, NULL) == 0;
+    CVReturn destinationStatus = destinationSurfaceLocked ? kCVReturnSuccess
+        : CVPixelBufferLockBaseAddress(destinationBuffer, 0);
+    if (destinationStatus != kCVReturnSuccess) {
+        if (sourceSurfaceLocked) IOSurfaceUnlock(sourceSurface, 1, NULL);
+        else CVPixelBufferUnlockBaseAddress(
+            sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+
+    BOOL copied = YES;
+    for (size_t plane = 0; plane < 2; plane++) {
+        const uint8_t *sourceBase = sourceSurfaceLocked
+            ? IOSurfaceGetBaseAddressOfPlane(sourceSurface, plane)
+            : CVPixelBufferGetBaseAddressOfPlane(sourceBuffer, plane);
+        uint8_t *destinationBase = destinationSurfaceLocked
+            ? IOSurfaceGetBaseAddressOfPlane(destinationSurface, plane)
+            : CVPixelBufferGetBaseAddressOfPlane(destinationBuffer, plane);
+        size_t sourceStride = sourceSurfaceLocked
+            ? IOSurfaceGetBytesPerRowOfPlane(sourceSurface, plane)
+            : CVPixelBufferGetBytesPerRowOfPlane(sourceBuffer, plane);
+        size_t destinationStride = destinationSurfaceLocked
+            ? IOSurfaceGetBytesPerRowOfPlane(destinationSurface, plane)
+            : CVPixelBufferGetBytesPerRowOfPlane(destinationBuffer, plane);
+        size_t rows = CVPixelBufferGetHeightOfPlane(sourceBuffer, plane);
+        size_t destinationRows =
+            CVPixelBufferGetHeightOfPlane(destinationBuffer, plane);
+        if (sourceBase == NULL || destinationBase == NULL ||
+            rows != destinationRows || sourceStride < width ||
+            destinationStride < width) {
+            copied = NO;
+            break;
+        }
+        for (size_t row = 0; row < rows; row++) {
+            memcpy(destinationBase + row * destinationStride,
+                   sourceBase + row * sourceStride, width);
+        }
+    }
+
+    if (destinationSurfaceLocked) {
+        IOSurfaceUnlock(destinationSurface, 0, NULL);
+    } else {
+        CVPixelBufferUnlockBaseAddress(destinationBuffer, 0);
+    }
+    if (sourceSurfaceLocked) {
+        IOSurfaceUnlock(sourceSurface, 1, NULL);
+    } else {
+        CVPixelBufferUnlockBaseAddress(
+            sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    }
+    if (copied) VCAMSetStandardColorAttachments(destinationBuffer);
+    return copied;
+}
+
+static void VCAMInvalidatePreviewCache(void) {
+    if (VCAMPreviewCacheLock == nil) return;
+    [VCAMPreviewCacheLock lock];
+    if (VCAMPreviewCacheBuffer != NULL) {
+        CVPixelBufferRelease(VCAMPreviewCacheBuffer);
+        VCAMPreviewCacheBuffer = NULL;
+    }
+    VCAMPreviewCacheSequence = 0;
+    VCAMPreviewCacheGeneration = 0;
+    VCAMPreviewCacheWidth = 0;
+    VCAMPreviewCacheHeight = 0;
+    VCAMPreviewCacheFormat = 0;
+    [VCAMPreviewCacheLock unlock];
+}
+
+static BOOL VCAMPreviewCacheCanReuse(
+    VCAMFramePresentation presentation, BOOL planarTarget,
+    VCAMSharedFrameMetadata metadata, size_t targetWidth,
+    size_t targetHeight, OSType targetFormat) {
+    return VCAMRuntimeSupportsPreviewCache() &&
+        presentation == VCAMFramePresentationCameraPreviewFit &&
+        planarTarget && metadata.sequence != 0 &&
+        metadata.surfaceGeneration != 0 &&
+        metadata.surfaceSlotCount == 1 &&
+        VCAMPreviewCacheBuffer != NULL &&
+        VCAMPreviewCacheSequence == metadata.sequence &&
+        VCAMPreviewCacheGeneration == metadata.surfaceGeneration &&
+        VCAMPreviewCacheWidth == targetWidth &&
+        VCAMPreviewCacheHeight == targetHeight &&
+        VCAMPreviewCacheFormat == targetFormat;
+}
+
+static BOOL VCAMCopyPreviewCacheIntoTarget(
+    CVPixelBufferRef targetBuffer, VCAMFramePresentation presentation,
+    BOOL planarTarget, VCAMSharedFrameMetadata metadata, size_t targetWidth,
+    size_t targetHeight, OSType targetFormat) {
+    if (VCAMPreviewCacheLock == nil) return NO;
+    [VCAMPreviewCacheLock lock];
+    BOOL copied = VCAMPreviewCacheCanReuse(
+        presentation, planarTarget, metadata, targetWidth, targetHeight,
+        targetFormat) &&
+        VCAMCopyPlanarPixels(VCAMPreviewCacheBuffer, targetBuffer);
+    [VCAMPreviewCacheLock unlock];
+    return copied;
+}
+
+static void VCAMRememberPreviewTarget(
+    CVPixelBufferRef targetBuffer, VCAMFramePresentation presentation,
+    BOOL planarTarget, VCAMSharedFrameMetadata metadata, size_t targetWidth,
+    size_t targetHeight, OSType targetFormat) {
+    if (!VCAMRuntimeSupportsPreviewCache() ||
+        presentation != VCAMFramePresentationCameraPreviewFit ||
+        !planarTarget || metadata.sequence == 0 ||
+        metadata.surfaceGeneration == 0 || metadata.surfaceSlotCount != 1 ||
+        VCAMPreviewCacheLock == nil) return;
+
+    CVPixelBufferRef candidate = NULL;
+    CVReturn status = CVPixelBufferCreate(
+        kCFAllocatorDefault, targetWidth, targetHeight, targetFormat,
+        NULL, &candidate);
+    if (status != kCVReturnSuccess || candidate == NULL ||
+        !VCAMCopyPlanarPixels(targetBuffer, candidate)) {
+        if (candidate != NULL) CVPixelBufferRelease(candidate);
+        return;
+    }
+
+    [VCAMPreviewCacheLock lock];
+    if (VCAMPreviewCacheBuffer != NULL) {
+        CVPixelBufferRelease(VCAMPreviewCacheBuffer);
+    }
+    VCAMPreviewCacheBuffer = candidate;
+    VCAMPreviewCacheSequence = metadata.sequence;
+    VCAMPreviewCacheGeneration = metadata.surfaceGeneration;
+    VCAMPreviewCacheWidth = targetWidth;
+    VCAMPreviewCacheHeight = targetHeight;
+    VCAMPreviewCacheFormat = targetFormat;
+    [VCAMPreviewCacheLock unlock];
 }
 
 static void VCAMMergeGraphAttachments(CVPixelBufferRef sourceBuffer,
@@ -1424,6 +1644,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     BOOL readerLocked = NO;
     BOOL usingMmapBootstrap = NO;
     BOOL rendered = NO;
+    BOOL previewCacheEligible = NO;
+    CFAbsoluteTime previewCallStarted = CFAbsoluteTimeGetCurrent();
     uint64_t debug6F2CFallbackState = 0;
     uint64_t debug6F2CSurfaceRGB = 0;
     uint64_t debug6F2CMmapRGB = 0;
@@ -1460,6 +1682,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMSharedSurfaceFrameRelease(&VCAMLastSurfaceFrame);
             VCAMAdoptedSurfaceGeneration = 0;
             VCAMLegacyMmapCutoffNanoseconds = 0;
+            VCAMInvalidatePreviewCache();
             return NO;
         }
         BOOL surfaceCopied = VCAMSharedSurfaceReaderCopyLatest(
@@ -1715,6 +1938,26 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         [VCAMReaderLock unlock];
         readerLocked = NO;
 
+        previewCacheEligible = copied && VCAMRuntimeSupportsPreviewCache() &&
+            presentation == VCAMFramePresentationCameraPreviewFit &&
+            planarTarget && metadata.sequence != 0 &&
+            metadata.surfaceGeneration != 0 && metadata.surfaceSlotCount == 1;
+        if (previewCacheEligible && VCAMCopyPreviewCacheIntoTarget(
+                targetBuffer, presentation, planarTarget, metadata,
+                targetWidth, targetHeight, targetFormat)) {
+            elapsed = CFAbsoluteTimeGetCurrent() - previewCallStarted;
+            if (publishPixelDiagnostics) {
+                VCAMDebug6F2CPublishRGBGateDiagnostics(
+                    debug6F2CFallbackState, debug6F2CSurfaceRGB,
+                    debug6F2CMmapRGB, debug6F2CSurfaceGeneration,
+                    debug6F2CMmapGeneration, debug6F2CSourceState);
+                VCAMPublishPixelDiagnostics(scratch, targetBuffer, targetBuffer);
+            }
+            notify_post("com.codex.vcam.ios18.rendered");
+            VCAMRecordPreviewPerformance(YES, NO, elapsed * 1000.0);
+            return YES;
+        }
+
         CVPixelBufferRef renderBuffer = targetBuffer;
         size_t renderWidth = targetWidth;
         size_t renderHeight = targetHeight;
@@ -1843,6 +2086,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     stagingBuffer, targetBuffer, compressedReplacementBuffer)
                 : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
                     stagingBuffer, targetBuffer)));
+        if (rendered && previewCacheEligible) {
+            VCAMRememberPreviewTarget(
+                targetBuffer, presentation, planarTarget, metadata,
+                targetWidth, targetHeight, targetFormat);
+        }
         if (rendered && publishPixelDiagnostics) {
             VCAMDebug6F2CPublishRGBGateDiagnostics(
                 debug6F2CFallbackState, debug6F2CSurfaceRGB,
@@ -1896,6 +2144,12 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         *replacementBufferOut == NULL) {
         rendered = VCAMCopyLastCompressedVirtualFrame(
             targetBuffer, replacementBufferOut);
+    }
+
+    if (previewCacheEligible) {
+        VCAMRecordPreviewPerformance(
+            NO, rendered,
+            (CFAbsoluteTimeGetCurrent() - previewCallStarted) * 1000.0);
     }
 
     if (rendered) {

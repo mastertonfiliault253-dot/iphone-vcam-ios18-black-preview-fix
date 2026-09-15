@@ -253,6 +253,51 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("imageWithCVPixelBuffer:ciSourceBuffer", image_section)
         self.assertNotIn("imageWithCVPixelBuffer:scratch", image_section)
 
+    def test_camera_preview_reuses_only_an_exact_unchanged_render(self) -> None:
+        # The stock Camera preview can request the same immutable source at
+        # ~20 fps. Reuse is safe only for the exact source generation/sequence
+        # and negotiated output; WebKit, photo, recording and compressed paths
+        # must continue through their existing render code.
+        self.assertIn("VCAMPreviewCacheLock", self.implementation)
+        self.assertIn("VCAMPreviewCacheCanReuse", self.implementation)
+        cache_gate = self.implementation.split(
+            "static BOOL VCAMPreviewCacheCanReuse", 1
+        )[1].split("static BOOL VCAMCopyPreviewCacheIntoTarget", 1)[0]
+        for key_part in (
+            "metadata.sequence",
+            "metadata.surfaceGeneration",
+            "metadata.surfaceSlotCount == 1",
+            "targetWidth",
+            "targetHeight",
+            "targetFormat",
+        ):
+            self.assertIn(key_part, cache_gate)
+        self.assertIn("VCAMFramePresentationCameraPreviewFit", cache_gate)
+        self.assertIn("planarTarget", cache_gate)
+        self.assertIn("VCAMRuntimeSupportsPreviewCache()", cache_gate)
+        self.assertNotIn("VCAMFramePresentationWebKitFill", cache_gate)
+        self.assertNotIn("VCAMFramePresentationStillPhotoFill", cache_gate)
+
+        cache_copy = self.implementation.split(
+            "static BOOL VCAMCopyPreviewCacheIntoTarget", 1
+        )[1].split("static void VCAMRememberPreviewTarget", 1)[0]
+        self.assertIn("VCAMCopyPlanarPixels", cache_copy)
+        self.assertNotIn("VTPixelTransferSessionTransferImage", cache_copy)
+
+        shared = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "metadata->surfaceSlotCount = reader->header->slotCount", shared
+        )
+
+        draw = self.implementation.split("BOOL drawReplacementOntoBuffer", 1)[1]
+        cache_lookup = draw.index("VCAMCopyPreviewCacheIntoTarget")
+        core_image = draw.index("CIImage *image =")
+        self.assertLess(cache_lookup, core_image)
+        self.assertIn("VCAMInvalidatePreviewCache();", draw)
+        self.assertIn("preview replacement performance window", self.implementation)
+
     def test_black_surface_fallback_uses_cpu_readable_mmap_bootstrap(self) -> None:
         # The mmap bootstrap is already local data; putting it through another
         # IOSurface-backed pool can reproduce iOS 18's black CPU mapping.

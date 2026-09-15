@@ -48,6 +48,8 @@ typedef struct {
     /// stay the real transfer function. See VCAMSharedFrameDecodeHardware.
     uint32_t transferFunction;
     uint32_t yCbCrMatrix;
+    /// Zero for mmap; one identifies an immutable IOSurface source.
+    uint32_t surfaceSlotCount;
 } VCAMSharedFrameMetadata;
 
 /// A retained, cross-process IOSurface frame. Release it with

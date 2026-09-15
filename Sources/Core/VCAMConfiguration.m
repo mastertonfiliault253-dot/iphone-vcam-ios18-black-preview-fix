@@ -208,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.98+ios18-preview-governor";
+    return "com.codex.vcam/0.8.99+ios18-preview-cache";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
