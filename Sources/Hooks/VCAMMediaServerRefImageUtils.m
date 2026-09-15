@@ -1102,7 +1102,7 @@ static BOOL VCAMPreviewCacheCanReuse(
         presentation == VCAMFramePresentationCameraPreviewFit &&
         planarTarget && metadata.sequence != 0 &&
         metadata.surfaceGeneration != 0 &&
-        metadata.surfaceSlotCount == 1 &&
+        metadata.surfaceSlotCount <= 1 &&
         VCAMPreviewCacheBuffer != NULL &&
         VCAMPreviewCacheSequence == metadata.sequence &&
         VCAMPreviewCacheGeneration == metadata.surfaceGeneration &&
@@ -1132,7 +1132,7 @@ static void VCAMRememberPreviewTarget(
     if (!VCAMRuntimeSupportsPreviewCache() ||
         presentation != VCAMFramePresentationCameraPreviewFit ||
         !planarTarget || metadata.sequence == 0 ||
-        metadata.surfaceGeneration == 0 || metadata.surfaceSlotCount != 1 ||
+        metadata.surfaceGeneration == 0 || metadata.surfaceSlotCount > 1 ||
         VCAMPreviewCacheLock == nil) return;
 
     CVPixelBufferRef candidate = NULL;
@@ -1941,7 +1941,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         previewCacheEligible = copied && VCAMRuntimeSupportsPreviewCache() &&
             presentation == VCAMFramePresentationCameraPreviewFit &&
             planarTarget && metadata.sequence != 0 &&
-            metadata.surfaceGeneration != 0 && metadata.surfaceSlotCount == 1;
+            metadata.surfaceGeneration != 0 && metadata.surfaceSlotCount <= 1;
         if (previewCacheEligible && VCAMCopyPreviewCacheIntoTarget(
                 targetBuffer, presentation, planarTarget, metadata,
                 targetWidth, targetHeight, targetFormat)) {

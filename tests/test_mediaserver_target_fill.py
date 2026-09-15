@@ -254,10 +254,12 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertNotIn("imageWithCVPixelBuffer:scratch", image_section)
 
     def test_camera_preview_reuses_only_an_exact_unchanged_render(self) -> None:
-        # The stock Camera preview can request the same immutable source at
-        # ~20 fps. Reuse is safe only for the exact source generation/sequence
-        # and negotiated output; WebKit, photo, recording and compressed paths
-        # must continue through their existing render code.
+        # The stock Camera preview can request the same source at ~20 fps.
+        # iOS 18 may expose that source through either a one-slot IOSurface or
+        # the mmap compatibility transport (surfaceSlotCount == 0). Reuse is
+        # safe only for the exact source generation/sequence and negotiated
+        # output; WebKit, photo, recording and compressed paths must continue
+        # through their existing render code.
         self.assertIn("VCAMPreviewCacheLock", self.implementation)
         self.assertIn("VCAMPreviewCacheCanReuse", self.implementation)
         cache_gate = self.implementation.split(
@@ -266,7 +268,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         for key_part in (
             "metadata.sequence",
             "metadata.surfaceGeneration",
-            "metadata.surfaceSlotCount == 1",
+            "metadata.surfaceSlotCount <= 1",
             "targetWidth",
             "targetHeight",
             "targetFormat",
@@ -290,6 +292,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn(
             "metadata->surfaceSlotCount = reader->header->slotCount", shared
         )
+        self.assertIn("metadata->surfaceSlotCount = 0", shared)
 
         draw = self.implementation.split("BOOL drawReplacementOntoBuffer", 1)[1]
         cache_lookup = draw.index("VCAMCopyPreviewCacheIntoTarget")
