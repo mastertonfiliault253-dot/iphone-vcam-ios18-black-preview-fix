@@ -282,6 +282,35 @@ class PackagingArchitectureTests(unittest.TestCase):
             postinst,
         )
 
+    def test_cameracaptured_reference_log_uses_and_resets_allowed_path(self) -> None:
+        implementation = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(
+            encoding="utf-8"
+        )
+        reference_log = (
+            "/var/mobile/Library/VirtualCaptureCard/VCAM/vcam-ref.log"
+        )
+        candidates = implementation.split(
+            "static const char *candidatePaths[] = {", 1
+        )[1].split("};", 1)[0]
+        first_candidate = next(
+            line.strip().removesuffix(",")
+            for line in candidates.splitlines()
+            if line.strip().startswith('"')
+        )
+
+        self.assertEqual(first_candidate, f'"{reference_log}"')
+        self.assertIn(f"vcam_ref_log={reference_log}", postinst)
+        self.assertIn(': > "$vcam_ref_log"', postinst)
+        self.assertIn('chown mobile:mobile "$vcam_ref_log"', postinst)
+        self.assertIn('chmod 0600 "$vcam_ref_log"', postinst)
+        self.assertLess(
+            postinst.index(': > "$vcam_ref_log"'),
+            postinst.index("killall -9 SpringBoard cameracaptured"),
+        )
+
     def test_worker_hides_source_selection_and_publication(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(encoding="utf-8")
         main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(encoding="utf-8")

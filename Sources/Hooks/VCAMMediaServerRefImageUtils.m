@@ -754,9 +754,11 @@ void VCAMRefLog(const char *message) {
     snprintf(line, sizeof(line), "[%d][start=%llu][%s.%03d] %s\n", getpid(),
              (unsigned long long)processStartToken, stamp,
              (int)(value.tv_usec / 1000), message != NULL ? message : "(null)");
-    // cameracaptured sandbox blocks /var/tmp; try several writable candidates
-    // in order so the iOS18 daemon can emit its signature/proof log.
+    // iOS 18 cameracaptured explicitly grants its home-relative
+    // /Library/VirtualCaptureCard directory. Prefer the package-owned child
+    // there so signature/proof logs survive the daemon sandbox.
     static const char *candidatePaths[] = {
+        "/var/mobile/Library/VirtualCaptureCard/VCAM/vcam-ref.log",
         "/var/mobile/Media/VCAM/vcam-ref.log",
         "/var/mobile/Library/Caches/vcam-ref.log",
         "/var/log/vcam-ref.log",
