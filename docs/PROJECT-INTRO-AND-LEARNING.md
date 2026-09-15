@@ -72,7 +72,7 @@ flowchart LR
 | `camera-source-video` | `BWMultiStreamCameraSourceNode` 的 `VideoCapture` 输出 | SmartCam/分析、上游虚拟化 |
 | `video-converter` | `BWPixelTransferNode` 的 `Video Data Converter/Scaler/Zoomer`、`Rotator/Zoomer` | Safari/WebRTC、第三方 VideoDataOutput |
 | `camera-preview` | `BWPixelTransferNode` 的 `Preview Scaler` | 系统 Camera 预览 |
-| `video-recording` | `BWPixelTransferNode` 的 `Movie File Zoomer` | 系统录像 |
+| `video-recording` | `BWPixelTransferNode` 的 `Movie File Zoomer`；iOS 18 以前保留 `Movie File Frame Rate Governor` 兼容回退 | 系统录像 |
 | `still-photo` | `BWMeteorHeadroomNode` 的 `Meteor Headroom` | 拍照编码前最后一级 |
 
 安全策略：

@@ -879,6 +879,17 @@ static BOOL VCAMOutputIsKnownInternalGraphStage(NSString *nodeClass,
         VCAMStringMatches(nodeClass, @"BWMetadataDetectorGatingNode");
 }
 
+static BOOL VCAMOperatingSystemIsAtLeast18(void) {
+    static dispatch_once_t onceToken;
+    static BOOL isAtLeast18 = NO;
+    dispatch_once(&onceToken, ^{
+        NSOperatingSystemVersion version =
+            NSProcessInfo.processInfo.operatingSystemVersion;
+        isAtLeast18 = version.majorVersion >= 18;
+    });
+    return isAtLeast18;
+}
+
 static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
                                                             CVPixelBufferRef pixelBuffer) {
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
@@ -930,12 +941,20 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         }
     }
 
-    // iOS 16.1 routes movie frames through this exact 420f governor even when
-    // the older Movie File Zoomer terminal is absent. Treat it as the same
-    // fail-closed recording boundary so the system encoder receives the
-    // virtual raw frame instead of suppressing the entire recording.
+    // iOS 18 also runs this 4:3 governor throughout still-photo preview. If it
+    // is replaced there, its RealtimeFill propagation marker can reach Preview
+    // Scaler and bypass CameraPreviewFit, alternating landscape and portrait
+    // compositions while doing a second full-frame render. The actual iOS 18
+    // recording consumer remains the exact Movie File Zoomer route above.
+    //
+    // iOS 16.1 can use this governor as its final movie boundary when the older
+    // Movie File Zoomer is absent, so retain that fail-closed fallback on every
+    // pre-iOS-18 system for which no prewarm-only trace has been established.
     if (VCAMStringMatches(nodeClass, @"BWFrameRateGovernorNode") &&
         VCAMStringMatches(nodeName, @"Movie File Frame Rate Governor")) {
+        if (VCAMOperatingSystemIsAtLeast18()) {
+            return VCAMReplacementRouteNone;
+        }
         return VCAMReplacementRouteVideoRecording;
     }
 

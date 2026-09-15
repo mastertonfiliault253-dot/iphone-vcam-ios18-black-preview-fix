@@ -155,15 +155,27 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             ),
         )
 
-    def test_ios16_movie_file_governor_is_a_fail_closed_recording_route(self) -> None:
-        self.assertRegex(
+    def test_movie_file_governor_is_version_scoped_between_prewarm_and_recording(self) -> None:
+        version_helper = _between(
+            self.entry,
+            "static BOOL VCAMOperatingSystemIsAtLeast18",
+            "static VCAMReplacementRoute VCAMReplacementRouteForOutput",
+        )
+        self.assertIn("operatingSystemVersion", version_helper)
+        self.assertIn("majorVersion >= 18", version_helper)
+
+        body = _between(
             self.route_function,
-            re.compile(
-                r'VCAMStringMatches\(nodeClass,\s*@"BWFrameRateGovernorNode"\)'
-                r'\s*&&\s*VCAMStringMatches\(nodeName,\s*@"Movie File Frame Rate Governor"\)'
-                r'\s*\)\s*\{\s*return VCAMReplacementRouteVideoRecording;',
-                re.DOTALL,
-            ),
+            'if (VCAMStringMatches(nodeClass, @"BWFrameRateGovernorNode") &&\n'
+            '        VCAMStringMatches(nodeName, @"Movie File Frame Rate Governor")) {',
+            "// Stock Camera still capture reaches this last standard 8-bit pixel stage",
+        )
+        self.assertIn("VCAMOperatingSystemIsAtLeast18()", body)
+        self.assertIn("return VCAMReplacementRouteNone;", body)
+        self.assertIn("return VCAMReplacementRouteVideoRecording;", body)
+        self.assertLess(
+            body.index("return VCAMReplacementRouteNone;"),
+            body.index("return VCAMReplacementRouteVideoRecording;"),
         )
 
     def test_fanout_and_inference_nodes_are_never_direct_replacement_routes(self) -> None:
