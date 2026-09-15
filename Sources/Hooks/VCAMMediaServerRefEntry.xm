@@ -757,13 +757,20 @@ static BOOL VCAMReplacePhotoEncodedSurface(CMSampleBufferRef sampleBuffer) {
 static CFStringRef const VCAMPropagationMarkerKey =
     CFSTR("com.codex.vcam.virtual-frame.v1");
 
+static BOOL VCAMOperatingSystemIsAtLeast18(void);
+
 static BOOL VCAMRouteUsesPropagationMarker(VCAMReplacementRoute route) {
-    // WebKit's terminal converter must redraw from the canonical shared frame.
-    // Passing the upstream marker would preserve pixels that already traversed
-    // the camera source's private compressed buffer.
+    // iOS 16 WebKit must redraw from the canonical shared frame because its
+    // terminal can receive pixels that traversed a private compressed buffer.
+    // On iOS 18 the observed Video Data Converter is itself the final standard
+    // pixel boundary before BWRemoteQueueSinkNode. Mark that rendered result so
+    // the remote sink does not synchronously compose the same dynamic frame a
+    // second time.
     return route == VCAMReplacementRouteCameraSourceVideo ||
         route == VCAMReplacementRouteCameraPreview ||
-        route == VCAMReplacementRouteVideoRecording;
+        route == VCAMReplacementRouteVideoRecording ||
+        (route == VCAMReplacementRouteVideoConverter &&
+         VCAMOperatingSystemIsAtLeast18());
 }
 
 static BOOL VCAMWritePropagationMarker(CMSampleBufferRef sampleBuffer,
@@ -977,6 +984,16 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         return VCAMReplacementRoutePhotoEncoder;
     }
 
+    // iOS 18 front-camera traces place this node immediately before the
+    // explicitly routed Video Data Converter/Zoomer. It is a graph-processing
+    // stage, not a consumer boundary; replacing both outputs rendered every
+    // dynamic frame twice before the remote queue saw it.
+    if (VCAMOperatingSystemIsAtLeast18() &&
+        VCAMStringMatches(nodeClass, @"BWBackgroundBlurNode") &&
+        VCAMStringMatches(nodeName, @"BWBackgroundBlurNode")) {
+        return VCAMReplacementRouteNone;
+    }
+
     if (VCAMOutputIsKnownInternalGraphStage(nodeClass, nodeName, outputName)) {
         return VCAMReplacementRouteNone;
     }
@@ -1086,12 +1103,11 @@ static BOOL VCAMReplaceSampleBufferInPlace(
     if (replacementBuffer != NULL) CVPixelBufferRelease(replacementBuffer);
     if (!inPlace) return NO;
 
-    if (route == VCAMReplacementRouteCameraSourceVideo ||
-        route == VCAMReplacementRouteCameraPreview ||
-        route == VCAMReplacementRouteVideoRecording) {
+    if (VCAMRouteUsesPropagationMarker(route)) {
         inPlace = VCAMWritePropagationMarker(sampleBuffer, imageBuffer);
     }
-    if (inPlace && route == VCAMReplacementRouteVideoConverter) {
+    if (inPlace && route == VCAMReplacementRouteVideoConverter &&
+        !VCAMOperatingSystemIsAtLeast18()) {
         VCAMClearPropagationMarker(sampleBuffer, imageBuffer);
     }
     if (inPlace && route == VCAMReplacementRoutePhotoEncoder) {
@@ -1203,9 +1219,28 @@ static BOOL VCAMReplaceSampleBufferInPlace(
             VCAMRefLog(message);
         }
         if (VCAMVirtualModeIsEnabled()) {
-            BOOL replaced = VCAMReplaceSampleBufferInPlace(
-                sampleBuffer, VCAMFramePresentationCameraPreviewFit,
-                VCAMReplacementRouteCameraPreview);
+            CVPixelBufferRef imageBuffer =
+                CMSampleBufferGetImageBuffer(sampleBuffer);
+            BOOL propagatedReplacement =
+                VCAMOperatingSystemIsAtLeast18() &&
+                VCAMSampleHasMatchingPropagationMarker(
+                    sampleBuffer, imageBuffer);
+            if (propagatedReplacement) {
+                static volatile int propagatedRemoteSamples = 0;
+                int propagatedCount = __sync_add_and_fetch(
+                    &propagatedRemoteSamples, 1);
+                if (propagatedCount <= 8 || propagatedCount % 300 == 0) {
+                    char message[144] = {0};
+                    snprintf(message, sizeof(message),
+                             "passing propagated remote queue virtual frame count=%d",
+                             propagatedCount);
+                    VCAMRefLog(message);
+                }
+            }
+            BOOL replaced = propagatedReplacement ||
+                VCAMReplaceSampleBufferInPlace(
+                    sampleBuffer, VCAMFramePresentationCameraPreviewFit,
+                    VCAMReplacementRouteCameraPreview);
             if (!replaced) {
                 VCAMRefLog("suppressing remote queue real sample after replacement failure");
                 return;

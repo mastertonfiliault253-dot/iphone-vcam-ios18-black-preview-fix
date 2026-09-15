@@ -229,13 +229,10 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "// SumUp's final still encoder",
         )
         self.assertIn("VCAMCopyReplacementBufferIntoTarget", in_place)
-        self.assertRegex(
+        self.assertIn("VCAMRouteUsesPropagationMarker(route)", in_place)
+        self.assertIn(
+            "VCAMWritePropagationMarker(sampleBuffer, imageBuffer)",
             in_place,
-            re.compile(
-                r'if\s*\(route\s*==\s*VCAMReplacementRouteCameraSourceVideo'
-                r'.*?VCAMWritePropagationMarker\(sampleBuffer,\s*imageBuffer\)',
-                re.DOTALL,
-            ),
         )
 
     def test_source_marker_uses_the_original_sample_without_a_clone(self) -> None:
@@ -345,13 +342,20 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         )
         self.assertIn("VCAMWritePropagationMarker(sampleBuffer, imageBuffer)", in_place)
 
-    def test_webkit_terminal_rerenders_from_uncompressed_shared_frame(self) -> None:
+    def test_webkit_terminal_propagates_only_on_ios18(self) -> None:
         route_helper = _between(
             self.entry,
             "static BOOL VCAMRouteUsesPropagationMarker",
             "static BOOL VCAMWritePropagationMarker",
         )
-        self.assertNotIn("VCAMReplacementRouteVideoConverter", route_helper)
+        self.assertRegex(
+            route_helper,
+            re.compile(
+                r"route == VCAMReplacementRouteVideoConverter\s*&&\s*"
+                r"VCAMOperatingSystemIsAtLeast18\(\)",
+                re.DOTALL,
+            ),
+        )
         self.assertIn("VCAMReplacementRouteCameraPreview", route_helper)
         self.assertIn("VCAMReplacementRouteVideoRecording", route_helper)
         in_place = _between(
@@ -360,7 +364,18 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "// SumUp's final still encoder",
         )
         self.assertIn("VCAMPresentationForReplacementRoute(replacementRoute)", self.entry)
+        self.assertIn("VCAMRouteUsesPropagationMarker(route)", in_place)
         self.assertIn("VCAMClearPropagationMarker", in_place)
+
+    def test_ios18_background_blur_is_a_known_preterminal_stage(self) -> None:
+        routing = _between(
+            self.entry,
+            "static VCAMReplacementRoute VCAMReplacementRouteForOutput",
+            "static void VCAMLogOutputSignature",
+        )
+        self.assertIn("BWBackgroundBlurNode", routing)
+        background_gate = routing.split("BWBackgroundBlurNode", 1)[0].rsplit("if (", 1)[1]
+        self.assertIn("VCAMOperatingSystemIsAtLeast18()", background_gate)
 
     def test_marked_recording_frame_reaches_system_encoder_without_second_guard(self) -> None:
         fast_path = _between(
@@ -415,6 +430,9 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn("VCAMReplaceSampleBufferInPlace", remote_sink)
         self.assertIn("VCAMFramePresentationCameraPreviewFit", remote_sink)
         self.assertIn("VCAMVirtualModeIsEnabled", remote_sink)
+        self.assertIn("VCAMSampleHasMatchingPropagationMarker", remote_sink)
+        self.assertIn("VCAMOperatingSystemIsAtLeast18()", remote_sink)
+        self.assertIn("passing propagated remote queue virtual frame", remote_sink)
         self.assertIn("suppressing remote queue real sample", remote_sink)
         self.assertIn("return;", remote_sink)
 

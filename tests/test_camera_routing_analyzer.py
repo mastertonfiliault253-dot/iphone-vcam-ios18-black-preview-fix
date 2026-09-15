@@ -78,7 +78,9 @@ class CameraRoutingAnalyzerTests(unittest.TestCase):
         self.assertIn("failures=none", result.stdout)
         self.assertIn("route_counts=4:2", result.stdout)
 
-    def test_preview_listener_selects_requested_pid_from_multiple_sessions(self) -> None:
+    def test_preview_listener_selects_requested_pid_from_multiple_sessions(
+        self,
+    ) -> None:
         result = run_analyzer(
             "production identity pid=24062 start=1 ctor=1\n"
             "production replacement-count=1 route=4\n"
@@ -145,6 +147,41 @@ class CameraRoutingAnalyzerTests(unittest.TestCase):
         self.assertIn("preview_fps=20.00", result.stdout)
         self.assertIn("estimated_processing_duty=0.800", result.stdout)
         self.assertIn("excessive-preview-processing-duty", result.stdout)
+
+    def test_reports_duplicate_dynamic_stream_rendering_as_red(self) -> None:
+        result = run_analyzer(
+            "[24940][start=3][18:22:49.980] output signature output=0x1 outputClass=BWNodeOutput outputName=(none) node=0x2 nodeClass=BWBackgroundBlurNode nodeName=BWBackgroundBlurNode size=1920x1080 pixel=420v/34323076 subtype=420v/34323076 planes=2 data=0 supported=1 allowed=1 route=universal-video\n"
+            "[24940][start=3][18:22:50.032] output signature output=0x3 outputClass=BWNodeOutput outputName=(none) node=0x4 nodeClass=BWPixelTransferNode nodeName=Video Data Converter/Zoomer size=1920x1080 pixel=420f/34323066 subtype=420f/34323066 planes=2 data=0 supported=1 allowed=1 route=video-converter\n"
+            "[24940][start=3][18:22:54.000] replacement render window count=120 p50Ms=30.00 p95Ms=35.00 maxMs=40.00\n"
+            "[24940][start=3][18:22:56.000] replacement render window count=120 p50Ms=30.00 p95Ms=35.00 maxMs=40.00\n",
+            "--stream-performance",
+            "--production-pid",
+            "24940",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("VCAM_STREAM_PERFORMANCE=RED", result.stdout)
+        self.assertIn("excessive-stream-render-rate", result.stdout)
+        self.assertIn("excessive-stream-processing-duty", result.stdout)
+        self.assertIn("remote-propagation-fast-path-missing", result.stdout)
+        self.assertIn("known-preterminal-rendered", result.stdout)
+        self.assertIn("max_render_rate_fps=60.00", result.stdout)
+        self.assertIn("max_estimated_processing_duty=1.800", result.stdout)
+
+    def test_accepts_one_terminal_dynamic_stream_render(self) -> None:
+        result = run_analyzer(
+            "[30001][start=4][10:00:00.000] output signature output=0x1 outputClass=BWNodeOutput outputName=(none) node=0x2 nodeClass=BWPixelTransferNode nodeName=Video Data Converter/Zoomer size=1920x1080 pixel=420f/34323066 subtype=420f/34323066 planes=2 data=0 supported=1 allowed=1 route=video-converter\n"
+            "[30001][start=4][10:00:04.000] replacement render window count=120 p50Ms=20.00 p95Ms=25.00 maxMs=30.00\n"
+            "[30001][start=4][10:00:08.000] replacement render window count=120 p50Ms=20.00 p95Ms=25.00 maxMs=30.00\n"
+            "[30001][start=4][10:00:08.010] passing propagated remote queue virtual frame count=120\n",
+            "--stream-performance",
+            "--production-pid",
+            "30001",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("VCAM_STREAM_PERFORMANCE=GREEN", result.stdout)
+        self.assertIn("failures=none", result.stdout)
+        self.assertIn("max_render_rate_fps=30.00", result.stdout)
+        self.assertIn("max_estimated_processing_duty=0.600", result.stdout)
 
 
 if __name__ == "__main__":

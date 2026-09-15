@@ -986,7 +986,7 @@ static void VCAMSetStandardColorAttachments(CVPixelBufferRef buffer) {
                           kCVAttachmentMode_ShouldPropagate);
 }
 
-static BOOL VCAMRuntimeSupportsPreviewCache(void) {
+static BOOL VCAMRuntimeIsAtLeastIOS18(void) {
     static dispatch_once_t onceToken;
     static BOOL supported = NO;
     dispatch_once(&onceToken, ^{
@@ -1098,7 +1098,7 @@ static BOOL VCAMPreviewCacheCanReuse(
     VCAMFramePresentation presentation, BOOL planarTarget,
     VCAMSharedFrameMetadata metadata, size_t targetWidth,
     size_t targetHeight, OSType targetFormat) {
-    return VCAMRuntimeSupportsPreviewCache() &&
+    return VCAMRuntimeIsAtLeastIOS18() &&
         presentation == VCAMFramePresentationCameraPreviewFit &&
         planarTarget && metadata.sequence != 0 &&
         metadata.surfaceGeneration != 0 &&
@@ -1129,7 +1129,7 @@ static void VCAMRememberPreviewTarget(
     CVPixelBufferRef targetBuffer, VCAMFramePresentation presentation,
     BOOL planarTarget, VCAMSharedFrameMetadata metadata, size_t targetWidth,
     size_t targetHeight, OSType targetFormat) {
-    if (!VCAMRuntimeSupportsPreviewCache() ||
+    if (!VCAMRuntimeIsAtLeastIOS18() ||
         presentation != VCAMFramePresentationCameraPreviewFit ||
         !planarTarget || metadata.sequence == 0 ||
         metadata.surfaceGeneration == 0 || metadata.surfaceSlotCount > 1 ||
@@ -1938,7 +1938,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         [VCAMReaderLock unlock];
         readerLocked = NO;
 
-        previewCacheEligible = copied && VCAMRuntimeSupportsPreviewCache() &&
+        previewCacheEligible = copied && VCAMRuntimeIsAtLeastIOS18() &&
             presentation == VCAMFramePresentationCameraPreviewFit &&
             planarTarget && metadata.sequence != 0 &&
             metadata.surfaceGeneration != 0 && metadata.surfaceSlotCount <= 1;
@@ -2025,9 +2025,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // pixel basis and then applies the camera graph's portrait display
         // transform. Device A/B showed that canonical portrait pixels which
         // are already upright in Camera therefore appear 90 degrees clockwise
-        // in WebKit. Pre-rotate only that explicit terminal route; target
-        // dimensions alone are never used to identify a browser consumer.
+        // in WebKit. Pre-rotate only that explicit terminal route on pre-iOS-18;
+        // iOS 18 displays the canonical orientation directly. Target dimensions
+        // alone are never used to identify a browser consumer.
         if (webKitLandscapeStorage && sourceIsPortrait &&
+            !VCAMRuntimeIsAtLeastIOS18() &&
             targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
         }

@@ -17,12 +17,21 @@ PRODUCTION_IDENTITY_RE = re.compile(
 PRODUCTION_ROUTE_RE = re.compile(
     r"production replacement-count=(?P<count>\d+) route=(?P<route>\d+)"
 )
-REF_PREFIX_RE = re.compile(r"^\[(?P<pid>\d+)\]\[start=[^]]+\]\[(?P<time>\d\d:\d\d:\d\d\.\d{3})\] (?P<message>.*)$")
+REF_PREFIX_RE = re.compile(
+    r"^\[(?P<pid>\d+)\]\[start=[^]]+\]\[(?P<time>\d\d:\d\d:\d\d\.\d{3})\] (?P<message>.*)$"
+)
 PREVIEW_EMIT_RE = re.compile(
     r"emitSampleBuffer video count=(?P<count>\d+).*route=camera-preview"
 )
 RENDER_WINDOW_RE = re.compile(
     r"replacement render window count=120 p50Ms=(?P<p50>[0-9.]+)"
+)
+OUTPUT_SIGNATURE_RE = re.compile(
+    r"output signature .*nodeClass=(?P<node_class>\S+) "
+    r"nodeName=(?P<node_name>.*?) size=.*route=(?P<route>\S+)"
+)
+REMOTE_PROPAGATION_RE = re.compile(
+    r"passing propagated remote queue virtual frame count=(?P<count>\d+)"
 )
 PREVIEW_PERFORMANCE_RE = re.compile(
     r"preview replacement performance window count=(?P<count>\d+) "
@@ -127,9 +136,8 @@ def analyze_preview_performance(
 
     cache_ratio = cache_hits / performance_calls if performance_calls else 0.0
     repeated_static_sequence = (
-        (len(source_sequences) >= 2 and len(set(source_sequences)) == 1)
-        or cache_hits > 0
-    )
+        len(source_sequences) >= 2 and len(set(source_sequences)) == 1
+    ) or cache_hits > 0
     if expect_static_source:
         if source_sequences and not repeated_static_sequence:
             failures.append("source-sequence-not-static")
@@ -159,6 +167,97 @@ def analyze_preview_performance(
     return 1 if failures else 0
 
 
+def analyze_stream_performance(text: str, production_pid: int | None) -> int:
+    rows: list[tuple[float, str]] = []
+    available_pids: set[int] = set()
+    for line in text.splitlines():
+        match = REF_PREFIX_RE.match(line)
+        if match is None:
+            continue
+        pid = int(match.group("pid"))
+        available_pids.add(pid)
+        if production_pid is None or pid == production_pid:
+            rows.append((_seconds(match.group("time")), match.group("message")))
+
+    failures: list[str] = []
+    if production_pid is not None and production_pid not in available_pids:
+        failures.append("requested-production-camera-session-missing")
+    if not rows:
+        failures.append("stream-reference-telemetry-missing")
+
+    render_windows: list[tuple[float, float]] = []
+    converter_signatures = 0
+    rendered_background_blur_signatures = 0
+    remote_propagation_passes = 0
+    for timestamp, message in rows:
+        if match := RENDER_WINDOW_RE.search(message):
+            render_windows.append((timestamp, float(match.group("p50"))))
+        if match := OUTPUT_SIGNATURE_RE.search(message):
+            if match.group("route") == "video-converter":
+                converter_signatures += 1
+            if (
+                match.group("node_class") == "BWBackgroundBlurNode"
+                and match.group("route") == "universal-video"
+            ):
+                rendered_background_blur_signatures += 1
+        if match := REMOTE_PROPAGATION_RE.search(message):
+            remote_propagation_passes = max(
+                remote_propagation_passes, int(match.group("count"))
+            )
+
+    rates_and_duties: list[tuple[float, float]] = []
+    for (previous_time, _), (timestamp, p50_ms) in zip(
+        render_windows, render_windows[1:]
+    ):
+        elapsed = timestamp - previous_time
+        if elapsed < 0:
+            elapsed += 24 * 60 * 60
+        # Gaps larger than a minute delimit separate user-driven stream bursts.
+        if 0 < elapsed <= 60:
+            render_rate = 120.0 / elapsed
+            rates_and_duties.append((render_rate, render_rate * p50_ms / 1000.0))
+
+    max_render_rate = max((item[0] for item in rates_and_duties), default=0.0)
+    max_processing_duty = max((item[1] for item in rates_and_duties), default=0.0)
+    median_render_p50 = (
+        statistics.median([p50 for _, p50 in render_windows]) if render_windows else 0.0
+    )
+
+    if converter_signatures == 0:
+        failures.append("video-converter-route-missing")
+    if len(render_windows) < 2 or not rates_and_duties:
+        failures.append("stream-processing-timing-missing")
+    if max_render_rate > 35.0:
+        failures.append("excessive-stream-render-rate")
+    if max_processing_duty >= 0.75:
+        failures.append("excessive-stream-processing-duty")
+    if converter_signatures and remote_propagation_passes == 0:
+        failures.append("remote-propagation-fast-path-missing")
+    if rendered_background_blur_signatures:
+        failures.append("known-preterminal-rendered")
+
+    selected_pid = production_pid
+    if selected_pid is None and rows:
+        matching_pids = [
+            int(match.group("pid"))
+            for line in text.splitlines()
+            if (match := REF_PREFIX_RE.match(line)) is not None
+        ]
+        selected_pid = Counter(matching_pids).most_common(1)[0][0]
+
+    print(f"VCAM_STREAM_PERFORMANCE={'RED' if failures else 'GREEN'}")
+    print("failures=" + (",".join(failures) if failures else "none"))
+    print(f"production_pid={selected_pid if selected_pid is not None else 'none'}")
+    print(f"render_windows={len(render_windows)}")
+    print(f"median_render_p50_ms={median_render_p50:.2f}")
+    print(f"max_render_rate_fps={max_render_rate:.2f}")
+    print(f"max_estimated_processing_duty={max_processing_duty:.3f}")
+    print(f"video_converter_signatures={converter_signatures}")
+    print(f"remote_propagation_passes={remote_propagation_passes}")
+    print(f"rendered_background_blur_signatures={rendered_background_blur_signatures}")
+    return 1 if failures else 0
+
+
 def analyze_preview_only_listener(text: str, production_pid: int | None) -> int:
     identities = list(PRODUCTION_IDENTITY_RE.finditer(text))
     if not identities:
@@ -168,12 +267,13 @@ def analyze_preview_only_listener(text: str, production_pid: int | None) -> int:
 
     sessions = []
     for index, identity in enumerate(identities):
-        end = identities[index + 1].start() if index + 1 < len(identities) else len(text)
-        session = text[identity.end():end]
+        end = (
+            identities[index + 1].start() if index + 1 < len(identities) else len(text)
+        )
+        session = text[identity.end() : end]
         pid = int(identity.group("pid"))
         routes = [
-            int(match.group("route"))
-            for match in PRODUCTION_ROUTE_RE.finditer(session)
+            int(match.group("route")) for match in PRODUCTION_ROUTE_RE.finditer(session)
         ]
         if production_pid is None or pid == production_pid:
             sessions.append((len(routes), pid, routes))
@@ -205,9 +305,9 @@ def analyze_preview_only_listener(text: str, production_pid: int | None) -> int:
         previous != current for previous, current in zip(routes, routes[1:])
     )
     transition_rate = total_transitions / max(len(routes) - 1, 1)
-    route_counts = ",".join(
-        f"{route}:{counts[route]}" for route in sorted(counts)
-    ) or "none"
+    route_counts = (
+        ",".join(f"{route}:{counts[route]}" for route in sorted(counts)) or "none"
+    )
 
     print(f"VCAM_CAMERA_PREVIEW_ROUTING={'RED' if failures else 'GREEN'}")
     print("failures=" + (",".join(failures) if failures else "none"))
@@ -244,6 +344,11 @@ def main() -> int:
         action="store_true",
         help="require repeated source frames to use the preview output cache",
     )
+    parser.add_argument(
+        "--stream-performance",
+        action="store_true",
+        help="validate dynamic HLS/RTSP camera-consumer render load",
+    )
     args = parser.parse_args()
 
     text = sys.stdin.read()
@@ -251,6 +356,8 @@ def main() -> int:
         return analyze_preview_performance(
             text, args.production_pid, args.expect_static_source
         )
+    if args.stream_performance:
+        return analyze_stream_performance(text, args.production_pid)
     if args.preview_only_listener:
         return analyze_preview_only_listener(text, args.production_pid)
 

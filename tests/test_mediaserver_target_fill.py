@@ -42,7 +42,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
         self.assertIn("kCGImagePropertyOrientationRight", entry)
 
-    def test_webkit_terminal_alone_uses_landscape_storage_compensation(self) -> None:
+    def test_webkit_landscape_storage_compensation_is_pre_ios18_only(self) -> None:
         # Device A/B: the same canonical portrait source is upright in Camera
         # but appears rotated 90 degrees in Safari's 640x480 video-converter
         # terminal. Only that explicit route may pre-rotate the raw pixels.
@@ -53,6 +53,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
         webkit_adapter = self.adapter.split(
             "if (webKitLandscapeStorage && sourceIsPortrait", 1
         )[1].split("// The producer publishes", 1)[0]
+        self.assertIn("!VCAMRuntimeIsAtLeastIOS18()", webkit_adapter)
         self.assertIn(
             "imageByApplyingOrientation:kCGImagePropertyOrientationLeft",
             webkit_adapter,
@@ -276,7 +277,7 @@ class MediaServerTargetFillTests(unittest.TestCase):
             self.assertIn(key_part, cache_gate)
         self.assertIn("VCAMFramePresentationCameraPreviewFit", cache_gate)
         self.assertIn("planarTarget", cache_gate)
-        self.assertIn("VCAMRuntimeSupportsPreviewCache()", cache_gate)
+        self.assertIn("VCAMRuntimeIsAtLeastIOS18()", cache_gate)
         self.assertNotIn("VCAMFramePresentationWebKitFill", cache_gate)
         self.assertNotIn("VCAMFramePresentationStillPhotoFill", cache_gate)
 
