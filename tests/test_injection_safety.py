@@ -194,8 +194,8 @@ class InjectionSafetyTests(unittest.TestCase):
             "kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange",
             implementation,
         )
-        self.assertNotIn('@"BWFanOutNode"', entry)
-        self.assertNotIn('@"BWInferenceNode"', entry)
+        self.assertNotIn('@"BWFanOutNode"', route_function)
+        self.assertNotIn('@"BWInferenceNode"', route_function)
         self.assertIn('@"BWPhotoEncoderNode"', entry)
         self.assertIn('@"Encoder"', entry)
         self.assertIn("VCAMReplacementRoutePhotoEncoder", entry)

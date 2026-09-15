@@ -852,6 +852,33 @@ static BOOL VCAMSampleHasMatchingPropagationMarker(
         CMTimeCompare(markerTime, presentationTime) == 0;
 }
 
+static BOOL VCAMOutputIsKnownInternalGraphStage(NSString *nodeClass,
+                                                 NSString *nodeName,
+                                                 NSString *outputName) {
+    // These exact iOS 18 stages only fan out, synchronize, analyse or stage a
+    // frame inside cameracaptured. Re-rendering the same canonical image at
+    // every one of them multiplied a single Camera stream into dozens of
+    // synchronous software renders. Consumer boundaries below (Preview Scaler,
+    // video converters, Movie File governor and remote queue sink) remain
+    // fail-closed and still perform the replacement.
+    if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
+        VCAMStringMatches(outputName, @"VideoCapture(PrimaryScaler)")) {
+        return YES;
+    }
+    if (VCAMStringMatches(nodeClass, @"BWFrameRateGovernorNode") &&
+        VCAMStringMatches(nodeName, @"Preview Governor")) {
+        return YES;
+    }
+    return VCAMStringMatches(nodeClass, @"BWSlaveFrameSynchronizerNode") ||
+        VCAMStringMatches(nodeClass, @"BWSynchronizerNode") ||
+        VCAMStringMatches(nodeClass, @"BWFanOutNode") ||
+        VCAMStringMatches(nodeClass, @"BWPreviewStitcherNode") ||
+        VCAMStringMatches(nodeClass, @"BWStreamingFilterNode") ||
+        VCAMStringMatches(nodeClass, @"BWInferenceNode") ||
+        VCAMStringMatches(nodeClass, @"BWCrossoverNode") ||
+        VCAMStringMatches(nodeClass, @"BWMetadataDetectorGatingNode");
+}
+
 static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
                                                             CVPixelBufferRef pixelBuffer) {
     id node = VCAMSafeObjectResult(output, sel_registerName("node"));
@@ -862,15 +889,18 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     // Keep ordinary VideoCapture frames untouched: preview/WebKit apply their
     // own physical-camera transforms after this node. The iOS 16 still branch
     // is different, however. Its final high-resolution photo is carried on the
-    // raw StillImage output as the private '&xf0' compressed format; replacing
-    // only that exact output closes the side path which bypasses Meteor
-    // Headroom/BWPhotoEncoder. The compressed renderer preserves the negotiated
-    // surface contract and applies the still-photo orientation metadata.
+    // raw StillImage output as a private compressed format. iOS 16.1 reports
+    // StillImage/&xf0; iOS 18.3.1 reports StillImage(StillImage)/pf20. Replacing
+    // only those device-observed outputs closes the side path which bypasses
+    // Meteor Headroom/BWPhotoEncoder. The compressed renderer preserves the
+    // negotiated surface contract and applies still-photo orientation metadata.
     if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode") &&
-        VCAMStringMatches(outputName, @"StillImage")) {
+        (VCAMStringMatches(outputName, @"StillImage") ||
+         VCAMStringMatches(outputName, @"StillImage(StillImage)"))) {
         OSType pixelFormat = pixelBuffer == NULL
             ? 0 : CVPixelBufferGetPixelFormatType(pixelBuffer);
-        if (pixelFormat == (OSType)0x26786630 &&
+        if ((pixelFormat == (OSType)0x26786630 ||
+             pixelFormat == (OSType)0x70663230) &&
             VCAMTargetBufferIsSupported(pixelBuffer)) {
             return VCAMReplacementRouteStillPhoto;
         }
@@ -926,6 +956,10 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         VCAMStringMatches(nodeName, @"Encoder") &&
         VCAMTargetBufferIsSupported(pixelBuffer)) {
         return VCAMReplacementRoutePhotoEncoder;
+    }
+
+    if (VCAMOutputIsKnownInternalGraphStage(nodeClass, nodeName, outputName)) {
+        return VCAMReplacementRouteNone;
     }
 
     // BWNodeOutput is the common cameracaptured boundary. Known terminals keep

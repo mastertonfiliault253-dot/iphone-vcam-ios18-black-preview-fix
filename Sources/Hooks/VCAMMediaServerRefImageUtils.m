@@ -384,7 +384,8 @@ static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
         format == (OSType)0x5b387630 || // observed private compressed '[8v0'
         format == (OSType)0x7d387630 || // observed private compressed '}8v0'
         format == (OSType)0x26386630 || // observed private bi-planar '&8f0'
-        format == (OSType)0x26786630;   // iOS 16.1 deferred photo '&xf0'
+        format == (OSType)0x26786630 || // iOS 16.1 deferred photo '&xf0'
+        format == (OSType)0x70663230;   // iOS 18.3.1 still photo 'pf20'
 }
 
 static CVReturn VCAMCreateStagingPool(OSType format, size_t width, size_t height,
@@ -898,7 +899,7 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
         return CVIsCompressedPixelFormatAvailable(format) ||
             format == (OSType)0x70343230 || // iOS 16.1 Camera preview 'p420'
             format == (OSType)0x5b387630 || format == (OSType)0x7d387630 ||
-            format == (OSType)0x26786630;
+            format == (OSType)0x26786630 || format == (OSType)0x70663230;
     }
     return CVPixelBufferGetWidthOfPlane(targetBuffer, 0) == width &&
         CVPixelBufferGetHeightOfPlane(targetBuffer, 0) == height &&

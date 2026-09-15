@@ -39,7 +39,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             self.route_function,
             re.compile(
                 r'VCAMStringMatches\(nodeClass,\s*@"BWMultiStreamCameraSourceNode"\)'
-                r'\s*&&\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
+                r'\s*&&\s*\(\s*VCAMStringMatches\(outputName,\s*@"StillImage"\)'
                 r'.*?pixelFormat\s*==\s*\(OSType\)0x26786630'
                 r'.*?return VCAMReplacementRouteStillPhoto;',
                 re.DOTALL,
@@ -127,6 +127,34 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertNotIn("width == 750", self.route_function)
         self.assertNotIn("height == 1334", self.route_function)
 
+    def test_ios18_pf20_still_source_uses_supported_photo_route(self) -> None:
+        utils = UTILS_PATH.read_text(encoding="utf-8")
+        compressed_formats = _between(
+            utils,
+            "static BOOL VCAMFormatIsCompressedVideoRange",
+            "static CVReturn VCAMCreateStagingPool",
+        )
+        support = _between(
+            utils,
+            "BOOL VCAMTargetBufferIsSupported",
+            "static BOOL VCAMFillBlackSharedFrame",
+        )
+
+        # iOS 18.3.1 on iPhone12,5 exposed stock Camera's full-resolution
+        # still as StillImage(StillImage), 4224x3168, private compressed pf20.
+        self.assertIn('@"StillImage(StillImage)"', self.route_function)
+        self.assertIn("(OSType)0x70663230", self.route_function)
+        self.assertIn("(OSType)0x70663230", compressed_formats)
+        self.assertIn("(OSType)0x70663230", support)
+        self.assertRegex(
+            self.route_function,
+            re.compile(
+                r'pixelFormat\s*==\s*\(OSType\)0x70663230.*?'
+                r'return VCAMReplacementRouteStillPhoto;',
+                re.DOTALL,
+            ),
+        )
+
     def test_ios16_movie_file_governor_is_a_fail_closed_recording_route(self) -> None:
         self.assertRegex(
             self.route_function,
@@ -141,6 +169,38 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
     def test_fanout_and_inference_nodes_are_never_direct_replacement_routes(self) -> None:
         self.assertNotIn('@"BWFanOutNode"', self.route_function)
         self.assertNotIn('@"BWInferenceNode"', self.route_function)
+
+    def test_ios18_observed_internal_graph_stages_bypass_direct_rendering(self) -> None:
+        helper = _between(
+            self.entry,
+            "static BOOL VCAMOutputIsKnownInternalGraphStage",
+            "static VCAMReplacementRoute VCAMReplacementRouteForOutput",
+        )
+        for node_class in (
+            "BWSlaveFrameSynchronizerNode",
+            "BWSynchronizerNode",
+            "BWFanOutNode",
+            "BWPreviewStitcherNode",
+            "BWStreamingFilterNode",
+            "BWInferenceNode",
+            "BWCrossoverNode",
+            "BWMetadataDetectorGatingNode",
+        ):
+            self.assertIn(f'@"{node_class}"', helper)
+        self.assertIn('@"VideoCapture(PrimaryScaler)"', helper)
+        self.assertIn('@"Preview Governor"', helper)
+
+        internal_guard = self.route_function.index(
+            "VCAMOutputIsKnownInternalGraphStage(nodeClass, nodeName, outputName)"
+        )
+        fallback = self.route_function.rindex(
+            "return VCAMReplacementRouteUniversalVideo;"
+        )
+        self.assertLess(internal_guard, fallback)
+        self.assertIn(
+            "return VCAMReplacementRouteNone;",
+            self.route_function[internal_guard:fallback],
+        )
 
     def test_successful_source_replacement_writes_versioned_full_time_marker(self) -> None:
         self.assertIn(
