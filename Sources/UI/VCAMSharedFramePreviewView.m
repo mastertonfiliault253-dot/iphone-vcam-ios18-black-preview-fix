@@ -24,6 +24,15 @@
 @property(nonatomic) uint64_t lastBrokerFetchNanoseconds;
 @end
 
+static void VCAMPreviewSignalsConsumerDemand(
+    VCAMSharedFramePreviewView *preview) {
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 18 ||
+        preview.window == nil || preview.hidden || preview.alpha <= 0.01) return;
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.codex.vcam.ios18.frame"), NULL, NULL, true);
+}
+
 static BOOL VCAMPreviewGetLatestMetadata(
     VCAMSharedFrameReader *frameReader,
     VCAMSharedSurfaceReader *surfaceReader,
@@ -279,6 +288,7 @@ static BOOL VCAMPreviewGetBrokerMetadata(
 
 - (void)displayTick:(CADisplayLink *)displayLink {
     (void)displayLink;
+    VCAMPreviewSignalsConsumerDemand(self);
     const uint64_t maximumAge = 1000000000ULL;
     BOOL frameWasSurface = NO;
     VCAMSharedFrameMetadata previewMetadata = {0};

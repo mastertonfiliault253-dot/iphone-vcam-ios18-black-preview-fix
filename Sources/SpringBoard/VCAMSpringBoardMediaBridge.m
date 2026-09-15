@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <unistd.h>
 
 #import "../Core/VCAMConfiguration.h"
@@ -22,11 +23,20 @@ static const char *const VCAMLegacyLocalVideoDaemonMarker =
 static const char *const VCAMLegacyLocalImageDaemonMarker =
     "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
+static const uint64_t VCAMDynamicConsumerLeaseNanoseconds =
+    3ULL * 1000000000ULL;
 static const uint64_t VCAMSurfaceHandshakeProbeIntervalNanoseconds =
     1ULL * 1000000000ULL;
 static const NSUInteger VCAMStaticImageMaximumStartRetries = 20;
 static const NSTimeInterval VCAMStaticImageStartRetryDelaySeconds = 0.25;
 static const uint64_t VCAMStaticImageMaximumSurfaceBytes = 64ULL * 1024ULL * 1024ULL;
+static _Atomic(uint64_t) VCAMLastDynamicConsumerActivityNanoseconds;
+static _Atomic(uint32_t) VCAMHLSConsumerSuspended;
+static _Atomic(uint32_t) VCAMHLSResumePending;
+
+static BOOL VCAMSpringBoardRuntimeIsAtLeastIOS18(void) {
+    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
+}
 
 static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
     NSString *extension = path.pathExtension.lowercaseString;
@@ -257,6 +267,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) BOOL staticImageStartRetryable;
 @property(nonatomic) BOOL staticImageStartRetryPending;
 @property(nonatomic) NSUInteger staticImageStartRetryAttempt;
+@property(nonatomic) BOOL hlsSuspendedForNoConsumer;
 @property(nonatomic) uint64_t hlsProxyTokenHigh;
 @property(nonatomic) uint64_t hlsProxyTokenLow;
 @property(nonatomic) uint64_t hlsSessionRequestGeneration;
@@ -268,7 +279,31 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) CGAffineTransform sourceTransform;
 @property(nonatomic) CGSize sourceNaturalSize;
 @property(nonatomic, copy, nullable) NSString *lastError;
+- (void)suspendHLSForNoConsumer;
+- (void)resumeHLSForConsumer;
 @end
+
+static void VCAMSpringBoardMediaConsumerActivity(
+    CFNotificationCenterRef center, void *observer, CFStringRef name,
+    const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)name; (void)object; (void)userInfo;
+    if (!VCAMSpringBoardRuntimeIsAtLeastIOS18()) return;
+    atomic_store_explicit(
+        &VCAMLastDynamicConsumerActivityNanoseconds,
+        VCAMSharedFrameMonotonicNanoseconds(), memory_order_release);
+    if (atomic_load_explicit(&VCAMHLSConsumerSuspended,
+                             memory_order_acquire) == 0) return;
+    uint32_t expected = 0;
+    if (!atomic_compare_exchange_strong_explicit(
+            &VCAMHLSResumePending, &expected, 1,
+            memory_order_acq_rel, memory_order_acquire)) return;
+    VCAMSpringBoardMediaBridge *bridge =
+        (__bridge VCAMSpringBoardMediaBridge *)observer;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        atomic_store_explicit(&VCAMHLSResumePending, 0, memory_order_release);
+        [bridge resumeHLSForConsumer];
+    });
+}
 
 @implementation VCAMSpringBoardMediaBridge
 
@@ -312,6 +347,13 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         (__bridge const void *)self, VCAMSpringBoardMediaPreferencesChanged,
         CFSTR("com.codex.vcam/preferences.changed"), NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
+    if (VCAMSpringBoardRuntimeIsAtLeastIOS18()) {
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge const void *)self, VCAMSpringBoardMediaConsumerActivity,
+            CFSTR("com.codex.vcam.ios18.frame"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+    }
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
         @"springboard media bridge started metal=%d writer=%d surface=%d",
         self.metalDevice != nil, self.writer != NULL,
@@ -320,6 +362,11 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 }
 
 - (void)stopPlayback {
+    self.hlsSuspendedForNoConsumer = NO;
+    atomic_store_explicit(&VCAMHLSConsumerSuspended, 0, memory_order_release);
+    atomic_store_explicit(&VCAMHLSResumePending, 0, memory_order_release);
+    atomic_store_explicit(
+        &VCAMLastDynamicConsumerActivityNanoseconds, 0, memory_order_release);
     self.hlsSessionRequestGeneration += 1;
     uint64_t retiredTokenHigh = self.hlsProxyTokenHigh;
     uint64_t retiredTokenLow = self.hlsProxyTokenLow;
@@ -388,7 +435,54 @@ static void VCAMSpringBoardMediaPreferencesChanged(
         CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge const void *)self,
         CFSTR("com.codex.vcam/preferences.changed"), NULL);
+    CFNotificationCenterRemoveObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)self,
+        CFSTR("com.codex.vcam.ios18.frame"), NULL);
     self.started = NO;
+}
+
+- (void)suspendHLSForNoConsumer {
+    if (self.localVideo) return;
+    if (!VCAMSpringBoardRuntimeIsAtLeastIOS18() ||
+        self.player == nil || self.hlsSuspendedForNoConsumer) return;
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+    BOOL surfaceConsumerActive = self.surfaceWriter != NULL &&
+        VCAMSharedSurfaceWriterHasConsumer(self.surfaceWriter);
+    if (surfaceConsumerActive) {
+        if (now != 0) {
+            atomic_store_explicit(
+                &VCAMLastDynamicConsumerActivityNanoseconds,
+                now, memory_order_release);
+        }
+        return;
+    }
+    uint64_t lastActivity = atomic_load_explicit(
+        &VCAMLastDynamicConsumerActivityNanoseconds, memory_order_acquire);
+    if (now == 0 || lastActivity == 0 || now < lastActivity ||
+        now - lastActivity < VCAMDynamicConsumerLeaseNanoseconds) return;
+    self.hlsSuspendedForNoConsumer = YES;
+    atomic_store_explicit(&VCAMHLSConsumerSuspended, 1, memory_order_release);
+    self.displayLink.paused = YES;
+    self.player.rate = 0.0f;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard HLS suspended no consumer idle=%.1fs",
+        (double)(now - lastActivity) / 1e9]];
+}
+
+- (void)resumeHLSForConsumer {
+    NSAssert(NSThread.isMainThread, @"HLS consumer resume requires main thread");
+    if (!self.started || self.localVideo ||
+        !VCAMSpringBoardRuntimeIsAtLeastIOS18() ||
+        !self.hlsSuspendedForNoConsumer || self.player == nil) return;
+    self.hlsSuspendedForNoConsumer = NO;
+    atomic_store_explicit(&VCAMHLSConsumerSuspended, 0, memory_order_release);
+    self.lastDecodedFrameTimestampNanoseconds =
+        VCAMSharedFrameMonotonicNanoseconds();
+    self.displayLink.paused = NO;
+    [self.player play];
+    [VCAMConfiguration appendProcessLog:
+        @"springboard HLS resumed for consumer"];
 }
 
 - (BOOL)configurationMatches:(VCAMConfiguration *)configuration {
@@ -852,6 +946,14 @@ static void VCAMSpringBoardMediaPreferencesChanged(
     self.lastFrameTimestampNanoseconds = 0;
     self.lastDecodedFrameTimestampNanoseconds =
         VCAMSharedFrameMonotonicNanoseconds();
+    if (!localVideo && VCAMSpringBoardRuntimeIsAtLeastIOS18()) {
+        atomic_store_explicit(
+            &VCAMLastDynamicConsumerActivityNanoseconds,
+            self.lastDecodedFrameTimestampNanoseconds, memory_order_release);
+        self.hlsSuspendedForNoConsumer = NO;
+        atomic_store_explicit(&VCAMHLSConsumerSuspended, 0,
+                              memory_order_release);
+    }
     self.lastError = nil;
     [self.player play];
     self.displayLink = [CADisplayLink displayLinkWithTarget:self
@@ -950,6 +1052,8 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 - (void)tick:(CADisplayLink *)displayLink {
     (void)displayLink;
     if (self.output == nil || self.player.currentItem == nil) return;
+    [self suspendHLSForNoConsumer];
+    if (self.hlsSuspendedForNoConsumer) return;
     AVPlayerItem *item = self.player.currentItem;
     if (item.status == AVPlayerItemStatusFailed) {
         [self scheduleReconnectForItem:item reason:@"player item failed"];

@@ -4,6 +4,7 @@
 #import <math.h>
 #import <stdio.h>
 #import <string.h>
+#import <stdatomic.h>
 #import <unistd.h>
 
 #import "VCAMFrameProducer.h"
@@ -29,6 +30,15 @@ static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
 static BOOL VCAMLoggedStaticNV12Fallback;
 static BOOL VCAMLoggedUnsupportedNativeFormat;
+static const uint64_t VCAMDynamicConsumerLeaseNanoseconds =
+    3ULL * 1000000000ULL;
+static _Atomic(uint64_t) VCAMLastDynamicConsumerActivityNanoseconds;
+static _Atomic(uint32_t) VCAMDynamicConsumerActive;
+static void VCAMScheduleTimer(void);
+
+static BOOL VCAMDaemonRuntimeIsAtLeastIOS18(void) {
+    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
+}
 
 static void VCAMDestroySurfaceWriter(void) {
     if (VCAMSurfaceWriter != NULL) {
@@ -171,6 +181,32 @@ static void VCAMEnsureSurfaceWriter(uint32_t width, uint32_t height,
 
 static void VCAMPublishTick(void) {
     @autoreleasepool {
+        if (VCAMDaemonRuntimeIsAtLeastIOS18() &&
+            [VCAMProducer requiresConsumerDemand] &&
+            atomic_load_explicit(&VCAMDynamicConsumerActive,
+                                 memory_order_acquire) != 0) {
+            uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+            BOOL transportConsumerActive = VCAMSurfaceWriter != NULL &&
+                VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
+            if (transportConsumerActive && now != 0) {
+                atomic_store_explicit(
+                    &VCAMLastDynamicConsumerActivityNanoseconds,
+                    now, memory_order_release);
+            }
+            uint64_t lastActivity = atomic_load_explicit(
+                &VCAMLastDynamicConsumerActivityNanoseconds,
+                memory_order_acquire);
+            if (!transportConsumerActive && now != 0 && lastActivity != 0 &&
+                now >= lastActivity &&
+                now - lastActivity >= VCAMDynamicConsumerLeaseNanoseconds) {
+                atomic_store_explicit(&VCAMDynamicConsumerActive, 0,
+                                      memory_order_release);
+                [VCAMProducer setConsumerDemandActive:NO];
+                VCAMDestroySurfaceWriter();
+                VCAMScheduleTimer();
+                return;
+            }
+        }
         if (![VCAMProducer isEnabled]) {
             VCAMDestroySurfaceWriter();
             return;
@@ -310,7 +346,12 @@ static void VCAMPublishTick(void) {
 }
 
 static void VCAMScheduleTimer(void) {
-    NSInteger fps = [VCAMProducer isEnabled] ? [VCAMProducer preferredFramesPerSecond] : 1;  // 1 Hz when idle
+    BOOL demandIdle = VCAMDaemonRuntimeIsAtLeastIOS18() &&
+        [VCAMProducer requiresConsumerDemand] &&
+        atomic_load_explicit(&VCAMDynamicConsumerActive,
+                             memory_order_acquire) == 0;
+    NSInteger fps = [VCAMProducer isEnabled] && !demandIdle
+        ? [VCAMProducer preferredFramesPerSecond] : 1;  // 1 Hz when idle
     uint64_t interval = NSEC_PER_SEC / (uint64_t)MAX(1, MIN(60, fps));
     if (VCAMTimer == nil) {
         VCAMTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -322,6 +363,24 @@ static void VCAMScheduleTimer(void) {
                               interval, interval / 10);
 }
 
+static void VCAMMediaConsumerActivity(
+    CFNotificationCenterRef center, void *observer, CFStringRef name,
+    const void *object, CFDictionaryRef userInfo) {
+    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+    if (!VCAMDaemonRuntimeIsAtLeastIOS18()) return;
+    atomic_store_explicit(
+        &VCAMLastDynamicConsumerActivityNanoseconds,
+        VCAMSharedFrameMonotonicNanoseconds(), memory_order_release);
+    if (atomic_exchange_explicit(&VCAMDynamicConsumerActive, 1,
+                                 memory_order_acq_rel) != 0) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([VCAMProducer requiresConsumerDemand]) {
+            [VCAMProducer setConsumerDemandActive:YES];
+            VCAMScheduleTimer();
+        }
+    });
+}
+
 static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *observer,
                                      CFStringRef name, const void *object,
                                      CFDictionaryRef userInfo) {
@@ -331,6 +390,19 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
         // surface; recreating here keeps the one-slot path honest.
         VCAMDestroySurfaceWriter();
         [VCAMProducer reload];
+        BOOL recentDemand = NO;
+        if (VCAMDaemonRuntimeIsAtLeastIOS18() &&
+            [VCAMProducer requiresConsumerDemand]) {
+            uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
+            uint64_t lastActivity = atomic_load_explicit(
+                &VCAMLastDynamicConsumerActivityNanoseconds,
+                memory_order_acquire);
+            recentDemand = now != 0 && lastActivity != 0 && now >= lastActivity &&
+                now - lastActivity < VCAMDynamicConsumerLeaseNanoseconds;
+            [VCAMProducer setConsumerDemandActive:recentDemand];
+        }
+        atomic_store_explicit(&VCAMDynamicConsumerActive,
+                              recentDemand ? 1 : 0, memory_order_release);
         VCAMScheduleTimer();
     });
 }
@@ -357,6 +429,13 @@ int main(int argc, char *argv[]) {
                                         CFSTR("com.codex.vcam/preferences.changed"),
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
+        if (VCAMDaemonRuntimeIsAtLeastIOS18()) {
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL, VCAMMediaConsumerActivity,
+                CFSTR("com.codex.vcam.ios18.frame"), NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately);
+        }
         VCAMScheduleTimer();
         [VCAMConfiguration appendProcessLog:@"vcamd started"];
         fprintf(stderr, "vcamd boot step=runloop\n");

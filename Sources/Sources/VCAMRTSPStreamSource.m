@@ -116,6 +116,12 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
 - (BOOL)decodeOneFFmpegSession;
 @end
 
+static int VCAMRTSPInterruptWhenStopped(void *opaque) {
+    VCAMRTSPStreamSource *source =
+        (__bridge VCAMRTSPStreamSource *)opaque;
+    return source == nil || !source.running;
+}
+
 @implementation VCAMRTSPStreamSource
 
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
@@ -404,21 +410,29 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
             urlString.UTF8String ?: "(nil)");
     fflush(stderr);
     [self configureOpenOptions:&options];
+    formatContext = avformat_alloc_context();
+    if (formatContext == NULL) goto cleanup;
+    formatContext->interrupt_callback.callback = VCAMRTSPInterruptWhenStopped;
+    formatContext->interrupt_callback.opaque = (__bridge void *)self;
     // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
     // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
     // could display error-concealed inter frames after a delayed packet.
     int openResult = avformat_open_input(&formatContext, url, NULL, &options);
     if (openResult < 0) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ FFmpeg input open failed error=%@", self.streamName,
-            VCAMFFmpegErrorDescription(openResult)]];
+        if (self.running) {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ FFmpeg input open failed error=%@", self.streamName,
+                VCAMFFmpegErrorDescription(openResult)]];
+        }
         goto cleanup;
     }
     int streamInfoResult = avformat_find_stream_info(formatContext, NULL);
     if (streamInfoResult < 0) {
-        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ FFmpeg stream probe failed error=%@", self.streamName,
-            VCAMFFmpegErrorDescription(streamInfoResult)]];
+        if (self.running) {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ FFmpeg stream probe failed error=%@", self.streamName,
+                VCAMFFmpegErrorDescription(streamInfoResult)]];
+        }
         goto cleanup;
     }
 

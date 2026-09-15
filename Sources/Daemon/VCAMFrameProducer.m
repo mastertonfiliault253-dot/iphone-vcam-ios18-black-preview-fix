@@ -60,15 +60,25 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) id<VCAMMediaSource> source;
 @property(nonatomic, strong) dispatch_queue_t stateQueue;
+@property(nonatomic) BOOL consumerDemandActive;
+@property(nonatomic) BOOL rtspHasStartedForConsumer;
+- (VCAMRTSPStreamSource *)newRTSPSource;
 @end
 
 @implementation VCAMFrameProducer
+
+- (VCAMRTSPStreamSource *)newRTSPSource {
+    return [[VCAMRTSPStreamSource alloc]
+        initWithConfiguration:self.configuration renderer:self.renderer];
+}
 
 - (instancetype)init {
     self = [super init];
     if (self) {
         _renderer = [VCAMFrameRenderer new];
         _stateQueue = dispatch_queue_create("com.codex.vcamd.producer", DISPATCH_QUEUE_SERIAL);
+        _consumerDemandActive =
+            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 18;
         [self reload];
     }
     return self;
@@ -120,8 +130,9 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                 break;
             case VCAMSourceKindRTSP:
                 // RTSP is always decoded by FFmpeg's software decoder in vcamd.
-                self.source = [[VCAMRTSPStreamSource alloc] initWithConfiguration:self.configuration
-                                                                          renderer:self.renderer];
+                if (self.consumerDemandActive) {
+                    self.source = [self newRTSPSource];
+                }
                 break;
             case VCAMSourceKindHLS:
                 // SpringBoard owns the production AVPlayer HLS path. Retain
@@ -140,6 +151,50 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
             @"vcamd reload source=%ld enabled=%d started=%d error=%@",
             (long)self.configuration.sourceKind, self.configuration.enabled,
             self.source != nil, error.localizedDescription ?: @"(none)"]];
+    });
+}
+
+- (BOOL)requiresConsumerDemand {
+    __block BOOL required = NO;
+    dispatch_sync(self.stateQueue, ^{
+        required = self.configuration.enabled &&
+            self.configuration.sourceKind == VCAMSourceKindRTSP &&
+            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
+    });
+    return required;
+}
+
+- (void)setConsumerDemandActive:(BOOL)active {
+    dispatch_sync(self.stateQueue, ^{
+        BOOL rtsp = self.configuration.enabled &&
+            self.configuration.sourceKind == VCAMSourceKindRTSP &&
+            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
+        BOOL unchanged = self.consumerDemandActive == active;
+        self.consumerDemandActive = active;
+        if (!rtsp || (unchanged && !(active && self.source == nil))) return;
+        if (!active) {
+            if (self.source == nil) return;
+            [self.source stop];
+            self.source = nil;
+            [VCAMConfiguration appendProcessLog:
+                @"vcamd RTSP source suspended no consumer"];
+            return;
+        }
+        if (self.source != nil) return;
+        self.source = [self newRTSPSource];
+        NSError *error = nil;
+        if (![self.source start:&error]) self.source = nil;
+        if (self.source != nil) {
+            NSString *message = self.rtspHasStartedForConsumer
+                ? @"vcamd RTSP source resumed for consumer"
+                : @"vcamd RTSP source started for consumer";
+            self.rtspHasStartedForConsumer = YES;
+            [VCAMConfiguration appendProcessLog:message];
+        } else {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"vcamd RTSP source start for consumer failed error=%@",
+                error.localizedDescription ?: @"unknown"]];
+        }
     });
 }
 
