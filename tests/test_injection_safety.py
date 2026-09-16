@@ -201,8 +201,12 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMReplacementRoutePhotoEncoder", entry)
         self.assertIn("%hook BWPhotoEncoderNode", entry)
         self.assertIn("%hook BWRemoteQueueSinkNode", entry)
-        self.assertNotIn('@"Front Camera"', entry)
-        self.assertNotIn('@"Back Camera"', entry)
+        # Lens position is observed only at the physical source boundary. It
+        # may select WebKit presentation compensation, but must never select a
+        # replacement route or alter Camera/photo/recording consumers.
+        self.assertIn('@"Front Camera"', entry)
+        self.assertIn('@"Back Camera"', entry)
+        self.assertIn("VCAMSetLastCameraIsFront", entry)
         self.assertIn("NSPointerFunctionsObjectPointerPersonality", entry)
         self.assertIn("method_getReturnType", entry)
         self.assertNotIn("[node description]", entry)
@@ -241,7 +245,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
         self.assertIn("kCGImagePropertyOrientationRight", entry)
         # preview path is never rotated; only still-photo fill triggers it
-        self.assertIn("webKitLandscapeStorage && sourceIsPortrait", render)
+        self.assertIn("BOOL webKitRotatedForStorage = webKitLandscapeStorage &&", render)
         self.assertNotIn("aspectFit && sourceIsPortrait", render)
         self.assertIn("VCAMSetStandardColorAttachments", implementation)
 

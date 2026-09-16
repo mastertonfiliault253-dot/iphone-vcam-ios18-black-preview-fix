@@ -9,6 +9,8 @@ void VCAMRefLog(const char *message);
 void loadReplacementMedia(void);
 BOOL VCAMVirtualModeIsEnabled(void);
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer);
+void VCAMSetLastCameraIsFront(BOOL isFront);
+BOOL VCAMLastCameraIsFront(void);
 
 typedef enum VCAMFramePresentation {
     // The real camera graph still owns target size, pixel format, timing and

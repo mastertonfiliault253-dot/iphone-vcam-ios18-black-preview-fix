@@ -87,6 +87,18 @@ static volatile int VCAMConsecutiveSlowRenders;
 // Fresh installs start on the real camera. After a valid value is observed,
 // transient read failures retain that last value in VCAMReloadConfiguredMode.
 static volatile int VCAMConfiguredMode = 0;
+// The physical source node is emitted before its converter fan-out. Keep only
+// its lens position so the explicit WebKit presentation can cancel the
+// consumer's front-camera mirror without changing routing or graph contracts.
+static volatile int VCAMCurrentCameraIsFront = 0;
+
+void VCAMSetLastCameraIsFront(BOOL isFront) {
+    __sync_lock_test_and_set(&VCAMCurrentCameraIsFront, isFront ? 1 : 0);
+}
+
+BOOL VCAMLastCameraIsFront(void) {
+    return __sync_fetch_and_add(&VCAMCurrentCameraIsFront, 0) != 0;
+}
 
 // Bounded pixel telemetry for the iOS 18 black-preview investigation. The
 // values are scalar Darwin-notify state so a root probe can read them without
@@ -2019,20 +2031,27 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             }
         }
         CIImage *image = [CIImage imageWithCVPixelBuffer:ciSourceBuffer];
+        CGFloat sourceWidth = CGRectGetWidth(image.extent);
+        CGFloat sourceHeight = CGRectGetHeight(image.extent);
         BOOL sourceIsPortrait = CGRectGetHeight(image.extent) >
             CGRectGetWidth(image.extent);
-        // Safari's iOS 16 getUserMedia terminal consumes a landscape 640x480
-        // pixel basis and then applies the camera graph's portrait display
-        // transform. Device A/B showed that canonical portrait pixels which
-        // are already upright in Camera therefore appear 90 degrees clockwise
-        // in WebKit. Pre-rotate only that explicit terminal route on pre-iOS-18;
-        // iOS 18 displays the canonical orientation directly. Target dimensions
-        // alone are never used to identify a browser consumer.
-        if (webKitLandscapeStorage && sourceIsPortrait &&
-            !VCAMRuntimeIsAtLeastIOS18() &&
-            targetWidth > targetHeight) {
-            image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
+        // WebKit can renegotiate its converter basis when the lens changes:
+        // the observed iOS 18 rear target is portrait while the front target
+        // is landscape. Adapt to the actual target dimensions instead of an OS
+        // version or fixed profile. Lens state only chooses the system camera's
+        // storage rotation direction; it never identifies the consumer route.
+        BOOL currentCameraIsFront = VCAMLastCameraIsFront();
+        BOOL webKitRotatedForStorage = webKitLandscapeStorage &&
+            sourceIsPortrait && targetWidth > targetHeight;
+        if (webKitRotatedForStorage) {
+            CGImagePropertyOrientation storageOrientation =
+                currentCameraIsFront
+                    ? kCGImagePropertyOrientationRight
+                    : kCGImagePropertyOrientationLeft;
+            image = [image imageByApplyingOrientation:storageOrientation];
         }
+        BOOL webKitFrontPresentation =
+            webKitLandscapeStorage && currentCameraIsFront;
         // Still-photo fill renders the landscape camera basis with canonical
         // portrait pixels: rotate left in place and let the caller mark the
         // final sample Orientation=Right so Photos shows a portrait 3:4 image.
@@ -2042,6 +2061,19 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             if (stillPhotoRequiresRightOrientationOut != NULL) {
                 *stillPhotoRequiresRightOrientationOut = YES;
             }
+        }
+        // The front WebKit graph applies its user-facing mirror after this
+        // converter. The shared VCAM frame is canonical/unmirrored, so cancel
+        // that downstream transform here and nowhere else. This must not affect
+        // Camera preview, still-photo, recording, or rear-camera consumers.
+        if (webKitFrontPresentation) {
+            CGRect extent = image.extent;
+            CGFloat mirrorTranslation = CGRectGetMinX(extent) * 2.0 +
+                CGRectGetWidth(extent);
+            image = [image imageByApplyingTransform:
+                CGAffineTransformMakeTranslation(mirrorTranslation, 0.0)];
+            image = [image imageByApplyingTransform:
+                CGAffineTransformMakeScale(-1.0, 1.0)];
         }
         // The producer publishes canonical visual orientation. The real
         // camera graph remains the negotiation shell: target dimensions,
@@ -2055,6 +2087,30 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent))
             : MAX((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent));
+        if (webKitLandscapeStorage || !realtimeCompensation) {
+            static volatile int webKitCompositionCount = 0;
+            static volatile int stillCompositionCount = 0;
+            int compositionCount = webKitLandscapeStorage
+                ? __sync_add_and_fetch(&webKitCompositionCount, 1)
+                : __sync_add_and_fetch(&stillCompositionCount, 1);
+            int logInterval = webKitLandscapeStorage ? 300 : 8;
+            if (compositionCount <= 8 || compositionCount % logInterval == 0) {
+                char message[384] = {0};
+                snprintf(message, sizeof(message),
+                         "composition diagnostic presentation=%s count=%d source=%.0fx%.0f oriented=%.0fx%.0f target=%zux%zu front=%d rotate=%d mirror=%d fit=%d scale=%.6f coverage=%.1fx%.1f",
+                         webKitLandscapeStorage ? "webkit" : "still",
+                         compositionCount, (double)sourceWidth,
+                         (double)sourceHeight,
+                         (double)CGRectGetWidth(image.extent),
+                         (double)CGRectGetHeight(image.extent),
+                         renderWidth, renderHeight, currentCameraIsFront,
+                         webKitRotatedForStorage, webKitFrontPresentation,
+                         aspectFit, (double)scale,
+                         (double)(CGRectGetWidth(image.extent) * scale),
+                         (double)(CGRectGetHeight(image.extent) * scale));
+                VCAMRefLog(message);
+            }
+        }
         image = [image imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
         CGFloat x = ((CGFloat)renderWidth - CGRectGetWidth(image.extent)) * 0.5 -
             CGRectGetMinX(image.extent);

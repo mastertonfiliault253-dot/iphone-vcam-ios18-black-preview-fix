@@ -904,6 +904,19 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     NSString *outputName = VCAMSafeObjectResult(output, sel_registerName("name"));
     NSString *nodeName = VCAMSafeObjectResult(node, sel_registerName("name"));
 
+    // Lens position is available only on the physical source node, before the
+    // generic converter/remote-queue fan-out. Record it for WebKit presentation
+    // compensation, but do not use it to choose a replacement route.
+    if (VCAMStringMatches(nodeClass, @"BWMultiStreamCameraSourceNode")) {
+        if ([nodeName isKindOfClass:NSString.class] &&
+            [nodeName rangeOfString:@"Front Camera"].location != NSNotFound) {
+            VCAMSetLastCameraIsFront(YES);
+        } else if ([nodeName isKindOfClass:NSString.class] &&
+                   [nodeName rangeOfString:@"Back Camera"].location != NSNotFound) {
+            VCAMSetLastCameraIsFront(NO);
+        }
+    }
+
     // Keep ordinary VideoCapture frames untouched: preview/WebKit apply their
     // own physical-camera transforms after this node. The iOS 16 still branch
     // is different, however. Its final high-resolution photo is carried on the

@@ -42,23 +42,62 @@ class MediaServerTargetFillTests(unittest.TestCase):
         self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
         self.assertIn("kCGImagePropertyOrientationRight", entry)
 
-    def test_webkit_landscape_storage_compensation_is_pre_ios18_only(self) -> None:
-        # Device A/B: the same canonical portrait source is upright in Camera
-        # but appears rotated 90 degrees in Safari's 640x480 video-converter
-        # terminal. Only that explicit route may pre-rotate the raw pixels.
+    def test_webkit_adapts_portrait_source_to_negotiated_landscape_storage(self) -> None:
+        # The iOS 18 trace negotiates a portrait WebKit target on the rear lens
+        # and a landscape target on the front lens. Rotate only when the
+        # explicit WebKit target basis differs from the canonical portrait
+        # source; OS version and hard-coded resolutions must not decide it.
         self.assertIn(
-            "webKitLandscapeStorage && sourceIsPortrait",
+            "BOOL webKitRotatedForStorage = webKitLandscapeStorage &&",
             self.adapter,
         )
         webkit_adapter = self.adapter.split(
-            "if (webKitLandscapeStorage && sourceIsPortrait", 1
+            "BOOL webKitRotatedForStorage =", 1
         )[1].split("// The producer publishes", 1)[0]
-        self.assertIn("!VCAMRuntimeIsAtLeastIOS18()", webkit_adapter)
+        self.assertIn("sourceIsPortrait && targetWidth > targetHeight", webkit_adapter)
+        self.assertNotIn("VCAMRuntimeIsAtLeastIOS18", webkit_adapter)
+        self.assertIn("VCAMLastCameraIsFront", self.adapter)
+        self.assertIn("currentCameraIsFront", webkit_adapter)
+        self.assertIn("kCGImagePropertyOrientationRight", webkit_adapter)
+        self.assertIn("kCGImagePropertyOrientationLeft", webkit_adapter)
         self.assertIn(
-            "imageByApplyingOrientation:kCGImagePropertyOrientationLeft",
+            "imageByApplyingOrientation:storageOrientation",
             webkit_adapter,
         )
         self.assertNotIn("kCGImagePropertyOrientationUpMirrored", webkit_adapter)
+
+    def test_front_webkit_mirror_compensation_is_consumer_scoped(self) -> None:
+        # The shared frame is canonical and unmirrored. The front WebKit graph
+        # mirrors its preview after the converter, so pre-compensate exactly
+        # that consumer. Camera preview, still photo, recording and rear WebKit
+        # must not receive this transform.
+        self.assertIn(
+            "webKitLandscapeStorage && currentCameraIsFront",
+            self.adapter,
+        )
+        self.assertIn("VCAMLastCameraIsFront()", self.adapter)
+        mirror_block = self.adapter.split(
+            "if (webKitFrontPresentation)", 1
+        )[1].split("// The producer publishes", 1)[0]
+        self.assertIn("CGAffineTransformMakeScale(-1.0, 1.0)", mirror_block)
+        self.assertEqual(
+            self.adapter.count("CGAffineTransformMakeScale(-1.0, 1.0)"),
+            1,
+        )
+
+    def test_composition_logs_negotiated_coverage_without_pixels(self) -> None:
+        self.assertIn("composition diagnostic presentation=%s", self.adapter)
+        for field in (
+            "source=%.0fx%.0f",
+            "oriented=%.0fx%.0f",
+            "target=%zux%zu",
+            "front=%d",
+            "rotate=%d",
+            "mirror=%d",
+            "scale=%.6f",
+            "coverage=%.1fx%.1f",
+        ):
+            self.assertIn(field, self.adapter)
 
         entry = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefEntry.xm"
