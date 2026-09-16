@@ -104,6 +104,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         for terminal_name, route_name in (
             ("Video Data Converter/Scaler/Zoomer", "VideoConverter"),
             ("Video Data Converter/Rotator/Zoomer", "VideoConverter"),
+            ("Video Data Converter/Rotator/Scaler/Zoomer", "VideoConverter"),
             ("Video Data Converter/Zoomer", "StillPhoto"),
             ("Preview Scaler", "CameraPreview"),
             ("Movie File Zoomer", "VideoRecording"),

@@ -208,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.102+ios18-stream-demand";
+    return "com.codex.vcam/0.8.103+ios18-webkit-terminal";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
