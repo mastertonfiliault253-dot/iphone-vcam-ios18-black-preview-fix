@@ -179,19 +179,23 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             body.index("return VCAMReplacementRouteVideoRecording;"),
         )
 
-    def test_only_metadata_input_fanout_is_a_direct_analysis_route(self) -> None:
-        # Camera QR recognition consumes Preview Splitter/MetadataObject before
-        # Preview Scaler. Keep every other fan-out and inference output on the
-        # internal-stage bypass to avoid restoring the old render explosion.
+    def test_metadata_input_fanout_remains_on_the_physical_camera(self) -> None:
+        # iOS 16 left Camera's QR detector on the physical-camera branch while
+        # replacing only the visible preview. Preserve that behavior on iOS 18
+        # so a QR code in front of the lens still produces the system link UI.
         self.assertIn('@"BWFanOutNode"', self.route_function)
         self.assertIn('@"Preview Splitter"', self.route_function)
         self.assertIn('@"MetadataObject"', self.route_function)
-        self.assertIn(
-            "return VCAMReplacementRouteQRAnalysis;", self.route_function
+        metadata_route = _between(
+            self.route_function,
+            '// Stock Camera\'s physical QR/metadata detector consumes this exact fan-out',
+            "if (VCAMOutputIsKnownInternalGraphStage",
         )
+        self.assertIn("return VCAMReplacementRouteNone;", metadata_route)
+        self.assertNotIn("VCAMReplacementRouteQRAnalysis", self.route_function)
         self.assertNotIn('@"BWInferenceNode"', self.route_function)
 
-    def test_qr_analysis_reuses_preview_fit_without_propagation(self) -> None:
+    def test_no_virtual_qr_analysis_presentation_or_propagation_route(self) -> None:
         presentation = _between(
             self.entry,
             "static VCAMFramePresentation VCAMPresentationForReplacementRoute",
@@ -202,13 +206,7 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "static BOOL VCAMRouteUsesPropagationMarker",
             "static BOOL VCAMWritePropagationMarker",
         )
-        self.assertRegex(
-            presentation,
-            re.compile(
-                r"case VCAMReplacementRouteQRAnalysis:\s*"
-                r"return VCAMFramePresentationCameraPreviewFit;"
-            ),
-        )
+        self.assertNotIn("VCAMReplacementRouteQRAnalysis", presentation)
         self.assertNotIn("VCAMReplacementRouteQRAnalysis", marker_routes)
 
     def test_ios18_observed_internal_graph_stages_bypass_direct_rendering(self) -> None:

@@ -197,7 +197,7 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn('@"BWFanOutNode"', route_function)
         self.assertIn('@"Preview Splitter"', route_function)
         self.assertIn('@"MetadataObject"', route_function)
-        self.assertIn("VCAMReplacementRouteQRAnalysis", route_function)
+        self.assertNotIn("VCAMReplacementRouteQRAnalysis", route_function)
         self.assertNotIn('@"BWInferenceNode"', route_function)
         self.assertIn('@"BWPhotoEncoderNode"', entry)
         self.assertIn('@"Encoder"', entry)

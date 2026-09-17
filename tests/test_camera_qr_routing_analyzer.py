@@ -22,7 +22,7 @@ def signature(output: str, node_class: str, node: str, route: str) -> str:
 
 
 class CameraQrRoutingAnalyzerTests(unittest.TestCase):
-    def test_rejects_preview_only_replacement(self) -> None:
+    def test_accepts_virtual_preview_with_physical_qr_analysis(self) -> None:
         text = "\n".join(
             (
                 signature("(none)", "BWPixelTransferNode", "Preview Scaler", "camera-preview"),
@@ -30,11 +30,9 @@ class CameraQrRoutingAnalyzerTests(unittest.TestCase):
                 signature("(none)", "BWMetadataDetectorGatingNode", "BWMetadataDetectorGatingNode", "none"),
             )
         )
-        failures = MODULE.analyze(text)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("does not receive VCAM pixels", failures[0])
+        self.assertEqual(MODULE.analyze(text), [])
 
-    def test_accepts_scoped_metadata_input_replacement(self) -> None:
+    def test_rejects_replacing_physical_qr_analysis_input(self) -> None:
         text = "\n".join(
             (
                 signature("(none)", "BWPixelTransferNode", "Preview Scaler", "camera-preview"),
@@ -42,13 +40,15 @@ class CameraQrRoutingAnalyzerTests(unittest.TestCase):
                 signature("(none)", "BWMetadataDetectorGatingNode", "BWMetadataDetectorGatingNode", "none"),
             )
         )
-        self.assertEqual(MODULE.analyze(text), [])
+        failures = MODULE.analyze(text)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("must remain physical", failures[0])
 
     def test_rejects_replacing_post_detection_output(self) -> None:
         text = "\n".join(
             (
                 signature("(none)", "BWPixelTransferNode", "Preview Scaler", "camera-preview"),
-                signature("MetadataObject", "BWFanOutNode", "Preview Splitter", "qr-analysis"),
+                signature("MetadataObject", "BWFanOutNode", "Preview Splitter", "none"),
                 signature("(none)", "BWMetadataDetectorGatingNode", "BWMetadataDetectorGatingNode", "universal-video"),
             )
         )

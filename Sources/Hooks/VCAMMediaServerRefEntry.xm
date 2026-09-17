@@ -103,7 +103,6 @@ typedef NS_ENUM(NSUInteger, VCAMReplacementRoute) {
     VCAMReplacementRouteCameraSourceVideo,
     VCAMReplacementRouteVideoConverter,
     VCAMReplacementRouteCameraPreview,
-    VCAMReplacementRouteQRAnalysis,
     VCAMReplacementRouteVideoRecording,
     VCAMReplacementRouteStillPhoto,
     // SumUp's BWPhotoEncoderNode is an app-specific terminal. It is not the
@@ -208,7 +207,6 @@ static const char *VCAMReplacementRouteName(VCAMReplacementRoute route) {
         case VCAMReplacementRouteCameraSourceVideo: return "camera-source-video";
         case VCAMReplacementRouteVideoConverter: return "video-converter";
         case VCAMReplacementRouteCameraPreview: return "camera-preview";
-        case VCAMReplacementRouteQRAnalysis: return "qr-analysis";
         case VCAMReplacementRouteVideoRecording: return "video-recording";
         case VCAMReplacementRouteStillPhoto: return "still-photo";
         case VCAMReplacementRoutePhotoEncoder: return "photo-encoder";
@@ -225,7 +223,6 @@ static VCAMFramePresentation VCAMPresentationForReplacementRoute(
         case VCAMReplacementRouteVideoConverter:
             return VCAMFramePresentationWebKitFill;
         case VCAMReplacementRouteCameraPreview:
-        case VCAMReplacementRouteQRAnalysis:
             return VCAMFramePresentationCameraPreviewFit;
         case VCAMReplacementRouteStillPhoto:
         case VCAMReplacementRoutePhotoEncoder:
@@ -1013,17 +1010,17 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
         return VCAMReplacementRouteNone;
     }
 
-    // Stock Camera's QR/metadata detector consumes this exact fan-out before
-    // Preview Scaler. If only the visible preview is replaced, the detector
-    // continues analysing the physical camera and cannot recognize a QR code
-    // displayed by VCAM. Route only this observed input through the same
-    // whole-frame composition as Camera preview; all other fan-out/inference
-    // stages remain internal and untouched.
+    // Stock Camera's physical QR/metadata detector consumes this exact fan-out.
+    // iOS 16 left it untouched while replacing only the visible preview, so a
+    // QR code in front of the real lens could still produce the system link UI.
+    // Preserve that split on iOS 18; replacing this branch with VCAM pixels
+    // makes physical QR recognition impossible whenever the virtual source has
+    // no QR code of its own.
     if (VCAMOperatingSystemIsAtLeast18() &&
         VCAMStringMatches(nodeClass, @"BWFanOutNode") &&
         VCAMStringMatches(nodeName, @"Preview Splitter") &&
         VCAMStringMatches(outputName, @"MetadataObject")) {
-        return VCAMReplacementRouteQRAnalysis;
+        return VCAMReplacementRouteNone;
     }
 
     if (VCAMOutputIsKnownInternalGraphStage(nodeClass, nodeName, outputName)) {
@@ -1355,8 +1352,6 @@ static BOOL VCAMReplaceSampleBufferInPlace(
             notify_post("com.codex.vcam.ios18.route.converter"); break;
         case VCAMReplacementRouteCameraPreview:
             notify_post("com.codex.vcam.ios18.route.preview"); break;
-        case VCAMReplacementRouteQRAnalysis:
-            notify_post("com.codex.vcam.ios18.route.qr-analysis"); break;
         case VCAMReplacementRouteVideoRecording:
             notify_post("com.codex.vcam.ios18.route.recording"); break;
         case VCAMReplacementRouteStillPhoto:

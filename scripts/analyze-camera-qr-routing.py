@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check whether Camera's QR-analysis input receives VCAM pixels."""
+"""Check that Camera keeps physical QR analysis beside a virtual preview."""
 
 from __future__ import annotations
 
@@ -44,9 +44,9 @@ def analyze(text: str) -> list[str]:
         failures.append("Camera preview replacement route was not observed")
     if not metadata_routes:
         failures.append("Camera MetadataObject analysis input was not observed")
-    elif "qr-analysis" not in metadata_routes:
+    elif any(route != "none" for route in metadata_routes):
         failures.append(
-            "Camera MetadataObject analysis input does not receive VCAM pixels "
+            "Camera MetadataObject analysis input must remain physical "
             f"(routes={','.join(sorted(set(metadata_routes)))})"
         )
     if detector_routes and any(route != "none" for route in detector_routes):
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         for failure in failures:
             print(f"RED: {failure}")
         return 1
-    print("GREEN: Camera preview and QR-analysis input both receive VCAM pixels")
+    print("GREEN: Camera preview receives VCAM pixels and QR analysis remains physical")
     return 0
 
 
