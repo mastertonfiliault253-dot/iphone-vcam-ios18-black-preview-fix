@@ -208,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.104+ios18-webkit-adaptive-fill";
+    return "com.codex.vcam/0.8.105+ios18-camera-qr-analysis";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

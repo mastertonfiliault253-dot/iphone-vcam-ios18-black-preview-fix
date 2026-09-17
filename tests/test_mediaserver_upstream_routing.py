@@ -179,9 +179,37 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             body.index("return VCAMReplacementRouteVideoRecording;"),
         )
 
-    def test_fanout_and_inference_nodes_are_never_direct_replacement_routes(self) -> None:
-        self.assertNotIn('@"BWFanOutNode"', self.route_function)
+    def test_only_metadata_input_fanout_is_a_direct_analysis_route(self) -> None:
+        # Camera QR recognition consumes Preview Splitter/MetadataObject before
+        # Preview Scaler. Keep every other fan-out and inference output on the
+        # internal-stage bypass to avoid restoring the old render explosion.
+        self.assertIn('@"BWFanOutNode"', self.route_function)
+        self.assertIn('@"Preview Splitter"', self.route_function)
+        self.assertIn('@"MetadataObject"', self.route_function)
+        self.assertIn(
+            "return VCAMReplacementRouteQRAnalysis;", self.route_function
+        )
         self.assertNotIn('@"BWInferenceNode"', self.route_function)
+
+    def test_qr_analysis_reuses_preview_fit_without_propagation(self) -> None:
+        presentation = _between(
+            self.entry,
+            "static VCAMFramePresentation VCAMPresentationForReplacementRoute",
+            "static BOOL VCAMStringMatches",
+        )
+        marker_routes = _between(
+            self.entry,
+            "static BOOL VCAMRouteUsesPropagationMarker",
+            "static BOOL VCAMWritePropagationMarker",
+        )
+        self.assertRegex(
+            presentation,
+            re.compile(
+                r"case VCAMReplacementRouteQRAnalysis:\s*"
+                r"return VCAMFramePresentationCameraPreviewFit;"
+            ),
+        )
+        self.assertNotIn("VCAMReplacementRouteQRAnalysis", marker_routes)
 
     def test_ios18_observed_internal_graph_stages_bypass_direct_rendering(self) -> None:
         helper = _between(

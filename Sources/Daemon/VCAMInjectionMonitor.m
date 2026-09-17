@@ -221,7 +221,10 @@ int main(int argc, char *argv[]) {
             .name = "cameracaptured",
             .processPath = "/usr/libexec/cameracaptured",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib",
-            .proofPath = "/var/tmp/vcam-ref-msd.log",
+            // Keep proof verification on the same first-choice path used by
+            // VCAMRefLog. cameracaptured can write this sandbox-approved
+            // directory, and postinst creates the file before respawning it.
+            .proofPath = "/var/mobile/Library/VirtualCaptureCard/VCAM/vcam-ref.log",
             .proofFormat = "[%d][start=%llu][",
         },
     };

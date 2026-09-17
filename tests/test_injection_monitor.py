@@ -7,6 +7,26 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class InjectionMonitorTests(unittest.TestCase):
+    def test_cameracaptured_proof_uses_reference_log_preferred_by_hook(self) -> None:
+        monitor = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
+            encoding="utf-8"
+        )
+        image_utils = (
+            ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
+        ).read_text(encoding="utf-8")
+        reference_log = "/var/mobile/Library/VirtualCaptureCard/VCAM/vcam-ref.log"
+        candidates = image_utils.split(
+            "static const char *candidatePaths[] = {", 1
+        )[1].split("};", 1)[0]
+        first_candidate = next(
+            line.strip().removesuffix(",")
+            for line in candidates.splitlines()
+            if line.strip().startswith('"')
+        )
+
+        self.assertEqual(first_candidate, f'"{reference_log}"')
+        self.assertIn(f'.proofPath = "{reference_log}"', monitor)
+
     def test_monitor_repairs_only_system_clients_and_never_apps(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
             encoding="utf-8"
