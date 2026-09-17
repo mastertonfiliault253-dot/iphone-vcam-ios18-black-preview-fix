@@ -151,6 +151,30 @@ class PackagingArchitectureTests(unittest.TestCase):
         )
         self.assertNotIn("vcam_best_effort_inject", postinst)
 
+    def test_ci_rejects_springboard_as_an_active_injection_monitor_target(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grep -q '\"/usr/libexec/cameracaptured\"' Sources/Daemon/VCAMInjectionMonitor.m",
+            workflow,
+        )
+        self.assertIn(
+            "! grep -q '\"/System/Library/CoreServices/SpringBoard.app/SpringBoard\"' "
+            "Sources/Daemon/VCAMInjectionMonitor.m",
+            workflow,
+        )
+        self.assertIn(
+            'test "$(grep -c \'^            \\.processPath = \' '
+            'Sources/Daemon/VCAMInjectionMonitor.m)" -eq 1',
+            workflow,
+        )
+        self.assertIn(
+            'test "$(grep -c \'^            \\.dylibPath = \' '
+            'Sources/Daemon/VCAMInjectionMonitor.m)" -eq 1',
+            workflow,
+        )
+
     def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:
         launchd_path = (
             ROOT / "layout" / "Library" / "LaunchDaemons" / "com.codex.vcamd.plist"
