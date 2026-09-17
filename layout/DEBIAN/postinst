@@ -37,9 +37,10 @@ if [ -e "$daemon_plist" ]; then
     done
 fi
 
-# Dopamine normally has systemhook load ElleKit's TweakLoader. If that loader
-# is missing from an already-running target, recover this package's two exact
-# clients without widening injection to Camera, WebKit or third-party apps.
+# Dopamine normally has systemhook load ElleKit's TweakLoader into SpringBoard
+# and application clients. Never PAC-inject those processes: direct opainject
+# can race dyld fixups during launch. vcaminjectd only repairs cameracaptured,
+# where constructor proof makes the exact-target recovery observable.
 vcam_inject_log=/var/tmp/vcam-postinst-inject.log
 : > "$vcam_inject_log" 2>/dev/null || true
 
@@ -49,14 +50,13 @@ vcam_log_injection() {
 
 # A loaded dylib cannot be replaced in place. Upgrades used to inject the new
 # client into the existing process, leaving the old Objective-C classes alive.
-# Respawn both exact hosts first. vcaminjectd is the sole opainject owner so a
-# missing constructor proof cannot make postinst and the watchdog inject the
-# same stable process independently.
+# Respawn both exact hosts first. ElleKit owns SpringBoard loading;
+# vcaminjectd is the sole opainject owner for cameracaptured.
 : > /var/tmp/vcam-springboard-client.log 2>/dev/null || true
 : > /var/tmp/vcam-ref-msd.log 2>/dev/null || true
 killall -9 SpringBoard cameracaptured >/dev/null 2>&1 || true
 sleep 1
-vcam_log_injection "deferred target=SpringBoard reason=vcaminjectd"
+vcam_log_injection "automatic target=SpringBoard reason=ElleKit"
 vcam_log_injection "deferred target=cameracaptured reason=vcaminjectd"
 
 inject_daemon_plist=/var/jb/Library/LaunchDaemons/com.codex.vcaminjectd.plist

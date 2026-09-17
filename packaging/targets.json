@@ -49,7 +49,7 @@
       "bundleIds": [],
       "executables": ["vcaminjectd"],
       "injected": false,
-      "allowedTargets": ["SpringBoard", "cameracaptured"]
+      "allowedTargets": ["cameracaptured"]
     }
   ]
 }

@@ -27,13 +27,13 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         self.assertIn('"org.mozilla.ios.Firefox"', springboard_filter)
         self.assertIn("cameracaptured", media_filter)
 
-    def test_postinstall_defers_exact_targets_to_single_injection_daemon(self) -> None:
+    def test_postinstall_keeps_springboard_on_ellekit_and_defers_cameracaptured(self) -> None:
         postinst = (ROOT / "layout" / "DEBIAN" / "postinst").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(postinst.count('vcam_log_injection "deferred target='), 2)
+        self.assertEqual(postinst.count('vcam_log_injection "deferred target='), 1)
         self.assertIn(
-            'vcam_log_injection "deferred target=SpringBoard reason=vcaminjectd"',
+            'vcam_log_injection "automatic target=SpringBoard reason=ElleKit"',
             postinst,
         )
         self.assertIn(

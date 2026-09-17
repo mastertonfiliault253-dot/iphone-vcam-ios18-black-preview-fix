@@ -211,13 +211,6 @@ int main(int argc, char *argv[]) {
     (void)argv;
     VCAMInjectionTarget targets[] = {
         {
-            .name = "SpringBoard",
-            .processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
-            .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMSpringBoardClient.dylib",
-            .proofPath = "/var/tmp/vcam-springboard-client.log",
-            .proofFormat = "pid=%d start=%llu ",
-        },
-        {
             .name = "cameracaptured",
             .processPath = "/usr/libexec/cameracaptured",
             .dylibPath = "/var/jb/Library/MobileSubstrate/DynamicLibraries/VCAMMediaServerClient.dylib",
@@ -228,7 +221,7 @@ int main(int argc, char *argv[]) {
             .proofFormat = "[%d][start=%llu][",
         },
     };
-    fprintf(stderr, "vcaminjectd starting with %zu exact targets (application clients use ElleKit auto-injection)\n",
+    fprintf(stderr, "vcaminjectd starting with %zu exact targets (SpringBoard and application clients use ElleKit auto-injection)\n",
             sizeof(targets) / sizeof(targets[0]));
     fflush(stderr);
     while (YES) {

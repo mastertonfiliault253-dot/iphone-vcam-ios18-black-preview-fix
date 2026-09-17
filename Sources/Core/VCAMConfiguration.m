@@ -208,7 +208,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.105+ios18-camera-qr-analysis";
+    return "com.codex.vcam/0.8.106+ios18-springboard-safe-injection";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

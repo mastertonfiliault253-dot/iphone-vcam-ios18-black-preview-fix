@@ -83,7 +83,7 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertFalse(targets["vcaminjectd"]["injected"])
         self.assertEqual(
             targets["vcaminjectd"]["allowedTargets"],
-            ["SpringBoard", "cameracaptured"],
+            ["cameracaptured"],
         )
         self.assertEqual(
             targets["VCAMSpringBoardClient"]["bundleIds"],
@@ -143,9 +143,12 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn(restart, postinst)
         self.assertLess(
             postinst.index(restart),
-            postinst.index('vcam_log_injection "deferred target=SpringBoard'),
+            postinst.index('vcam_log_injection "automatic target=SpringBoard'),
         )
-        self.assertIn("vcaminjectd is the sole opainject owner", postinst)
+        self.assertIn(
+            'vcam_log_injection "deferred target=cameracaptured reason=vcaminjectd"',
+            postinst,
+        )
         self.assertNotIn("vcam_best_effort_inject", postinst)
 
     def test_realtime_worker_sets_decoder_jetsam_budget_before_allocating(self) -> None:

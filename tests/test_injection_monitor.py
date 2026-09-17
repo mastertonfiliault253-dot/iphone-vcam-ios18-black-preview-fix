@@ -27,20 +27,18 @@ class InjectionMonitorTests(unittest.TestCase):
         self.assertEqual(first_candidate, f'"{reference_log}"')
         self.assertIn(f'.proofPath = "{reference_log}"', monitor)
 
-    def test_monitor_repairs_only_system_clients_and_never_apps(self) -> None:
+    def test_monitor_repairs_only_cameracaptured_and_never_springboard_or_apps(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(source.count(".processPath ="), 2)
-        self.assertIn(
-            '.processPath = "/System/Library/CoreServices/SpringBoard.app/SpringBoard"',
-            source,
-        )
+        self.assertEqual(source.count(".processPath ="), 1)
+        self.assertNotIn("/System/Library/CoreServices/SpringBoard.app/SpringBoard", source)
         self.assertIn('.processPath = "/usr/libexec/cameracaptured"', source)
-        self.assertEqual(source.count(".dylibPath ="), 2)
-        # Application clients (Camera, Safari, browsers) are loaded by ElleKit
-        # from the plist filter; opainject must never target an app process.
+        self.assertEqual(source.count(".dylibPath ="), 1)
+        # SpringBoard and application clients are loaded by ElleKit from the
+        # plist filter; direct PAC injection races dyld and can crash SpringBoard.
         for forbidden in (
+            "VCAMSpringBoardClient.dylib",
             "/Applications/Camera.app",
             "MobileSafari",
             "Google",
@@ -51,7 +49,7 @@ class InjectionMonitorTests(unittest.TestCase):
             "WebKit",
         ):
             self.assertNotIn(forbidden, source)
-        self.assertIn("application clients use ElleKit auto-injection", source)
+        self.assertIn("SpringBoard and application clients use ElleKit auto-injection", source)
 
     def test_springboard_plist_filter_keeps_application_clients(self) -> None:
         plist = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
@@ -91,7 +89,7 @@ class InjectionMonitorTests(unittest.TestCase):
         # even across daemon restarts.
         self.assertIn("already-loaded proof=1", source)
         self.assertIn("if (VCAMProofContainsProcess(target, pid, startToken)) {", source)
-        self.assertIn('proofFormat = "pid=%d start=%llu "', source)
+        self.assertNotIn('proofFormat = "pid=%d start=%llu "', source)
         self.assertIn('proofFormat = "[%d][start=%llu]["', source)
 
     def test_monitor_is_a_root_rootless_launchdaemon(self) -> None:
