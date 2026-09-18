@@ -66,6 +66,24 @@ class StreamLifecycleAnalyzerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("hls-activity-after-suspension", result.stdout)
 
+    def test_hls_resume_that_reaches_generic_stall_timeout_is_red(self) -> None:
+        result = run_analyzer(
+            "hls",
+            "\n".join(
+                [
+                    "[2026-09-18 10:30:00.000][DEBUG-vcamapp] springboard HLS start url=<REDACTED>",
+                    "[2026-09-18 10:30:04.000][DEBUG-vcamapp] springboard HLS suspended no consumer idle=3.0s",
+                    "[2026-09-18 10:33:00.000][DEBUG-vcamapp] springboard HLS resumed for consumer",
+                    "[2026-09-18 10:33:03.000][DEBUG-vcamapp] springboard HLS health ticks=300 hasNew=0 itemStatus=1 timeControl=0 wait=none current=43.491 liveLag=nan",
+                    "[2026-09-18 10:33:08.000][DEBUG-vcamapp] springboard HLS reconnect attempt=1 delay=1s error=springboard HLS stalled 8.0s status=1 timeControl=0 details=none",
+                ]
+            ),
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("hls-resume-stall", result.stdout)
+        self.assertIn("resume_stalls=1", result.stdout)
+
     def test_rtsp_resume_then_final_suspend_is_green(self) -> None:
         result = run_analyzer(
             "rtsp",

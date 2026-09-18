@@ -23,6 +23,8 @@ static const char *const VCAMLegacyLocalVideoDaemonMarker =
 static const char *const VCAMLegacyLocalImageDaemonMarker =
     "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 static const uint64_t VCAMHLSStallTimeoutNanoseconds = 8ULL * 1000000000ULL;
+static const uint64_t VCAMHLSResumeFrameTimeoutNanoseconds =
+    2ULL * 1000000000ULL;
 static const uint64_t VCAMDynamicConsumerLeaseNanoseconds =
     3ULL * 1000000000ULL;
 static const uint64_t VCAMSurfaceHandshakeProbeIntervalNanoseconds =
@@ -268,6 +270,7 @@ static void VCAMSpringBoardMediaPreferencesChanged(
 @property(nonatomic) BOOL staticImageStartRetryPending;
 @property(nonatomic) NSUInteger staticImageStartRetryAttempt;
 @property(nonatomic) BOOL hlsSuspendedForNoConsumer;
+@property(nonatomic) NSUInteger hlsResumeProbeGeneration;
 @property(nonatomic) uint64_t hlsProxyTokenHigh;
 @property(nonatomic) uint64_t hlsProxyTokenLow;
 @property(nonatomic) uint64_t hlsSessionRequestGeneration;
@@ -362,6 +365,7 @@ static void VCAMSpringBoardMediaConsumerActivity(
 }
 
 - (void)stopPlayback {
+    self.hlsResumeProbeGeneration += 1;
     self.hlsSuspendedForNoConsumer = NO;
     atomic_store_explicit(&VCAMHLSConsumerSuspended, 0, memory_order_release);
     atomic_store_explicit(&VCAMHLSResumePending, 0, memory_order_release);
@@ -475,6 +479,9 @@ static void VCAMSpringBoardMediaConsumerActivity(
     if (!self.started || self.localVideo ||
         !VCAMSpringBoardRuntimeIsAtLeastIOS18() ||
         !self.hlsSuspendedForNoConsumer || self.player == nil) return;
+    AVPlayer *resumedPlayer = self.player;
+    NSUInteger decodedFramesBeforeResume = self.decodedFrames;
+    NSUInteger probeGeneration = ++self.hlsResumeProbeGeneration;
     self.hlsSuspendedForNoConsumer = NO;
     atomic_store_explicit(&VCAMHLSConsumerSuspended, 0, memory_order_release);
     self.lastDecodedFrameTimestampNanoseconds =
@@ -483,6 +490,18 @@ static void VCAMSpringBoardMediaConsumerActivity(
     [self.player play];
     [VCAMConfiguration appendProcessLog:
         @"springboard HLS resumed for consumer"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)VCAMHLSResumeFrameTimeoutNanoseconds),
+        dispatch_get_main_queue(), ^{
+        if (!self.started || self.localVideo || self.hlsSuspendedForNoConsumer ||
+            self.hlsResumeProbeGeneration != probeGeneration ||
+            self.player != resumedPlayer ||
+            self.decodedFrames != decodedFramesBeforeResume) return;
+        [VCAMConfiguration appendProcessLog:
+            @"springboard HLS resume frame timeout 2.0s; rebuilding live player"];
+        [self stopPlayback];
+        if (self.started) [self reload];
+    });
 }
 
 - (BOOL)configurationMatches:(VCAMConfiguration *)configuration {

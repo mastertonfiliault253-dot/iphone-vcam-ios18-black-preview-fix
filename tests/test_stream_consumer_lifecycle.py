@@ -76,6 +76,22 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
         self.assertNotIn("self.consumerDemandActive = active", setter)
         self.assertIn("_consumerDemandActive = active", setter)
 
+    def test_hls_resume_rebuilds_live_player_before_generic_stall_timeout(self) -> None:
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"
+        ).read_text(encoding="utf-8")
+        resume = bridge.split("- (void)resumeHLSForConsumer", 2)[2].split(
+            "- (BOOL)configurationMatches:", 1
+        )[0]
+
+        self.assertIn("VCAMHLSResumeFrameTimeoutNanoseconds", bridge)
+        self.assertIn("hlsResumeProbeGeneration", bridge)
+        self.assertIn("decodedFramesBeforeResume", resume)
+        self.assertIn("self.decodedFrames != decodedFramesBeforeResume", resume)
+        self.assertIn("springboard HLS resume frame timeout", resume)
+        self.assertIn("[self stopPlayback]", resume)
+        self.assertIn("[self reload]", resume)
+
     def test_rtsp_stop_interrupts_blocking_ffmpeg_io_before_restart(self) -> None:
         source = (
             ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m"

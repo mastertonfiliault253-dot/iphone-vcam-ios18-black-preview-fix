@@ -39,8 +39,34 @@ def analyze(text: str, source: str) -> int:
         if match is not None:
             rows.append((_parse_time(match.group("time")), match.group("message")))
 
+    resume_stalls = 0
+    if source == "hls":
+        waiting_for_resumed_playback = False
+        for _, message in rows:
+            if start_marker in message or suspend_marker in message:
+                waiting_for_resumed_playback = False
+            elif resume_marker in message:
+                waiting_for_resumed_playback = True
+            elif waiting_for_resumed_playback and (
+                "springboard HLS frame decoded=" in message
+                or (
+                    "springboard HLS health " in message
+                    and "timeControl=2" in message
+                )
+            ):
+                waiting_for_resumed_playback = False
+            elif (
+                waiting_for_resumed_playback
+                and "springboard HLS reconnect " in message
+                and "springboard HLS stalled" in message
+            ):
+                resume_stalls += 1
+                waiting_for_resumed_playback = False
+
     start_indexes = [index for index, (_, message) in enumerate(rows) if start_marker in message]
     failures: list[str] = []
+    if resume_stalls:
+        failures.append("hls-resume-stall")
     if not start_indexes:
         failures.append(f"{source}-start-missing")
         session: list[tuple[datetime, str]] = []
@@ -84,6 +110,7 @@ def analyze(text: str, source: str) -> int:
     print(f"starts={len(start_indexes)}")
     print(f"suspensions={len(suspensions)}")
     print(f"resumes={len(resumes)}")
+    print(f"resume_stalls={resume_stalls}")
     print(f"activity_after_suspend={activity_after_suspend}")
     print(f"active_seconds_before_suspend={active_seconds_before_suspend:.3f}")
     return 1 if failures else 0
