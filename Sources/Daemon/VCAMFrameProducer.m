@@ -169,8 +169,8 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         BOOL rtsp = self.configuration.enabled &&
             self.configuration.sourceKind == VCAMSourceKindRTSP &&
             NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
-        BOOL unchanged = self.consumerDemandActive == active;
-        self.consumerDemandActive = active;
+        BOOL unchanged = _consumerDemandActive == active;
+        _consumerDemandActive = active;
         if (!rtsp || (unchanged && !(active && self.source == nil))) return;
         if (!active) {
             if (self.source == nil) return;

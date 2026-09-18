@@ -65,6 +65,17 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
         daemon_start = main.split("int main(int argc, char *argv[])", 1)[1]
         self.assertIn("if (VCAMDaemonRuntimeIsAtLeastIOS18())", daemon_start)
 
+    def test_consumer_demand_setter_does_not_recursively_call_itself(self) -> None:
+        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
+            encoding="utf-8"
+        )
+        setter = producer.split(
+            "- (void)setConsumerDemandActive:(BOOL)active {", 1
+        )[1].split("\n}\n", 1)[0]
+
+        self.assertNotIn("self.consumerDemandActive = active", setter)
+        self.assertIn("_consumerDemandActive = active", setter)
+
     def test_rtsp_stop_interrupts_blocking_ffmpeg_io_before_restart(self) -> None:
         source = (
             ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m"
