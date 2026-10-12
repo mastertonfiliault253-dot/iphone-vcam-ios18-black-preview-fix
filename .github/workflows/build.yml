@@ -105,6 +105,9 @@ jobs:
           test "$probe_debs" -eq 1
           probe_app="$(find probe-app/.theos/_ -type f -name VCAMDetectProbe -path '*/Applications/*' -print -quit)"
           test -n "$probe_app"
+          # bundle 缺 Info.plist 时 LaunchServices 不认该 App（真机 uiopen 静默失败已实测）
+          probe_plist="$(find probe-app/.theos/_ -type f -name Info.plist -path '*/VCAMDetectProbe.app/*' -print -quit)"
+          test -n "$probe_plist"
           lipo -info "$probe_app"
           lipo "$probe_app" -verify_arch arm64 arm64e
       - uses: actions/upload-artifact@v4

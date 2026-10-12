@@ -120,7 +120,7 @@ class AppContractTests(unittest.TestCase):
 
     def test_control_and_infoplist_keys(self):
         self.assertIn("com.codex.vcamdetectprobe", self._read("control"))
-        info = self._read("Info.plist")
+        info = self._read("Resources/Info.plist")
         self.assertIn("NSCameraUsageDescription", info)
         self.assertIn("NSMotionUsageDescription", info)
         self.assertIn("vcam-probe", info)
