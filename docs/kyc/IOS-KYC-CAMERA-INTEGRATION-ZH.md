@@ -417,6 +417,30 @@ emitSampleBuffer:` 处克隆像素进图拥有的 buffer 并转发**原始** sam
      （hookkit 2.5.1 早于 iOS 18，运行时 hook 在该系统未实测；不生效则退回
      自有 App 剔除检测项的方案）。
 
+## RTSP 流式源增量核对（2026-10-13，PC ffmpeg→mediamtx→vcam RTSP→测试台）
+
+链路：`tools/mediamtx/mediamtx.exe`（v1.21.2，配置 `scripts/deterministic-mediamtx.yml`
+端口 18554）+ ffmpeg testsrc2 1280×720@30 closed-GOP 发布者；设备配置
+`/var/mobile/Media/VCAM/com.codex.vcam.plist` 切 `source='rtsp'`。注意
+`scripts/start-deterministic-stream.ps1` 在 PS5.1 下路径含空格会坏，改手动启动
+两进程（参数照抄脚本）。主机 LAN IP 以 `ipconfig` 现查为准（本轮 192.168.2.181）。
+
+逐项结果：
+
+| 核对项 | 结果 | 证据 |
+|---|---|---|
+| 端到端内容一致 | ✅ | `snap_b.jpg` 目检 = testsrc2（颜色条+棋盘）；RTSP 会话/软解日志齐全（`rtsp session decoder=h264` → `rtsp first software pixel buffer`） |
+| 1080p 档内容连续 | ✅ 23.11/23.82Hz frozen=False | flow_record_1080/720 检测电池（修复后的 1080p 路径对 RTSP 源同样正常） |
+| 循环重复（时间连续性） | ✅ 链路无循环 | 35s 挑战片段 loop 度量出 `True@12.0s dip=0.225`——但主机 ffmpeg 直落盘 testsrc2 35s 对照（不经任何设备环节）同样 `True@12.0s dip=0.059`：12s 周期是 **testsrc2 测试图案固有动画周期**，非链路重放；RTSP 客户端无 loop 代码路径，属结构性消除。教训：loop 判据对"周期性动画内容"会假阳性，判别前必须有源侧对照 |
+| consumer demand 时延 | 1.9s | `vcamd RTSP source started for consumer`→`rtsp first software pixel buffer`（01:03:13.395→01:03:15.301），含 2s 流预热 |
+| stale/首帧前画面 | 纯黑 | 首帧前快照全黑（RTSP 首帧前无旧帧可用）；真实供应商会话建议先预热流再进流程 |
+| 中途断源行为 | 保持最后帧 + 指数退避重连 | kill publisher 后录像尾帧仍为最后画面（不转黑）；日志 `Server returned 404` + `rtsp reconnect backing off 1s→2s→4s`；消费者退出后 `suspended no consumer` 干净释放 |
+| 软解噪声指纹 | ≈无损 | 设备软解录像 noise_lap 3.34/3.45 vs 同源直落盘 3.55（差 <6%） |
+
+对内容策略的含义：RTSP 直播路径结构性消除"原样循环"信号，且 testsrc2 的对照实验
+表明**内容本身带周期运动就会被时序检测抓到**——AI 人脸视频需避免固定动作周期
+（与阶段4 清单第 4 条一致），这是比"换 RTSP 通道"更本质的要求。
+
 ## 1080p 内容冻结修复（2026-10-13，CI 出包 + 真机验收通过）
 
 **根因**（本节 00:00 对照运行确认）：`cameracaptured` 的 CoreImage 上下文被强制软件
