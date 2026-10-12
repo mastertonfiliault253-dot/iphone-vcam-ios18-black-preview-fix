@@ -145,9 +145,12 @@ static BOOL pathExists(NSString *p) {
     if (uname(&u) == 0) { machine = @(u.machine); release = @(u.release); }
 
     NSMutableArray *dyldSuspicious = [NSMutableArray array];
+    // 自身可执行文件路径（本 App 名叫 VCAMDetectProbe，会被 "VCAM" 签名误命中）。
+    NSString *selfImage = [[NSBundle mainBundle] executablePath] ?: @"";
     uint32_t n = _dyld_image_count();
     for (uint32_t i = 0; i < n; i++) {
         NSString *name = @(_dyld_get_image_name(i));
+        if (selfImage.length && [name isEqualToString:selfImage]) { continue; }
         for (NSString *sig in @[@"substrate", @"ellekit", @"fishhook", @"libsub",
                                 @"substitute", @"TweakInject", @"Shadow", @"hookkit",
                                 @"VCAM", @"libcy", @"cycript", @"substitute.dylib"]) {
