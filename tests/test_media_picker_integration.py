@@ -473,7 +473,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("NSURLSessionWebSocketTask", obs)
         self.assertIn("latestJPEG", obs)
         self.assertIn("latestFrameHostTime", obs)
-        self.assertIn("< 3.5", obs)
+        self.assertIn(
+            "static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;", obs
+        )
+        self.assertIn("< VCAMStaleFrameSeconds", obs)
         self.assertIn("return NULL", obs)
 
     def test_rtsp_consumes_tcp_continuously_and_converts_latest_clean_frame(self) -> None:
@@ -503,7 +506,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("self.streamName", rtsp)
         self.assertIn("receive_frame error=", rtsp)
         self.assertIn("_latestPixelBuffer", rtsp)
-        self.assertIn("< 3.5", rtsp)
+        self.assertIn(
+            "static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;", rtsp
+        )
+        self.assertIn("< VCAMStaleFrameSeconds", rtsp)
         self.assertIn("VCAMCopyBGRAFromAVFrame", rtsp)
         self.assertIn("AV_PIX_FMT_YUV420P", converter)
         self.assertIn("AV_PIX_FMT_NV12", converter)

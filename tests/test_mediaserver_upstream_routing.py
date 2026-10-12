@@ -146,7 +146,13 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         self.assertIn('@"StillImage(StillImage)"', self.route_function)
         self.assertIn("(OSType)0x70663230", self.route_function)
         self.assertIn("(OSType)0x70663230", compressed_formats)
-        self.assertIn("(OSType)0x70663230", support)
+        # Target-buffer support accepts compressed formats only through the
+        # shared observed-format table proven above, never by CPU plane reads.
+        self.assertIn(
+            "BOOL compressedVideoRange = VCAMFormatIsCompressedVideoRange(format);",
+            support,
+        )
+        self.assertIn("if (compressedVideoRange)", support)
         self.assertRegex(
             self.route_function,
             re.compile(
@@ -307,8 +313,15 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "if (compressedVideoRange)",
             "return CVPixelBufferGetWidthOfPlane",
         )
+        # p420 is validated purely by the observed-format table (never by a
+        # CVIsCompressedPixelFormatAvailable capability probe) and accepted
+        # as an opaque VideoToolbox-owned surface.
         self.assertIn("format == (OSType)0x70343230", compressed_formats)
-        self.assertIn("format == (OSType)0x70343230", compressed_branch)
+        self.assertIn(
+            "BOOL compressedVideoRange = VCAMFormatIsCompressedVideoRange(format);",
+            support,
+        )
+        self.assertIn("return YES;", compressed_branch)
 
     def test_ios16_observed_deferred_photo_format_uses_compressed_transfer(self) -> None:
         utils = UTILS_PATH.read_text(encoding="utf-8")
@@ -327,8 +340,14 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             "if (compressedVideoRange)",
             "return CVPixelBufferGetWidthOfPlane",
         )
+        # '&xf0' rides the same compressed transfer contract: table membership
+        # plus opaque pass-through, no plane reinterpretation.
         self.assertIn("format == (OSType)0x26786630", compressed_formats)
-        self.assertIn("format == (OSType)0x26786630", compressed_branch)
+        self.assertIn(
+            "BOOL compressedVideoRange = VCAMFormatIsCompressedVideoRange(format);",
+            support,
+        )
+        self.assertIn("return YES;", compressed_branch)
 
     def test_downstream_fast_path_requires_its_own_matching_numeric_marker(self) -> None:
         matcher = _between(

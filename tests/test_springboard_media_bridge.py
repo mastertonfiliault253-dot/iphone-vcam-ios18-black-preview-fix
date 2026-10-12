@@ -170,7 +170,7 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("seekToTime:kCMTimeZero", source)
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", source)
         self.assertIn("/var/tmp/vcam-local-video-legacy-vcamd.enable", producer)
-        self.assertIn("VCAMLocalMediaPathIsVideo", producer)
+        self.assertIn("VCAMMediaPathIsVideo(", producer)
         self.assertIn("videoTrack.preferredTransform", source)
         self.assertIn("VCAMCoreImageLinearTransformForTrack", source)
         self.assertIn("preferredTransform.a, -preferredTransform.b", source)

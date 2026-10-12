@@ -78,7 +78,10 @@ class InjectionSafetyTests(unittest.TestCase):
         self.assertIn("CVPixelBufferGetIOSurface", implementation)
         self.assertIn("CVPixelBufferGetPlaneCount(targetBuffer) != 2", implementation)
         self.assertIn("CVPixelBufferGetBytesPerRowOfPlane", implementation)
-        self.assertIn("CVIsCompressedPixelFormatAvailable", implementation)
+        self.assertIn(
+            "BOOL compressedVideoRange = VCAMFormatIsCompressedVideoRange(format);",
+            implementation,
+        )
         self.assertIn("0x5b387630", implementation)
         self.assertIn("0x7d387630", implementation)
         self.assertIn("VTPixelTransferSessionTransferImage", implementation)
@@ -243,7 +246,7 @@ class InjectionSafetyTests(unittest.TestCase):
             "CIRenderDestination *destination", 1
         )[0]
 
-        self.assertIn("!realtimeCompensation && /* sourceIsPortrait always YES */ YES", render)
+        self.assertIn("!realtimeCompensation && targetWidth > targetHeight", render)
         self.assertIn("stillPhotoRequiresRightOrientationOut", implementation)
         self.assertIn("VCAMSetStillPhotoDisplayOrientation", entry)
         self.assertIn("kCGImagePropertyOrientationRight", entry)
