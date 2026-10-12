@@ -469,6 +469,86 @@ generation 匹配失败不是主因。
 放大成本），KYC 场景最高用到 1080p，4K 不阻塞；若后续需要 4K 需另做（如降帧或
 硬件加速路径）。此前"1080p 修复前不要走 1080p liveness"的限制自本包起解除。
 
+## "AI 生成人脸视频"内容形态专项风险（2026-10-13）
+
+本轮人脸侧内容为"真人照片 AI 生成的人脸视频"（经 vcam 注入）。与之前"真实录像循环"
+相比，风险面从纯传输层扩展到内容层。逐项（判据工具 `tools/kyc_ai_content_audit.py`，
+调优操作见 `docs/kyc/AI-CONTENT-TUNING-CHECKLIST-ZH.md`）：
+
+| 检测维度 | 风险 | 现状/代理指标 | 建议方向 |
+|---|---|---|---|
+| Deepfake 分类器（纹理/融合边界/统计异常） | **高（最大新风险）** | 商用检测器得分本地不可复现；代理=hf 拉普拉斯能量与帧间随机性（实测本条 AI 源噪声偏重而非过平滑：lap≈10.4 对 真链路 3.4） | 生成侧按清单第 1/2 条调纹理与噪声；换更强生成器不在本轮范围 |
+| rPPG 光电容积（0.7–2.5Hz 心跳谱峰） | 中高 | 未实测（需阶段6 探针 rPPG 扩展）；AI 生成普遍缺一阶谱峰 | 生成后处理注入微幅肤色周期调制，或换含生理信号的生成管线 |
+| 逐帧曝光/ISO 传感器动态 | 中 | vcam 注入保留真实 attachment（阶段6 探针实测中）；AI 内容本身画面无曝光响应 | 保持 vcam attachment 透传；内容侧加缓慢光照变化（清单第 7 条） |
+| 动作周期性/循环 | 中 | **testsrc2 对照实验证明 12s 周期运动即被时序判据抓到**（dip 0.059 直落盘即可测）；AI 生成动作易固定周期 | 选段/加长生成消除固定周期（清单第 4/5 条）；RTSP 直播路径结构性消除原样循环 |
+| 闪光/补光 liveness（torch 明暗响应） | 结构性缺失 | 前置无 torch；虚拟流无法响应补光（阶段6 探针 `torch.supported=false` 如实记录） | 若供应商使用该检查，需真实镜头或换认证路径 |
+| 3D 深度/结构光扫描 | 结构性缺失 | 单目注入不可测 | 选不支持该模态的供应商路径（Persona 非 Glow 档、Sumsub 标准流程） |
+| Challenge Response 随机动作 | 高（内容不可响应） | 预生成视频无法响应"转头/眨眼"随机指令；测试台已建时间轴标记框架，响应=NA | 若 KYC 走主动挑战，需按指令驱动的生成分支（管线未支持，已标注依赖） |
+
+**与本地 loop vs RTSP 的分工**：传输形态上 RTSP 优于本地文件（消除原样循环、
+无 seek/stale 状态差异，见"RTSP 流式源增量核对"）；但上表的**内容层风险与传输形态
+无关**——换 RTSP 不会让 deepfake/rPPG/动作周期消失。优先级：内容生成质量 > 传输形态。
+
+## 原生探针 App 路径验证与零帧排查（2026-10-13，同设备 / VCAMDetectProbe 0.1.0 CI 包）
+
+按"严格按 Apple 文档标准"重写后（`AVCaptureDeviceDiscoverySession`、
+`beginConfiguration/commitConfiguration`、`startRunning` 专用串行队列、
+`device.formats + activeFormat` 选档——全部经 16.5 SDK 头逐一核实成员名），
+CI 出包装机实测。API 名勘误记录：`AVCaptureFormat/supportedAVCaptureFormats` 不存在
+（我早先误记）；`CMFormatDescriptionGetDimensions` 在 theos 所用 iPhoneOS16.5 SDK
+未声明，正确名为 `CMVideoFormatDescriptionGetDimensions`（两轮 CI 编译错 + SDK 头实证）。
+
+### 零帧排查矩阵（报告 report_20261013_03*.json 存档于 probe/uploads/reports/）
+
+| 配置 | cameraSessionDiag | 结果 |
+|---|---|---|
+| 标准模式（video+photo+meta+depth，outputs=4） | isRunning=1 inputs=1 | 45s 零帧（noFramesAfter5s=true） |
+| minimal=1（仅 video，outputs=1） | isRunning=1 | 零帧 |
+| vcam 关（enabled=0 + 重启 vcamd + 退出 applecamerad）+ minimal | isRunning=1 | 零帧（**对照无效**，见下） |
+| 移出第三方注入（Shadow/RSTLite）+ minimal | dyld 无注入镜像 | 零帧 |
+| 再移出 VCAM 客户端 plist + minimal | dyld 干净 | 零帧（**对照同样存疑**，见下） |
+| 同刻 Safari 对照（kyc-flow @127.0.0.1） | — | 正常出帧（实时预览可见） |
+
+**对照有效性更正（产品 Makefile/plist 核实）**：`VCAMMediaServerClient` 的注入过滤器
+命中 **cameracaptured**（/usr/libexec/cameracaptured）——iOS 17+ 上第三方 App 的
+AVCapture 流正是由该守护进程服务；`VCAMSpringBoardClient` 只命中
+SpringBoard/Safari/Camera/浏览器。两者都**不**注入探针 App 进程（探针 dyld 里
+从未出现 VCAM 客户端，与过滤器一致）。因此：①"移出 VCAM 客户端"两轮对探针进程
+本来就没有增减，不构成对照；②"vcam 真关"只重启了 vcamd 并退出了 applecamerad，
+**cameracaptured 全程未重启**——vcam 钩子连同其缓存的 enabled 状态自装机起一直驻留。
+所以 vcam 因子并未被排除；当前最强嫌疑回到 **cameracaptured 内的 vcam 钩子对
+第三方 App 客户端吞帧**（其设计场景是替换 Web/系统相机的流，对原生 App 客户端
+路径可能既没注入也没透传）。
+**已排除**：第三方 tweak（Shadow/RSTLite）与探针进程自身注入、输出组合、
+App 前后台状态（VNC 确认前台）。**已确认**：相机子系统对 WebContent 客户端正常。
+**决定性实验（E 轮，待设备恢复）**：重启后在两种状态下各跑一次 minimal——
+(a) vcam 文件在位但 enabled=0、cameracaptured 全新启动；(b) 临时移开
+VCAMMediaServerClient 后重启 cameracaptured。若 (b) 出帧而 (a) 不出 →
+根因坐实为钩子对 App 客户端不透传（进阶段 8 P0）。
+
+### 扩展收集项实测（与帧无关的信号已全部可用）
+
+探针已接入并验证回传：identifierForVendor、屏幕亮度、音频路由快照、
+气压计（40 样本/45s）、TrueDepth 前置存在性（=1，含各 front device type 矩阵）、
+最大拍照档位（supported=[1920x1080, 4032x2268]）、传感器能力范围
+（曝光 0.02–1000ms、ISO 23–2208、60fps 档、FOV 73.29°）、分辨率档位应用记录
+（low 640x480 / high 1920x1080 均成功）。依赖帧的信号（faceID/yaw/roll、
+Vision faceCaptureQuality/landmarks、实时曝光采样、深度帧计数）因零帧全部为 0 样本——
+E 轮解决出帧后即可补齐（这些正是供应商检测栈的同源信号）。
+
+### 基础设施陷阱记录（复测必须遵守）
+
+1. `uiopen` 命中已在后台运行的旧进程（旧二进制执行、旧报告格式）——启动前必须
+   `killall -9 VCAMDetectProbe`。
+2. dpkg 升级后首次运行会弹相机权限（TCC 按二进制重置），需 VNC 点击"允许"
+   （canvas 像素定位系统蓝按钮质心）。
+3. Choosy 式 per-app 排除（偏好 `TweakInject=NO`）对 TweakInject 无效；
+   移出 `/var/jb/usr/lib/TweakInject/` 文件的方法有效（已移至 `TweakInject-disabled/`，
+   Shadow/RSTLite/VCAM 客户端 4 组文件当前处于移出状态，复测前按需恢复）。
+4. 设备重启 = 需人工在设备上启动 Dopamine 激活越狱（SSH/VNC 均依赖越狱守护）。
+5. 探针 App 自身进程内确有自动注入（Shadow+HookKit+RSTLite+ellekit），
+   与 Safari 侧结论一致——对真实 KYC SDK 是设备指纹风险（见"越狱检测实测"）。
+
 ## 已实施项
 
 - `probe/kyc-camera-test.html`：浏览器相机路径自诊断页（getUserMedia 参数、
