@@ -172,13 +172,13 @@ static BOOL pathExists(NSString *p) {
     struct utsname u;
     uname(&u);
     NSString *appVer = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?";
-    self.report[@"meta"] = @{
+    self.report[@"meta"] = [@{
         @"flow": @"native_probe",
         @"started": @([NSDate date].timeIntervalSince1970),
         @"machine": @(u.machine),
         @"systemRelease": @(u.release),
         @"appVersion": appVer,
-    };
+    } mutableCopy];
 }
 
 #pragma mark - camera
