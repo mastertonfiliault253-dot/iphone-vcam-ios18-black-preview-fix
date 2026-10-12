@@ -55,6 +55,9 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, strong) NSMutableArray *uploadedFiles;
 @property(nonatomic, assign) BOOL photoCaptured;
 @property(nonatomic, assign) BOOL photoOutputSupported;
+@property(nonatomic, assign) BOOL metaOutputSupported;
+@property(nonatomic, assign) BOOL videoOutputSupported;
+@property(nonatomic, assign) BOOL reportMinimal;
 @property(nonatomic, assign) CFAbsoluteTime startClock;
 @end
 
@@ -203,16 +206,21 @@ static BOOL pathExists(NSString *p) {
     if (!input) { [self failWith:[NSString stringWithFormat:@"input: %@", err]]; return; }
     [self.session addInput:input];
 
-    self.photoOutput = [[AVCapturePhotoOutput alloc] init];
-    self.photoOutputSupported = [self.session canAddOutput:self.photoOutput];
-    if (self.photoOutputSupported) { [self.session addOutput:self.photoOutput]; }
+    BOOL minimal = [[NSUserDefaults standardUserDefaults] boolForKey:@"probeMinimal"];
+    self.reportMinimal = minimal;
+    if (!minimal) {
+        self.photoOutput = [[AVCapturePhotoOutput alloc] init];
+        self.photoOutputSupported = [self.session canAddOutput:self.photoOutput];
+        if (self.photoOutputSupported) { [self.session addOutput:self.photoOutput]; }
 
-    AVCaptureMetadataOutput *meta = [[AVCaptureMetadataOutput alloc] init];
-    if ([self.session canAddOutput:meta]) {
-        [self.session addOutput:meta];
-        [meta setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
-        if ([meta.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-            meta.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+        AVCaptureMetadataOutput *meta = [[AVCaptureMetadataOutput alloc] init];
+        self.metaOutputSupported = [self.session canAddOutput:meta];
+        if (self.metaOutputSupported) {
+            [self.session addOutput:meta];
+            [meta setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
+            if ([meta.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+                meta.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+            }
         }
     }
 
@@ -222,9 +230,38 @@ static BOOL pathExists(NSString *p) {
         @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)};
     self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
     [self.videoOutput setSampleBufferDelegate:self queue:self.sampleQueue];
-    if ([self.session canAddOutput:self.videoOutput]) { [self.session addOutput:self.videoOutput]; }
+    self.videoOutputSupported = [self.session canAddOutput:self.videoOutput];
+    if (self.videoOutputSupported) { [self.session addOutput:self.videoOutput]; }
 
     [self.session startRunning];
+    // 启动 2s 后自检会话状态：定位零帧问题在会话层还是管线层（诊断数据入报告）。
+    __weak ProbeRunner *weakMe = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), self.sampleQueue, ^{
+        ProbeRunner *me = weakMe;
+        if (!me) { return; }
+        me.report[@"cameraSessionDiag"] = [@{
+            @"isRunning": @(me.session.isRunning),
+            @"isInterrupted": @(me.session.isInterrupted),
+            @"inputs": @(me.session.inputs.count),
+            @"outputs": @(me.session.outputs.count),
+            @"preset": me.session.sessionPreset ?: @"?",
+        } mutableCopy];
+        [me log:[NSString stringWithFormat:@"diag isRunning=%d in=%lu out=%lu\n",
+                 (int)me.session.isRunning, (unsigned long)me.session.inputs.count,
+                 (unsigned long)me.session.outputs.count]];
+        if (me.session.inputs.count && !me.session.isRunning) {
+            [me log:@"session not running despite input — retry startRunning\n"];
+            [me.session startRunning];
+        }
+    });
+    // 5s 无任何帧 → 记一条诊断信号（结合 Safari 同机对照可定位层级）。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), self.sampleQueue, ^{
+        ProbeRunner *me = weakMe;
+        if (me && me.phaseFrames == 0) {
+            [me log:@"NO FRAMES after 5s\n"];
+            ((NSMutableDictionary *)me.report)[@"noFramesAfter5s"] = @YES;
+        }
+    });
     self.phase = 0;
     self.phaseFrames = 0;
     self.attachments = [NSMutableDictionary dictionary];
@@ -242,6 +279,9 @@ static BOOL pathExists(NSString *p) {
         @"sessions": [NSMutableArray array],
         @"torch": [@{@"supported": @(hasTorch)} mutableCopy],
         @"photoOutputSupported": @(self.photoOutputSupported),
+        @"metaOutputSupported": @(self.metaOutputSupported),
+        @"videoOutputSupported": @(self.videoOutputSupported),
+        @"minimalMode": @(self.reportMinimal),
         @"photo": [NSMutableDictionary dictionary],
     } mutableCopy];
 
@@ -392,7 +432,14 @@ static BOOL pathExists(NSString *p) {
 #pragma mark - photo
 
 - (void)captureProbePhoto {
-    if (!self.photoOutput || self.photoCaptured) { return; }
+    if (!self.photoOutput) {
+        if (!self.photoCaptured) {
+            self.photoCaptured = YES;
+            ((NSMutableDictionary *)self.report[@"camera"][@"photo"])[@"skipped"] = @"no photo output (minimal mode or unsupported)";
+        }
+        return;
+    }
+    if (self.photoCaptured) { return; }
     if (self.phaseFrames < 1) {  // 首帧未到就 capturePhoto 会抛 NSException（真机崩溃已证）
         [self log:@"photo deferred: no frame yet\n"];
         __weak ProbeRunner *me = self;

@@ -145,18 +145,23 @@
 }
 
 // vcam-probe://run?host=192.168.2.181&port=8077 —— 无人值守经 uiopen 直接触发采集。
+// minimal=1 诊断模式：只挂 video 输出（不挂 photo/metadata），用于隔离
+// "多输出组合是否会阻断 iOS 18 帧流"（真机首轮出现全档零帧，Safari 同机正常）。
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)opts {
     ProbeViewController *vc = (ProbeViewController *)self.window.rootViewController;
     if (![url.scheme isEqualToString:@"vcam-probe"]) { return YES; }
     NSString *host = nil;
     NSString *port = @"8077";
+    BOOL minimal = NO;
     for (NSString *pair in [url.query componentsSeparatedByString:@"&"]) {
         NSArray *kv = [pair componentsSeparatedByString:@"="];
         if (kv.count == 2) {
             if ([kv[0] isEqualToString:@"host"]) { host = kv[1]; }
             if ([kv[0] isEqualToString:@"port"]) { port = kv[1]; }
+            if ([kv[0] isEqualToString:@"minimal"]) { minimal = [kv[1] boolValue]; }
         }
     }
+    [[NSUserDefaults standardUserDefaults] setBool:minimal forKey:@"probeMinimal"];
     if (host.length) {
         vc.hostField.text = [NSString stringWithFormat:@"%@:%@", host, port];
     }
