@@ -25,7 +25,7 @@ def _sample_report():
         "camera": {
             "frontCamera": {"hasTorch": False, "position": "front"},
             "sessions": [
-                {"label": "640x480", "activeFormatW": 640, "activeFormatH": 480,
+                {"label": "low", "capturedW": 640, "capturedH": 480,
                  "frames": 1000, "faceFrames": 900,
                  "attachmentStats": {
                      "ExposureTime": {"n": 1000, "min": 0.004, "max": 0.009, "mean": 0.006, "sd": 0.001},

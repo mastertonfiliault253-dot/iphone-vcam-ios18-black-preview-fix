@@ -1,6 +1,7 @@
 // 原生检测采集引擎。对应 docs/kyc/DETECTION-PLAN-NATIVE-APP-ZH.md §2。
 // 只读设备与相机，不改 vcam 产品路径。所有可判读信号 dump 成 JSON，深度分析在主机侧。
 #import "ProbeRunner.h"
+#import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMotion/CoreMotion.h>
 #import <ImageIO/ImageIO.h>
@@ -41,6 +42,8 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, copy) NSString *currentFile;
 @property(nonatomic, assign) int phase;             // 0 low, 1 high, -1 recording off
 @property(nonatomic, assign) int phaseFrames;
+@property(nonatomic, assign) int capturedW[2];   // 各 phase 实际出帧宽高（从首帧 CVPixelBuffer 记录）
+@property(nonatomic, assign) int capturedH[2];
 @property(nonatomic, assign) int faceFramesThisPhase;
 @property(nonatomic, assign) int totalFaceObjects;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *attachments;  // phase-scoped
@@ -120,14 +123,14 @@ static BOOL pathExists(NSString *p) {
     }
 
     NSDictionary *jbPaths = @{
-        @"/var/jb": pathExists(@"/var/jb"),
-        @"/var/jb/Applications/Sileo.app": pathExists(@"/var/jb/Applications/Sileo.app"),
-        @"/var/jb/usr/lib/TweakInject": pathExists(@"/var/jb/usr/lib/TweakInject"),
-        @"/var/jb/usr/lib/libsubstrate.dylib": pathExists(@"/var/jb/usr/lib/libsubstrate.dylib"),
-        @"/var/jb/var/lib/dpkg/status": pathExists(@"/var/jb/var/lib/dpkg/status"),
-        @"/var/jb/usr/sbin/frida": pathExists(@"/var/jb/usr/sbin/frida"),
-        @"/bin/bash": pathExists(@"/bin/bash"),
-        @"/Applications/Cydia.app": pathExists(@"/Applications/Cydia.app"),
+        @"/var/jb": @(pathExists(@"/var/jb")),
+        @"/var/jb/Applications/Sileo.app": @(pathExists(@"/var/jb/Applications/Sileo.app")),
+        @"/var/jb/usr/lib/TweakInject": @(pathExists(@"/var/jb/usr/lib/TweakInject")),
+        @"/var/jb/usr/lib/libsubstrate.dylib": @(pathExists(@"/var/jb/usr/lib/libsubstrate.dylib")),
+        @"/var/jb/var/lib/dpkg/status": @(pathExists(@"/var/jb/var/lib/dpkg/status")),
+        @"/var/jb/usr/sbin/frida": @(pathExists(@"/var/jb/usr/sbin/frida")),
+        @"/bin/bash": @(pathExists(@"/bin/bash")),
+        @"/Applications/Cydia.app": @(pathExists(@"/Applications/Cydia.app")),
     };
 
     NSMutableDictionary *canOpen = [NSMutableDictionary dictionary];
@@ -176,10 +179,14 @@ static BOOL pathExists(NSString *p) {
 
 - (void)setupCameraAndRun {
     self.session = [[AVCaptureSession alloc] init];
-    self.session.sessionPreset = AVCaptureSessionPresetHigh;
+    // 用 sessionPreset 而非 device.activeFormat：后者及 supportedAVCaptureFormats/AVCaptureFormat
+    // 在 theos 自带的 iPhoneOS SDK 头里不公开（CI 编译报错核实），preset 是确定可用的公开 API。
+    if ([self.session canSetSessionPreset:AVCaptureSessionPreset640x480]) {
+        self.session.sessionPreset = AVCaptureSessionPreset640x480;
+    }
     self.frontDevice = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
                                                         mediaType:AVMediaTypeVideo
-                                                         position:AVCapturePositionFront];
+                                                         position:AVCaptureDevicePositionFront];
     if (!self.frontDevice) {
         self.frontDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     }
@@ -197,7 +204,7 @@ static BOOL pathExists(NSString *p) {
     if ([self.session canAddOutput:meta]) {
         [self.session addOutput:meta];
         [meta setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
-        if (meta.availableMetadataObjectTypes.containsObject(AVMetadataObjectTypeFace)) {
+        if ([meta.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
             meta.metadataObjectTypes = @[AVMetadataObjectTypeFace];
         }
     }
@@ -210,7 +217,6 @@ static BOOL pathExists(NSString *p) {
     [self.videoOutput setSampleBufferDelegate:self queue:self.sampleQueue];
     if ([self.session canAddOutput:self.videoOutput]) { [self.session addOutput:self.videoOutput]; }
 
-    [self selectFormatForLowPhase];
     [self.session startRunning];
     self.phase = 0;
     self.phaseFrames = 0;
@@ -224,7 +230,7 @@ static BOOL pathExists(NSString *p) {
     self.report[@"camera"] = [@{
         @"frontCamera": @{
             @"hasTorch": @(hasTorch),
-            @"position": self.frontDevice.position == AVCapturePositionFront ? @"front" : @"other",
+            @"position": self.frontDevice.position == AVCaptureDevicePositionFront ? @"front" : @"other",
         },
         @"sessions": [NSMutableArray array],
         @"torch": [@{@"supported": @(hasTorch)} mutableCopy],
@@ -244,32 +250,6 @@ static BOOL pathExists(NSString *p) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 2) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me finishProbe]; });
-}
-
-- (void)selectFormatForLowPhase {
-    // 优先选最接近 640x480 的格式，否则取最小。
-    AVCaptureFormat *picked = nil;
-    double bestScore = DBL_MAX;
-    if ([self.frontDevice respondsToSelector:@selector(supportedAVCaptureFormats)]) {
-        for (AVCaptureFormat *f in self.frontDevice.supportedAVCaptureFormats) {
-            if (f.mediaType != AVMediaTypeVideo) { continue; }
-            CMVideoDimensions d = f.dimensions;
-            double score = fabs(d.width - 640) + fabs(d.height - 480);
-            if (score < bestScore) { bestScore = score; picked = f; }
-        }
-    }
-    [self lockAndSetFormat:picked preset:AVCaptureSessionPreset640x480];
-}
-
-- (void)lockAndSetFormat:(AVCaptureFormat *)fmt preset:(NSString *)preset {
-    [self.frontDevice lockForConfiguration:nil];
-    @try {
-        if (fmt) { self.frontDevice.activeFormat = fmt; }
-    } @catch (NSException *e) {
-        if (preset) { self.session.sessionPreset = preset; }
-    } @finally {
-        [self.frontDevice unlockForConfiguration];
-    }
 }
 
 - (void)startMotion {
@@ -328,6 +308,7 @@ static BOOL pathExists(NSString *p) {
     if (!pb) { return; }
     size_t w = CVPixelBufferGetWidth(pb);
     size_t h = CVPixelBufferGetHeight(pb);
+    if (self.phase >= 0 && self.phase < 2) { self.capturedW[self.phase] = (int)w; self.capturedH[self.phase] = (int)h; }
     NSString *name = [NSString stringWithFormat:@"probe_phase%d_%zux%zu.mp4", self.phase, w, h];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -436,7 +417,7 @@ static BOOL pathExists(NSString *p) {
             }
         }
     }
-    CMVideoDimensions dims = photo.dimensions;
+    CMVideoDimensions dims = photo.resolvedSettings.dimensions;
     photoReport[@"saved"] = @YES;
     photoReport[@"width"] = @(dims.width);
     photoReport[@"height"] = @(dims.height);
@@ -448,21 +429,14 @@ static BOOL pathExists(NSString *p) {
 #pragma mark - phases
 
 - (void)finishLowPhase {
-    [self finalizeCurrentSessionWithLabel:@"640x480"];
-    // switch to high format for phase 2
-    AVCaptureFormat *best = nil;
-    long bestPx = 0;
-    if ([self.frontDevice respondsToSelector:@selector(supportedAVCaptureFormats)]) {
-        for (AVCaptureFormat *f in self.frontDevice.supportedAVCaptureFormats) {
-            if (f.mediaType != AVMediaTypeVideo) { continue; }
-            long px = (long)f.dimensions.width * f.dimensions.height;
-            if (px > bestPx) { bestPx = px; best = f; }
-        }
+    [self finalizeCurrentSessionWithLabel:@"low"];
+    // 切到高档继续 phase 1；维度以首帧实测为准（见 capturedW/H）。
+    if ([self.session canSetSessionPreset:AVCaptureSessionPresetHD1920x1080]) {
+        self.session.sessionPreset = AVCaptureSessionPresetHD1920x1080;
     }
     self.phase = 1;
     self.writerInput = nil;
     self.writer = nil;
-    [self lockAndSetFormat:best preset:AVCaptureSessionPreset1920x1080];
 }
 
 - (void)finalizeCurrentSessionWithLabel:(NSString *)label {
@@ -496,11 +470,12 @@ static BOOL pathExists(NSString *p) {
 }
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {
-    AVCaptureFormat *af = self.frontDevice.activeFormat;
+    int w = 0, h = 0;
+    if (self.phase >= 0 && self.phase < 2) { w = self.capturedW[self.phase]; h = self.capturedH[self.phase]; }
     NSMutableDictionary *s = [@{
         @"label": label,
-        @"activeFormatW": @(af.dimensions.width),
-        @"activeFormatH": @(af.dimensions.height),
+        @"capturedW": @(w),
+        @"capturedH": @(h),
         @"frames": @(self.phaseFrames),
         @"faceFrames": @(self.faceFramesThisPhase),
     } mutableCopy];

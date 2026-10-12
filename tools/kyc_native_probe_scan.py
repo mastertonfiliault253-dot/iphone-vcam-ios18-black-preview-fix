@@ -53,7 +53,7 @@ def analyze_sessions(sessions):
             cov = face / frames
             out.append((("PASS" if cov > 0.5 else "RISK"),
                         f"[{label}] 人脸 metadata 覆盖 {cov*100:.0f}%（帧中有人而无人脸框=矛盾信号）"))
-        out.append(("INFO", f"[{label}] activeFormat={s.get('activeFormatW')}x{s.get('activeFormatH')} "
+        out.append(("INFO", f"[{label}] captured={s.get('capturedW')}x{s.get('capturedH')} "
                             f"frames={frames} attachmentKeys={len(att)}"))
     return out
 
