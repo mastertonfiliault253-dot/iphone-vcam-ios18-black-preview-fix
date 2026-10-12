@@ -103,7 +103,7 @@ jobs:
           make -C probe-app clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           probe_debs="$(find probe-app/packages -maxdepth 1 -type f -name '*_iphoneos-arm64.deb' -print | wc -l | tr -d ' ')"
           test "$probe_debs" -eq 1
-          probe_app="$(find .theos/_ -type f -name VCAMDetectProbe -path '*/Applications/*' -print -quit)"
+          probe_app="$(find probe-app/.theos/_ -type f -name VCAMDetectProbe -path '*/Applications/*' -print -quit)"
           test -n "$probe_app"
           lipo -info "$probe_app"
           lipo "$probe_app" -verify_arch arm64 arm64e
