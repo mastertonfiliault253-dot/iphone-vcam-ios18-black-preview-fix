@@ -3,6 +3,7 @@
 #import "ProbeRunner.h"
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
 #import <CoreMotion/CoreMotion.h>
 #import <ImageIO/ImageIO.h>
 #import <ifaddrs.h>
@@ -234,7 +235,7 @@ static BOOL pathExists(NSString *p) {
     @try {
         self.frontDevice.activeFormat = fmt;
     } @catch (NSException *e) {
-        [self log:[NSString stringWithFormat:@"format %s exception: %@\n", label.UTF8String(), e.reason]];
+        [self log:[NSString stringWithFormat:@"format %s exception: %@\n", label.UTF8String, e.reason]];
     } @finally {
         [self.frontDevice unlockForConfiguration];
     }
