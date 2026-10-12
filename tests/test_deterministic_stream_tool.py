@@ -27,7 +27,7 @@ class DeterministicStreamToolTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
         config = CONFIG.read_text(encoding="utf-8")
 
-        self.assertIn(r"rtsp-vnc-tool\mediamtx\mediamtx.exe", script)
+        self.assertIn(r"tools\mediamtx\mediamtx.exe", script)
         self.assertIn("18554", script)
         self.assertIn("18888", script)
         self.assertIn("vcam-test", script)

@@ -17,3 +17,6 @@ tools/.license-ui-state.json
 tmp/
 probe/uploads/
 .mimosa/
+
+# 可下载的第三方二进制（GitHub release v1.21.2），不入库；见 docs/kyc RTSP 一节
+tools/mediamtx/mediamtx.exe

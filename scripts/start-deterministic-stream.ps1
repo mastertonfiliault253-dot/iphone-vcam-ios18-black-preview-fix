@@ -12,10 +12,9 @@ $hlsPort = 18888
 $pathName = "vcam-test"
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $serverConfig = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "deterministic-mediamtx.yml")).Path
-$workspaceRoot = Split-Path -Parent (Split-Path -Parent $projectRoot)
 
 if ([string]::IsNullOrWhiteSpace($MediaMTXPath)) {
-    $MediaMTXPath = Join-Path $workspaceRoot "rtsp-vnc-tool\mediamtx\mediamtx.exe"
+    $MediaMTXPath = Join-Path $projectRoot "tools\mediamtx\mediamtx.exe"
 }
 if (-not (Test-Path -LiteralPath $MediaMTXPath -PathType Leaf)) {
     throw "MediaMTX not found: $MediaMTXPath"
