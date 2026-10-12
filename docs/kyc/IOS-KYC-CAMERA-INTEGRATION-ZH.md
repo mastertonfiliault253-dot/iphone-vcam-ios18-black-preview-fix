@@ -536,6 +536,31 @@ VCAMMediaServerClient 后重启 cameracaptured。若 (b) 出帧而 (a) 不出 �
 Vision faceCaptureQuality/landmarks、实时曝光采样、深度帧计数）因零帧全部为 0 样本——
 E 轮解决出帧后即可补齐（这些正是供应商检测栈的同源信号）。
 
+### 设备身份字段随注入状态变化（App 层设备伪装，2026-10-13 复盘发现）
+
+对全部报告做交叉核对时发现，**所有 Shadow/RSTLite 仍在 TweakInject 内**的轮次
+（030427–031036，含 A/B 轮）与**移出之后**的 C/D 轮（031146/031306）相比，
+App 看到的设备身份不同：
+
+| 字段 | 注入在位（A/B 及更早） | 移开后（C/D） |
+|---|---|---|
+| uname machine | iPhone14,6（iPhone 13 Pro Max） | iPhone12,5（iPhone XS Max，真实） |
+| uname release | 23.6.0（iOS 17.6） | 24.3.0（iOS 18.3.1，真实） |
+| identifierForVendor | 570CD830-… | 69CF23FF-… |
+| dyldSuspicious | RSTLite/Shadow/libellekit/… 6 项 | 仅探针自身 1 项 |
+
+排除"换机"解释：两组报告的 dyld 镜像同属一个 preboot 卷组 UUID（A49AB5A1…）
+与同一 dopamine 实例后缀（882cVy）——同一物理设备、同一越狱安装。
+**结论（高置信，待 F 轮复核）**：设备上的第三方 tweak（首要嫌疑 Shadow，其过滤器
+Classes 无关、Bundles[com.apple.UIKit] 命中所有 UIKit App；RSTLite 次之）
+在 App 进程内改写 `uname` 与 IDFV，即存在一个 App 级设备身份伪装层。
+对 KYC 检测栈含义：这台测试机上任何 App 看到的机型/系统/IDFV 都不是真值——
+供应商 SDK 若做设备一致性核验会直接命中；这也解释了跨轮次设备字段"漂移"。
+对本项目既有结论的影响：零帧矩阵不受影响（各轮均零帧）；相机能力类字段
+（sensor 范围、maxPhotoDims、TrueDepth）两组数值完全一致，说明伪装只动标识层、
+未动硬件能力枚举。E/F 轮验证方式：重新注入 Shadow 跑一轮，若 machine 回到
+iPhone14,6 即坐实（并在复测报告注明当前设备身份状态）。
+
 ### 基础设施陷阱记录（复测必须遵守）
 
 1. `uiopen` 命中已在后台运行的旧进程（旧二进制执行、旧报告格式）——启动前必须

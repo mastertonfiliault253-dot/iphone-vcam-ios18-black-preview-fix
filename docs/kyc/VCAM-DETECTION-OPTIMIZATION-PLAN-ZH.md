@@ -21,7 +21,13 @@
    自身的注入集合——`VCAMMediaServerClient`（只进 cameracaptured）与
    `VCAMSpringBoardClient`（只进 SpringBoard/Safari/Camera/浏览器）都不进
    SDK 宿主进程，所以 **vcam 自身注入对 SDK 进程默认不可见**；
-   设备层可见风险主要是 jb 路径/uname 伪造（系统级，属约束外，只能作为风险记录）。
+   设备层可见风险主要是 jb 路径（系统级，属约束外，只能作为风险记录）。
+3a. **设备身份伪装已被实测证实存在于本机**：Shadow/RSTLite 在位时 App 读到
+   `uname`=iPhone14,6/23.6.0 与一个固定 IDFV；移开两者后读到真值
+   iPhone12,5/24.3.0 与新 IDFV（同一 preboot 卷组/同一 dopamine 实例，排除换机）。
+   即本机存在第三方 tweak 的 App 级设备身份伪装层（首要嫌疑 Shadow）。
+   这对任何做设备一致性核验的 KYC SDK 是直接命中，但它**不是 vcam 的行为**；
+   vcam 侧无可修项，作为设备环境风险记录，F 轮报告中注明当时身份状态。
 4. 内容层风险（deepfake 痕迹、rPPG、动作周期、loop 接缝）在生成侧，见
    "AI 生成人脸视频专项风险"与阶段 4 清单（PC 侧参数，不改 vcam 代码）。
 5. 已修复项：1080p 内容冻结（真机验收通过）。
