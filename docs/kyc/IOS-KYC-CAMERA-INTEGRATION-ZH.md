@@ -19,7 +19,8 @@
    PAD 模型识别的风险，且无法响应主动挑战（眨眼/转头）；RTSP/HLS 直播真人画面是最优
    内容形态。全分辨率实测（见下，含真实相机基线对照）：480p/720p 与真实相机完全一致；
    1080p 档发现注入层特有问题——时间戳仍 ~30fps 但帧内容仅 ~2Hz 更新（服务端帧内容
-   分析可检出），修复前不要让 KYC 走 1080p 档 liveness；4K 档 ~8–10fps 经基线对照
+   分析可检出），修复前不要让 KYC 走 1080p 档 liveness（2026-10-13 已修复并真机验收，
+   见"1080p 内容冻结修复"一节）；4K 档 ~8–10fps 经基线对照
    证实主要是 Safari 自身行为（真实相机同档也 ~10fps），非 vcam 特有缺陷。可识别信号
    与缺失维度的逐项矩阵见"可识别信号与缺失维度矩阵"一节：硬性缺失是闪光/补光响应与
    IMU 联动两类检查（是否被主流平台使用未核实），其余风险集中在内容层。
@@ -415,6 +416,34 @@ emitSampleBuffer:` 处克隆像素进图拥有的 buffer 并转发**原始** sam
      待办：Settings → Shadow 对目标 KYC 宿主 App 启用，再跑检测 demo 验证效果
      （hookkit 2.5.1 早于 iOS 18，运行时 hook 在该系统未实测；不生效则退回
      自有 App 剔除检测项的方案）。
+
+## 1080p 内容冻结修复（2026-10-13，CI 出包 + 真机验收通过）
+
+**根因**（本节 00:00 对照运行确认）：`cameracaptured` 的 CoreImage 上下文被强制软件
+渲染（Metal 在该进程挂起），1080p 全尺寸软渲染单帧实测 90–135ms（480p 仅 6–10ms），
+超 30fps 帧预算后 graph 复用旧帧 → "时间戳 30fps + 内容 ~9Hz"。此前推测的
+generation 匹配失败不是主因。
+
+**修复**（commit a239067，`VCAMMediaServerRefImageUtils.m`）：实时路径把合成尺寸钳制
+到源细节以内（`VCAMClampRealtimeCompositionSize`，0.85×VCAMSharedFrame 长边），写回
+时一次双线性放大到目标尺寸再走既有直写路径（保持"优先直写、VT 仅兜底"语义）；
+静态照片路径仍全尺寸合成不受影响。回归测试：`tests/test_ios18_large_target_render.py`
+（源码契约）+ `tests/test_kyc_report_scan.py`（合成资产 frozen 判据）。
+
+**真机验收**（CI run 38279712480 产物 0.8.110+ios18-review-fixes，装 .39 后
+`kill -9` cameracaptured/SpringBoard，`kyc-flow.html?auto=1` 完整流程）：
+
+| 判据 | 修复前 | 修复后 |
+|---|---|---|
+| 1080p 录像 `content_refresh_hz` / `content_frozen` | 9.34 / **True** | **18.66 / False** |
+| 渲染耗时（vcam-ref.log render window） | 90–135ms/帧 | **p50=11.66 p95=13.93 max=18.70ms** |
+| 浏览器端六档 change_ratio | 1080p 档低 | 六档全 1.0（报告 report_20261013_005356.json） |
+| clamp 生效日志 | 无 | `realtime composition clamped for large target=3840x2160 composed=1632x918`（4K 档触发） |
+
+18.66Hz 未到 30Hz 的原因是 AI 源视频本身近静止段落（与 480/720 档同源测量一致），
+非渲染瓶颈。**残留**：4K(2160p) 档经钳制后仍 145–195ms/帧超预算（4K 全尺寸直写+
+放大成本），KYC 场景最高用到 1080p，4K 不阻塞；若后续需要 4K 需另做（如降帧或
+硬件加速路径）。此前"1080p 修复前不要走 1080p liveness"的限制自本包起解除。
 
 ## 已实施项
 
