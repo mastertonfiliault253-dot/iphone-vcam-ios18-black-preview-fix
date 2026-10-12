@@ -54,6 +54,7 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, strong) NSMutableDictionary *report;
 @property(nonatomic, strong) NSMutableArray *uploadedFiles;
 @property(nonatomic, assign) BOOL photoCaptured;
+@property(nonatomic, assign) BOOL photoOutputSupported;
 @property(nonatomic, assign) CFAbsoluteTime startClock;
 @end
 
@@ -203,7 +204,8 @@ static BOOL pathExists(NSString *p) {
     [self.session addInput:input];
 
     self.photoOutput = [[AVCapturePhotoOutput alloc] init];
-    if ([self.session canAddOutput:self.photoOutput]) { [self.session addOutput:self.photoOutput]; }
+    self.photoOutputSupported = [self.session canAddOutput:self.photoOutput];
+    if (self.photoOutputSupported) { [self.session addOutput:self.photoOutput]; }
 
     AVCaptureMetadataOutput *meta = [[AVCaptureMetadataOutput alloc] init];
     if ([self.session canAddOutput:meta]) {
@@ -239,6 +241,7 @@ static BOOL pathExists(NSString *p) {
         },
         @"sessions": [NSMutableArray array],
         @"torch": [@{@"supported": @(hasTorch)} mutableCopy],
+        @"photoOutputSupported": @(self.photoOutputSupported),
         @"photo": [NSMutableDictionary dictionary],
     } mutableCopy];
 
@@ -390,9 +393,24 @@ static BOOL pathExists(NSString *p) {
 
 - (void)captureProbePhoto {
     if (!self.photoOutput || self.photoCaptured) { return; }
+    if (self.phaseFrames < 1) {  // 首帧未到就 capturePhoto 会抛 NSException（真机崩溃已证）
+        [self log:@"photo deferred: no frame yet\n"];
+        __weak ProbeRunner *me = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), self.sampleQueue, ^{
+            [me captureProbePhoto];
+        });
+        return;
+    }
     self.photoCaptured = YES;
     AVCapturePhotoSettings *s = [AVCapturePhotoSettings photoSettings];
-    [self.photoOutput capturePhotoWithSettings:s delegate:self];
+    @try {
+        [self.photoOutput capturePhotoWithSettings:s delegate:self];
+    } @catch (NSException *e) {
+        NSMutableDictionary *pr = (NSMutableDictionary *)self.report[@"camera"][@"photo"];
+        pr[@"saved"] = @NO;
+        pr[@"error"] = [NSString stringWithFormat:@"%@: %@", e.name, e.reason];
+        [self log:[NSString stringWithFormat:@"photo exception: %@\n", e.reason]];
+    }
 }
 
 - (void)photoOutput:(AVCapturePhotoOutput *)out
