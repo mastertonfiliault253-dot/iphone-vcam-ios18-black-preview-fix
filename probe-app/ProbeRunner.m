@@ -282,26 +282,32 @@ static BOOL pathExists(NSString *p) {
 }
 
 - (void)applyFormat:(AVCaptureDeviceFormat *)fmt label:(NSString *)label {
+    // 合并写入（此前整字典覆盖导致 low 档记录被 high 档冲掉）。
+    NSMutableDictionary *af = nil;
+    id prev = ((NSMutableDictionary *)self.report)[@"appliedFormat"];
+    if ([prev isKindOfClass:NSMutableDictionary.class]) { af = prev; }
+    else { af = [NSMutableDictionary dictionary]; ((NSMutableDictionary *)self.report)[@"appliedFormat"] = af; }
     if (!fmt) {
+        af[label] = @"no-match";
         [self log:[NSString stringWithFormat:@"format %s: no match, keep device default\n", label.UTF8String]];
         return;
     }
     NSError *lockErr = nil;
     if (![self.frontDevice lockForConfiguration:&lockErr]) {
+        af[label] = @"lock-fail";
         [self log:[NSString stringWithFormat:@"format %s lock fail: %@\n", label.UTF8String, lockErr]];
         return;
     }
     @try {
         self.frontDevice.activeFormat = fmt;
     } @catch (NSException *e) {
+        af[label] = [NSString stringWithFormat:@"exception:%@", e.reason ?: e.name];
         [self log:[NSString stringWithFormat:@"format %s exception: %@\n", label.UTF8String, e.reason]];
     } @finally {
         [self.frontDevice unlockForConfiguration];
     }
     CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription);
-    ((NSMutableDictionary *)self.report)[@"appliedFormat"] = [@{
-        label: [NSString stringWithFormat:@"%dx%d", d.width, d.height],
-    } mutableCopy];
+    af[label] = [NSString stringWithFormat:@"%dx%d", d.width, d.height];
     [self log:[NSString stringWithFormat:@"format %s -> %dx%d\n", label.UTF8String, d.width, d.height]];
     [self recordMaxPhotoDimensionsForFormat:fmt];
 }
