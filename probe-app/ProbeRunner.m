@@ -515,7 +515,7 @@ static BOOL pathExists(NSString *p) {
     [self.motionLock lock];
     NSArray *samples = [self.motionSamples copy];
     [self.motionLock unlock];
-    double gsx = 0, asx = 0;
+    double gsx = 0;
     double gs[3] = {0,0,0}, as[3] = {0,0,0}, gm[3] = {0,0,0}, am[3] = {0,0,0};
     for (NSDictionary *m in samples) {
         NSArray *gk = @[@"gx", @"gy", @"gz"], *ak = @[@"ax", @"ay", @"az"];
@@ -598,7 +598,8 @@ static BOOL pathExists(NSString *p) {
     req.HTTPBody = data;
     req.timeoutInterval = 15;
     NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
-        completionHandler:(__unused NSData *resp, __unused NSURLResponse *r, NSError *e) {
+        completionHandler:^(NSData *resp, NSURLResponse *r, NSError *e) {
+            (void)resp; (void)r;
             if (e) { [self log:[NSString stringWithFormat:@"upload FAIL %@: %@\n", label, e.localizedDescription]]; }
             else if (success) { success(); [self log:[NSString stringWithFormat:@"uploaded %@ (%lu B)\n", label, (unsigned long)data.length]]; }
         }];
