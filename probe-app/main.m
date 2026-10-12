@@ -1,8 +1,46 @@
 // VCAMDetectProbe：原生 KYC 检测自检探针的一键入口（阶段 6）。
 // 启动后经 vcam-probe://run?host=<ip>&port=<port> 或界面按钮触发一次约 50s 采集，
 // 结果结构化 JSON + 视频/照片资产 POST 回测试台（默认 http://<host>:8077）。
-#import <UIKit/UIKit.h>
-#import "ProbeRunner.h"
+// WKWebView 页（原阶段 6 的宿主 demo 并入本 App）：WKUIDelegate 的
+// requestMediaCapturePermission（iOS 15+）自动放行 getUserMedia，
+// 使 App 内 WebView 与 Safari 的指纹/权限路径差异可被同页对照采集。
+#import <WebKit/WebKit.h>
+
+@interface WKProbeViewController : UIViewController <WKUIDelegate, WKNavigationDelegate>
+@property(nonatomic, strong) WKWebView *webView;
+@end
+
+@implementation WKProbeViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    config.allowsInlineMediaPlayback = YES;
+    self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
+    self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.webView.UIDelegate = self;
+    self.webView.navigationDelegate = self;
+    [self.view addSubview:self.webView];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    NSString *base = [[NSUserDefaults standardUserDefaults] stringForKey:@"probeBaseURL"];
+    if (!base.length) { base = @"http://127.0.0.1:8077"; }
+    // kyc_upload_server 以 probe/ 为文档根：页面在 /kyc-flow.html。
+    NSString *urlString = [base stringByAppendingString:@"/kyc-flow.html?auto=1"];
+    [self.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
+}
+
+- (void)webView:(WKWebView *)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                          initiatedByFrame:(WKFrameInfo *)frame
+                                      type:(WKMediaCaptureType)type
+                           decisionHandler:(void (^)(WKPermissionDecision decision))decisionHandler {
+    decisionHandler(WKPermissionDecisionAllow);
+}
+
+@end
 
 @interface ProbeViewController : UIViewController <UITextFieldDelegate>
 @property(nonatomic, strong) UITextView *logView;
@@ -24,7 +62,7 @@
 
     self.hostField = [[UITextField alloc] initWithFrame:CGRectMake(20, 130, 360, 40)];
     self.hostField.placeholder = @"test server host (leave default ok)";
-    self.hostField.text = @"192.168.2.181:8077";
+    self.hostField.text = @"127.0.0.1:8077";
     self.hostField.borderStyle = UITextBorderStyleRoundedRect;
     self.hostField.delegate = self;
     self.hostField.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -40,7 +78,15 @@
     [self.runButton addTarget:self action:@selector(runTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.runButton];
 
-    self.logView = [[UITextView alloc] initWithFrame:CGRectMake(20, 266, 360, 420)];
+    UIButton *webButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    webButton.frame = CGRectMake(20, 256, 360, 44);
+    [webButton setTitle:@"Open kyc-flow in WKWebView (vs Safari)" forState:UIControlStateNormal];
+    webButton.layer.borderWidth = 1;
+    webButton.layer.borderColor = UIColor.systemPurpleColor.CGColor;
+    [webButton addTarget:self action:@selector(openWebView) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:webButton];
+
+    self.logView = [[UITextView alloc] initWithFrame:CGRectMake(20, 310, 360, 380)];
     self.logView.editable = NO;
     self.logView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     self.logView.backgroundColor = UIColor.secondarySystemBackgroundColor;
@@ -58,9 +104,15 @@
     });
 }
 
+- (void)openWebView {
+    WKProbeViewController *web = [[WKProbeViewController alloc] init];
+    [self presentViewController:web animated:YES completion:nil];
+}
+
 - (void)runTapped {
-    NSString *hostPort = self.hostField.text.length ? self.hostField.text : @"192.168.2.181:8077";
+    NSString *hostPort = self.hostField.text.length ? self.hostField.text : @"127.0.0.1:8077";
     NSString *base = [@"http://" stringByAppendingString:hostPort];
+    [[NSUserDefaults standardUserDefaults] setObject:base forKey:@"probeBaseURL"];
     self.runButton.enabled = NO;
     [self appendLog:@"\n[start] target "];
     [self appendLog:base];

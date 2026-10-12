@@ -133,6 +133,14 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("AVMetadataFaceObject", src)
         self.assertIn("startDeviceMotionUpdates", src)
 
+    def test_wkwebview_host_page_with_media_permission_delegate(self):
+        src = self._read("main.m")
+        self.assertIn("requestMediaCapturePermissionForOrigin", src)
+        self.assertIn("WKPermissionDecisionAllow", src)
+        self.assertIn("kyc-flow.html?auto=1", src)
+        mk = self._read("Makefile")
+        self.assertIn("WebKit", mk)
+
 
 if __name__ == "__main__":
     unittest.main()
