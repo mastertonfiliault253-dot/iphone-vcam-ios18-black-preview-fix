@@ -136,7 +136,7 @@ class AppContractTests(unittest.TestCase):
     def test_wkwebview_host_page_with_media_permission_delegate(self):
         src = self._read("main.m")
         self.assertIn("requestMediaCapturePermissionForOrigin", src)
-        self.assertIn("WKPermissionDecisionAllow", src)
+        self.assertIn("WKPermissionDecisionGrant", src)
         self.assertIn("kyc-flow.html?auto=1", src)
         mk = self._read("Makefile")
         self.assertIn("WebKit", mk)

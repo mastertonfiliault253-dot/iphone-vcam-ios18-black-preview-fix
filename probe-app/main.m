@@ -4,7 +4,9 @@
 // WKWebView 页（原阶段 6 的宿主 demo 并入本 App）：WKUIDelegate 的
 // requestMediaCapturePermission（iOS 15+）自动放行 getUserMedia，
 // 使 App 内 WebView 与 Safari 的指纹/权限路径差异可被同页对照采集。
+#import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
+#import "ProbeRunner.h"
 
 @interface WKProbeViewController : UIViewController <WKUIDelegate, WKNavigationDelegate>
 @property(nonatomic, strong) WKWebView *webView;
@@ -37,7 +39,8 @@
                           initiatedByFrame:(WKFrameInfo *)frame
                                       type:(WKMediaCaptureType)type
                            decisionHandler:(void (^)(WKPermissionDecision decision))decisionHandler {
-    decisionHandler(WKPermissionDecisionAllow);
+    // WebKit 公开头文件常量名为 Grant（非 Allow）：WKPermissionDecision{Prompt,Grant,Deny}。
+    decisionHandler(WKPermissionDecisionGrant);
 }
 
 @end
