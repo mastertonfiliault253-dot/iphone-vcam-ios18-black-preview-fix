@@ -5,6 +5,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreMotion/CoreMotion.h>
+#import <Vision/Vision.h>
 #import <ImageIO/ImageIO.h>
 #import <ifaddrs.h>
 #import <arpa/inet.h>
@@ -25,7 +26,8 @@ static NSString *tmpPathNamed(NSString *name) {
 
 @interface ProbeRunner () <AVCaptureVideoDataOutputSampleBufferDelegate,
                           AVCapturePhotoCaptureDelegate,
-                          AVCaptureMetadataOutputObjectsDelegate> {
+                          AVCaptureMetadataOutputObjectsDelegate,
+                          AVCaptureDepthDataOutputDelegate> {
     // 各 phase 实际出帧宽高（从首帧 CVPixelBuffer 记录）。array 不能做 property，用 ivar。
     int _capturedW[2];
     int _capturedH[2];
@@ -43,6 +45,25 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, strong) CMMotionManager *motion;
 @property(nonatomic, strong) NSMutableArray *motionSamples;  // {t,gx,gy,gz,ax,ay,az}
 @property(nonatomic, strong) NSLock *motionLock;
+
+// —— 扩展收集（全部经 16.5 SDK 头逐一核实成员名）——
+@property(nonatomic, strong) AVCaptureDepthDataOutput *depthOutput;
+@property(nonatomic, assign) BOOL depthOutputSupported;
+@property(nonatomic, strong) dispatch_queue_t visionQueue;
+@property(nonatomic, strong) CMAltimeter *altimeter;
+@property(nonatomic, assign) BOOL altimeterAvailable;
+@property(nonatomic, strong) NSMutableArray *altimeterSamples;  // {t,altitudeM,pressureKPa}
+@property(nonatomic, strong) NSMutableArray *faceSamples;       // {t,id,w,h[,yaw,roll]} 仅 sampleQueue
+@property(nonatomic, strong) NSMutableArray *visionSamples;     // {t,n,qual[,lm]} 仅 visionQueue（@synchronized）
+@property(nonatomic, strong) NSMutableArray *exposureSamples;   // {t,exposureUs,iso} 仅 sampleQueue
+@property(nonatomic, strong) NSDictionary *maxPhotoDimsSnapshot;
+@property(nonatomic, strong) NSDictionary *trueDepthInfo;
+@property(nonatomic, strong) NSDictionary *sensorRangesSnapshot;
+@property(nonatomic, assign) int depthFramesTotal;
+@property(nonatomic, assign) int depthDroppedTotal;
+@property(nonatomic, assign) double depthFirstTs, depthLastTs;
+@property(nonatomic, assign) int depthW, depthH;
+@property(nonatomic, copy) NSString *depthTypeStr;
 
 @property(nonatomic, strong) AVAssetWriter *writer;
 @property(nonatomic, strong) AVAssetWriterInput *writerInput;
@@ -72,6 +93,11 @@ static NSString *tmpPathNamed(NSString *name) {
         _motionSamples = [NSMutableArray array];
         _uploadedFiles = [NSMutableArray array];
         _report = [NSMutableDictionary dictionary];
+        _altimeterSamples = [NSMutableArray array];
+        _faceSamples = [NSMutableArray array];
+        _visionSamples = [NSMutableArray array];
+        _exposureSamples = [NSMutableArray array];
+        _visionQueue = dispatch_queue_create("vcam.probe.vision", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -170,8 +196,39 @@ static BOOL pathExists(NSString *p) {
         @"network": nets,
         @"machine": machine,
         @"systemRelease": release,
+        // 扩展收集：IDFV / 屏幕亮度 / 气压计可用性 / 音频路由快照。
+        @"identifierForVendor": [[UIDevice currentDevice] identifierForVendor].UUIDString ?: @"none",
+        @"screenBrightness": @(UIScreen.mainScreen.brightness),
+        @"barometerAvailable": @([CMAltimeter isRelativeAltitudeAvailable]),
+        @"audio": [self collectAudioRoute],
     };
     return YES;
+}
+
+// AVAudioSession.currentRoute 快照（iOS 4+ 公开 API；portName/transportType 已废弃但本 target 允许）。
+- (NSDictionary *)collectAudioRoute {
+    NSMutableDictionary *a = [NSMutableDictionary dictionary];
+    @try {
+        AVAudioSession *as = [AVAudioSession sharedInstance];
+        NSMutableArray *ins = [NSMutableArray array], *outs = [NSMutableArray array];
+        // 注意：16.5 SDK 头中 AVAudioSessionPortDescription 只有 portType/portName
+        // （transportType 未声明——本地编译实证），只记这两个。
+        for (AVAudioSessionPortDescription *p in as.currentRoute.inputs) {
+            [ins addObject:@{@"type": p.portType ?: @"?", @"name": p.portName ?: @""}];
+        }
+        for (AVAudioSessionPortDescription *p in as.currentRoute.outputs) {
+            [outs addObject:@{@"type": p.portType ?: @"?", @"name": p.portName ?: @""}];
+        }
+        a[@"inputs"] = ins;
+        a[@"outputs"] = outs;
+        a[@"category"] = as.category ?: @"?";
+        a[@"mode"] = as.mode ?: @"?";
+        a[@"inputChannels"] = @(as.inputNumberOfChannels);
+        a[@"outputVolume"] = @(round(as.outputVolume * 1000) / 1000);
+    } @catch (NSException *e) {
+        a[@"error"] = [NSString stringWithFormat:@"%@: %@", e.name, e.reason ?: @""];
+    }
+    return a;
 }
 
 - (void)collectMeta {
@@ -208,7 +265,9 @@ static BOOL pathExists(NSString *p) {
         if (![f.mediaType isEqualToString:AVMediaTypeVideo]) { continue; }
         CMFormatDescriptionRef fd = f.formatDescription;
         if (!fd) { continue; }
-        CMVideoDimensions d = CMFormatDescriptionGetDimensions(fd);
+        // 16.5 SDK 头中该 C 函数名为 CMVideoFormatDescriptionGetDimensions（iOS 4+）；
+        // CMFormatDescriptionGetDimensions 在 theos 所用 SDK 未声明（CI 两轮编译错实证）。
+        CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(fd);
         if (d.width <= 0 || d.height <= 0) { continue; }
         BOOL fpsOk = NO;
         for (AVFrameRateRange *r in f.videoSupportedFrameRateRanges) {
@@ -239,11 +298,65 @@ static BOOL pathExists(NSString *p) {
     } @finally {
         [self.frontDevice unlockForConfiguration];
     }
-    CMVideoDimensions d = CMFormatDescriptionGetDimensions(fmt.formatDescription);
+    CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription);
     ((NSMutableDictionary *)self.report)[@"appliedFormat"] = [@{
         label: [NSString stringWithFormat:@"%dx%d", d.width, d.height],
     } mutableCopy];
     [self log:[NSString stringWithFormat:@"format %s -> %dx%d\n", label.UTF8String, d.width, d.height]];
+    [self recordMaxPhotoDimensionsForFormat:fmt];
+}
+
+// AVCaptureDeviceFormat.supportedMaxPhotoDimensions（iOS 16）+ AVCapturePhotoOutput.maxPhotoDimensions
+// 文档要求"startRunning 前设置"；把支持档位与生效档位都记入报告（KYC 高分辨率证件采集能力信号）。
+- (void)recordMaxPhotoDimensionsForFormat:(AVCaptureDeviceFormat *)fmt {
+    NSMutableArray *list = [NSMutableArray array];
+    CMVideoDimensions biggest = {0, 0};
+    if (@available(iOS 16.0, *)) {  // supportedMaxPhotoDimensions/maxPhotoDimensions 均 iOS 16.0
+        for (NSValue *v in fmt.supportedMaxPhotoDimensions) {
+            CMVideoDimensions md = {0, 0};
+            [v getValue:&md];
+            [list addObject:[NSString stringWithFormat:@"%dx%d", md.width, md.height]];
+            if ((long long)md.width * md.height > (long long)biggest.width * biggest.height) { biggest = md; }
+        }
+        if (biggest.width > 0 && self.photoOutput) {
+            @try {
+                self.photoOutput.maxPhotoDimensions = biggest;
+            } @catch (NSException *e) {
+                [self log:[NSString stringWithFormat:@"maxPhotoDimensions exception: %@\n", e.reason]];
+            }
+        }
+    }
+    self.maxPhotoDimsSnapshot = @{
+        @"supported": list,
+        @"applied": [NSString stringWithFormat:@"%dx%d", biggest.width, biggest.height],
+    };
+}
+
+// 传感器能力范围（KYC 曝光动态类检测的基准）：全部为 AVCaptureDevice/Format 公开只读属性。
+// 注：min/maxExposureDuration、min/maxISO 挂在 AVCaptureDeviceFormat（activeFormat）上，
+// 不是 AVCaptureDevice（16.5 SDK 头 2643-2673 行实证归属）。
+// videoMaxFrameRate 在 16.5 SDK 头已移除（改用 videoSupportedFrameRateRanges 的 max，文档同此指引）；
+// minFrameDuration/maxFrameDuration 也不在该头——按 range 与 exposureDuration 表达。
+- (NSDictionary *)collectSensorRanges {
+    AVCaptureDeviceFormat *af = self.frontDevice.activeFormat;
+    double maxFPS = 0;
+    NSMutableArray *ranges = [NSMutableArray array];
+    for (AVFrameRateRange *r in af.videoSupportedFrameRateRanges) {
+        maxFPS = MAX(maxFPS, r.maxFrameRate);
+        [ranges addObject:@{@"minFPS": @(r.minFrameRate), @"maxFPS": @(r.maxFrameRate)}];
+    }
+    return @{
+        @"minExposureMs": @(round(CMTimeGetSeconds(af.minExposureDuration) * 1e5) / 100.0),
+        @"maxExposureMs": @(round(CMTimeGetSeconds(af.maxExposureDuration) * 1e5) / 100.0),
+        @"minISO": @(round((double)af.minISO * 10) / 10.0),
+        @"maxISO": @(round((double)af.maxISO * 10) / 10.0),
+        @"activeMaxFPS": @(maxFPS),
+        @"frameRateRanges": ranges,
+        // 视场角/像素合并/HDR 能力是设备指纹与画面真实性交叉核对的常用信号。
+        @"videoFieldOfView": @(round((double)af.videoFieldOfView * 100) / 100),
+        @"videoBinned": @(af.isVideoBinned),
+        @"videoHDRSupported": @(af.isVideoHDRSupported),
+    };
 }
 
 - (void)configureAndStartSession {
@@ -272,6 +385,28 @@ static BOOL pathExists(NSString *p) {
     [self.session beginConfiguration];
     [self.session addInput:input];
 
+    // 扩展收集：前置各 device type 可用性（3D 深度通道对 KYC liveness 是硬缺失项）。
+    // 注：16.5 SDK 头没有 discoverySession.supportedDeviceTypes（本地编译实证），
+    // 改为逐类型建 DiscoverySession 探测。
+    NSMutableDictionary *typePresent = [NSMutableDictionary dictionary];
+    for (AVCaptureDeviceType t in @[AVCaptureDeviceTypeBuiltInWideAngleCamera,
+                                    AVCaptureDeviceTypeBuiltInTrueDepthCamera,
+                                    AVCaptureDeviceTypeBuiltInDualCamera,
+                                    AVCaptureDeviceTypeBuiltInDualWideCamera,
+                                    AVCaptureDeviceTypeBuiltInTripleCamera]) {
+        AVCaptureDeviceDiscoverySession *d2 =
+            [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[t]
+                                                                  mediaType:AVMediaTypeVideo
+                                                                   position:AVCaptureDevicePositionFront];
+        typePresent[t] = @(d2.devices.count > 0);
+    }
+    self.trueDepthInfo = @{
+        @"frontTrueDepthPresent": typePresent[AVCaptureDeviceTypeBuiltInTrueDepthCamera] ?: @NO,
+        @"frontTypesPresent": typePresent,
+    };
+
+    self.sampleQueue = dispatch_queue_create("vcam.probe.samples", DISPATCH_QUEUE_SERIAL);
+
     BOOL minimal = [[NSUserDefaults standardUserDefaults] boolForKey:@"probeMinimal"];
     self.reportMinimal = minimal;
     if (!minimal) {
@@ -283,14 +418,25 @@ static BOOL pathExists(NSString *p) {
         self.metaOutputSupported = [self.session canAddOutput:meta];
         if (self.metaOutputSupported) {
             [self.session addOutput:meta];
-            [meta setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
+            // 人脸样本数组与帧样本共用 sampleQueue，避免跨线程改 report。
+            [meta setMetadataObjectsDelegate:self queue:self.sampleQueue];
             if ([meta.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
                 meta.metadataObjectTypes = @[AVMetadataObjectTypeFace];
             }
         }
+
+        // 扩展收集：深度通道可用性。wide-angle 前置通常 canAddOutput=NO（如实记 false）；
+        // delegate 方法签名 depthDataOutput:didOutputDepthData:timestamp:connection:（SDK 头核实）。
+        AVCaptureDepthDataOutput *depth = [[AVCaptureDepthDataOutput alloc] init];
+        depth.alwaysDiscardsLateDepthData = YES;
+        self.depthOutputSupported = [self.session canAddOutput:depth];
+        if (self.depthOutputSupported) {
+            self.depthOutput = depth;
+            [self.session addOutput:depth];
+            [depth setDelegate:self callbackQueue:self.sampleQueue];
+        }
     }
 
-    self.sampleQueue = dispatch_queue_create("vcam.probe.samples", DISPATCH_QUEUE_SERIAL);
     self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
     self.videoOutput.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey:
         @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)};
@@ -301,6 +447,7 @@ static BOOL pathExists(NSString *p) {
 
     // 低档先选 640x480（近似取最接近档）；随后阶段切换用 applyFormat。
     [self applyFormat:[self pickFormatNearWidth:640 height:480] label:@"low"];
+    self.sensorRangesSnapshot = [self collectSensorRanges];
     [self.session commitConfiguration];
 
     [self.session startRunning];  // 文档要求：阻塞调用，本处已在专用串行队列上
@@ -351,6 +498,7 @@ static BOOL pathExists(NSString *p) {
         @"photoOutputSupported": @(self.photoOutputSupported),
         @"metaOutputSupported": @(self.metaOutputSupported),
         @"videoOutputSupported": @(self.videoOutputSupported),
+        @"depthOutputSupported": @(self.depthOutputSupported),
         @"minimalMode": @(self.reportMinimal),
         @"photo": [NSMutableDictionary dictionary],
     } mutableCopy];
@@ -394,6 +542,30 @@ static BOOL pathExists(NSString *p) {
         }];
         [self.motionLock unlock];
     }];
+    [self startAltimeter];
+}
+
+// 扩展收集：CMAltimeter 相对高度/气压（iOS 8+；可用性已判断，iPhone 上通常可用）。
+// 与视频流矛盾检测相关：设备静止但 IMU/气压噪声应仍非零（真实设备特征）。
+- (void)startAltimeter {
+    if (![CMAltimeter isRelativeAltitudeAvailable]) { return; }
+    self.altimeterAvailable = YES;
+    self.altimeter = [[CMAltimeter alloc] init];
+    [self.altimeter startRelativeAltitudeUpdatesToQueue:self.motionQueue
+                                              withHandler:^(CMAltitudeData *d, NSError *e) {
+        (void)e;
+        if (!d) { return; }
+        double t = CFAbsoluteTimeGetCurrent() - self.startClock;
+        @synchronized (self.altimeterSamples) {
+            if (self.altimeterSamples.count < 40) {
+                [self.altimeterSamples addObject:@{
+                    @"t": @(round(t * 10000) / 10000),
+                    @"altitudeM": d.relativeAltitude ?: @0,
+                    @"pressureKPa": d.pressure ?: @0,
+                }];
+            }
+        }
+    }];
 }
 
 - (void)setTorch:(BOOL)on {
@@ -423,6 +595,73 @@ static BOOL pathExists(NSString *p) {
         [self log:[NSString stringWithFormat:@"phase%d first frame %zux%zu\n", self.phase, w, h]];
     }
     [self recordAttachments:sb];
+
+    // 扩展收集：低频采样设备实时曝光状态（AE 活跃变化的直接证据）。
+    if ((self.phaseFrames - 1) % 30 == 0 && self.exposureSamples.count < 60) {
+        [self sampleDeviceExposure];
+    }
+    // 扩展收集：Vision 人脸捕获质量+关键点（每 5 帧一次，异步不阻塞帧队列）。
+    if ((self.phaseFrames - 1) % 5 == 0 && self.visionSamples.count < 120) {
+        CFRetain(sb);
+        __weak ProbeRunner *me = self;
+        dispatch_async(self.visionQueue, ^{
+            [me runVisionOnSample:sb];
+            CFRelease(sb);
+        });
+    }
+}
+
+// device.exposureDuration / ISO（iOS 8/7 公开只读属性）：正在进行的自动曝光状态。
+- (void)sampleDeviceExposure {
+    double durUs = CMTimeGetSeconds(self.frontDevice.exposureDuration) * 1e6;
+    [self.exposureSamples addObject:@{
+        @"t": @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000),
+        @"exposureUs": @(round(durUs * 100) / 100.0),
+        @"iso": @(round((double)self.frontDevice.ISO * 10) / 10.0),
+    }];
+}
+
+// VNDetectFaceCaptureQualityRequest（iOS 13）+ VNDetectFaceLandmarksRequest（iOS 11）：
+// 供应商 deepfake/质量检测最常用的现成信号源。faceCaptureQuality 为 NSNumber（SDK 头核实）。
+- (void)runVisionOnSample:(CMSampleBufferRef)sb {
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCMSampleBuffer:sb options:@{}];
+    VNDetectFaceCaptureQualityRequest *quality = [[VNDetectFaceCaptureQualityRequest alloc] init];
+    VNDetectFaceLandmarksRequest *landmarks = [[VNDetectFaceLandmarksRequest alloc] init];
+    NSError *err = nil;
+    if (![handler performRequests:@[quality, landmarks] error:&err]) {
+        @synchronized (self.visionSamples) {
+            if (self.visionSamples.count < 3) {
+                [self.visionSamples addObject:@{@"error": err.localizedDescription ?: @"vision failed"}];
+            }
+        }
+        return;
+    }
+    NSMutableArray *quals = [NSMutableArray array];
+    for (VNFaceObservation *o in quality.results) {
+        // faceCaptureQuality 是 NSNumber(可空)；confidence 是 float（VNConfidence），不能直接 ?:。
+        NSNumber *q = o.faceCaptureQuality;
+        [quals addObject:q ?: @(o.confidence)];
+    }
+    NSMutableDictionary *entry = [@{
+        @"t": @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000),
+        @"n": @(quality.results.count),
+        @"qual": quals,
+    } mutableCopy];
+    VNFaceObservation *lo = landmarks.results.firstObject;
+    if (lo.landmarks) {
+        VNFaceLandmarks2D *lm = lo.landmarks;
+        NSMutableDictionary *regions = [NSMutableDictionary dictionary];
+        for (NSArray *pair in @[@[@"faceContour", lm.faceContour], @[@"leftEye", lm.leftEye],
+                                @[@"rightEye", lm.rightEye], @[@"nose", lm.nose],
+                                @[@"outerLips", lm.outerLips], @[@"innerLips", lm.innerLips]]) {
+            VNFaceLandmarkRegion2D *r = pair[1];
+            regions[pair[0]] = r ? @(r.pointCount) : @0;
+        }
+        entry[@"lm"] = regions;
+    }
+    @synchronized (self.visionSamples) {
+        [self.visionSamples addObject:entry];
+    }
 }
 
 - (void)startWriterForSampleBuffer:(CMSampleBufferRef)sb {
@@ -494,9 +733,58 @@ static BOOL pathExists(NSString *p) {
           fromConnection:(AVCaptureConnection *)conn {
     int faces = 0;
     for (AVMetadataObject *o in objects) {
-        if ([o isKindOfClass:AVMetadataFaceObject.class]) { faces++; }
+        if ([o isKindOfClass:AVMetadataFaceObject.class]) {
+            faces++;
+            // 扩展收集：faceID（跨帧跟踪）、yaw/roll（姿态角）。读取 yawAngle/rollAngle 前
+            // 必须先判断 has*（头文件明确：为 NO 时读取抛 NSGenericException）。
+            if (self.faceSamples.count < 150) {
+                AVMetadataFaceObject *f = (AVMetadataFaceObject *)o;
+                NSMutableDictionary *d = [@{
+                    @"t": @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000),
+                    @"id": @(f.faceID),
+                    @"w": @(round(f.bounds.size.width * 1000) / 1000),
+                    @"h": @(round(f.bounds.size.height * 1000) / 1000),
+                } mutableCopy];
+                if (f.hasYawAngle) { d[@"yaw"] = @(round(f.yawAngle * 100) / 100); }
+                if (f.hasRollAngle) { d[@"roll"] = @(round(f.rollAngle * 100) / 100); }
+                [self.faceSamples addObject:d];
+            }
+        }
     }
     if (faces > 0) { self.faceFramesThisPhase++; self.totalFaceObjects += faces; }
+}
+
+#pragma mark - depth output
+
+- (void)depthDataOutput:(AVCaptureDepthDataOutput *)output
+     didOutputDepthData:(AVDepthData *)depthData
+              timestamp:(CMTime)timestamp
+             connection:(AVCaptureConnection *)connection {
+    (void)output; (void)connection;
+    self.depthFramesTotal++;
+    double ts = CMTimeGetSeconds(timestamp);
+    if (self.depthFirstTs <= 0) { self.depthFirstTs = ts; }
+    self.depthLastTs = ts;
+    CVPixelBufferRef map = depthData.depthDataMap;
+    if (map) {
+        self.depthW = (int)CVPixelBufferGetWidth(map);
+        self.depthH = (int)CVPixelBufferGetHeight(map);
+    }
+    if (!self.depthTypeStr) {
+        OSType t4 = depthData.depthDataType;
+        char cc[5] = {(char)((t4 >> 24) & 0xFF), (char)((t4 >> 16) & 0xFF),
+                      (char)((t4 >> 8) & 0xFF), (char)(t4 & 0xFF), 0};
+        self.depthTypeStr = [NSString stringWithCString:cc encoding:NSASCIIStringEncoding];
+    }
+}
+
+- (void)depthDataOutput:(AVCaptureDepthDataOutput *)output
+     didDropDepthData:(AVDepthData *)depthData
+            timestamp:(CMTime)timestamp
+           connection:(AVCaptureConnection *)connection
+               reason:(AVCaptureOutputDataDroppedReason)reason {
+    (void)output; (void)depthData; (void)timestamp; (void)connection; (void)reason;
+    self.depthDroppedTotal++;
 }
 
 #pragma mark - photo
@@ -571,6 +859,29 @@ static BOOL pathExists(NSString *p) {
     photoReport[@"height"] = @(ph);
     photoReport[@"exifKeyCount"] = @(keyCount);
     photoReport[@"exif"] = flat;
+    // 扩展收集：resolvedSettings（iOS 10）。16.5 SDK 头确认该类可用成员为
+    // photoDimensions/previewDimensions/embeddedThumbnailDimensions/uniqueID/flashEnabled/
+    // expectedPhotoCount/photoProcessingTimeRange（无 ISO/曝光时长——那些在 device/attachment 侧采）。
+    AVCaptureResolvedPhotoSettings *rs = photo.resolvedSettings;
+    if (rs) {
+        @try {
+            photoReport[@"resolved"] = @{
+                @"uniqueID": @(rs.uniqueID),
+                @"photoDims": [NSString stringWithFormat:@"%dx%d",
+                               rs.photoDimensions.width, rs.photoDimensions.height],
+                @"previewDims": [NSString stringWithFormat:@"%dx%d",
+                                 rs.previewDimensions.width, rs.previewDimensions.height],
+                @"thumbDims": [NSString stringWithFormat:@"%dx%d",
+                               rs.embeddedThumbnailDimensions.width, rs.embeddedThumbnailDimensions.height],
+                @"flashEnabled": @(rs.isFlashEnabled),
+                @"expectedPhotoCount": @(rs.expectedPhotoCount),
+                @"processingStartMs": @(round(CMTimeGetSeconds(rs.photoProcessingTimeRange.start) * 1000)),
+                @"processingDurMs": @(round(CMTimeGetSeconds(rs.photoProcessingTimeRange.duration) * 1000)),
+            };
+        } @catch (NSException *e) {
+            photoReport[@"resolvedError"] = [NSString stringWithFormat:@"%@: %@", e.name, e.reason ?: @""];
+        }
+    }
     [self log:[NSString stringWithFormat:@"photo %dx%d exifKeys=%d\n", pw, ph, keyCount]];
 }
 
@@ -610,11 +921,42 @@ static BOOL pathExists(NSString *p) {
     [self finalizeCurrentSessionWithLabel:@"high"];
     dispatch_async(self.sessionQueue, ^{ [self.session stopRunning]; });
     [self.motion stopDeviceMotionUpdates];
+    if (self.altimeter) { [self.altimeter stopRelativeAltitudeUpdates]; }
+    [self aggregateExtendedSamples];
     [self computeMotionStats];
     [self selfVerdicts];
     self.report[@"meta"][@"finished"] = @([NSDate date].timeIntervalSince1970);
     [self uploadReport];
     if (self.completion) { self.completion(); }
+}
+
+// 把运行期在各队列收集的扩展样本汇总进报告（finishProbe 在 sampleQueue 上，帧队列已停）。
+- (void)aggregateExtendedSamples {
+    NSMutableDictionary *cam = ([self.report[@"camera"] isKindOfClass:NSMutableDictionary.class]
+                                ? (NSMutableDictionary *)self.report[@"camera"] : nil);
+    if (cam) {
+        @synchronized (self.visionSamples) { cam[@"visionSamples"] = [self.visionSamples copy]; }
+        cam[@"faceSamples"] = [self.faceSamples copy];
+        cam[@"exposureSamples"] = [self.exposureSamples copy];
+        if (self.maxPhotoDimsSnapshot) { cam[@"maxPhotoDims"] = self.maxPhotoDimsSnapshot; }
+        if (self.trueDepthInfo) { cam[@"trueDepth"] = self.trueDepthInfo; }
+        if (self.sensorRangesSnapshot) { cam[@"sensorRanges"] = self.sensorRangesSnapshot; }
+        cam[@"depth"] = @{
+            @"frames": @(self.depthFramesTotal),
+            @"dropped": @(self.depthDroppedTotal),
+            @"w": @(self.depthW),
+            @"h": @(self.depthH),
+            @"firstTs": @(self.depthFirstTs),
+            @"lastTs": @(self.depthLastTs),
+            @"type": self.depthTypeStr ?: @"",
+        };
+    }
+    @synchronized (self.altimeterSamples) {
+        self.report[@"altimeter"] = @{
+            @"available": @(self.altimeterAvailable),
+            @"samples": [self.altimeterSamples copy],
+        };
+    }
 }
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {
@@ -705,6 +1047,29 @@ static BOOL pathExists(NSString *p) {
                                @"detail": [NSString stringWithFormat:@"faceMeta=%.0f%%", 100*faces/frames]}];
         }
     }
+    NSDictionary *cam = self.report[@"camera"];
+    NSInteger faceDet = [cam[@"faceSamples"] count];
+    [items addObject:@{@"name": @"face_meta_detailed",
+                       @"status": faceDet > 0 ? @"PASS" : @"RISK",
+                       @"detail": [NSString stringWithFormat:@"faceID/yaw/roll 样本 %ld 条", (long)faceDet]}];
+    NSInteger visionN = [cam[@"visionSamples"] count];
+    [items addObject:@{@"name": @"vision_face_quality",
+                       @"status": visionN > 0 ? @"PASS" : @"RISK",
+                       @"detail": [NSString stringWithFormat:@"Vision 质量/关键点样本 %ld 条", (long)visionN]}];
+    NSInteger expN = [cam[@"exposureSamples"] count];
+    [items addObject:@{@"name": @"sensor_exposure_sampling",
+                       @"status": expN > 0 ? @"PASS" : @"RISK",
+                       @"detail": [NSString stringWithFormat:@"实时曝光/ISO 采样 %ld 条", (long)expN]}];
+    BOOL tdPresent = [cam[@"trueDepth"][@"frontTrueDepthPresent"] boolValue];
+    NSInteger depthFrames = [cam[@"depth"][@"frames"] integerValue];
+    [items addObject:@{@"name": @"depth_channel",
+                       @"status": tdPresent && depthFrames > 0 ? @"PASS" : @"NA",
+                       @"detail": [NSString stringWithFormat:@"TrueDepth=%d depthFrames=%ld",
+                                   (int)tdPresent, (long)depthFrames]}];
+    NSInteger baroN = [self.report[@"altimeter"][@"samples"] count];
+    [items addObject:@{@"name": @"barometer",
+                       @"status": baroN > 0 ? @"PASS" : @"NA",
+                       @"detail": [NSString stringWithFormat:@"气压样本 %ld 条", (long)baroN]}];
     self.report[@"items"] = items;
 }
 

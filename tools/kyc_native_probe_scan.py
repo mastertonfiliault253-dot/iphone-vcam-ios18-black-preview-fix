@@ -82,6 +82,64 @@ def analyze_photo(p):
     return out
 
 
+def analyze_extended(report):
+    """扩展收集项（IDFV/亮度/音频路由/人脸细节/Vision 质量/实时曝光/最大拍照档位/深度/气压）。"""
+    cam = report.get("camera", {})
+    env = report.get("environment", {})
+    out = []
+    idfv = env.get("identifierForVendor")
+    if idfv and idfv != "none":
+        audio = env.get("audio", {})
+        out.append(("INFO", f"IDFV 可得；brightness={env.get('screenBrightness')} "
+                            f"barometerAvailable={env.get('barometerAvailable')} "
+                            f"audio inputs={len(audio.get('inputs', []))} outputs={len(audio.get('outputs', []))}"))
+    else:
+        out.append(("RISK", "identifierForVendor 不可得（供应商 SDK 常用设备指纹缺位）"))
+    fs = cam.get("faceSamples", [])
+    yawn = sum(1 for f in fs if "yaw" in f)
+    rolln = sum(1 for f in fs if "roll" in f)
+    if fs:
+        out.append(("INFO", f"人脸 metadata 细节 {len(fs)} 条（yaw={yawn} roll={rolln}）——faceID 跨帧跟踪可用"))
+    else:
+        out.append(("RISK", "无 faceID/yaw/roll 细节样本（零帧时先查 cameraSessionDiag/noFramesAfter5s）"))
+    vs = cam.get("visionSamples", [])
+    if vs:
+        quals = [q for v in vs for q in v.get("qual", []) if isinstance(q, (int, float))]
+        msg = f"Vision 人脸质量 {len(vs)} 样本 / {len(quals)} 个质量值"
+        if quals:
+            msg += f"，mean={sum(quals)/len(quals):.3f} min={min(quals):.3f}"
+        out.append(("INFO", msg))
+    else:
+        out.append(("RISK", "无 Vision 质量样本（检测栈同源信号缺位）"))
+    es = cam.get("exposureSamples", [])
+    if es:
+        ds = [e.get("exposureUs", 0) for e in es]
+        iso = [e.get("iso", 0) for e in es]
+        spread = "有变化(AE 活跃, 真实传感器特征)" if max(ds) > min(ds) or max(iso) > min(iso) else "恒定(AE 锁死?)"
+        out.append(("INFO", f"实时曝光采样 {len(es)} 条 exposureUs {min(ds)}~{max(ds)} iso {min(iso)}~{max(iso)}：{spread}"))
+    else:
+        out.append(("RISK", "无实时曝光/ISO 采样"))
+    mr = cam.get("maxPhotoDims", {})
+    if mr:
+        out.append(("INFO", f"最大拍照档位 supported={mr.get('supported')} applied={mr.get('applied')}"))
+    sr = cam.get("sensorRanges", {})
+    if sr:
+        out.append(("INFO", f"sensor 范围 maxExposureMs={sr.get('maxExposureMs')} ISO {sr.get('minISO')}~{sr.get('maxISO')} "
+                            f"FOV={sr.get('videoFieldOfView')} maxFPS={sr.get('activeMaxFPS')}"))
+    tr = cam.get("trueDepth", {})
+    dep = cam.get("depth", {})
+    if tr.get("frontTrueDepthPresent"):
+        out.append(("INFO", f"TrueDepth 前置存在，depthFrames={dep.get('frames')}（3D liveness 通道可尝试）"))
+    else:
+        out.append(("NA", "TrueDepth 前置不可得 → 3D 深度 liveness 通道无法打开（真实 KYC 硬缺项，文档已记）"))
+    al = report.get("altimeter", {})
+    if al.get("samples"):
+        out.append(("INFO", f"气压样本 {len(al['samples'])} 条"))
+    else:
+        out.append(("NA", "无气压样本"))
+    return out
+
+
 def cross_compare(native_items, browser_report):
     rows = []
     bitems = {}
@@ -112,6 +170,7 @@ def analyze(report_path, browser_path=None, videos=None):
     verdicts += analyze_sessions(cam.get("sessions", []))
     verdicts += analyze_motion(report.get("motion"))
     verdicts += analyze_photo(cam.get("photo"))
+    verdicts += analyze_extended(report)
 
     print("\n-- verdicts --")
     for lvl, msg in verdicts:
