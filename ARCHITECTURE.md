@@ -10,9 +10,12 @@ VCAM separates media production, camera replacement and control UI:
   For non-loopback numeric-IP plain-HTTP HLS, vcamd additionally relays
   authenticated HTTP bytes from the configured LAN origin to device loopback;
   it never decodes those bytes.
-- `VCAMMediaServerClient` is injected only into `mediaserverd`. It performs the
-  validated `BWNodeOutput` replacement and contains no UIKit, decoder or network
-  client.
+- `VCAMMediaServerClient` is injected only into the camera capture daemon:
+  `mediaserverd` on iOS 16 and `cameracaptured` on iOS 17/18 (selected by
+  `VCAMInjectionPolicy`). Throughout this file "mediaserverd" denotes that
+  camera-frame host wherever it still names the iOS 16 transport. It performs
+  the validated `BWNodeOutput` replacement and contains no UIKit, decoder or
+  network client.
 - `VCAMSpringBoardClient` gives SpringBoard, Camera and the supported browser
   main processes one foreground-owned white dot, control panel and preview. In
   SpringBoard only, its media bridge normalizes static images with ImageIO into
@@ -29,6 +32,11 @@ VCAM separates media production, camera replacement and control UI:
   broker for panel display only. App hosts receive UI only; they never decode
   media, hook camera frames or publish replacement frames, and the JPEG never
   enters the mediaserverd replacement path.
+- On iOS 18 the cameracaptured replacement posts the Darwin notification
+  `com.codex.vcam.ios18.frame` as evidence of a live lease on the VCAM frame
+  stream; vcamd demand tracking and the SpringBoard HLS suspend/resume gate
+  consume it. It is posted only after the virtual-mode enable check, so a
+  camera running in real mode (replacement off) does not pin HLS to running.
 - `vcaminjectd` repairs only the SpringBoard and `mediaserverd` mappings after
   those exact processes restart. Normal tweak filtering loads application UI
   clients.
@@ -45,9 +53,14 @@ second VCAM scale. Camera preview keeps its existing whole-frame fit and
 recording remains full-bleed.
 At the still-photo terminal, VCAM only aspect-fills the system-negotiated target.
 It does not rotate pixels according to the source or phone posture and does not
-replace the sample's orientation metadata; the existing system camera graph
-remains the sole owner of saved-photo orientation and aspect metadata. Audio is
-never replaced.
+replace orientation metadata the graph already attached; the existing system
+camera graph remains the owner of saved-photo orientation and aspect metadata.
+Exception: because the still-photo fill renders canonical portrait pixels
+rotated left into the landscape target, the VCAM photo route marks the sample
+`Orientation=Right` **only when the graph left no orientation attachment at
+all** (device-observed gap on iOS 18.3.1), so Photos shows a portrait 3:4
+image instead of a sideways one. It never overwrites an existing orientation.
+Audio is never replaced.
 
 Non-loopback numeric-IP plain-HTTP LAN HLS has a split ownership contract: the audit-identified
 SpringBoard process generates a random 128-bit token and registers it with vcamd over XPC, AVPlayer
@@ -100,9 +113,11 @@ static-image publisher.
 
 The loopback configuration broker is not authenticated by a compiled password.
 Each request first obtains a 10-second, single-use random token from an XPC
-allowlist that binds the peer PID, process start time, exact executable path,
-code-signing identifier and, for third-party browsers, expected team ID. Selected
-media paths are canonicalized and
+allowlist that binds the peer PID, process start time, exact executable path
+and process name, and admits third-party browsers by bundle identifier against
+a pinned App Store team-ID table (runtime membership is by bundle id; the team
+values are documentation/future signature-check anchors because csops-based
+identity queries are unreliable under a jailbreak). Selected media paths are canonicalized and
 must remain below `/var/mobile/Media/VCAM`; the broker has no arbitrary file-fetch
 command. Imports are capped at 2 GiB and retain a 256 MiB free-space reserve;
 HTTP(S) downloads enforce both limits while bytes arrive, before import. Media

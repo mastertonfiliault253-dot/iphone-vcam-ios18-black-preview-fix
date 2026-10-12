@@ -4,6 +4,7 @@
 #import <ImageIO/ImageIO.h>
 #import <objc/runtime.h>
 #import <math.h>
+#import <time.h>
 #import "../Core/VCAMConfiguration.h"
 
 @interface VCAMMediaServerProvider : NSObject
@@ -112,8 +113,28 @@ static BOOL VCAMLoadVideoMedia(VCAMMediaServerProviderState *state) {
     return YES;
 }
 
+// The mediaserverd draw path runs at camera frame rate. Re-reading the plist
+// (and possibly the broker socket) every frame dominated the cost budget of a
+// skipped frame, so throttle to 0.5 s. Callers are serialized by the state
+// lock. Panel-driven changes land within half a second, which matches how the
+// setting is actually used.
+static NSDictionary *VCAMCurrentConfigurationValuesThrottled(void) {
+    static NSDictionary *cached;
+    static uint64_t lastReadNanoseconds;
+    struct timespec timestamp = {0};
+    uint64_t now = clock_gettime(CLOCK_MONOTONIC, &timestamp) == 0
+        ? (uint64_t)timestamp.tv_sec * 1000000000ULL + (uint64_t)timestamp.tv_nsec
+        : 0;
+    if (cached == nil || now == 0 || now < lastReadNanoseconds ||
+        now - lastReadNanoseconds >= 500000000ULL) {
+        cached = [VCAMConfiguration currentValues] ?: @{};
+        lastReadNanoseconds = now;
+    }
+    return cached;
+}
+
 static BOOL VCAMEnsureMediaLoaded(VCAMMediaServerProviderState *state) {
-    NSDictionary *values = [VCAMConfiguration currentValues];
+    NSDictionary *values = VCAMCurrentConfigurationValuesThrottled();
     BOOL enabled = [values[@"enabled"] boolValue] && [values[@"injectionMediaServerEnabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString];
     NSString *path = [values[@"mediaPath"] isKindOfClass:NSString.class] ? values[@"mediaPath"] : nil;
@@ -207,23 +228,30 @@ static CIImage *VCAMTransformedReplacement(CIImage *image,
     return [result imageByCroppingToRect:target];
 }
 
-BOOL VCAMMediaServerReplacementDrawsIntoBuffer(CVPixelBufferRef targetBuffer) {
-    if (targetBuffer == NULL) return NO;
+VCAMMediaServerReplacementResult VCAMMediaServerReplacementDrawIntoBuffer(
+    CVPixelBufferRef targetBuffer) {
+    if (targetBuffer == NULL) return VCAMMediaServerReplacementPassedThrough;
     VCAMMediaServerProviderState *state = VCAMCurrentState();
     @synchronized (state) {
         @autoreleasepool {
-            if (!VCAMEnsureMediaLoaded(state)) return NO;
+            if (!VCAMEnsureMediaLoaded(state)) {
+                // state.enabled distinguishes "replacement requested but media
+                // unusable" (fail closed) from "replacement off" (pass real
+                // frames through).
+                return state.enabled ? VCAMMediaServerReplacementFailed
+                                     : VCAMMediaServerReplacementPassedThrough;
+            }
 
             CIImage *replacement = nil;
             if (state.videoMode) {
                 CVPixelBufferRef frame = VCAMCopyNextVideoPixelBuffer(state);
-                if (frame == NULL) return NO;
+                if (frame == NULL) return VCAMMediaServerReplacementFailed;
                 replacement = [CIImage imageWithCVPixelBuffer:frame];
                 CVPixelBufferRelease(frame);
             } else if (state.replacementImage != NULL) {
                 replacement = [CIImage imageWithCGImage:state.replacementImage];
             }
-            if (replacement == nil) return NO;
+            if (replacement == nil) return VCAMMediaServerReplacementFailed;
 
             if (!CGAffineTransformIsIdentity(state.videoTransform)) {
                 replacement = [replacement imageByApplyingTransform:state.videoTransform];
@@ -236,7 +264,7 @@ BOOL VCAMMediaServerReplacementDrawsIntoBuffer(CVPixelBufferRef targetBuffer) {
                                                         state.rotationDegrees,
                                                         state.mirrorHorizontally,
                                                         state.contentMode);
-            if (final == nil) return NO;
+            if (final == nil) return VCAMMediaServerReplacementFailed;
 
             CVPixelBufferLockBaseAddress(targetBuffer, 0);
             [VCAMSharedCIContext() render:final
@@ -244,7 +272,7 @@ BOOL VCAMMediaServerReplacementDrawsIntoBuffer(CVPixelBufferRef targetBuffer) {
                                    bounds:target
                                colorSpace:VCAMSharedColorSpace()];
             CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
-            return YES;
+            return VCAMMediaServerReplacementDrawn;
         }
     }
 }

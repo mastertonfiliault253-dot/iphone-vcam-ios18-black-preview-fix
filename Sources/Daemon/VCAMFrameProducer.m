@@ -17,11 +17,6 @@ static const char *const VCAMLegacyLocalVideoDaemonMarker =
 static const char *const VCAMLegacyLocalImageDaemonMarker =
     "/var/tmp/vcam-local-image-legacy-vcamd.enable";
 
-static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
-    NSString *extension = path.pathExtension.lowercaseString;
-    return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
-}
-
 static BOOL VCAMObjectsEqual(id left, id right) {
     return left == right || (left != nil && [left isEqual:right]);
 }
@@ -113,7 +108,7 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                 // SpringBoard owns production local-video playback through the
                 // same AVPlayer/NV12/Metal path as HLS. Keep the old daemon
                 // reader behind an explicit on-device rollback marker.
-                BOOL localVideo = VCAMLocalMediaPathIsVideo(
+                BOOL localVideo = VCAMMediaPathIsVideo(
                     self.configuration.mediaPath);
                 BOOL daemonRollback = localVideo
                     ? access(VCAMLegacyLocalVideoDaemonMarker, F_OK) == 0
@@ -212,7 +207,7 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
         BOOL nativeOBS = self.configuration.sourceKind == VCAMSourceKindOBSWebSocket &&
             [self.source isKindOfClass:VCAMOBSStreamSource.class];
         BOOL nativeStill = self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
-            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            !VCAMMediaPathIsVideo(self.configuration.mediaPath) &&
             [self.source isKindOfClass:VCAMLocalMediaSource.class];
         enabled = self.configuration.enabled &&
             (nativeOBS || nativeStill);
@@ -224,7 +219,7 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     __block uint32_t slotCount = VCAMSharedFrameSlotCount;
     dispatch_sync(self.stateQueue, ^{
         if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
-            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            !VCAMMediaPathIsVideo(self.configuration.mediaPath) &&
             [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
             slotCount = 1;
         }
@@ -236,7 +231,7 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     __block CGSize size = CGSizeZero;
     dispatch_sync(self.stateQueue, ^{
         if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
-            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            !VCAMMediaPathIsVideo(self.configuration.mediaPath) &&
             [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
             size = [(VCAMLocalMediaSource *)self.source orientedStillImageSize];
         }
@@ -248,7 +243,7 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     __block BOOL rendered = NO;
     dispatch_sync(self.stateQueue, ^{
         if (self.configuration.sourceKind == VCAMSourceKindLocalMedia &&
-            !VCAMLocalMediaPathIsVideo(self.configuration.mediaPath) &&
+            !VCAMMediaPathIsVideo(self.configuration.mediaPath) &&
             [self.source isKindOfClass:VCAMLocalMediaSource.class]) {
             rendered = [(VCAMLocalMediaSource *)self.source
                 renderStillImageIntoPixelBuffer:pixelBuffer];
@@ -297,9 +292,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 - (CMSampleBufferRef)copyTemplateForSize:(CGSize)size {
     size_t width = (size_t)MAX(1.0, round(size.width));
     size_t height = (size_t)MAX(1.0, round(size.height));
-    // RTSP publishes NV12 only for the identity transform (rotation is handled
-    // at the push end). When the panel rotates RTSP, fall back to BGRA so the
-    // existing vImage NV12->BGRA path still renders the rotation correctly.
     // RTSP always publishes NV12 (rotation is ignored; handled at push end).
     OSType templateFormat = self.configuration.sourceKind == VCAMSourceKindRTSP
         ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange

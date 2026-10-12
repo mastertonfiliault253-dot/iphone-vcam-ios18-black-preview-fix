@@ -215,13 +215,20 @@ static VCAMSurfaceBrokerPeerIdentity VCAMSurfaceBrokerIdentityForPeer(
         VCAMPeerIsPlatformBinary(pid) && [path hasPrefix:@"/Applications/"]) {
         return VCAMSurfaceBrokerPeerIdentityUIHost;
     }
-    NSDictionary<NSString *, NSString *> *allowedThirdPartyTeams = @{
+    // Membership test is by bundle identifier only. The dictionary carries the
+    // vendors' App Store team IDs as documentation and as the anchor a future
+    // signature check would compare against; the values are deliberately not
+    // compared at runtime because csops-based identity queries are unreliable
+    // under a jailbreak (see VCAMPeerIsPlatformBinary above) and the exact
+    // proc_pidpath + /Applications/ prefix checks above already bind the peer
+    // to a concrete on-disk bundle.
+    NSDictionary<NSString *, NSString *> *allowedThirdPartyBundles = @{
         @"com.google.chrome.ios": @"EQHXZ8M8AV",
         @"com.microsoft.msedge": @"UBF8T346G9",
         @"org.mozilla.ios.Firefox": @"43AQ936H96",
     };
-    NSString *expectedTeam = allowedThirdPartyTeams[bundleIdentifier];
-    return expectedTeam.length > 0
+    NSString *teamIDForBundle = allowedThirdPartyBundles[bundleIdentifier];
+    return teamIDForBundle.length > 0
         ? VCAMSurfaceBrokerPeerIdentityUIHost
         : VCAMSurfaceBrokerPeerIdentityUnknown;
 }
@@ -278,15 +285,9 @@ static const uint64_t VCAMConfigurationTokenLifetimeNanoseconds =
 static VCAMConfigurationToken
     VCAMConfigurationTokens[VCAMConfigurationTokenCapacity];
 
-static uint64_t VCAMSurfaceBrokerMonotonicNanoseconds(void) {
-    struct timespec now = {0};
-    return clock_gettime(CLOCK_MONOTONIC, &now) == 0
-        ? (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec : 0;
-}
-
 static void VCAMSurfaceBrokerStoreConfigurationToken(uint64_t high,
                                                      uint64_t low) {
-    uint64_t now = VCAMSurfaceBrokerMonotonicNanoseconds();
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     size_t selected = 0;
     uint64_t oldest = UINT64_MAX;
     for (size_t index = 0; index < VCAMConfigurationTokenCapacity; index++) {
@@ -308,7 +309,7 @@ static void VCAMSurfaceBrokerStoreConfigurationToken(uint64_t high,
 
 static bool VCAMSurfaceBrokerConsumeConfigurationToken(uint64_t high,
                                                        uint64_t low) {
-    uint64_t now = VCAMSurfaceBrokerMonotonicNanoseconds();
+    uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
     for (size_t index = 0; now != 0 &&
          index < VCAMConfigurationTokenCapacity; index++) {
         VCAMConfigurationToken *token = &VCAMConfigurationTokens[index];

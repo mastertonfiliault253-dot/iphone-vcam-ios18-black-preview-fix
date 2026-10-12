@@ -1318,7 +1318,6 @@ static BOOL VCAMReplaceSampleBufferInPlace(
         return;
     }
 
-    notify_post("com.codex.vcam.ios18.frame");
     static volatile int outputVideoSamples = 0;
     int outputSampleCount = __sync_add_and_fetch(&outputVideoSamples, 1);
     VCAMRuntimeSetState(&g_runtimeOutputCountToken,
@@ -1339,6 +1338,13 @@ static BOOL VCAMReplaceSampleBufferInPlace(
         return;
     }
 
+    // Consumer-activity evidence for HLS/RTSP demand: only frames that
+    // virtual mode actually serves should refresh it. Both receivers
+    // (vcamd demand tracking and the SpringBoard HLS suspend/resume gate)
+    // implement "a lease on the VCAM frame stream" semantics, so posting
+    // before the enable check pinned HLS to running while the camera was
+    // used in real mode with the replacement off.
+    notify_post("com.codex.vcam.ios18.frame");
     notify_post("com.codex.vcam.ios18.vmode");
 
     CVPixelBufferRef originalImageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);

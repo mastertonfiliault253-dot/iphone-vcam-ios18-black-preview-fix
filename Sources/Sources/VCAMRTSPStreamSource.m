@@ -17,6 +17,10 @@ static volatile int gFFmpegDiagnosticCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
 
+// Beyond this age the last decoded frame counts as lost and the source
+// reports no video. Same window as VCAMOBSStreamSource.
+static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;
+
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
     BOOL decoderClass = NO;
@@ -618,7 +622,7 @@ cleanup:
     uint64_t sequence = 0;
     @synchronized (self) {
         if (!self.running || _latestPixelBuffer == NULL ||
-            CACurrentMediaTime() - _latestFrameHostTime >= 3.5 ||
+            CACurrentMediaTime() - _latestFrameHostTime >= VCAMStaleFrameSeconds ||
             _latestFrameSequence == _lastDisplayFrameSequence) {
             return NULL;
         }
@@ -656,7 +660,7 @@ cleanup:
     uint64_t sequence = 0;
     @synchronized (self) {
         if (self.running && _latestPixelBuffer != NULL &&
-            CACurrentMediaTime() - _latestFrameHostTime < 3.5) {
+            CACurrentMediaTime() - _latestFrameHostTime < VCAMStaleFrameSeconds) {
             pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
             sequence = _latestFrameSequence;
         }

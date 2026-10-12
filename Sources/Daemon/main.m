@@ -275,6 +275,8 @@ static void VCAMPublishTick(void) {
                     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                         @"vcamd unsupported native pixel format=%08x; skipping frame", pixelFormat]];
                 }
+                CVPixelBufferRelease(native);
+                native = NULL;
                 return;
             }
             uint32_t width = (uint32_t)CVPixelBufferGetWidth(native);

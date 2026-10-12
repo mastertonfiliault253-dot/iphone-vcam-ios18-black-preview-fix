@@ -161,3 +161,57 @@ frame=1 vmode=1 route(全部命中)=1 rendered=1 sbcreated=1
 - 修复后的包已重新构建并安装，设备返回 `install ok installed`；当前设备上的
   `vcaminjectd` 已停用以阻止继续注入。下一步由操作者打开 Camera 触发
   `cameracaptured`，先确认它不再以 SIGTRAP 重启，再单独验收预览和拍照帧替换。
+
+## 2026-10-12 0.8.110+ios18-review-fixes 安装与回归（.39）
+
+代码审查（4 个只读子代理两轴审查，见 `docs/kyc/` 相关章节背景）发现的全部缺陷修复后，
+本地 WSL 构建 rootless 包（`dist/wsl-rootless/com.codex.vcam_0.8.110+ios18-review-fixes_iphoneos-arm64.deb`，
+SHA256 `ccfaf410…26f91b…`），dpkg 升级安装成功（`ii 0.8.110+ios18-review-fixes`），
+postinst 自动重启 vcamd/SpringBoard/cameracaptured/vcaminjectd。三处二进制确认更新
+（vcamd 与 SpringBoardClient 含新 BuildTag 字符串，MediaServerClient mtime=安装时刻；
+该 dylib 按设计不内嵌 BuildTag）。注入层 ctor 正常加载（`vcam-ref.log`:
+`hook targets available photoEncoder=1 remoteQueue=1 nodeOutput=1`）。
+
+真机功能回归（源=用户面板当次所选 3632234B.mov，736×992@23.75；产物
+`tmp/kyccheck/v110_out/`）：
+
+- 全分辨率 fullcheck 六档全部 exact 协商成功、track fps=30、12 个媒体+指纹完整回传。
+- 帧结构（frame_diff 判据）：≤720p 各档 60-61 帧/2s、内容 diff 活跃，与 0.8.109 一致无回归；
+  4K 20 帧 = 真实相机基线同值（优于 0.8.109 当时的 16 帧，源不同仅供参考）；
+  1080p 内容活跃（max_diff 12.2 > 源自身 9.6，非 0.8.109 时的"冻结"3.0），但 63%
+  重复仍高于源理论值——**1080p 生成-采纳路径限流问题本轮未修**（不在审查修复范围），
+  现状如实记录。
+- 照片路径（pf20 压缩格式、白名单去重后）：六档照片正常回传，亮度 130-136 非黑帧。
+- 泄漏修复（main.m 错误路径）：触发条件（native transport 不支持格式）在本机不可
+  自然构造，且该设备 `ps` 不提供真实 RSS——按代码级验证（release 配对+编译通过），
+  运行时内存曲线未实测。
+- 不可本机实测项（如实列出）：mediaserverd fail-closed（iOS16 路径，无 iOS16 设备）、
+  解码器 stop drain/RTSP demand（无 RTSP 源）、OBS 缓存（无 OBS 源）、TOCTOU 竞态
+  （难以定向触发）——均以编译+逻辑审查验证。
+
+## 2026-10-11 .39 真机画面验收（帧替换通过）
+
+安装 `0.8.109+ios18-hls-resume-recovery`（本地 CI 包 `dist/ci-35355679449/`，
+SHA256 `049f2f02…7a7b`）后，在 192.168.2.39 / iOS 18.3.1 上完成画面级验收：
+
+- 注入：`vcaminjectd` 对新的 `cameracaptured` 进程记录 `already-loaded proof=1`，
+  无 SIGTRAP 重启。
+- 图片源：面板导入 jpg 后，系统 Camera 预览显示该图片（VNC 截图 + 现场确认）。
+- 视频源：面板导入 .mov 后，面板实测 **34.1 fps**、"已收到推流（系统原生播放，
+  283 ms 前）"，预览内容持续流动（VNC 采样 40/40 变化）。
+- Safari `getUserMedia`：`probe/kyc-camera-test.html` 经 `ssh -R` 反向隧道以
+  `http://127.0.0.1` 打开（Safari 仅在安全上下文暴露 `navigator.mediaDevices`，
+  局域网 `http://` 直开时该 API 为 undefined），允许相机权限后：
+  `track.settings: res=640x480 fps=30 facing=user deviceId=b9E0AA9F…`，
+  10 s 统计采样=99、画面变化=93（连续真实帧流），视频内容为虚拟视频源。
+- KYC 实际采集链路（同日补齐）：Safari 内 canvas 抓帧拍照回传 `photo.jpg`
+  （480×640 JPEG，清晰度 Laplacian 方差 226.9，目检清晰无失真）、`MediaRecorder`
+  录像回传 `clip.mp4`（h264 640×480，30.36 fps，2.93 s，帧间运动量正常，内容即虚拟
+  视频源）——回传图片/视频质量验收通过（`probe/uploads/`）。
+- 拍照 EXIF 文件级对照（同日）：替换态 `IMG_0058.HEIC` 与真实相机
+  （`enabled=false`）`IMG_0059.HEIC` 的 EXIF 结构完全一致（均仅
+  `Orientation=6`/`ColorSpace=1`/4032×3024，无 Make/DateTime/GPS），证明该设备保存
+  照片本就不写相机 EXIF，缺失并非替换链路造成，两态在文件元数据上不可区分。
+- 未覆盖项：主动 liveness 挑战（属内容层，非替换层，需 RTSP 直播真人画面才可能响应）、
+  KYC SDK 越狱检测实测。KYC 整体分析与风险矩阵见
+  `docs/kyc/IOS-KYC-CAMERA-INTEGRATION-ZH.md`。

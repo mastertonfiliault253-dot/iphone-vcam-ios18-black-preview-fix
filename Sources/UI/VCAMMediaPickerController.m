@@ -78,11 +78,6 @@ static BOOL VCAMIsSupportedMediaExtension(NSString *extension) {
     return [extensions containsObject:extension.lowercaseString ?: @""];
 }
 
-static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
-    return [@[@"mov", @"mp4", @"m4v"]
-        containsObject:path.pathExtension.lowercaseString ?: @""];
-}
-
 static int64_t VCAMAvailableImportantStorageBytes(void) {
     NSNumber *available = nil;
     [[NSURL fileURLWithPath:NSTemporaryDirectory()] getResourceValue:&available
@@ -705,7 +700,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     BOOL enabled = [values[@"enabled"] boolValue];
     NSString *source = [values[@"source"] lowercaseString] ?: @"camera";
     BOOL staticImage = enabled && [source isEqualToString:@"local"] &&
-        !VCAMLocalMediaPathIsVideo(values[@"mediaPath"]);
+        !VCAMMediaPathIsVideo(values[@"mediaPath"]);
     NSString *sourceTitle = @"真实相机（未替换）";
     NSString *detail = @"vcamd 未发布替换画面；真实相机保持可用";
     if (enabled && [source isEqualToString:@"local"]) {

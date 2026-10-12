@@ -21,6 +21,15 @@ typedef NS_ENUM(NSInteger, VCAMLocalDecoderMode) {
     VCAMLocalDecoderModeSinglePlayer = 1,
 };
 
+/// Shared media-path classification: the video extension set accepted by the
+/// importer. vcamd, the SpringBoard bridge and the control panel each make
+/// routing decisions from this; one definition keeps the processes from
+/// disagreeing about what counts as a video source.
+static inline BOOL VCAMMediaPathIsVideo(NSString *_Nullable path) {
+    NSString *extension = path.pathExtension.lowercaseString ?: @"";
+    return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
+}
+
 /// Immutable configuration snapshot. Callers only need to load one snapshot;
 /// path resolution and validation stay behind this interface.
 @interface VCAMConfiguration : NSObject

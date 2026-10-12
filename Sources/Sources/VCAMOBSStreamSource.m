@@ -3,6 +3,9 @@
 #import <QuartzCore/QuartzCore.h>
 
 static const NSUInteger VCAMPacketHeaderLength = 16;
+// Same stale-frame window as VCAMRTSPStreamSource: beyond this the pushed
+// frame is treated as lost and the source reports no video.
+static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;
 
 @interface VCAMOBSStreamSource () <NSURLSessionDelegate>
 @property(nonatomic, strong) VCAMConfiguration *configuration;
@@ -15,7 +18,13 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
 @property(nonatomic) NSUInteger connectionGeneration;
 @end
 
-@implementation VCAMOBSStreamSource
+@implementation VCAMOBSStreamSource {
+    // Decoded-image cache: OBS pushes frames far slower than the camera
+    // graph pulls them, so re-JPEG-decoding the same bytes on every pull
+    // wasted CPU (the RTSP source already caches its last rendered sample).
+    CGImageRef _cachedImage;
+    CFTimeInterval _cachedFrameHostTime;
+}
 
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
                               renderer:(VCAMFrameRenderer *)renderer {
@@ -115,18 +124,40 @@ static const NSUInteger VCAMPacketHeaderLength = 16;
 
 - (CGImageRef)copyLatestImage {
     NSData *jpeg = nil;
+    CFTimeInterval stamp = 0;
     @synchronized (self) {
         if (self.running &&
-            CACurrentMediaTime() - self.latestFrameHostTime < 3.5) {
+            CACurrentMediaTime() - self.latestFrameHostTime < VCAMStaleFrameSeconds) {
             jpeg = self.latestJPEG;
+            stamp = self.latestFrameHostTime;
         }
     }
     if (jpeg.length == 0) return NULL;
+    CGImageRef cached = NULL;
+    @synchronized (self) {
+        if (_cachedImage != NULL && _cachedFrameHostTime == stamp) {
+            cached = CGImageRetain(_cachedImage);
+        }
+    }
+    if (cached != NULL) return cached;
     CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)jpeg, NULL);
     if (source == NULL) return NULL;
     CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
     CFRelease(source);
-    return image;
+    if (image == NULL) return NULL;
+    @synchronized (self) {
+        if (_cachedImage != NULL) CGImageRelease(_cachedImage);
+        _cachedImage = image;  // cache owns one reference
+        _cachedFrameHostTime = stamp;
+    }
+    return CGImageRetain(image);
+}
+
+- (void)dealloc {
+    if (_cachedImage != NULL) {
+        CGImageRelease(_cachedImage);
+        _cachedImage = NULL;
+    }
 }
 
 - (CMSampleBufferRef)copyAudioSampleForTemplate:(CMSampleBufferRef)templateBuffer {

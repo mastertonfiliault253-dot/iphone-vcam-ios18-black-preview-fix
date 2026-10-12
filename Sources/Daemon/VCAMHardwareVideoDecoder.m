@@ -975,6 +975,11 @@ static void VCAMHardwareDecoderCallback(void *refcon,
 
 - (void)stop {
     if (_session != NULL) {
+        // Drain queued callbacks while the session is still valid; after
+        // Invalidate these calls are no-ops and the pending frames would be
+        // dropped unreturned.
+        VTDecompressionSessionFinishDelayedFrames(_session);
+        VTDecompressionSessionWaitForAsynchronousFrames(_session);
         VTDecompressionSessionInvalidate(_session);
         CFRelease(_session);
         _session = NULL;

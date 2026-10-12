@@ -13,8 +13,15 @@
     if (mediaType == 'vide') {
         CVPixelBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (imageBuffer != NULL) {
+            VCAMMediaServerReplacementResult result;
             @autoreleasepool {
-                VCAMMediaServerReplacementDrawsIntoBuffer(imageBuffer);
+                result = VCAMMediaServerReplacementDrawIntoBuffer(imageBuffer);
+            }
+            if (result == VCAMMediaServerReplacementFailed) {
+                // Fail closed: the buffer still carries real camera pixels;
+                // dropping the frame keeps an inactive/failed replacement from
+                // leaking a real frame (ARCHITECTURE.md policy).
+                return;
             }
         }
     }

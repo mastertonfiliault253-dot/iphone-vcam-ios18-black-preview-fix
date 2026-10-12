@@ -1167,10 +1167,20 @@ bool VCAMSharedSurfaceWriterHasConsumer(VCAMSharedSurfaceWriter *writer) {
         atomic_store_explicit(&writer->header->consumerReady, 0,
                               memory_order_release);
         if (!consumerAlive) {
-            atomic_store_explicit(&writer->header->consumerPID, 0,
-                                  memory_order_release);
-            atomic_store_explicit(&writer->header->consumerStartToken, 0,
-                                  memory_order_release);
+            // CAS guard: a reader may register a fresh consumer between the
+            // liveness check above and this clear. Only drop the fields while
+            // they still hold the observed dead values, otherwise the new
+            // consumer's registration and slot leases would be erased.
+            int32_t expectedPID = consumerPID;
+            if (!atomic_compare_exchange_strong_explicit(
+                    &writer->header->consumerPID, &expectedPID, 0,
+                    memory_order_release, memory_order_relaxed)) {
+                return ready;
+            }
+            uint64_t expectedToken = consumerStartToken;
+            atomic_compare_exchange_strong_explicit(
+                &writer->header->consumerStartToken, &expectedToken, 0,
+                memory_order_release, memory_order_relaxed);
             atomic_store_explicit(
                 &writer->header->consumerHeartbeatNanoseconds, 0,
                 memory_order_release);

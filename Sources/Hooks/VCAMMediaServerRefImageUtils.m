@@ -826,9 +826,19 @@ void VCAMRefLog(const char *message) {
         "/var/tmp/vcam-ref-msd.log",
         NULL,
     };
-    for (int index = 0; candidatePaths[index] != NULL; index++) {
+    // Hot path: remember the first path that worked and start there. The full
+    // probe still runs whenever the cached path stops opening (file deleted,
+    // sandbox change), so recovery needs no invalidation hook.
+    static int preferredIndex = 0;
+    for (int step = 0; ; step++) {
+        int index = step == 0 ? preferredIndex : step - 1;
+        if (candidatePaths[index] == NULL) break;
         int descriptor = open(candidatePaths[index], O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (descriptor < 0) continue;
+        if (descriptor < 0) {
+            if (step == 0) preferredIndex = 0;
+            continue;
+        }
+        preferredIndex = index;
         if (flock(descriptor, LOCK_EX) == 0) {
             struct stat metadata = {0};
             if (fstat(descriptor, &metadata) == 0 &&
@@ -954,12 +964,13 @@ BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer) {
         CVPixelBufferGetPlaneCount(targetBuffer) != 2) return NO;
     if (compressedVideoRange) {
         // Apple explicitly forbids CPU interpretation of compressed planes.
-        // VideoToolbox owns the write; the IOSurface and device capability
-        // checks are the only safe validation available here.
-        return CVIsCompressedPixelFormatAvailable(format) ||
-            format == (OSType)0x70343230 || // iOS 16.1 Camera preview 'p420'
-            format == (OSType)0x5b387630 || format == (OSType)0x7d387630 ||
-            format == (OSType)0x26786630 || format == (OSType)0x70663230;
+        // VideoToolbox owns the write; the IOSurface check above plus
+        // membership in the observed-format table (already proven by
+        // compressedVideoRange, whose render pools are created from the very
+        // same list) is the only safe validation available here. Do not
+        // re-enumerate the formats below that table: it previously drifted
+        // and silently rejected the '&8f0' bi-planar format.
+        return YES;
     }
     return CVPixelBufferGetWidthOfPlane(targetBuffer, 0) == width &&
         CVPixelBufferGetHeightOfPlane(targetBuffer, 0) == height &&
@@ -2055,8 +2066,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // Still-photo fill renders the landscape camera basis with canonical
         // portrait pixels: rotate left in place and let the caller mark the
         // final sample Orientation=Right so Photos shows a portrait 3:4 image.
-        if (!realtimeCompensation && /* sourceIsPortrait always YES */ YES &&
-            targetWidth > targetHeight) {
+        if (!realtimeCompensation && targetWidth > targetHeight) {
             image = [image imageByApplyingOrientation:kCGImagePropertyOrientationLeft];
             if (stillPhotoRequiresRightOrientationOut != NULL) {
                 *stillPhotoRequiresRightOrientationOut = YES;

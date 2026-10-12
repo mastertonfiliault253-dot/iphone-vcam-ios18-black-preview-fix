@@ -40,11 +40,6 @@ static BOOL VCAMSpringBoardRuntimeIsAtLeastIOS18(void) {
     return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
 }
 
-static BOOL VCAMLocalMediaPathIsVideo(NSString *path) {
-    NSString *extension = path.pathExtension.lowercaseString;
-    return [@[@"mov", @"mp4", @"m4v"] containsObject:extension];
-}
-
 static CGAffineTransform VCAMCoreImageLinearTransformForTrack(
     CGAffineTransform preferredTransform) {
     // Track presentation matrices use the video/display top-left basis while
@@ -728,7 +723,7 @@ static void VCAMSpringBoardMediaConsumerActivity(
         BOOL stillCurrent = current.enabled &&
             current.sourceKind == VCAMSourceKindLocalMedia &&
             current.mediaPath.length > 0 &&
-            !VCAMLocalMediaPathIsVideo(current.mediaPath) &&
+            !VCAMMediaPathIsVideo(current.mediaPath) &&
             [current.mediaPath isEqualToString:mediaPath];
         if (!stillCurrent) {
             self.staticImageStartRetryAttempt = 0;
@@ -765,10 +760,10 @@ static void VCAMSpringBoardMediaConsumerActivity(
     BOOL hls = next.sourceKind == VCAMSourceKindHLS && next.hlsURL != nil &&
         access(VCAMLegacyHLSDaemonMarker, F_OK) != 0;
     BOOL localVideo = next.sourceKind == VCAMSourceKindLocalMedia &&
-        VCAMLocalMediaPathIsVideo(next.mediaPath) &&
+        VCAMMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalVideoDaemonMarker, F_OK) != 0;
     BOOL staticImage = next.sourceKind == VCAMSourceKindLocalMedia &&
-        next.mediaPath.length > 0 && !VCAMLocalMediaPathIsVideo(next.mediaPath) &&
+        next.mediaPath.length > 0 && !VCAMMediaPathIsVideo(next.mediaPath) &&
         access(VCAMLegacyLocalImageDaemonMarker, F_OK) != 0;
     BOOL shouldPlay = next.enabled && (hls || localVideo || staticImage);
     if (!shouldPlay) {
