@@ -1388,6 +1388,147 @@ static void VCAMConvertBGRARec709(const uint8_t *pixel, BOOL fullRange,
     }
 }
 
+// cameracaptured 的 CoreImage 上下文被强制走软件渲染（Metal 渲染在该进程会挂起），
+// 1080p/4K 全尺寸软渲染单帧实测 90–135ms，超过 30fps 帧预算后 graph 复用旧帧，
+// 表现为"时间戳正常 + 内容刷新 ~9Hz"的冻结。源细节本来就只有 VCAMSharedFrame
+// 尺寸，实时路径把合成尺寸钳制到源细节以内，放大在直写阶段一次双线性完成。
+static void VCAMClampRealtimeCompositionSize(size_t *width, size_t *height) {
+    size_t longerTarget = MAX(*width, *height);
+    size_t sourceDetail = (size_t)MAX(VCAMSharedFrameWidth, VCAMSharedFrameHeight);
+    if (longerTarget <= sourceDetail) {
+        return;
+    }
+    CGFloat scale = (CGFloat)sourceDetail * 0.85 / (CGFloat)longerTarget;
+    size_t composedWidth = ((size_t)((CGFloat)*width * scale)) & ~(size_t)1;
+    size_t composedHeight = ((size_t)((CGFloat)*height * scale)) & ~(size_t)1;
+    if (composedWidth < 16 || composedHeight < 16) {
+        return;
+    }
+    *width = composedWidth;
+    *height = composedHeight;
+}
+
+// 把 BGRA 暂存左上角 (0,0,contentWidth,contentHeight) 的内容双线性放大写入
+// 同格式全尺寸缓冲区；仅用于合成尺寸已被钳制小于目标尺寸的实时路径。
+static void VCAMUpscaleBGRAContent(const uint8_t *sourceBase, size_t sourceBytesPerRow,
+                                   size_t contentWidth, size_t contentHeight,
+                                   uint8_t *targetBase, size_t targetBytesPerRow,
+                                   size_t targetWidth, size_t targetHeight) {
+    CGFloat scaleX = (CGFloat)contentWidth / (CGFloat)targetWidth;
+    CGFloat scaleY = (CGFloat)contentHeight / (CGFloat)targetHeight;
+    for (size_t row = 0; row < targetHeight; row++) {
+        CGFloat sourceY = ((CGFloat)row + 0.5) * scaleY - 0.5;
+        if (sourceY < 0.0) sourceY = 0.0;
+        if (sourceY > (CGFloat)(contentHeight - 1)) sourceY = (CGFloat)(contentHeight - 1);
+        size_t y0 = (size_t)sourceY;
+        size_t y1 = MIN(y0 + 1, contentHeight - 1);
+        uint32_t weightY = (uint32_t)((sourceY - (CGFloat)y0) * 256.0);
+        uint32_t weightYInv = 256u - weightY;
+        const uint8_t *row0 = sourceBase + y0 * sourceBytesPerRow;
+        const uint8_t *row1 = sourceBase + y1 * sourceBytesPerRow;
+        uint8_t *outputLine = targetBase + row * targetBytesPerRow;
+        for (size_t column = 0; column < targetWidth; column++) {
+            CGFloat sourceX = ((CGFloat)column + 0.5) * scaleX - 0.5;
+            if (sourceX < 0.0) sourceX = 0.0;
+            if (sourceX > (CGFloat)(contentWidth - 1)) sourceX = (CGFloat)(contentWidth - 1);
+            size_t x0 = (size_t)sourceX;
+            size_t x1 = MIN(x0 + 1, contentWidth - 1);
+            uint32_t weightX = (uint32_t)((sourceX - (CGFloat)x0) * 256.0);
+            uint32_t weightXInv = 256u - weightX;
+            uint8_t *output = outputLine + column * 4;
+            for (int channel = 0; channel < 4; channel++) {
+                uint32_t top = row0[x0 * 4 + channel] * weightXInv + row0[x1 * 4 + channel] * weightX;
+                uint32_t bottom = row1[x0 * 4 + channel] * weightXInv + row1[x1 * 4 + channel] * weightX;
+                output[channel] = (uint8_t)((top * weightYInv + bottom * weightY) >> 16);
+            }
+        }
+    }
+}
+
+// 合成尺寸小于目标尺寸时的 planar 写回：先把内容放大到全尺寸 BGRA（池化缓冲），
+// 再走与相同尺寸路径完全一致的直写副本路径——保持"优先直写、VideoToolbox 仅作
+// 兜底"的 iOS 18 语义，不让 graph 的 IOSurface 依赖 transfer 可见性。
+static CVPixelBufferPoolRef VCAMUpscaleScratchPool = NULL;
+static size_t VCAMUpscaleScratchWidth = 0;
+static size_t VCAMUpscaleScratchHeight = 0;
+
+static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
+                                       CVPixelBufferRef targetBuffer);
+
+static BOOL VCAMCopyScaledBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
+                                             size_t contentWidth, size_t contentHeight,
+                                             CVPixelBufferRef targetBuffer) {
+    if (stagingBuffer == NULL || targetBuffer == NULL ||
+        CVPixelBufferGetPixelFormatType(stagingBuffer) != kCVPixelFormatType_32BGRA ||
+        CVPixelBufferGetWidth(stagingBuffer) < contentWidth ||
+        CVPixelBufferGetHeight(stagingBuffer) < contentHeight) {
+        return NO;
+    }
+    size_t targetWidth = CVPixelBufferGetWidth(targetBuffer);
+    size_t targetHeight = CVPixelBufferGetHeight(targetBuffer);
+    if (contentWidth == targetWidth && contentHeight == targetHeight) {
+        return VCAMCopyBGRAToPlanarTarget(stagingBuffer, targetBuffer);
+    }
+    CVPixelBufferRef fullBuffer = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMUpscaleScratchPool == NULL ||
+        VCAMUpscaleScratchWidth != targetWidth ||
+        VCAMUpscaleScratchHeight != targetHeight) {
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = VCAMCreateStagingPool(
+            kCVPixelFormatType_32BGRA, targetWidth, targetHeight, &replacementPool);
+        if (poolStatus == kCVReturnSuccess) {
+            if (VCAMUpscaleScratchPool != NULL) {
+                CVPixelBufferPoolRelease(VCAMUpscaleScratchPool);
+            }
+            VCAMUpscaleScratchPool = replacementPool;
+            VCAMUpscaleScratchWidth = targetWidth;
+            VCAMUpscaleScratchHeight = targetHeight;
+        }
+    }
+    BOOL poolReady = VCAMUpscaleScratchPool != NULL &&
+        VCAMUpscaleScratchWidth == targetWidth &&
+        VCAMUpscaleScratchHeight == targetHeight;
+    if (poolReady) {
+        (void)CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
+                                                VCAMUpscaleScratchPool, &fullBuffer);
+    }
+    [VCAMPixelTransferLock unlock];
+    if (fullBuffer == NULL) {
+        return NO;
+    }
+    CVReturn stagingLock = CVPixelBufferLockBaseAddress(
+        stagingBuffer, kCVPixelBufferLock_ReadOnly);
+    CVReturn fullLock = stagingLock == kCVReturnSuccess
+        ? CVPixelBufferLockBaseAddress(fullBuffer, 0) : kCVReturnInvalidArgument;
+    BOOL upscaled = NO;
+    if (stagingLock == kCVReturnSuccess && fullLock == kCVReturnSuccess) {
+        const uint8_t *stagingBase = CVPixelBufferGetBaseAddress(stagingBuffer);
+        uint8_t *fullBase = CVPixelBufferGetBaseAddress(fullBuffer);
+        upscaled = stagingBase != NULL && fullBase != NULL;
+        if (upscaled) {
+            VCAMUpscaleBGRAContent(
+                stagingBase, CVPixelBufferGetBytesPerRow(stagingBuffer),
+                contentWidth, contentHeight,
+                fullBase, CVPixelBufferGetBytesPerRow(fullBuffer),
+                targetWidth, targetHeight);
+        }
+    }
+    if (fullLock == kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(fullBuffer, 0);
+    }
+    if (stagingLock == kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(stagingBuffer, kCVPixelBufferLock_ReadOnly);
+    }
+    if (!upscaled) {
+        CVPixelBufferRelease(fullBuffer);
+        return NO;
+    }
+    BOOL copied = VCAMCopyBGRAToPlanarTarget(fullBuffer, targetBuffer);
+    CVPixelBufferRelease(fullBuffer);
+    return copied;
+}
+
 static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
                                        CVPixelBufferRef targetBuffer) {
     if (stagingBuffer == NULL || targetBuffer == NULL ||
@@ -1984,6 +2125,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         CVPixelBufferRef renderBuffer = targetBuffer;
         size_t renderWidth = targetWidth;
         size_t renderHeight = targetHeight;
+        size_t planarComposedWidth = targetWidth;
+        size_t planarComposedHeight = targetHeight;
         if (compressedTarget) {
             CVReturn stagingStatus = VCAMPixelTransferSession == NULL
                 ? kCVReturnInvalidArgument
@@ -2012,8 +2155,25 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             renderWidth = CVPixelBufferGetWidth(stagingBuffer);
             renderHeight = CVPixelBufferGetHeight(stagingBuffer);
         } else if (planarTarget) {
+            // 实时路径把合成尺寸钳制到源细节以内，写回阶段一次双线性放大补齐；
+            // 静态照片仍按目标全尺寸合成以保留细节。
+            size_t compositionWidth = targetWidth;
+            size_t compositionHeight = targetHeight;
+            if (realtimeCompensation) {
+                VCAMClampRealtimeCompositionSize(&compositionWidth, &compositionHeight);
+            }
+            if (compositionWidth != targetWidth || compositionHeight != targetHeight) {
+                static dispatch_once_t compositionClampToken;
+                dispatch_once(&compositionClampToken, ^{
+                    char message[192] = {0};
+                    snprintf(message, sizeof(message),
+                             "realtime composition clamped for large target=%zux%zu composed=%zux%zu; scaled direct-write enabled",
+                             targetWidth, targetHeight, compositionWidth, compositionHeight);
+                    VCAMRefLog(message);
+                });
+            }
             CVReturn stagingStatus = VCAMCreatePlanarRenderBuffer(
-                targetWidth, targetHeight, &stagingBuffer);
+                compositionWidth, compositionHeight, &stagingBuffer);
             if (stagingStatus != kCVReturnSuccess || stagingBuffer == NULL) {
                 static volatile int allocationFailures = 0;
                 int failureCount = __sync_add_and_fetch(&allocationFailures, 1);
@@ -2029,6 +2189,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             renderBuffer = stagingBuffer;
             renderWidth = CVPixelBufferGetWidth(stagingBuffer);
             renderHeight = CVPixelBufferGetHeight(stagingBuffer);
+            planarComposedWidth = renderWidth;
+            planarComposedHeight = renderHeight;
         }
 
         CVPixelBufferRef ciSourceBuffer = scratch;
@@ -2152,8 +2314,14 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             (compressedTarget
                 ? VCAMTransferIntoCompressedTarget(
                     stagingBuffer, targetBuffer, compressedReplacementBuffer)
-                : (!planarTarget || VCAMTransferBGRAIntoPlanarTarget(
-                    stagingBuffer, targetBuffer)));
+                : (!planarTarget ||
+                   (planarComposedWidth != targetWidth ||
+                    planarComposedHeight != targetHeight
+                       ? VCAMCopyScaledBGRAToPlanarTarget(
+                           stagingBuffer, planarComposedWidth, planarComposedHeight,
+                           targetBuffer)
+                       : VCAMTransferBGRAIntoPlanarTarget(
+                           stagingBuffer, targetBuffer))));
         if (rendered && previewCacheEligible) {
             VCAMRememberPreviewTarget(
                 targetBuffer, presentation, planarTarget, metadata,
