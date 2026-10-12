@@ -12,3 +12,8 @@ tools/license-101.plist
 tools/license-202.plist
 tools/license.plist
 tools/.license-ui-state.json
+
+# 临时工作文件、回传资产与工具缓存不入库
+tmp/
+probe/uploads/
+.mimosa/

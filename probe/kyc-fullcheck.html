@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VCAM KYC 全量模拟测试</title>
+<style>
+body{font-family:-apple-system;background:#111;color:#eee;margin:0;padding:16px;font-size:14px}
+button{font-size:16px;padding:10px 14px;margin:4px;border-radius:8px;border:0;background:#0a84ff;color:#fff}
+button:disabled{background:#444;color:#888}
+video{width:100%;max-width:360px;background:#000;border-radius:8px}
+pre{background:#1c1c1e;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:40vh;overflow:auto}
+</style>
+</head>
+<body>
+<h3>VCAM KYC 全量模拟测试</h3>
+<div>
+<button id="run">▶ 一键全量测试</button>
+<span id="phase" style="color:#8a8"></span>
+</div>
+<video id="v" autoplay playsinline muted></video>
+<pre id="log">未开始。点按钮后依次执行：设备指纹采集 → 逐分辨率拍照/录像回传。</pre>
+<script>
+// 模拟 KYC 平台的浏览器侧行为：枚举能协商到的所有分辨率，逐档拍照+录像回传，
+// 同时收集浏览器/设备可暴露的全部指纹信息（含 track settings/capabilities）。
+const logEl = document.getElementById('log');
+function log(s){ logEl.textContent += '\n' + s; logEl.scrollTop = logEl.scrollHeight; console.log(s); }
+
+const RES_LIST = [
+  [352,280],[640,480],[720,576],[1280,720],[1920,1080],[3840,2160]
+];
+
+async function upload(name, blob){
+  const r = await fetch('/upload?name=' + encodeURIComponent(name), {method:'POST', body:blob});
+  const t = await r.text();
+  log(`上传 ${name} → HTTP ${r.status} (${blob.size} bytes) ${t}`);
+  return r.ok;
+}
+
+// —— 1. 设备可暴露的信息（浏览器指纹面）——
+async function collectFingerprint(){
+  const F = {};
+  F.userAgent = navigator.userAgent;
+  F.appVersion = navigator.appVersion;
+  F.platform = navigator.platform;
+  F.vendor = navigator.vendor;
+  F.language = navigator.language;
+  F.languages = navigator.languages;
+  F.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  F.hardwareConcurrency = navigator.hardwareConcurrency;
+  F.deviceMemory = navigator.deviceMemory || 'unsupported';
+  F.maxTouchPoints = navigator.maxTouchPoints;
+  F.userAgentData = navigator.userAgentData || 'unsupported';
+  F.screen = {w:screen.width,h:screen.height,availW:screen.availWidth,availH:screen.availHeight,
+    dpr:window.devicePixelRatio,colorDepth:screen.colorDepth,pixelDepth:screen.pixelDepth,
+    orientation:screen.orientation ? screen.orientation.type : 'n/a'};
+  F.touchEvents = ('ontouchstart' in window);
+  // canvas 指纹
+  const c = document.createElement('canvas'); c.width=220;c.height=40;
+  const ctx=c.getContext('2d'); ctx.textBaseline='top';
+  ctx.font='14px Arial'; ctx.fillStyle='#f60'; ctx.fillRect(0,0,80,20);
+  ctx.fillStyle='#333'; ctx.fillText('vcam指纹测试',2,6);
+  F.canvasFP = c.toDataURL().slice(-40);
+  // WebGL（GPU 型号暴露点）
+  try{
+    const wc=document.createElement('canvas'); const gl=wc.getContext('webgl');
+    const dbg=gl.getExtension('WEBGL_debug_renderer_info');
+    F.webgl = {vendor:gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
+      renderer:gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL),
+      supported:gl.getSupportedExtensions()};
+  }catch(e){F.webgl='err '+e.message;}
+  // 音频能力
+  try{ const ac=new (window.AudioContext||window.webkitAudioContext)();
+    F.audio={sampleRate:ac.sampleRate,state:ac.state}; ac.close();
+  }catch(e){F.audio='err '+e.message;}
+  F.videoCodecs = {h264:document.createElement('video').canPlayType('video/mp4;codecs=avc1'),
+    vp8:document.createElement('video').canPlayType('video/webm;codecs=vp8')};
+  // 设备枚举（相机标签/deviceId 也是 KYC 可拿到的指纹）
+  try{
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    F.devices = devs.map(d=>({kind:d.kind, label:d.label, deviceId:d.deviceId}));
+  }catch(e){F.devices='err '+e.message;}
+  return F;
+}
+
+async function main(){
+  document.getElementById('run').disabled = true;
+  const t0 = Date.now();
+  // 1) 先启动相机（后续枚举/capabilities 需要 permission 才有 label/settings）
+  document.getElementById('phase').textContent='启动相机…';
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+  }catch(e){ log('getUserMedia 失败: '+e.message); return; }
+  document.getElementById('v').srcObject = stream;
+  const track = stream.getVideoTracks()[0];
+  const base = await collectFingerprint();
+  base.trackInitialSettings = track.getSettings();
+  try{ base.trackCapabilities = track.getCapabilities(); }catch(e){ base.trackCapabilities='err '+e.message; }
+  log('指纹对象就绪，初始 settings=' + JSON.stringify(base.trackInitialSettings));
+
+  // 2) 逐分辨率：applyConstraints → 读真实 settings → 拍照回传 → 2s 录像回传
+  const seen = new Set();
+  const attempts = [];
+  for(const [w,h] of RES_LIST){
+    document.getElementById('phase').textContent = `切换 ${w}x${h}…`;
+    let applied = false;
+    try{
+      await track.applyConstraints({width:{exact:w},height:{exact:h}});
+      applied = true;
+    }catch(e){
+      try{ await track.applyConstraints({width:{ideal:w},height:{ideal:h}}); applied='ideal'; }
+      catch(e2){ attempts.push({req:`${w}x${h}`, ok:false, err:String(e2.name||e2)}); log(`✗ ${w}x${h} 不支持: ${e2.name||e2}`); continue; }
+    }
+    await new Promise(r=>setTimeout(r,700));
+    const s = track.getSettings();
+    const key = `${s.width}x${s.height}`;
+    attempts.push({req:`${w}x${h}`, ok:true, mode:applied===true?'exact':'ideal', actual:key, fps:s.frameRate||null});
+    log(`✓ 请求 ${w}x${h} → 实际 ${key} fps=${s.frameRate||'?'}`);
+    if(seen.has(key)) { log(`  （与已有 ${key} 重复，跳过采集）`); continue; }
+    seen.add(key);
+    // 等几帧让新分辨率生效
+    await new Promise(r=>setTimeout(r,600));
+    // 拍照
+    const vc = document.createElement('canvas');
+    vc.width = s.width; vc.height = s.height;
+    vc.getContext('2d').drawImage(document.getElementById('v'),0,0,s.width,s.height);
+    const blob = await new Promise(r=>vc.toBlob(r,'image/jpeg',0.92));
+    await upload(`photo_${key}.jpg`, blob);
+    // 录像 2 秒
+    const rec = new MediaRecorder(stream,{mimeType:'video/mp4;codecs=avc1'});
+    const chunks=[];
+    rec.ondataavailable = e=>{ if(e.data.size) chunks.push(e.data); };
+    const done = new Promise(r=>rec.onstop=r);
+    rec.start();
+    await new Promise(r=>setTimeout(r,2000));
+    rec.stop(); await done;
+    await upload(`record_${key}.mp4`, new Blob(chunks,{type:'video/mp4'}));
+  }
+  base.resolutions = attempts;
+  base.elapsedMs = Date.now()-t0;
+  await upload('fingerprint.json', new Blob([JSON.stringify(base,null,1)],{type:'application/json'}));
+  document.getElementById('phase').textContent='完成';
+  log(`== 全部完成 ${base.elapsedMs}ms ==`);
+  // 停止相机，释放设备
+  for(const t of stream.getTracks()) t.stop();
+}
+document.getElementById('run').addEventListener('click', ()=>main().catch(e=>log('FATAL '+e.message)));
+</script>
+</body>
+</html>

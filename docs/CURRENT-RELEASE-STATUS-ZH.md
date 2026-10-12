@@ -2,7 +2,7 @@
 
 # VCAM 当前发布基线与技术状态
 
-> 候选版本已更新到 `0.8.110+ios18-review-fixes`（本地 WSL 构建，未走 CI，无 CI 构建提交号；下表 0.8.91 为历史快照保留）。本轮变化来自 2026-10-11 全库双轴代码审查的缺陷修复：vcamd 不支持像素格式错误路径的 CVPixelBuffer 泄漏、iOS18 `ios18.frame` 消费者通知移到虚拟模式判定之后（此前真实模式也会阻止 HLS 空闲挂起）、旧 mediaserverd 替换改为 fail-closed（绘制失败不再放行真实相机帧）、压缩目标采纳白名单去重（顺带修复 `&8f0` 被误拒）、surface consumer 死亡清理的 TOCTOU CAS 防护、解码器 stop 前补 drain（Finish/Wait 原为死代码）、mediaserverd 热路径配置读取 0.5s 节流、OBS 源 JPEG 解码缓存、`VCAMMediaPathIsVideo` 三进程统一。
+> 候选版本已更新到 `0.8.110+ios18-review-fixes`（正式包走 CI：`.github/workflows/build.yml` 在 macOS runner 上以默认 `ARCHS = arm64 arm64e` 构建，注入 dylib 含双架构，CI 提交 `aee7998`；**禁止**把 WSL 本地产物装真机：实测其 arm64e 片虽在（双架构齐全），但对签名/常量数据重定位（signed fixup）处理有缺陷，`cameracaptured` 在 ctor 即 SIGTRAP 崩溃循环；CI 版已在 .39 验证修复。下表 0.8.91 为历史快照保留）。本轮变化来自 2026-10-11 全库双轴代码审查的缺陷修复：vcamd 不支持像素格式错误路径的 CVPixelBuffer 泄漏、iOS18 `ios18.frame` 消费者通知移到虚拟模式判定之后（此前真实模式也会阻止 HLS 空闲挂起）、旧 mediaserverd 替换改为 fail-closed（绘制失败不再放行真实相机帧）、压缩目标采纳白名单去重（顺带修复 `&8f0` 被误拒）、surface consumer 死亡清理的 TOCTOU CAS 防护、解码器 stop 前补 drain（Finish/Wait 原为死代码）、mediaserverd 热路径配置读取 0.5s 节流、OBS 源 JPEG 解码缓存、`VCAMMediaPathIsVideo` 三进程统一。
 
 > 候选版本曾更新到 `0.8.91+ios16-nv12-local-video`。该轮主要技术变化：视频源（RTSP/HLS）共享传输从 BGRA 迁移到 NV12，去掉 BGRA<->YUV 的二次色度重采样；mediaserverd 用 Core Image 直接处理 NV12 输入（无需单独 YUV 旋转）；直播流支持保存/切换/编辑/删除；Google 应用小白点注入修复；悬浮窗预览改为 NV12 感知。本地视频与图片仍走 BGRA（本地视频旋转是主要开销，NV12 化收益小）。该候选已装到 `192.168.2.101`，真机可见验收（悬浮窗预览、RTSP/HLS 画面、颜色/方向）待用户确认。
 

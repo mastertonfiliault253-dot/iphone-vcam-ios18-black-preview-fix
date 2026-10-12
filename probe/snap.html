@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VCAM 快速快照（验证当前相机流来源）</title>
+<style>
+body{font-family:-apple-system;background:#111;color:#eee;margin:0;padding:16px;font-size:14px}
+video{width:100%;max-width:360px;background:#000;border-radius:8px}
+pre{background:#1c1c1e;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px}
+</style>
+</head>
+<body>
+<h3>快速快照</h3>
+<video id="v" autoplay playsinline muted></video>
+<pre id="log">初始化…</pre>
+<script>
+// 自动模式（?auto=1）：取 640x480 流 → 2 张照片 + 8s 短片回传，用于判断
+// 当前相机管线是真实相机还是 vcam 替换（与源视频帧做内容比对）。
+const logEl = document.getElementById('log');
+function log(s){ logEl.textContent += '\n' + s; console.log(s); }
+async function upload(name, blob){
+  const r = await fetch('/upload?name=' + encodeURIComponent(name), {method:'POST', body:blob});
+  log(`上传 ${name} → HTTP ${r.status} (${blob.size}B)`);
+}
+async function main(){
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+  }catch(e){ log('getUserMedia 失败: '+e.message); return; }
+  document.getElementById('v').srcObject = stream;
+  const track = stream.getVideoTracks()[0];
+  log('settings=' + JSON.stringify(track.getSettings()));
+  await new Promise(r=>setTimeout(r,1500));
+  const v = document.getElementById('v');
+  for(const [tag, delay] of [['snap_a',0],['snap_b',2000]]){
+    await new Promise(r=>setTimeout(r,delay));
+    const c = document.createElement('canvas'); c.width=640; c.height=480;
+    c.getContext('2d').drawImage(v,0,0,640,480);
+    const blob = await new Promise(r=>c.toBlob(r,'image/jpeg',0.92));
+    await upload(tag+'.jpg', blob);
+  }
+  const rec = new MediaRecorder(stream,{mimeType:'video/mp4;codecs=avc1'});
+  const chunks=[]; rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+  const done=new Promise(r=>rec.onstop=r);
+  rec.start(); await new Promise(r=>setTimeout(r,8000)); rec.stop(); await done;
+  await upload('snap_clip.mp4', new Blob(chunks,{type:'video/mp4'}));
+  for(const t of stream.getTracks()) t.stop();
+  log('DONE');
+}
+if(new URLSearchParams(location.search).has('auto')) main().catch(e=>log('FATAL '+e.message));
+</script>
+</body>
+</html>

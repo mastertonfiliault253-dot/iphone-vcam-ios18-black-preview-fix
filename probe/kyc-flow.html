@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VCAM KYC 全流程测试台</title>
+<style>
+body{font-family:-apple-system;background:#111;color:#eee;margin:0;padding:16px;font-size:14px}
+button{font-size:15px;padding:10px 12px;margin:4px 0;border-radius:8px;border:0;background:#0a84ff;color:#fff}
+button:disabled{background:#444;color:#888}
+button.skip{background:#333;color:#ccc}
+video{width:100%;max-width:360px;background:#000;border-radius:8px}
+pre{background:#1c1c1e;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:35vh;overflow:auto}
+.step{margin:10px 0;padding:10px;border-radius:8px;background:#1c1c1e}
+.step h4{margin:2px 0 6px;font-size:15px}
+.verdict-ok{color:#4f4}.verdict-risk{color:#fa5}.verdict-na{color:#999}
+#challenge{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,.75);z-index:9}
+#challenge .cmd{font-size:34px;font-weight:600;color:#fff}
+#challenge .cd{font-size:20px;color:#ffa;margin-top:8px}
+</style>
+</head>
+<body>
+<h3>VCAM KYC 全流程测试台</h3>
+<div>按 1→5 顺序执行；每一步把结构化证据写入报告，最后统一回传。设备端经 ssh -R 隧道以 http://127.0.0.1 打开。</div>
+
+<div class="step"><h4>1. 环境与设备指纹</h4>
+<button id="b1">启动相机并采集</button><span id="v1"></span></div>
+
+<div class="step"><h4>2. 证件照片上传（真实证件）</h4>
+<input type="file" id="docfile" accept="image/*">
+<button id="b2">上传证件</button><button id="b2s" class="skip">跳过</button><span id="v2"></span></div>
+
+<div class="step"><h4>3. 分辨率协商 + 帧连续性电池</h4>
+<button id="b3">运行电池</button><span id="v3"></span></div>
+
+<div class="step"><h4>4. 挑战框架（随机指令 + 带时间轴录像）</h4>
+<button id="b4">开始 35s 会话</button><span id="v4"></span></div>
+
+<div class="step"><h4>5. 拍照并回传报告</h4>
+<button id="b5">拍照 + POST /report</button><span id="v5"></span></div>
+
+<video id="v" autoplay playsinline muted></video>
+<div id="challenge"><div class="cmd" id="cmdText"></div><div class="cd" id="cdText"></div></div>
+<pre id="log">未开始。</pre>
+
+<script>
+// 一份代码供 App(WKWebView) 与浏览器共用：纯 vanilla JS，无外部依赖。
+// 报告对象逐项记录 PASS/RISK/NA 与数值证据；最终判定由离线分析器复核。
+const logEl = document.getElementById('log');
+function log(s){ logEl.textContent += '\n' + s; logEl.scrollTop = logEl.scrollHeight; console.log(s); }
+function verdict(el, cls, s){ const n=document.getElementById(el); n.innerHTML=`<span class="verdict-${cls}">${s}</span>`; }
+
+const RES_LIST = [[352,280],[640,480],[720,576],[1280,720],[1920,1080],[3840,2160]];
+// track settings 报告的是竖屏后的 WxH（如 1080x1920），匹配必须忽略宽高方向。
+const RECORD_DIMS = [[1280,720],[1920,1080]]; // 高两档附录像：1080p 冻结复现需要
+const PHOTO_DIMS = [[640,480],[1920,1080]];
+const dimsMatch = (list,w,h)=>list.some(([a,b])=>(a===w&&b===h)||(a===h&&b===w));
+const CHALLENGES = ['向左缓慢转头','眨两次眼','请张大嘴'];
+
+const report = { meta:{ flow:'kyc-flow', page:'1.0', started:new Date().toISOString() },
+                 environment:null, document:null, battery:[], challenge:null, photo:null, items:[] };
+
+async function upload(name, blob){
+  const r = await fetch('/upload?name=' + encodeURIComponent(name), {method:'POST', body:blob});
+  const t = await r.text();
+  log(`上传 ${name} → HTTP ${r.status} (${blob.size}B) ${t}`);
+  return r.ok;
+}
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+let stream=null, track=null;
+
+async function collectFingerprint(){
+  const F = {};
+  F.userAgent = navigator.userAgent; F.appVersion = navigator.appVersion;
+  F.platform = navigator.platform; F.vendor = navigator.vendor;
+  F.language = navigator.language; F.languages = navigator.languages;
+  F.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  F.hardwareConcurrency = navigator.hardwareConcurrency;
+  F.deviceMemory = navigator.deviceMemory || 'unsupported';
+  F.maxTouchPoints = navigator.maxTouchPoints;
+  F.userAgentData = navigator.userAgentData || 'unsupported';
+  F.screen = {w:screen.width,h:screen.height,availW:screen.availWidth,availH:screen.availHeight,
+    dpr:window.devicePixelRatio,colorDepth:screen.colorDepth,pixelDepth:screen.pixelDepth,
+    orientation:screen.orientation ? screen.orientation.type : 'n/a'};
+  F.touchEvents = ('ontouchstart' in window);
+  const c = document.createElement('canvas'); c.width=220;c.height=40;
+  const ctx=c.getContext('2d'); ctx.textBaseline='top';
+  ctx.font='14px Arial'; ctx.fillStyle='#f60'; ctx.fillRect(0,0,80,20);
+  ctx.fillStyle='#333'; ctx.fillText('vcam指纹测试',2,6);
+  F.canvasFP = c.toDataURL().slice(-40);
+  try{
+    const wc=document.createElement('canvas'); const gl=wc.getContext('webgl');
+    const dbg=gl.getExtension('WEBGL_debug_renderer_info');
+    F.webgl = {vendor:gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
+      renderer:gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL),
+      supported:gl.getSupportedExtensions()};
+  }catch(e){F.webgl='err '+e.message;}
+  try{ const ac=new (window.AudioContext||window.webkitAudioContext)();
+    F.audio={sampleRate:ac.sampleRate,state:ac.state}; ac.close();
+  }catch(e){F.audio='err '+e.message;}
+  F.videoCodecs = {h264:document.createElement('video').canPlayType('video/mp4;codecs=avc1'),
+    vp8:document.createElement('video').canPlayType('video/webm;codecs=vp8')};
+  try{
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    F.devices = devs.map(d=>({kind:d.kind, label:d.label, deviceId:d.deviceId}));
+  }catch(e){F.devices='err '+e.message;}
+  return F;
+}
+
+// —— 步骤 1 ——
+async function step1(){
+  document.getElementById('b1').disabled = true;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+  }catch(e){ log('getUserMedia 失败: '+e.message); return; }
+  document.getElementById('v').srcObject = stream;
+  track = stream.getVideoTracks()[0];
+  const F = await collectFingerprint();
+  F.trackInitialSettings = track.getSettings();
+  try{ F.trackCapabilities = track.getCapabilities(); }catch(e){ F.trackCapabilities='err '+e.message; }
+  report.environment = F;
+  // 相机链路完整性证据：track 有真实 settings/设备标签即认为协商 shell 真实（传输层判定交离线复核）
+  const cam = (F.devices||[]).filter(d=>d.kind==='videoinput');
+  report.items.push({id:'camera_chain', name:'相机链路/设备枚举',
+    verdict: (F.trackInitialSettings.width && cam.length>0) ? 'PASS' : 'RISK',
+    evidence:`track=${F.trackInitialSettings.width}x${F.trackInitialSettings.height} devices=${cam.map(d=>d.label).join('|')||'none'}`});
+  log('步骤1 完成，settings=' + JSON.stringify(F.trackInitialSettings));
+  verdict('v1','ok','完成');
+};
+
+// —— 步骤 2 ——
+async function step2(){
+  const f = document.getElementById('docfile').files[0];
+  if(!f){ log('未选择证件文件'); return; }
+  const ok = await upload('doc_' + Date.now() + '.jpg', f);
+  report.document = {uploaded:ok, size:f.size, type:f.type};
+  report.items.push({id:'document_side', name:'证件侧（真实证件上传通道）',
+    verdict: ok ? 'PASS' : 'RISK', evidence:`uploaded=${ok} size=${f.size}`});
+  verdict('v2', ok?'ok':'risk', ok?'已上传':'上传失败');
+};
+function step2skip(){
+  report.document = {uploaded:false, skipped:true};
+  report.items.push({id:'document_side', name:'证件侧（真实证件上传通道）', verdict:'NA', evidence:'skipped'});
+  verdict('v2','na','跳过');
+};
+
+// —— 帧连续性统计：与 kyc-camera-test 一致的滚动哈希抽样 ——
+async function frameContinuity(ms){
+  const vid = document.getElementById('v');
+  const c = document.createElement('canvas'); c.width=80; c.height=60;
+  const ctx = c.getContext('2d', {willReadFrequently:true});
+  let sampled=0, changed=0, last=null;
+  const t0 = Date.now();
+  while(Date.now()-t0 < ms){
+    ctx.drawImage(vid,0,0,80,60);
+    const d = ctx.getImageData(0,0,80,60).data;
+    let h = 0;
+    for(let i=0;i<d.length;i+=997){ h = (h*31 + d[i]) >>> 0; }
+    sampled++;
+    if(last!==null && h!==last) changed++;
+    last = h;
+    await sleep(100);
+  }
+  return {sampled, changed, ratio: sampled>1 ? changed/(sampled-1) : 0};
+}
+
+// —— 步骤 3 ——
+async function step3(){
+  if(!track){ log('请先完成步骤1'); return; }
+  document.getElementById('b3').disabled = true;
+  const seen = new Set(), seenRec = new Set();
+  for(const [w,h] of RES_LIST){
+    let mode;
+    try{ await track.applyConstraints({width:{exact:w},height:{exact:h}}); mode='exact'; }
+    catch(e){ try{ await track.applyConstraints({width:{ideal:w},height:{ideal:h}}); mode='ideal'; }
+      catch(e2){ report.battery.push({req:`${w}x${h}`, ok:false, err:String(e2.name||e2)}); log(`✗ ${w}x${h} 不支持`); continue; } }
+    await sleep(700);
+    const s = track.getSettings();
+    const key = `${s.width}x${s.height}`;
+    await sleep(600);
+    const fc = await frameContinuity(2500);
+    const rec = {req:`${w}x${h}`, ok:true, mode, actual:key, fps:s.frameRate||null,
+                 sampled:fc.sampled, changed:fc.changed, change_ratio:+fc.ratio.toFixed(3)};
+    report.battery.push(rec);
+    log(`${key} mode=${mode} 帧连续性 sampled=${fc.sampled} changed=${fc.changed} ratio=${fc.ratio.toFixed(2)}`);
+    if(fc.ratio < 0.5) report.items.push({id:'frame_continuity_'+key, name:`帧内容连续性 ${key}`,
+      verdict:'RISK', evidence:`change_ratio=${rec.change_ratio} (<0.5，可能内容冻结)`});
+    if(!seen.has(key) && dimsMatch(PHOTO_DIMS, s.width, s.height)){
+      seen.add(key);
+      const vc = document.createElement('canvas');
+      vc.width=s.width; vc.height=s.height;
+      vc.getContext('2d').drawImage(document.getElementById('v'),0,0,s.width,s.height);
+      const blob = await new Promise(r=>vc.toBlob(r,'image/jpeg',0.92));
+      await upload(`flow_photo_${key}.jpg`, blob);
+    }
+    if(!seenRec.has(key) && dimsMatch(RECORD_DIMS, s.width, s.height)){
+      seenRec.add(key);
+      const mb = await recordClip(2500);
+      if(mb) await upload(`flow_record_${key}.mp4`, mb);
+    }
+  }
+  // 电池项：只要所有请求都协商成功即 PASS（内容质量由帧连续性/离线分析单列）
+  const failed = report.battery.filter(b=>!b.ok);
+  report.items.push({id:'res_negotiation', name:'分辨率协商（六档）',
+    verdict: failed.length? 'RISK':'PASS', evidence:`ok=${report.battery.length-failed.length}/${RES_LIST.length}`});
+  verdict('v3', failed.length?'risk':'ok', `完成 ${report.battery.length} 档`);
+};
+
+function recordClip(ms){
+  return new Promise((resolve)=>{
+    let rec;
+    try{ rec = new MediaRecorder(stream,{mimeType:'video/mp4;codecs=avc1'}); }
+    catch(e){ log('MediaRecorder 失败: '+e.message); resolve(null); return; }
+    const chunks=[];
+    rec.ondataavailable = e=>{ if(e.data.size) chunks.push(e.data); };
+    rec.onstop = ()=>resolve(new Blob(chunks,{type:'video/mp4'}));
+    rec.start();
+    setTimeout(()=>rec.stop(), ms);
+  });
+}
+
+// —— 步骤 4：挑战框架 ——
+async function reacquireStream(w,h){
+  // 电池段（尤其 4K 档）可能把 track 打到异常态；采集阶段重新拿流，
+  // 与真实 KYC 每次采集新建会话的行为一致，也便于归因。
+  if(stream) for(const t of stream.getTracks()) t.stop();
+  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:w},height:{ideal:h}},audio:false});
+  document.getElementById('v').srcObject = stream;
+  track = stream.getVideoTracks()[0];
+  await sleep(800);
+}
+
+async function clipDurationSeconds(blob){
+  return new Promise(resolve=>{
+    const v=document.createElement('video');
+    v.onloadedmetadata=()=>resolve(v.duration||0);
+    v.onerror=()=>resolve(-1);
+    v.src=URL.createObjectURL(blob);
+  });
+}
+
+async function step4(){
+  if(!track){ log('请先完成步骤1'); return; }
+  document.getElementById('b4').disabled = true;
+  if(track.readyState!=='live' || track.muted){ log('电池后 track 状态异常(' + track.readyState + '/' + track.muted + ')，重新取流'); }
+  await reacquireStream(640,480);
+  log('挑战会话使用新 stream，settings=' + JSON.stringify(track.getSettings()));
+  const SESSION_MS = 35000;
+  // 挑战时间：会话中段随机位置，互不重叠
+  const marks = [];
+  const slots = [6000, 14000, 24000];
+  CHALLENGES.forEach((cmd,i)=>{
+    marks.push({t: slots[i] + Math.floor(Math.random()*4000), cmd, durationMs: 4000});
+  });
+  const overlay = document.getElementById('challenge');
+  const t0 = Date.now();
+  const timeline = [];
+  marks.forEach(m=>timeline.push({atMs:m.t, kind:'challenge', cmd:m.cmd, durationMs:m.durationMs}));
+  // 逐挑战弹出
+  marks.forEach(m=>{
+    setTimeout(()=>{
+      if(Date.now()-t0 > SESSION_MS) return;
+      document.getElementById('cmdText').textContent = m.cmd;
+      overlay.style.display='flex';
+      let left = m.durationMs;
+      const iv = setInterval(()=>{
+        left -= 1000;
+        document.getElementById('cdText').textContent = (left/1000).toFixed(0);
+        if(left<=0){ clearInterval(iv); overlay.style.display='none'; }
+      }, 500);
+    }, m.t);
+  });
+  log('挑战会话开始（35s）…');
+  const mb = await recordClip(SESSION_MS);
+  overlay.style.display='none';
+  const elapsed = Date.now()-t0;
+  const clipSec = mb ? await clipDurationSeconds(mb) : 0;
+  if(mb) await upload('flow_challenge.mp4', mb);
+  report.challenge = {sessionMs: elapsed, timeline, clipSeconds: clipSec,
+                      response:'NA-预生成内容无法响应随机挑战'};
+  if(clipSec < SESSION_MS/1000 * 0.8) report.items.push({id:'recorder_integrity', name:'录像完整性',
+    verdict:'RISK', evidence:`clip=${clipSec.toFixed(1)}s < session ${SESSION_MS/1000}s（采集断流/饥饿）`});
+  report.items.push({id:'challenge_response', name:'主动挑战响应',
+    verdict:'NA', evidence:'预生成人脸视频不能按随机指令响应；直播/可驱动生成管线下再测'});
+  report.items.push({id:'content_repeat_loop', name:'内容重复（本地 loop 源）',
+    verdict:'NA', evidence:'离线分析器按 flow_challenge.mp4 计算动作重复度'});
+  log('步骤4 完成，timeline=' + JSON.stringify(timeline.map(m=>`${m.atMs}ms:${m.cmd}`)));
+  verdict('v4','na','完成（响应 NA）');
+};
+
+// —— 步骤 5 ——
+async function step5(){
+  if(!track){ log('请先完成步骤1'); return; }
+  document.getElementById('b5').disabled = true;
+  try{ await track.applyConstraints({width:{ideal:640},height:{ideal:480}}); }catch(e){}
+  await sleep(700);
+  const s = track.getSettings();
+  const vc = document.createElement('canvas');
+  vc.width=s.width; vc.height=s.height;
+  vc.getContext('2d').drawImage(document.getElementById('v'),0,0,s.width,s.height);
+  const blob = await new Promise(r=>vc.toBlob(r,'image/jpeg',0.92));
+  await upload(`flow_finalphoto_${s.width}x${s.height}.jpg`, blob);
+  report.photo = {captured:true, size:`${s.width}x${s.height}`};
+  report.meta.finished = new Date().toISOString();
+  const rb = new Blob([JSON.stringify(report,null,1)],{type:'application/json'});
+  const r = await fetch('/report', {method:'POST', body:rb});
+  const name = await r.text();
+  log(`报告 HTTP ${r.status} → uploads/reports/${name}`);
+  verdict('v5', r.ok?'ok':'risk', r.ok?('已回传 '+name):'回传失败');
+  for(const t of stream.getTracks()) t.stop();
+  stream=null; track=null;
+}
+
+document.getElementById('b1').onclick = step1;
+document.getElementById('b2').onclick = step2;
+document.getElementById('b2s').onclick = step2skip;
+document.getElementById('b3').onclick = step3;
+document.getElementById('b4').onclick = step4;
+document.getElementById('b5').onclick = step5;
+
+// ?auto=1：无人值守连跑（真机经 uiopen 打开时无法逐键点击；证件步骤无本地图时记 NA）
+if(new URLSearchParams(location.search).get('auto')==='1'){
+  (async()=>{
+    log('auto 模式：顺序执行 1→5');
+    await step1();
+    if(!document.getElementById('docfile').files[0]) step2skip(); else await step2();
+    await step3();
+    await step4();
+    await step5();
+    log('auto 模式结束');
+  })().catch(e=>log('AUTO FATAL '+e.message));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VCAM 相机自诊断（KYC 采集链路）</title>
+<style>
+  body { font-family: -apple-system; background:#111; color:#eee; padding:12px; font-size:14px; }
+  video { width:100%; max-width:360px; background:#000; }
+  pre { white-space:pre-wrap; background:#1d1d1d; padding:8px; border-radius:6px; font-size:12px; }
+  button { font-size:15px; padding:10px 12px; margin:6px 6px 6px 0; border-radius:8px; border:0; background:#0a84ff; color:#fff; }
+  button:disabled { background:#333; color:#888; }
+</style>
+</head>
+<body>
+<h3>VCAM 相机自诊断（KYC 采集链路）</h3>
+<button id="start">启动相机</button>
+<button id="snap" disabled>📷 拍照并回传</button>
+<button id="rec" disabled>🎬 录像3秒并回传</button>
+<video id="v" autoplay playsinline muted></video>
+<pre id="out">未启动</pre>
+<script>
+const out = document.getElementById('out');
+const v = document.getElementById('v');
+let stream = null;
+function log(s){ out.textContent = s + "\n" + out.textContent; }
+
+async function upload(blob, name){
+  try {
+    const r = await fetch('/upload?name=' + name, { method: 'POST', body: blob });
+    log('上传 ' + name + ' → HTTP ' + r.status + '（' + blob.size + ' bytes, ' + blob.type + '）');
+  } catch(e) { log('上传失败 ' + name + ': ' + e.message); }
+}
+
+async function start(){
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+    v.srcObject = stream;
+    const t = stream.getVideoTracks()[0];
+    const st = t.getSettings();
+    log('getUserMedia OK');
+    log('track.settings: res=' + st.width + 'x' + st.height + ' fps=' + (st.frameRate||'?') + ' facing=' + (st.facingMode||'?') + ' deviceId=' + (st.deviceId||'?').slice(0,12));
+    document.getElementById('snap').disabled = false;
+    document.getElementById('rec').disabled = false;
+    // 连续 10 秒帧变化统计（模拟 KYC liveness 的连续性检查）
+    let frames=0, changed=0, prev=null;
+    const c=document.createElement('canvas'); c.width=80; c.height=60;
+    const cx=c.getContext('2d',{willReadFrequently:true});
+    const iv=setInterval(()=>{
+      try{
+        cx.drawImage(v,0,0,80,60);
+        const d=cx.getImageData(0,0,80,60).data;
+        let h=0; for(let i=0;i<d.length;i+=997){h=(h*31+d[i])>>>0;}
+        frames++; if(prev!==null&&h!==prev) changed++; prev=h;
+      }catch(e){}
+    },100);
+    setTimeout(()=>{ clearInterval(iv);
+      log('10s 统计: 采样='+frames+' 画面变化='+changed+'（变化=0 → 画面冻结/重复帧）');
+    },10000);
+    log('等待 10 秒自动统计…');
+  } catch(e) { log('getUserMedia FAILED: ' + e.name + ' — ' + e.message); }
+}
+
+// KYC 照片路径：从视频轨抓取当前帧并编码 JPEG 上传（等同 Web SDK 文档拍照）
+async function snap(){
+  if (!stream) return;
+  const t = stream.getVideoTracks()[0];
+  const st = t.getSettings();
+  const c = document.createElement('canvas');
+  c.width = st.width; c.height = st.height;
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  c.toBlob(b => upload(b, 'photo.jpg'), 'image/jpeg', 0.92);
+  log('抓帧 ' + c.width + 'x' + c.height + ' …');
+}
+
+// KYC 视频/liveness 路径：录制连续帧流（MediaRecorder），3 秒后上传
+async function rec(){
+  if (!stream || !window.MediaRecorder) { log('MediaRecorder 不可用'); return; }
+  const mime = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1' : '';
+  let mr;
+  try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch(e){ log('MediaRecorder 创建失败: ' + e.message); return; }
+  const chunks = [];
+  mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => upload(new Blob(chunks, { type: mr.mimeType || 'video/mp4' }), 'clip.mp4');
+  mr.start();
+  log('录制中 3 秒…');
+  setTimeout(() => mr.stop(), 3000);
+}
+
+document.getElementById('start').onclick = start;
+document.getElementById('snap').onclick = snap;
+document.getElementById('rec').onclick = rec;
+</script>
+</body>
+</html>
