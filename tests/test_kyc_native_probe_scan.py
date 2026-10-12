@@ -133,6 +133,16 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("AVMetadataFaceObject", src)
         self.assertIn("startDeviceMotionUpdates", src)
 
+    def test_probe_runner_follows_apple_capture_standard(self):
+        # Apple 文档标准的会话配置路径（AVCaptureSession 类文档），防止回退到非标准写法。
+        src = self._read("ProbeRunner.m")
+        self.assertIn("AVCaptureDeviceDiscoverySession", src)
+        self.assertIn("beginConfiguration", src)
+        self.assertIn("commitConfiguration", src)
+        self.assertIn("videoSupportedFrameRateRanges", src)
+        self.assertIn("activeFormat", src)
+        self.assertIn("lockForConfiguration", src)
+
     def test_wkwebview_host_page_with_media_permission_delegate(self):
         src = self._read("main.m")
         self.assertIn("requestMediaCapturePermissionForOrigin", src)

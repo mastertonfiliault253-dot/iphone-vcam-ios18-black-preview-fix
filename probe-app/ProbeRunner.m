@@ -12,6 +12,7 @@
 #import <sys/sysctl.h>
 #import <math.h>
 #include <stdlib.h>
+#include <limits.h>
 
 static const int kLowPhaseSeconds = 35;
 static const int kHighPhaseSeconds = 8;
@@ -37,6 +38,7 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
 @property(nonatomic, strong) AVCapturePhotoOutput *photoOutput;
 @property(nonatomic, strong) dispatch_queue_t sampleQueue;
+@property(nonatomic, strong) dispatch_queue_t sessionQueue;  // 文档要求会话增删/启停在专用串行队列
 @property(nonatomic, strong) CMMotionManager *motion;
 @property(nonatomic, strong) NSMutableArray *motionSamples;  // {t,gx,gy,gz,ax,ay,az}
 @property(nonatomic, strong) NSLock *motionLock;
@@ -186,16 +188,76 @@ static BOOL pathExists(NSString *p) {
 
 #pragma mark - camera
 
+// 严格按 Apple 文档标准配置采集会话（AVCaptureSession 类文档 + AVCam 参考实现）：
+// - 设备经 AVCaptureDeviceDiscoverySession 枚举（iOS 10+ 文档标准入口）；
+// - addInput/addOutput 包在 beginConfiguration/commitConfiguration 中；
+// - startRunning 是阻塞调用，放专用串行 sessionQueue（类文档明确要求不阻塞主队列）；
+// - 分辨率经 device.formats（AVCaptureDeviceFormat）+ activeFormat 显式选择
+//   （文档："some specialized options require directly setting the capture device's activeFormat"；
+//    此前编译失败是我误写了 AVCaptureFormat/supportedAVCaptureFormats 这类不存在的名字）。
 - (void)setupCameraAndRun {
-    self.session = [[AVCaptureSession alloc] init];
-    // 用 sessionPreset 而非 device.activeFormat：后者及 supportedAVCaptureFormats/AVCaptureFormat
-    // 在 theos 自带的 iPhoneOS SDK 头里不公开（CI 编译报错核实），preset 是确定可用的公开 API。
-    if ([self.session canSetSessionPreset:AVCaptureSessionPreset640x480]) {
-        self.session.sessionPreset = AVCaptureSessionPreset640x480;
+    self.sessionQueue = dispatch_queue_create("vcam.probe.session", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(self.sessionQueue, ^{ [self configureAndStartSession]; });
+}
+
+- (AVCaptureDeviceFormat *)pickFormatNearWidth:(int)w height:(int)h {
+    AVCaptureDeviceFormat *best = nil;
+    long long bestScore = LLONG_MAX;
+    for (AVCaptureDeviceFormat *f in self.frontDevice.formats) {
+        if (![f.mediaType isEqualToString:AVMediaTypeVideo]) { continue; }
+        CMFormatDescriptionRef fd = f.formatDescription;
+        if (!fd) { continue; }
+        CMVideoDimensions d = CMFormatDescriptionGetDimensions(fd);
+        if (d.width <= 0 || d.height <= 0) { continue; }
+        BOOL fpsOk = NO;
+        for (AVFrameRateRange *r in f.videoSupportedFrameRateRanges) {
+            if (r.maxFrameRate >= 24) { fpsOk = YES; break; }
+        }
+        if (!fpsOk) { continue; }
+        long long score = llabs((long long)d.width - w) + llabs((long long)d.height - h);
+        if (score == 0) { return f; }
+        if (score < bestScore) { bestScore = score; best = f; }
     }
-    self.frontDevice = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
-                                                        mediaType:AVMediaTypeVideo
-                                                         position:AVCaptureDevicePositionFront];
+    return best;
+}
+
+- (void)applyFormat:(AVCaptureDeviceFormat *)fmt label:(NSString *)label {
+    if (!fmt) {
+        [self log:[NSString stringWithFormat:@"format %s: no match, keep device default\n", label.UTF8String]];
+        return;
+    }
+    NSError *lockErr = nil;
+    if (![self.frontDevice lockForConfiguration:&lockErr]) {
+        [self log:[NSString stringWithFormat:@"format %s lock fail: %@\n", label.UTF8String, lockErr]];
+        return;
+    }
+    @try {
+        self.frontDevice.activeFormat = fmt;
+    } @catch (NSException *e) {
+        [self log:[NSString stringWithFormat:@"format %s exception: %@\n", label.UTF8String(), e.reason]];
+    } @finally {
+        [self.frontDevice unlockForConfiguration];
+    }
+    CMVideoDimensions d = CMFormatDescriptionGetDimensions(fmt.formatDescription);
+    ((NSMutableDictionary *)self.report)[@"appliedFormat"] = [@{
+        label: [NSString stringWithFormat:@"%dx%d", d.width, d.height],
+    } mutableCopy];
+    [self log:[NSString stringWithFormat:@"format %s -> %dx%d\n", label.UTF8String, d.width, d.height]];
+}
+
+- (void)configureAndStartSession {
+    self.session = [[AVCaptureSession alloc] init];
+    AVCaptureDeviceDiscoverySession *disc =
+        [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+                                                            mediaType:AVMediaTypeVideo
+                                                             position:AVCaptureDevicePositionFront];
+    self.frontDevice = disc.devices.firstObject;
+    if (!self.frontDevice) {
+        disc = [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+                                                                    mediaType:AVMediaTypeVideo
+                                                                     position:AVCaptureDevicePositionUnspecified];
+        self.frontDevice = disc.devices.firstObject;
+    }
     if (!self.frontDevice) {
         self.frontDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     }
@@ -204,6 +266,9 @@ static BOOL pathExists(NSString *p) {
     NSError *err = nil;
     AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:self.frontDevice error:&err];
     if (!input) { [self failWith:[NSString stringWithFormat:@"input: %@", err]]; return; }
+
+    // 文档标准：多项增删用 beginConfiguration/commitConfiguration 成对提交。
+    [self.session beginConfiguration];
     [self.session addInput:input];
 
     BOOL minimal = [[NSUserDefaults standardUserDefaults] boolForKey:@"probeMinimal"];
@@ -233,7 +298,11 @@ static BOOL pathExists(NSString *p) {
     self.videoOutputSupported = [self.session canAddOutput:self.videoOutput];
     if (self.videoOutputSupported) { [self.session addOutput:self.videoOutput]; }
 
-    [self.session startRunning];
+    // 低档先选 640x480（近似取最接近档）；随后阶段切换用 applyFormat。
+    [self applyFormat:[self pickFormatNearWidth:640 height:480] label:@"low"];
+    [self.session commitConfiguration];
+
+    [self.session startRunning];  // 文档要求：阻塞调用，本处已在专用串行队列上
     // 启动 2s 后自检会话状态：定位零帧问题在会话层还是管线层（诊断数据入报告）。
     __weak ProbeRunner *weakMe = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), self.sampleQueue, ^{
@@ -508,10 +577,10 @@ static BOOL pathExists(NSString *p) {
 
 - (void)finishLowPhase {
     [self finalizeCurrentSessionWithLabel:@"low"];
-    // 切到高档继续 phase 1；维度以首帧实测为准（见 capturedW/H）。
-    if ([self.session canSetSessionPreset:AVCaptureSessionPreset1920x1080]) {
-        self.session.sessionPreset = AVCaptureSessionPreset1920x1080;
-    }
+    // 文档标准：运行中经 lockForConfiguration + activeFormat 切到最接近 1920x1080 的格式；
+    // 实际出帧维度以首帧实测为准（capturedW/H）。
+    AVCaptureDeviceFormat *hi = [self pickFormatNearWidth:1920 height:1080];
+    dispatch_async(self.sessionQueue, ^{ [self applyFormat:hi label:@"high"]; });
     self.phase = 1;
     self.writerInput = nil;
     self.writer = nil;
@@ -538,7 +607,7 @@ static BOOL pathExists(NSString *p) {
 - (void)finishProbe {
     self.phase = -1;
     [self finalizeCurrentSessionWithLabel:@"high"];
-    [self.session stopRunning];
+    dispatch_async(self.sessionQueue, ^{ [self.session stopRunning]; });
     [self.motion stopDeviceMotionUpdates];
     [self computeMotionStats];
     [self selfVerdicts];
