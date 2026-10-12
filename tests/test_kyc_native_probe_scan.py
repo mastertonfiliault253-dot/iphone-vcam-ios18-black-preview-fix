@@ -129,7 +129,7 @@ class AppContractTests(unittest.TestCase):
         src = self._read("ProbeRunner.m")
         self.assertIn("kLowPhaseSeconds = 35", src)
         self.assertIn("kHighPhaseSeconds = 8", src)
-        self.assertIn("CVPixelBufferGetAttachments", src)
+        self.assertIn("CVBufferGetAttachments", src)
         self.assertIn("AVMetadataFaceObject", src)
         self.assertIn("startDeviceMotionUpdates", src)
 

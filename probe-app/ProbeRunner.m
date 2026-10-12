@@ -23,7 +23,11 @@ static NSString *tmpPathNamed(NSString *name) {
 
 @interface ProbeRunner () <AVCaptureVideoDataOutputSampleBufferDelegate,
                           AVCapturePhotoCaptureDelegate,
-                          AVCaptureMetadataOutputObjectsDelegate>
+                          AVCaptureMetadataOutputObjectsDelegate> {
+    // 各 phase 实际出帧宽高（从首帧 CVPixelBuffer 记录）。array 不能做 property，用 ivar。
+    int _capturedW[2];
+    int _capturedH[2];
+}
 @property(nonatomic, copy) NSString *baseURL;
 @property(nonatomic, copy) void (^progress)(NSString *);
 @property(nonatomic, copy) void (^completion)(void);
@@ -42,8 +46,7 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, copy) NSString *currentFile;
 @property(nonatomic, assign) int phase;             // 0 low, 1 high, -1 recording off
 @property(nonatomic, assign) int phaseFrames;
-@property(nonatomic, assign) int capturedW[2];   // 各 phase 实际出帧宽高（从首帧 CVPixelBuffer 记录）
-@property(nonatomic, assign) int capturedH[2];
+@property(nonatomic, strong) NSOperationQueue *motionQueue;
 @property(nonatomic, assign) int faceFramesThisPhase;
 @property(nonatomic, assign) int totalFaceObjects;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *attachments;  // phase-scoped
@@ -158,6 +161,8 @@ static BOOL pathExists(NSString *p) {
         @"jbPaths": jbPaths,
         @"canOpenURL": canOpen,
         @"network": nets,
+        @"machine": machine,
+        @"systemRelease": release,
     };
     return YES;
 }
@@ -255,9 +260,13 @@ static BOOL pathExists(NSString *p) {
 - (void)startMotion {
     self.motion = [[CMMotionManager alloc] init];
     self.motion.deviceMotionUpdateInterval = 1.0 / 50.0;
+    // toQueue: 需要 NSOperationQueue（不是 dispatch_queue）；单串行队列保证采样有序。
+    self.motionQueue = [[NSOperationQueue alloc] init];
+    self.motionQueue.maxConcurrentOperationCount = 1;
     [self.motion startDeviceMotionUpdatesUsingReferenceFrame:CMAttitudeReferenceFrameXArbitraryZVertical
-                                                   toQueue:self.sampleQueue
+                                                   toQueue:self.motionQueue
                                              withHandler:^(CMDeviceMotion *m, NSError *e) {
+        (void)e;
         if (!m) { return; }
         double t = CFAbsoluteTimeGetCurrent() - self.startClock;
         [self.motionLock lock];
@@ -308,7 +317,7 @@ static BOOL pathExists(NSString *p) {
     if (!pb) { return; }
     size_t w = CVPixelBufferGetWidth(pb);
     size_t h = CVPixelBufferGetHeight(pb);
-    if (self.phase >= 0 && self.phase < 2) { self.capturedW[self.phase] = (int)w; self.capturedH[self.phase] = (int)h; }
+    if (self.phase >= 0 && self.phase < 2) { _capturedW[self.phase] = (int)w; _capturedH[self.phase] = (int)h; }
     NSString *name = [NSString stringWithFormat:@"probe_phase%d_%zux%zu.mp4", self.phase, w, h];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -337,7 +346,9 @@ static BOOL pathExists(NSString *p) {
 - (void)recordAttachments:(CMSampleBufferRef)sb {
     CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sb);
     if (!pb) { return; }
-    CFDictionaryRef atts = CVPixelBufferGetAttachments(pb, kCVPixelBufferAttachmentModeReadOnly);
+    // 传感器 attachment（ExposureTime/ISO 等）挂在 ShouldPropagate 模式；
+    // CVBufferGetAttachments 为 iOS 2.0+ 公开 API（主工程同源用 kCVAttachmentMode_*）。
+    CFDictionaryRef atts = CVBufferGetAttachments(pb, kCVAttachmentMode_ShouldPropagate);
     if (!atts) { return; }
     CFIndex count = CFDictionaryGetCount(atts);
     if (count <= 0) { return; }
@@ -417,13 +428,15 @@ static BOOL pathExists(NSString *p) {
             }
         }
     }
-    CMVideoDimensions dims = photo.resolvedSettings.dimensions;
+    // 维度从 ImageIO 属性顶层取（resolvedSettings.dimensions 在该 SDK 头中不可用）。
+    int pw = [props[(id)kCGImagePropertyPixelWidth] intValue];
+    int ph = [props[(id)kCGImagePropertyPixelHeight] intValue];
     photoReport[@"saved"] = @YES;
-    photoReport[@"width"] = @(dims.width);
-    photoReport[@"height"] = @(dims.height);
+    photoReport[@"width"] = @(pw);
+    photoReport[@"height"] = @(ph);
     photoReport[@"exifKeyCount"] = @(keyCount);
     photoReport[@"exif"] = flat;
-    [self log:[NSString stringWithFormat:@"photo %dx%d exifKeys=%d\n", dims.width, dims.height, keyCount]];
+    [self log:[NSString stringWithFormat:@"photo %dx%d exifKeys=%d\n", pw, ph, keyCount]];
 }
 
 #pragma mark - phases
@@ -431,8 +444,8 @@ static BOOL pathExists(NSString *p) {
 - (void)finishLowPhase {
     [self finalizeCurrentSessionWithLabel:@"low"];
     // 切到高档继续 phase 1；维度以首帧实测为准（见 capturedW/H）。
-    if ([self.session canSetSessionPreset:AVCaptureSessionPresetHD1920x1080]) {
-        self.session.sessionPreset = AVCaptureSessionPresetHD1920x1080;
+    if ([self.session canSetSessionPreset:AVCaptureSessionPreset1920x1080]) {
+        self.session.sessionPreset = AVCaptureSessionPreset1920x1080;
     }
     self.phase = 1;
     self.writerInput = nil;
@@ -471,7 +484,7 @@ static BOOL pathExists(NSString *p) {
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {
     int w = 0, h = 0;
-    if (self.phase >= 0 && self.phase < 2) { w = self.capturedW[self.phase]; h = self.capturedH[self.phase]; }
+    if (self.phase >= 0 && self.phase < 2) { w = _capturedW[self.phase]; h = _capturedH[self.phase]; }
     NSMutableDictionary *s = [@{
         @"label": label,
         @"capturedW": @(w),
@@ -523,7 +536,7 @@ static BOOL pathExists(NSString *p) {
         @"sampleCount": @(samples.count),
         @"gyroStdev": @[@(gs[0]), @(gs[1]), @(gs[2])],
         @"gravityStdev": @[@(as[0]), @(as[1]), @(as[2])],
-        @"activity": @(gsx > 0.02 ? @"moving" : @"static"),
+        @"activity": gsx > 0.02 ? @"moving" : @"static",
         @"samples": samples,
     };
 }
@@ -585,7 +598,7 @@ static BOOL pathExists(NSString *p) {
     req.HTTPBody = data;
     req.timeoutInterval = 15;
     NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
-        completionHandler:^(NSData *resp, NSURLResponse *r, NSError *e) {
+        completionHandler:(__unused NSData *resp, __unused NSURLResponse *r, NSError *e) {
             if (e) { [self log:[NSString stringWithFormat:@"upload FAIL %@: %@\n", label, e.localizedDescription]]; }
             else if (success) { success(); [self log:[NSString stringWithFormat:@"uploaded %@ (%lu B)\n", label, (unsigned long)data.length]]; }
         }];
