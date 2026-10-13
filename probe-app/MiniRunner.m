@@ -35,7 +35,7 @@ static MiniRunner *gMini;
 }
 
 - (void)runForSeconds:(NSInteger)seconds {
-    [self log:[NSString stringWithFormat @"start pid=%d", (int)getpid()]];
+    [self log:[NSString stringWithFormat:@"start pid=%d", (int)getpid()]];
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
                                                                 mediaType:AVMediaTypeVideo
                                                                  position:AVCaptureDevicePositionFront];
