@@ -1,7 +1,6 @@
 #import "MiniRunner.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CMTime.h>
-#import <CoreMedia/CMTimeFormatter.h>
 #import <stdio.h>
 
 // Apple 官方 AVCam 示例的最小子集：默认前置设备 + High preset + videoDataOutput，
