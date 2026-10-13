@@ -235,11 +235,61 @@ WKWebView 管线六档全部出帧且内容持续变化。零帧不是 vcam/注�
 风险提示（非 Sideloadly 本身）：本机代理对 `play.itunes.apple.com` 等域直连时被国内 CDN
 错误证书劫持，Apple 认证流量对代理客户端可见——sideload 建议换干净网络或专用空白 Apple ID。
 
+## 9. L 轮：std 容器 native_probe 原生管线对照（补齐 §8.2 缺口，决定性）
+
+"没对齐的接口也补上"——对标 Whatnot/Persona 原生 SDK 形态（AVFoundation 直采），
+在 std 容器上跑同一 native_probe 管线，与 jb 零帧报告做唯一变量对照。
+
+### 9.1 过程（含两个真实缺陷的发现与修复）
+- CI 出 std 变体 ipa（同 arm64e 二进制换 identity：bundleID=com.codex.vcamdetectprobe.std、
+  scheme=vcam-probe2，run 入口路由 native_probe），Sideloadly 真签名安装。
+- **Sideloadly 89% 卡住根因**：上一轮探针 App 仍在前台占用 bundle（杀掉进程后立即 Done）。
+  安装前置检查应包含"目标 App 进程不在运行"。
+- **崩溃 1（61888e9 修复）**：ProbeRunner 的 AVAssetWriter 从未 startWriting。jb 零帧时
+  writer 恒 nil 掩盖了它；std 出帧后 append 静默失败 → 收尾 markAsFinished 对 failed
+  writer 抛 ObjC 异常 → SIGABRT（35s finishLowPhase 处）。
+- **崩溃 2（787d37a 修复）**：真机日志实证 `NSInternalInconsistencyException: append sample
+  buffer: Must start a session using -[AVAssetWriter startSessionAtSourceTime:]`——实时输入
+  仅 startWriting 不够，必须首帧 append 前以首帧 PTS startSession。同时补
+  append 异常兜底（记入报告，不带走整个采集）与切档维度突变分段录（73d7555：
+  CI macOS 编译拒绝 CMSampleBufferGetPTS，改用 CMSampleBufferGetPresentationTimeStamp）。
+- 附带发现：覆盖安装后 LaunchServices 对 scheme 路由短暂错位（uiopen 误启动 jb 变体），
+  重启 App 注册后恢复；Sideloadly 覆盖安装期间设备端探针进程须先退出。
+
+### 9.2 结果（决定性）
+std 报告 report_20261014_020259.json（flow=native_probe，同一测试台回传）与
+jb 报告 report_20261013_193304.json（同代码同参数）对照：
+
+| 项 | jb 容器 | std 容器（真签名标准安装） |
+|---|---|---|
+| noFramesAfter5s | **true**（framesSoFar=0） | 无（5s 采样 framesSoFar=63） |
+| low 段 640x480@30 | 0 帧 | **1066 帧**（≈30fps×35s） |
+| high 段 1920x1080@30 | 0 帧 | **365 帧**（≈33fps×11s，切换竞态段 1 帧分段） |
+| 会话状态 | isRunning=true, dropped=0（帧根本没到管线） | isRunning=true, dropped=1 |
+| 录像回传 | 无 | probe_phase0_640x480.mp4、probe_phase1_640x480.mp4、probe_phase1_1920x1080.mp4 |
+
+录像离线分析（tools/kyc_report_scan.py）：两档 ts_fps 29.9/30.0、gap 33.3ms、
+**content_frozen=false**、内容刷新 15.4/17.5 Hz、noise_lap 6.87/5.31。
+→ **AVFoundation 原生管线在 std 容器全档出帧、1080p 无内容冻结、替换画面闭环**；
+零帧定性彻底锁定为 jb 容器特有（与 K 轮 WKWebView 结论互相独立印证，两条管线同结果）。
+
+如实标注：两档内容循环周期 8.2s/16.5s（loop_detected=true）——vcam 源循环播放固有特征，
+对应优化计划"循环内容"风险项（选段 ≥ 单次会话时长或加长源视频），非本轮新增。
+
+### 9.3 部署含义（最终版）
+自有 App（原生 AVFoundation 或内嵌 Web SDK 任一形态）走**标准安装通道**（免费 Apple ID
+Sideloadly 可复现）即可在 iOS 18.3.1 + vcam 0.8.110 下获得完整相机帧流；
+jb/procursus 安装形态的零帧不需要再修。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；
   report_20261013_193304.json（I 轮 Persona 复刻版，无帧依赖段全通）；
-  report_20261013_235116.json（K 轮 std 容器，6/6 档出帧——零帧对照决定性证据）。
+  report_20261013_235116.json（K 轮 std 容器，6/6 档出帧——零帧对照决定性证据）；
+  report_20261014_020259.json（L 轮 std 容器 native_probe 原生管线，low 1066/high 365 帧——
+  与 193304 同参数零帧形成决定性对照）。
+- L 轮录像：probe/uploads/probe_phase0_640x480.mp4、probe_phase1_640x480.mp4、
+  probe_phase1_1920x1080.mp4（kyc_report_scan 分析：ts_fps≈30、frozen=false）。
 - Sideloadly 审计：docs/tools/SECURITY-AUDIT-SIDELOADLY-ZH.md；
   启动脚本 tmp/start-sideloadly-gsadirect.cmd；设备屏截图 tmp/devshot_std*.jpg。
 - 生成视频：tmp/face_1080p30*.mov（本机）与设备 /var/mobile/Media/VCAM/ 同名文件；
