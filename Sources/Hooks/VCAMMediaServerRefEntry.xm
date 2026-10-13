@@ -6,6 +6,7 @@
 #import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <substrate.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1345,10 +1346,64 @@ static void VCAMMaybeDumpBWGraphSymbols(void) {
     VCAMRefLog("bw symbol dump written");
 }
 
+// —— 路线 A：真实 torch 观测（P0-1）——
+// BW 符号 dump 证实 cameracaptured 进程内 BWFigVideoCaptureDevice 有
+// setTorchLevel:/torchLevel。setTorchLevel: 即状态变更事件：任何 App（含
+// KYC SDK）打闪光活体时都会经过它，单点覆盖全部宿主，无需 App 侧注入。
+// 参数编码（float/double）随系统版本可能不同，安装时读取实际类型编码
+// 二选一，避免 ABI 错位。首帧时安装：此时 CMCapture/BWCore 必已加载。
+typedef void (*VCAMSetTorchLevelDoubleIMP)(id, SEL, double);
+typedef void (*VCAMSetTorchLevelFloatIMP)(id, SEL, float);
+static VCAMSetTorchLevelDoubleIMP VCAMOriginalSetTorchLevelD;
+static VCAMSetTorchLevelFloatIMP VCAMOriginalSetTorchLevelF;
+
+static void VCAMReplacedSetTorchLevelD(id receiver, SEL selector, double level) {
+    VCAMSetObservedTorchLevel(level);
+    if (VCAMOriginalSetTorchLevelD != NULL) {
+        VCAMOriginalSetTorchLevelD(receiver, selector, level);
+    }
+}
+
+static void VCAMReplacedSetTorchLevelF(id receiver, SEL selector, float level) {
+    VCAMSetObservedTorchLevel(level);
+    if (VCAMOriginalSetTorchLevelF != NULL) {
+        VCAMOriginalSetTorchLevelF(receiver, selector, level);
+    }
+}
+
+static void VCAMInstallTorchObservationIfNeeded(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+    Class deviceClass = objc_getClass("BWFigVideoCaptureDevice");
+    if (deviceClass == NULL) return;
+    SEL selector = sel_registerName("setTorchLevel:");
+    Method method = class_getInstanceMethod(deviceClass, selector);
+    if (method == NULL) {
+        installed = YES;  // 该类没有此方法：走配置注入回路，不再重试
+        VCAMRefLog("torch observation unavailable: setTorchLevel: not found");
+        return;
+    }
+    const char *encoding = method_getTypeEncoding(method);
+    // ObjC 类型编码里参数只能是 f 或 d；v/@/: 与数字不含这两个字母。
+    if (encoding != NULL && strchr(encoding, 'f') != NULL) {
+        MSHookMessageEx(deviceClass, selector, (IMP)VCAMReplacedSetTorchLevelF,
+                        (IMP *)&VCAMOriginalSetTorchLevelF);
+    } else {
+        MSHookMessageEx(deviceClass, selector, (IMP)VCAMReplacedSetTorchLevelD,
+                        (IMP *)&VCAMOriginalSetTorchLevelD);
+    }
+    installed = YES;
+    char message[192];
+    snprintf(message, sizeof(message), "torch observation installed encoding=%s",
+             encoding != NULL ? encoding : "?");
+    VCAMRefLog(message);
+}
+
 %hook BWNodeOutput
 
 - (void)emitSampleBuffer:(CMSampleBufferRef)sampleBuffer {
     VCAMMaybeDumpBWGraphSymbols();
+    VCAMInstallTorchObservationIfNeeded();
     if (sampleBuffer == NULL) {
         %orig(sampleBuffer);
         return;

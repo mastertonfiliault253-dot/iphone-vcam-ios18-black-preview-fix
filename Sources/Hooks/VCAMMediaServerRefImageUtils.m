@@ -807,6 +807,12 @@ static const char *VCAMConfigValueSegment(const char *contents, const char *key,
     return start;
 }
 
+// 路线 A 的真实 torch 观测：BWFigVideoCaptureDevice setTorchLevel: hook 注入。
+// 观测值带新鲜度窗口（5s）：窗口内以真实观测驱动增益，窗口外回落到
+// photorealTorchLevel 配置注入值（测试/校准回路）。
+static volatile double VCAMObservedTorchLevel = -1.0;  // -1 = 从未观测
+static volatile int64_t VCAMObservedTorchTimeMs = 0;
+
 // 把 photoreal 状态发布到 notifyd：App 沙箱读不到任何文件通道，探针靠它
 // 对表（VCAMDetectProbe observedPhotoreal）。编码 state = round(level*1000)<<1 | enabled。
 static void VCAMPublishPhotorealState(void) {
@@ -816,9 +822,23 @@ static void VCAMPublishPhotorealState(void) {
             NOTIFY_STATUS_OK) {
         return;
     }
-    uint64_t encoded = ((uint64_t)(VCAMPhotorealTorchLevel * 1000.0 + 0.5) << 1) |
+    double effective = VCAMPhotorealTorchLevel;
+    double observed = VCAMObservedTorchLevel;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (observed >= 0 && nowMs - VCAMObservedTorchTimeMs <= 5000) {
+        effective = observed;
+    }
+    uint64_t encoded = ((uint64_t)(effective * 1000.0 + 0.5) << 1) |
                        (uint64_t)(VCAMPhotorealEnabled != 0);
     notify_set_state(stateToken, encoded);
+}
+
+void VCAMSetObservedTorchLevel(double level) {
+    if (level < 0) level = 0;
+    if (level > 1) level = 1;
+    VCAMObservedTorchLevel = level;
+    VCAMObservedTorchTimeMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    VCAMPublishPhotorealState();
 }
 
 static void VCAMReloadPhotorealAndBranchConfig(void) {
@@ -891,6 +911,11 @@ static void VCAMEmitPhotorealStateSnapshot(double torch) {
 static CIImage *VCAMApplyPhotorealGain(CIImage *image) {
     if (!VCAMPhotorealCouplingEnabled()) return image;
     double level = VCAMPhotorealTorchLevel;
+    double observed = VCAMObservedTorchLevel;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (observed >= 0 && nowMs - VCAMObservedTorchTimeMs <= 5000) {
+        level = observed;  // 真实观测优先于配置注入（路线 A）
+    }
     if (level <= 0.001) return image;
     VCAMEmitPhotorealStateSnapshot(level);
     double brightness = level * 0.45;

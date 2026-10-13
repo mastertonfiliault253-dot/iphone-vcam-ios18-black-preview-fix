@@ -11,6 +11,8 @@ BOOL VCAMVirtualModeIsEnabled(void);
 // metadataBranch=replace 时让元数据分支也走替换路由（默认 0=passthrough，
 // 保持物理 QR 识别）。决策点在 VCAMMediaServerRefEntry.xm 的 Preview Splitter。
 int VCAMMetadataBranchReplaceEnabled(void);
+// 路线 A：cameracaptured 内 BW 图设备节点观测到的真实 torch 电平（0..1）。
+void VCAMSetObservedTorchLevel(double level);
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer);
 void VCAMSetLastCameraIsFront(BOOL isFront);
 BOOL VCAMLastCameraIsFront(void);
