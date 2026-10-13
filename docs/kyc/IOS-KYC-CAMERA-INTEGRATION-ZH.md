@@ -521,10 +521,27 @@ SpringBoard/Safari/Camera/浏览器。两者都**不**注入探针 App 进程（
 路径可能既没注入也没透传）。
 **已排除**：第三方 tweak（Shadow/RSTLite）与探针进程自身注入、输出组合、
 App 前后台状态（VNC 确认前台）。**已确认**：相机子系统对 WebContent 客户端正常。
-**决定性实验（E 轮，待设备恢复）**：重启后在两种状态下各跑一次 minimal——
-(a) vcam 文件在位但 enabled=0、cameracaptured 全新启动；(b) 临时移开
-VCAMMediaServerClient 后重启 cameracaptured。若 (b) 出帧而 (a) 不出 →
-根因坐实为钩子对 App 客户端不透传（进阶段 8 P0）。
+**决定性实验（E 轮，2026-10-13 午后已执行，设备重新激活后）**：三态各跑一次
+minimal，每态 cameracaptured 均全新启动（`kill <pid>`，launchd 秒级重生）：
+
+| 态 | 配置 | cameracaptured | 结果 |
+|---|---|---|---|
+| b′ | 越狱激活时 VCAM 文件仍在移出目录（进程天然无钩子）| 激活新起 PID 4025 | 零帧（report 105004 及复跑） |
+| a | 注入文件全部还原在位 + enabled=False | kill 后新起 PID 22685 | 零帧（121302） |
+| c | 在位 + enabled=True + source=local | kill 后新起 PID 22719 | 零帧（121419） |
+
+**裁决：vcam 钩子因子被排除**——完全没有钩子时探针同样零帧。原 P0-1
+"钩子对 App 客户端吞帧"假设作废（其修复选项不再实施）。
+**同机同时刻旁证**（同日 12:15）：Safari `kyc-camera-test` 启动相机 →
+**帧流正常**（10s 采样 99 ≈ 30fps）但画面纯黑、变化=1；系统相机 App 在
+vcam=off + 全新 cameracaptured 下预览同样全黑。两者一致指向**前置镜头被
+物理遮挡**（手机当时大概率被倒扣），即真实帧流对 Web/系统客户端正常，
+黑是场景黑。**问题边界由此收紧为：仅"原生 AVCapture 的第三方 App 客户端"
+零帧**（本机唯一此类客户端是 jb 通道安装的探针），Web/系统客户端不受影响。
+**下一步（进行中）**：探针增强版 805d1ee 增加 didDrop 计数、会话
+RuntimeError/Interrupt 事件与 simple=1 模式（不锁格式、默认 preset），
+用于把零帧钉到具体层（会话报错/帧被丢弃/投递无动作）；另用设备上真实
+AppStore 通道 App（Whatnot，正是 KYC 目标应用）做原生相机通道对照。
 
 ### 扩展收集项实测（与帧无关的信号已全部可用）
 

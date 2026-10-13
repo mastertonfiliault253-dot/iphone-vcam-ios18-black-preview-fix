@@ -14,9 +14,14 @@
    帧流连续、六项电池通过（见 IOS-KYC-CAMERA-INTEGRATION-ZH.md 各验收节）。
 2. **原生 App 相机路径当前零帧**（VCAMDetectProbe 全模式、任何 vcam 开关状态）：
    第三方 App 的 AVCapture 流由 **cameracaptured** 服务，vcam 的
-   `VCAMMediaServerClient` 恰好注入该进程（plist 过滤器实证）。根因未裁决：
-   排查轮里 cameracaptured 从未重启（钩子与缓存状态自装机驻留），
-   E 轮（全新启动）是决定性实验。
+   `VCAMMediaServerClient` 恰好注入该进程（plist 过滤器实证）。
+   **E 轮裁决（2026-10-13，三态均全新启动 cameracaptured）：钩子在位/关/开
+   以及完全无钩子时全部零帧 ⇒ vcam 因子排除**（见集成文档"E 轮"表）。
+   同时刻 Safari 与系统相机帧流正常（画面黑=镜头被遮，属物理现象）。
+   问题边界收紧为"仅原生 AVCapture App 客户端零帧"，归因转入探针自诊断
+   （didDrop 计数/会话事件/simple 模式）与真实 AppStore App（Whatnot）对照；
+   本方案 vcam 侧不再做钩子透传类改动（P0-1 修复选项作废，若后续对照
+   显示真实 App 也零帧，再按新证据立项）。
 3. **注入面的可见性**：真实 SDK 若在原生 App 进程做 dyld 枚举，看到的是该进程
    自身的注入集合——`VCAMMediaServerClient`（只进 cameracaptured）与
    `VCAMSpringBoardClient`（只进 SpringBoard/Safari/Camera/浏览器）都不进
