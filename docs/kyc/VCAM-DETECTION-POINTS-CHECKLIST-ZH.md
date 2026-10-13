@@ -34,6 +34,36 @@
 - MobileShieldKit 在场（内部混淆，具体探测项未读出；"Persona 收集越狱状态"按公开文档为真，标 `行业`）。
   S10-1 的"设备指纹模块在宿主进程内"由此升级为**实拆存在**。
 
+**Persona2 深度逆向（rea 6.4.0 + Ghidra 12.1.4，WSL；快照 persona2.snap，2026-10-13）**：
+
+- 概览：58,394 个函数、53 个段（ObjC+Swift 混合，`__swift5_*` 全段在场）；
+  Swift 协议 witness `Persona2.InquiryWebRtcAdapter.captureOutput(_:didOutput:from:cameraPosition:)`
+  把 `CMSampleBuffer` 原样转发给 WebRTC 适配器 ⇒ Persona 的"实时流"路径也是
+  **AVCapture 帧直接喂进编码器**，中间没有像素改动。
+- 类级证据（`rea search --kind procedures` 命中，去歧义后的名字）：
+  `NewGovernmentIdCaptureViewController/GovernmentIdCaptureViewImpl/K0000CaptureView/
+  GovernmentIdCaptureViewController::torchButtonTapped`、
+  `PersonaSelfieCaptureView::toggleFlashButtonTapped`、
+  `SelfieCaptureViewController::flashToggleButtonTouchUpInside`、自定义 `TorchButton` 类——
+  证件与自拍界面都有**用户可点的 torch/闪光按钮**；
+  底层调用完整：`setTorchMode:`、`setTorchModeOnWithLevel:error:`、`torchLevel`、
+  `isTorchActive/isTorchAvailable/hasTorch/isFlashAvailable`；
+  另有特性开关 `FeatureFlagsModule.SkipShutterFlashFlag`（快门闪光可配置）。
+  ⇒ 检测点 #5（torch 状态↔画面亮度一致性）由"字符串在场"升级为**类级+API 级确证**：
+  界面会真的把 torch 点亮/调档，注入画面必须能跟随亮度变化。
+- 挑战活体形态（`persona2_challenge.json` 检索 blink|smile|turn|challenge|liveness）：
+  **过程名里没有显式挑战/眨眼/微笑 API**（命中均为 URLSession `didReceiveChallenge`、
+  输入框 `textFieldShouldReturn` 等噪声），采集视图类名混淆（如 `K0000CaptureView`）；
+  framework 与其资源 bundle 内**无 CoreML 模型资源**（只有 SVG/Lottie/文案）；
+  Vision 引用×71、MPS×2。⇒ 客户端做人脸几何（Vision）+采集编排，
+  **deepfake 打分不在本机模型里（服务端侧）**，与公开文档口径一致；
+  "预生成视频无法响应随机挑战"的 S6 硬限制按服务端驱动理解维持不变。
+- 局限（如实）：`inspect-native-dispatch-metadata` 与 `IdensicMobileSDK` 的
+  `search_procedures` 均在 Ghidra provider 固定 330s 超时内未完成（5–7MB 的 ObjC/Swift
+  混合体全量自动分析超限；`--analysisTimeoutMs` 只适用于 JS provider）。Idensic 与
+  Tilt/Whop 主二进制（5.2MB/128MB/177MB）因此只有 grep 符号级结论，无函数级结论；
+  同一二进制重试会再付一次分析时间，已按"小请求"原则放弃函数级深挖。
+
 **Whop**（/var/containers/…/E74B292B…/Whop.app）内嵌 **IdensicMobileSDK**
 = **Sumsub** 移动端 SDK（二进制内 `https://api.sumsub.com`；主程序 sumsub×22、
 veriff、idensic 字符串）。
@@ -49,14 +79,24 @@ veriff、idensic 字符串）。
   ⇒ 挑战+被动双模式，同样有 torch 闪光。无 DepthDataOutput（TrueDepth 同样仅作 RGB）。
 - 另有 LiveKitWebRTC（语音/客服通话，非 KYC 采集）。
 
-**Tilt**（/var/containers/…/698D3934…/Tilt.app，retrolabs.retroapp.iOS）内嵌
-**LuciqSDK**（`https://api.luciq.ai`，KYC 后端 API）+ 主程序内 **Persona 符号×68**
-（Persona 引擎静态链入主二进制）+ RecaptchaEnterpriseSDK + AgoraRtcKit。
-LuciqSDK 本体几乎无相机符号（只 `setFrameRate`）；**相机采集在主程序内原生
-AVCapture**（`AVCaptureVideoPreviewLayer/Session/VideoDataOutput/
-DeviceTypeBuiltInWideAngle|DualWide|Triple`、`AVCaptureSessionPreset`），
-活体词=`Blink/blink×11`、`glint×2`、`Challenge×964` ⇒ 眨眼+glint 挑战活体。
-（Tilt 主程序未 grep 到 torch 符号，glint 可能用屏幕补光而非 torch——未钉，标待查。）
+**Tilt**（/var/containers/…/698D3934…/Tilt.app，retrolabs.retroapp.iOS，主二进制
+177MB）KYC=**自研原生实现**（`KYCViewController/KYCContentViewController/
+KYCVerification/KYCResult` 符号在主二进制内）+ 原生 AVCapture
+（`AVCaptureSessionPreset1920x1080`×2、`AVCaptureVideoDataOutput`、
+`AVCaptureDeviceDiscoverySession`、`DeviceTypeBuiltInWideAngle|DualWide|Triple`、
+`startRunning`）+ **torch 控制确在**（`setTorch`、`setCameraTorchOn`、`isTorchOn`、
+`isCameraTorchSupported`，RxSwift `isTorchSupportedSubject/Publisher` 风格）+
+RecaptchaEnterpriseSDK（设备可信/防 bot）。
+
+本轮 rea/符号复核对早前 Tilt 记录做**更正**（原记录为一次性 grep 误判）：
+- `LuciqSDK` 实为 **APM/崩溃/性能上报 SDK**（符号 `LuciqAPM`、`CrashReporting*`、
+  CoreData instrumentation；`api.luciq.ai` 是其上报域名），与 KYC 无关；
+- 主二进制内**没有任何 Persona SDK API 符号**（`Inquiry*`=0、`s8Persona2` 模块前缀=0；
+  "Persona 符号×68"是把普通 UI 文案 `PersonalInformation*` 误计）；
+- `Blink×11` 实为 UI 光标闪烁（`CharacterBlinkText`、`blinkScale`），非眨眼活体；
+  `glint×2` 实为 SwiftUI 视图状态 `_glintAngle`（`@State` 双倍精度角，伴随
+  `CoreMotionManagerHelper` 的 tilt 交互 UI），**不是相机补光/闪光实现**；
+- Tilt KYC 的活体算法具体形态未钉（自研，可能走服务端视频审核）——标待查。
 
 **跨 App 结论（3/3 一致）**：
 
@@ -66,8 +106,9 @@ DeviceTypeBuiltInWideAngle|DualWide|Triple`、`AVCaptureSessionPreset`），
 2. **深度流 3/3 不用**（无 DepthDataOutput）→ S5-4 进一步降级。
 3. **人脸检测作用于交付的帧**（Vision 或 CIDetector）→ 注入画面必须持续通过
    人脸检测器（脸的完整性/尺寸/自然度），deepfake 特征在这层被消费。
-4. **主动挑战（转头/眨眼）+ torch 闪光活体是主流实现**（Whatnot/Whop 实证，Tilt 眨眼+glint）
-   → 预生成视频无法响应随机挑战（S6 从"推测 NA"升级为"实拆确证的硬限制"）。
+4. **主动挑战（转头/眨眼）+ torch 闪光活体是主流实现**（Whatnot/Whop 实证；Tilt 为自研
+   KYC，torch 控制确在但活体形态未钉）→ 预生成视频无法响应随机挑战
+   （S6 从"推测 NA"升级为"实拆确证的硬限制"）。
 5. **新增检测点：torch 状态 ↔ 画面亮度一致性**——SDK 会 `setTorchMode` 打闪光，
    真相机画面里人脸会随 torch 亮灭产生亮度脉冲；vcam 替换帧若无对应变化，
    是强注入信号。可行对策：vcam 的 `VCAMMediaServerClient` 就在 cameracaptured 内，
