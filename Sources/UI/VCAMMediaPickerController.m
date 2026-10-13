@@ -34,6 +34,40 @@ static const char *const VCAMAppForegroundStateNotification =
     "com.codex.vcam/app.foreground-state";
 static int VCAMAppForegroundStateToken = NOTIFY_TOKEN_INVALID;
 
+// —— 小白点状态权威化（消灭 G 轮误报）——
+// 模式开关的权威源是 cameracaptured 经 notifyd 发布的 virtual-mode 状态
+// （Sources/Shared/VCAMSharedFrame.m 的 VCAMPublishRequestedActiveState），
+// 不再用"帧新鲜度"反推开关。帧新鲜度只区分绿/橙：
+// 灰=虚拟模式关；橙=开但流不新鲜（正是 G 轮被误报掩盖的状态）；绿=开且新鲜。
+static int VCAMVirtualModeActiveToken = NOTIFY_TOKEN_INVALID;
+static int VCAMVirtualModeReadyToken = NOTIFY_TOKEN_INVALID;
+
+static BOOL VCAMPublishedVirtualModeActive(void) {
+    if (VCAMVirtualModeActiveToken == NOTIFY_TOKEN_INVALID ||
+        VCAMVirtualModeReadyToken == NOTIFY_TOKEN_INVALID) {
+        int modeToken = NOTIFY_TOKEN_INVALID;
+        int readyToken = NOTIFY_TOKEN_INVALID;
+        if (notify_register_check("com.codex.vcam.ios18.virtual-mode.state",
+                                  &modeToken) != NOTIFY_STATUS_OK ||
+            notify_register_check("com.codex.vcam.ios18.virtual-mode.ready.state",
+                                  &readyToken) != NOTIFY_STATUS_OK) {
+            return NO;  // 注册失败下轮重试；未发布 ready 时虚拟模式本就不可用
+        }
+        VCAMVirtualModeActiveToken = modeToken;
+        VCAMVirtualModeReadyToken = readyToken;
+    }
+    uint64_t ready = 0;
+    uint64_t active = 0;
+    if (notify_get_state(VCAMVirtualModeReadyToken, &ready) != NOTIFY_STATUS_OK ||
+        ready == 0) {
+        return NO;
+    }
+    if (notify_get_state(VCAMVirtualModeActiveToken, &active) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    return active != 0;
+}
+
 static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
                                            CFStringRef name, const void *object,
                                            CFDictionaryRef userInfo);
@@ -602,9 +636,14 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     // eat control taps.
     // SpringBoard can report Active even while an injected app is in the
     // foreground, so the resign-active notifications drive the visibility.
-    BOOL hostInactive = self.hostResignedActive ||
+    // 全局悬浮点开关（缺省 NO）：开启后 SpringBoard 宿主即使在被注入 App
+    // 处于前台时也保持悬浮点显示，即 hostInactive 强制视为 NO；面板打开
+    // （panelOpen）与锁屏（locked）的抑制保持不变。
+    BOOL floatingDotGlobal = [self isSpringBoardHost] &&
+        [values[@"floatingDotGlobal"] boolValue];
+    BOOL hostInactive = !floatingDotGlobal && (self.hostResignedActive ||
         ([self isSpringBoardHost] &&
-         UIApplication.sharedApplication.applicationState != UIApplicationStateActive);
+         UIApplication.sharedApplication.applicationState != UIApplicationStateActive));
     BOOL visible = [self isFloatingButtonVisibleForValues:values] &&
         !locked && !panelOpen && !hostInactive;
     floatingWindow.hidden = !visible;
@@ -622,11 +661,15 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     UIView *indicator = button == nil ? nil
         : objc_getAssociatedObject(button, VCAMStatusIndicatorKey);
     if (indicator == nil || indicator.superview == nil) return;
+    if (!VCAMPublishedVirtualModeActive()) {
+        indicator.backgroundColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+        return;
+    }
     NSDictionary *stream = [VCAMSharedFramePreviewView streamingStatus];
     BOOL receiving = [stream[@"receiving"] boolValue];
     indicator.backgroundColor = receiving
         ? [UIColor colorWithRed:0.20 green:0.85 blue:0.35 alpha:1.0]
-        : [UIColor colorWithRed:0.95 green:0.33 blue:0.30 alpha:1.0];
+        : [UIColor colorWithRed:0.98 green:0.65 blue:0.15 alpha:1.0];
 }
 
 - (void)toggleFloatingButton:(UITapGestureRecognizer *)recognizer {

@@ -113,8 +113,9 @@ static BOOL VCAMMediaPathIsAllowed(NSString *path) {
 
 static BOOL VCAMConfigurationValueIsValid(NSString *key, id value) {
     if (![key isKindOfClass:NSString.class] || value == nil) return NO;
-    if ([@[@"enabled", @"loopMedia", @"mirrorHorizontally", @"replaceAudio"]
-            containsObject:key]) {
+    // floatingDotGlobal 为布尔开关（缺省 NO），与其余开关共用 NSNumber 校验。
+    if ([@[@"enabled", @"loopMedia", @"mirrorHorizontally", @"replaceAudio",
+           @"floatingDotGlobal"] containsObject:key]) {
         return [value isKindOfClass:NSNumber.class];
     }
     if ([@[@"preferredFramesPerSecond", @"rotationDegrees"] containsObject:key]) {
@@ -681,6 +682,7 @@ static SecKeyRef VCAMLicenseSecKey(void) {
             @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL", @"hlsURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"floatingButtonPositions", @"floatingButtonVisibility", @"savedStreams",
+            @"floatingDotGlobal",
         ]];
     });
     return keys;

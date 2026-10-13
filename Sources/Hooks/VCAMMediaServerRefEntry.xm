@@ -7,6 +7,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <notify.h>
 #include <unistd.h>
@@ -1013,14 +1014,17 @@ static VCAMReplacementRoute VCAMReplacementRouteForOutput(id output,
     // Stock Camera's physical QR/metadata detector consumes this exact fan-out.
     // iOS 16 left it untouched while replacing only the visible preview, so a
     // QR code in front of the real lens could still produce the system link UI.
-    // Preserve that split on iOS 18; replacing this branch with VCAM pixels
+    // Preserve that split by default; replacing this branch with VCAM pixels
     // makes physical QR recognition impossible whenever the virtual source has
-    // no QR code of its own.
+    // no QR code of its own. KYC face detection reads AVMetadataFaceObject off
+    // this same branch, so `metadataBranch=replace` opts the branch into the
+    // replacement route and lets face metadata flow on the virtual stream.
     if (VCAMOperatingSystemIsAtLeast18() &&
         VCAMStringMatches(nodeClass, @"BWFanOutNode") &&
         VCAMStringMatches(nodeName, @"Preview Splitter") &&
         VCAMStringMatches(outputName, @"MetadataObject")) {
-        return VCAMReplacementRouteNone;
+        return VCAMMetadataBranchReplaceEnabled() ? VCAMReplacementRouteUniversalVideo
+                                                 : VCAMReplacementRouteNone;
     }
 
     if (VCAMOutputIsKnownInternalGraphStage(nodeClass, nodeName, outputName)) {
@@ -1297,9 +1301,51 @@ static BOOL VCAMReplaceSampleBufferInPlace(
 
 %end
 
+// —— P0-1a BW 图符号发现（决定 torch/AE 状态观测走路线 A 还是 B）——
+// 设备侧没有工具链解析 dyld shared cache；cameracaptured 直接链接 BWCore，
+// 类与方法名在 ObjC runtime 里可见。`touch /var/mobile/Media/VCAM/bw_dump.request`
+// 后开一次相机，本 hook 把所有 BW* 前缀类中含 Torch/Exposure/Gain/Flash/Illum
+// 的方法名导出到 bw_symbols.log 并删除 marker（幂等、可重复触发；
+// 2s 节流让未触发时每帧只多一次 access()）。
+static void VCAMMaybeDumpBWGraphSymbols(void) {
+    static const char *requestPath = "/var/mobile/Media/VCAM/bw_dump.request";
+    static CFAbsoluteTime lastCheck;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (lastCheck != 0 && now - lastCheck < 2.0) return;
+    lastCheck = now;
+    if (access(requestPath, F_OK) != 0) return;
+    unlink(requestPath);
+    FILE *file = fopen("/var/mobile/Media/VCAM/bw_symbols.log", "w");
+    if (file == NULL) return;
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    fprintf(file, "# bw graph symbol dump classes=%u\n", classCount);
+    for (unsigned int i = 0; i < classCount; i++) {
+        const char *className = class_getName(classes[i]);
+        if (className == NULL || strncmp(className, "BW", 2) != 0) continue;
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(classes[i], &methodCount);
+        for (unsigned int m = 0; m < methodCount; m++) {
+            const char *selector = sel_getName(method_getName(methods[m]));
+            if (selector == NULL) continue;
+            if (strstr(selector, "Torch") != NULL || strstr(selector, "torch") != NULL ||
+                strstr(selector, "Exposure") != NULL || strstr(selector, "exposure") != NULL ||
+                strstr(selector, "Gain") != NULL || strstr(selector, "Flash") != NULL ||
+                strstr(selector, "Illum") != NULL) {
+                fprintf(file, "%s %s\n", className, selector);
+            }
+        }
+        free(methods);
+    }
+    free(classes);
+    fclose(file);
+    VCAMRefLog("bw symbol dump written");
+}
+
 %hook BWNodeOutput
 
 - (void)emitSampleBuffer:(CMSampleBufferRef)sampleBuffer {
+    VCAMMaybeDumpBWGraphSymbols();
     if (sampleBuffer == NULL) {
         %orig(sampleBuffer);
         return;

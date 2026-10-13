@@ -8,6 +8,9 @@ extern "C" {
 void VCAMRefLog(const char *message);
 void loadReplacementMedia(void);
 BOOL VCAMVirtualModeIsEnabled(void);
+// metadataBranch=replace 时让元数据分支也走替换路由（默认 0=passthrough，
+// 保持物理 QR 识别）。决策点在 VCAMMediaServerRefEntry.xm 的 Preview Splitter。
+int VCAMMetadataBranchReplaceEnabled(void);
 BOOL VCAMTargetBufferIsSupported(CVPixelBufferRef targetBuffer);
 void VCAMSetLastCameraIsFront(BOOL isFront);
 BOOL VCAMLastCameraIsFront(void);

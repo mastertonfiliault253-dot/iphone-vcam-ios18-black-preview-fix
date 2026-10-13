@@ -1338,6 +1338,34 @@ static BOOL pathExists(NSString *p) {
             @"samples": [self.altimeterSamples copy],
         };
     }
+    self.report[@"observedPhotoreal"] = [self readPhotorealStateTail];
+}
+
+// P0-3 对表：读 cameracaptured 写的 /var/mobile/Media/VCAM/photoreal_state.log，
+// 证实替换管线在探针窗口内确实带着 photoreal/torch_level 状态在跑。
+// 行格式 "t=<CFAbsoluteTime> photoreal=<0/1> torch_level=<0..1>"；
+// CFAbsoluteTime = Unix epoch - 970444800，可与 report.meta 时间戳直接对齐。
+- (NSDictionary *)readPhotorealStateTail {
+    NSString *path = @"/var/mobile/Media/VCAM/photoreal_state.log";
+    NSString *text = [NSString stringWithContentsOfFile:path
+                                              encoding:NSUTF8StringEncoding error:nil];
+    if (text.length == 0) { return @{@"present": @NO}; }
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    NSUInteger start = lines.count > 40 ? lines.count - 40 : 0;
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSUInteger i = start; i < lines.count; i++) {
+        NSString *line = lines[i];
+        if (![line hasPrefix:@"t="]) { continue; }
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        for (NSString *pair in [line componentsSeparatedByString:@" "]) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location == NSNotFound || eq.location == 0) { continue; }
+            entry[[pair substringToIndex:eq.location]] =
+                @([[pair substringFromIndex:eq.location + 1] doubleValue]);
+        }
+        if (entry.count >= 2) { [entries addObject:entry]; }
+    }
+    return @{@"present": @YES, @"count": @(entries.count), @"tail": entries};
 }
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {

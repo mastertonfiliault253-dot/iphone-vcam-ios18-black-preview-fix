@@ -745,6 +745,138 @@ static BOOL VCAMReadConfiguredModeFromFile(BOOL *enabledOut) {
     return YES;
 }
 
+// —— photoreal exposure coupling（检测点 #5：torch/AE ↔ 画面亮度一致性）——
+// 三家真实 KYC SDK 都会打 torch 脉冲（docs/kyc/VCAM-DETECTION-POINTS-CHECKLIST-ZH.md），
+// 真相机画面亮度会随之变化；替换画面必须做同方向响应，否则"闪光活体"直接穿帮。
+// 状态源现阶段来自配置注入（探针定量回路先行校准幅度），BW 图设备节点 hook
+// 接入后由真实观测值覆盖（见 probe-app/cli_main.m bw 模式的符号发现）。
+static volatile int32_t VCAMPhotorealEnabled = 1;      // photorealisticExposure
+static volatile double VCAMPhotorealTorchLevel = 0.0;  // 0..1 注入/观测 torch 电平
+static volatile int32_t VCAMMetadataBranchReplace = 0; // metadataBranch=replace
+
+// 与 VCAMReadConfiguredModeFromFile 相同的裸文本策略：只在偏好变化时低频调用，
+// 不引入 Foundation 并发解析。返回 malloc 的文件全文（NUL 结尾），失败 NULL。
+static char *VCAMCopyConfigFileContents(void) {
+    int descriptor = open("/var/mobile/Media/VCAM/com.codex.vcam.plist", O_RDONLY);
+    if (descriptor < 0) return NULL;
+    struct stat metadata = {0};
+    if (fstat(descriptor, &metadata) != 0 || metadata.st_size <= 0 ||
+        metadata.st_size > 1024 * 1024) {
+        close(descriptor);
+        return NULL;
+    }
+    size_t capacity = (size_t)metadata.st_size;
+    char *contents = calloc(capacity + 1, 1);
+    if (contents == NULL) {
+        close(descriptor);
+        return NULL;
+    }
+    size_t bytesRead = 0;
+    while (bytesRead < capacity) {
+        ssize_t result = read(descriptor, contents + bytesRead, capacity - bytesRead);
+        if (result < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (result == 0) break;
+        bytesRead += (size_t)result;
+    }
+    close(descriptor);
+    if (bytesRead != capacity) {
+        free(contents);
+        return NULL;
+    }
+    return contents;
+}
+
+// 返回该 key 的值段（下一个 <key> 之前），找不到返回 NULL。
+static const char *VCAMConfigValueSegment(const char *contents, const char *key,
+                                          const char **endOut) {
+    char keyTag[192];
+    snprintf(keyTag, sizeof(keyTag), "<key>%s</key>", key);
+    const char *start = strstr(contents, keyTag);
+    if (start == NULL) return NULL;
+    start += strlen(keyTag);
+    const char *end = strstr(start, "<key>");
+    *endOut = end != NULL ? end : contents + strlen(contents);
+    return start;
+}
+
+static void VCAMReloadPhotorealAndBranchConfig(void) {
+    int32_t enabled = 1;      // 缺省开启：目标就是画面跟随真实相机物理状态
+    double level = 0.0;
+    int32_t branch = 0;       // metadataBranch 缺省 passthrough（保持既有 QR 行为）
+    char *contents = VCAMCopyConfigFileContents();
+    if (contents != NULL) {
+        const char *end = NULL;
+        const char *segment = VCAMConfigValueSegment(contents, "photorealisticExposure", &end);
+        if (segment != NULL) {
+            enabled = strstr(segment, "<true") != NULL ? 1 : 0;
+        }
+        segment = VCAMConfigValueSegment(contents, "photorealTorchLevel", &end);
+        if (segment != NULL) {
+            const char *realTag = strstr(segment, "<real");
+            if (realTag != NULL) {
+                const char *valueStart = strchr(realTag, '>');
+                if (valueStart != NULL && valueStart < end) {
+                    level = strtod(valueStart + 1, NULL);
+                    if (level < 0) level = 0;
+                    if (level > 1) level = 1;
+                }
+            }
+        }
+        segment = VCAMConfigValueSegment(contents, "metadataBranch", &end);
+        if (segment != NULL && strstr(segment, "<string>replace") != NULL) {
+            branch = 1;
+        }
+        free(contents);
+    }
+    (void)__sync_lock_test_and_set(&VCAMPhotorealEnabled, enabled);
+    VCAMPhotorealTorchLevel = level;
+    (void)__sync_lock_test_and_set(&VCAMMetadataBranchReplace, branch);
+    char message[128];
+    snprintf(message, sizeof(message),
+             "photoreal config photoreal=%d torch_level=%.2f metadata_replace=%d",
+             (int)enabled, level, (int)branch);
+    VCAMRefLog(message);
+}
+
+int VCAMMetadataBranchReplaceEnabled(void) {
+    return VCAMMetadataBranchReplace != 0;
+}
+
+BOOL VCAMPhotorealCouplingEnabled(void) {
+    return VCAMPhotorealEnabled != 0;
+}
+
+// 状态快照低频导出：探针 native_probe 报告读它做 torch↔亮度一致性对表。
+static void VCAMEmitPhotorealStateSnapshot(double torch) {
+    static CFAbsoluteTime lastEmit = 0;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (lastEmit != 0 && now - lastEmit < 2.0) return;
+    lastEmit = now;
+    FILE *file = fopen("/var/mobile/Media/VCAM/photoreal_state.log", "a");
+    if (file == NULL) return;
+    fprintf(file, "t=%.2f photoreal=%d torch_level=%.3f\n",
+            now, (int)VCAMPhotorealEnabled, torch);
+    fclose(file);
+}
+
+// 合成链上的物理增益：真相机在 torch 开启时被补光照亮，画面亮度出现正相关脉冲。
+// CIColorControls.inputBrightness 是加性偏移（与补光物理同型），挂在既有 CoreImage
+// render task 里，零额外拷贝；幅度先取 0.45*level（真机基线采样后校准）。
+// 现阶段状态源=配置注入（photorealTorchLevel），BW 设备节点 hook 落地后覆盖。
+static CIImage *VCAMApplyPhotorealGain(CIImage *image) {
+    if (!VCAMPhotorealCouplingEnabled()) return image;
+    double level = VCAMPhotorealTorchLevel;
+    if (level <= 0.001) return image;
+    VCAMEmitPhotorealStateSnapshot(level);
+    double brightness = level * 0.45;
+    if (brightness > 1.0) brightness = 1.0;
+    return [image imageByApplyingFilter:@"CIColorControls" withInputParameters:
+        @{kCIInputImageKey: image, kCIInputBrightnessKey: @(brightness)}];
+}
+
 static void VCAMReloadConfiguredMode(void) {
     BOOL enabled = NO;
     if (VCAMReadConfiguredModeFromFile(&enabled)) {
@@ -755,6 +887,7 @@ static void VCAMReloadConfiguredMode(void) {
             VCAMRefLog("configuration unreadable; retaining last virtual-camera mode");
         });
     }
+    VCAMReloadPhotorealAndBranchConfig();
 }
 
 static void VCAMPreferencesChanged(__unused CFNotificationCenterRef center,
@@ -2293,6 +2426,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = [[image imageByCompositingOverImage:background]
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
+        image = VCAMApplyPhotorealGain(image);
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];
