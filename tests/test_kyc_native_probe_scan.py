@@ -213,6 +213,22 @@ class AppContractTests(unittest.TestCase):
         mk = self._read("Makefile")
         self.assertIn("Vision", mk)
 
+    def test_mini_runner_textbook_reference_exists(self):
+        # 零帧根因隔离用：与 ProbeRunner 完全隔离的最小 AVCapture 参考实现，
+        # 入口经 mini=1 参数贯通，结果写设备本地 mini.log（不依赖测试台）。
+        main = self._read("main.m")
+        self.assertIn("MiniRunner startWithDurationSeconds", main)
+        self.assertIn('isEqualToString:@"mini"', main)
+        src = self._read("MiniRunner.m")
+        for api in [
+            "AVCaptureSessionPresetHigh",                    # 不锁格式，用会话默认 preset
+            "setSampleBufferDelegate:self queue:dispatch_get_main_queue()",  # 教科书写法：主队列
+            "defaultDeviceWithDeviceType",
+            "didDropSampleBuffer",
+            "/var/mobile/Media/VCAM/mini.log",
+        ]:
+            self.assertIn(api, src)
+
     def test_wkwebview_host_page_with_media_permission_delegate(self):
         src = self._read("main.m")
         self.assertIn("requestMediaCapturePermissionForOrigin", src)

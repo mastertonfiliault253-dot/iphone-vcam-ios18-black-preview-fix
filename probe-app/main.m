@@ -7,6 +7,7 @@
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
 #import "ProbeRunner.h"
+#import "MiniRunner.h"
 
 @interface WKProbeViewController : UIViewController <WKUIDelegate, WKNavigationDelegate>
 @property(nonatomic, strong) WKWebView *webView;
@@ -156,6 +157,7 @@
     NSString *port = @"8077";
     BOOL minimal = NO;
     BOOL simple = NO;
+    BOOL mini = NO;
     for (NSString *pair in [url.query componentsSeparatedByString:@"&"]) {
         NSArray *kv = [pair componentsSeparatedByString:@"="];
         if (kv.count == 2) {
@@ -163,10 +165,17 @@
             if ([kv[0] isEqualToString:@"port"]) { port = kv[1]; }
             if ([kv[0] isEqualToString:@"minimal"]) { minimal = [kv[1] boolValue]; }
             if ([kv[0] isEqualToString:@"simple"]) { simple = [kv[1] boolValue]; }
+            if ([kv[0] isEqualToString:@"mini"]) { mini = [kv[1] boolValue]; }
         }
     }
     [[NSUserDefaults standardUserDefaults] setBool:minimal forKey:@"probeMinimal"];
     [[NSUserDefaults standardUserDefaults] setBool:simple forKey:@"probeSimple"];
+    if (mini) {
+        // 零帧根因隔离：完全独立的教科书最小实现（见 MiniRunner.m），
+        // 结果写 /var/mobile/Media/VCAM/mini.log，不依赖测试台。
+        [MiniRunner startWithDurationSeconds:12];
+        return YES;
+    }
     if (host.length) {
         vc.hostField.text = [NSString stringWithFormat:@"%@:%@", host, port];
     }
