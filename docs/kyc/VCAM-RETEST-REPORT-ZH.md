@@ -115,8 +115,27 @@ tick t=2..12  frames=0 isRunning=1        finish frames=0 drops=0
 4. 建议下一轮（H 轮）：修 WKWebView 空白（补 didFail 诊断）→ 用真实 AppStore App
    对照原生路径 → 决定"输出侧噪点合成"是否进 vcam 代码。
 
+## 6. I 轮增补：Persona 复刻版探针真机首跑（无帧依赖部分全通）
+
+CI run 38370895770 产物（torch API 修复后）装机，`uiopen --url "vcam-probe://run?host=192.168.2.181&port=8077"`
+触发，报告 report_20261013_193304.json。触发注意：主机 LAN IP 以 `ipconfig` 为准（实测 192.168.2.181，
+早前 .35 过时——指错 IP 时探针照跑但回传静默失败，服务端无任何请求日志）。
+
+无帧依赖证据（全部 PASS/在场）：
+- `appliedFormat`：low/high 两档 `fpsLock="30"`（setActiveVideoMin/MaxFrameDuration 成功，对齐 Persona 锁帧时长）；
+- `cameraProperties`：front=640x480@60fps（min=max=0.0333s 即已锁 30）、rear=1920x1080@30fps，
+  含 hasTorch/hasFlash/selectedCameraIndex/client/platform——Persona 同款遥测口径在场；
+- `rearTorch`：`{"off":"ok","rearHasTorch":true,"on":"ok"}`——`setTorchModeOnWithLevel:1.0` 成功无需回退；
+  前置 `torch.supported=false`（XS Max 前置无 torch，Persona 自拍补光走屏幕 flash，与此一致）；
+- `lumaWindow_rear`：`insufficient samples` → NA（零帧通道限制，分析器已按 NA 归因）。
+
+新检测面（同报告实证）：探针进程内同时读到**伪装机型 iPhone14,6/23.6.0**（RSTLite/Shadow 注入改写 uname）
+与**真机相机能力**（maxPhotoDims 4032x2268、TrueDepth、FOV 73.29、maxFPS 60）——机型↔相机规格矛盾，
+供应商交叉核对可命中；同报告 dyld 枚举可见 5 个注入镜像（RSTLite/ellekit/Shadow/HookKit×2）。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
-- 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）。
+- 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；
+  report_20261013_193304.json（I 轮 Persona 复刻版，无帧依赖段全通）。
 - 生成视频：tmp/face_1080p30*.mov（本机）与设备 /var/mobile/Media/VCAM/ 同名文件；
   当前生效配置 tmp/vcur-motion.plist（mediaPath=face_1080p30_motion.mov, fps=30）。
