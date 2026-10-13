@@ -237,6 +237,16 @@ class AppContractTests(unittest.TestCase):
         mk = self._read("Makefile")
         self.assertIn("WebKit", mk)
 
+    def test_wk_navigation_diagnostics_and_home_short_circuit(self):
+        # 真机 WK 页空白必须可归因：导航失败原因写 /var/mobile/Media/VCAM/wk.log；
+        # home host 只开主界面（否则每次 uiopen 都触发一次自动采集，干扰 UI 验证）。
+        src = self._read("main.m")
+        self.assertIn("didFailProvisionalNavigation", src)
+        self.assertIn("didFinishNavigation", src)
+        self.assertIn("nav fail-provisional", src)
+        self.assertIn("/var/mobile/Media/VCAM/wk.log", src)
+        self.assertIn('isEqualToString:@"home"', src)
+
 
 if __name__ == "__main__":
     unittest.main()

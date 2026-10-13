@@ -6,8 +6,17 @@
 // 使 App 内 WebView 与 Safari 的指纹/权限路径差异可被同页对照采集。
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
+#import <stdio.h>
 #import "ProbeRunner.h"
 #import "MiniRunner.h"
+
+// 导航诊断写独立文件（沙盒外可直读）：真机上 WK 页曾出现"打开后空白"，
+// 无诊断时无法区分是页面加载失败、HTTP 失败还是 JS 崩溃。
+static void WKProbeLog(NSString *line) {
+    FILE *f = fopen("/var/mobile/Media/VCAM/wk.log", "a");
+    if (f) { fprintf(f, "%s\n", line.UTF8String); fclose(f); }
+    NSLog(@"[vcam-wk] %@", line);
+}
 
 @interface WKProbeViewController : UIViewController <WKUIDelegate, WKNavigationDelegate>
 @property(nonatomic, strong) WKWebView *webView;
@@ -30,9 +39,30 @@
     [super viewDidAppear:animated];
     NSString *base = [[NSUserDefaults standardUserDefaults] stringForKey:@"probeBaseURL"];
     if (!base.length) { base = @"http://127.0.0.1:8077"; }
-    // kyc_upload_server 以 probe/ 为文档根：页面在 /kyc-flow.html。
+    // kyc_upload_server 以 probe/ 为文档根：页面在 /kyc-flow.html?auto=1。
     NSString *urlString = [base stringByAppendingString:@"/kyc-flow.html?auto=1"];
+    WKProbeLog([NSString stringWithFormat:@"load begin %@", urlString]);
     [self.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:urlString]]];
+}
+
+// 空白页定位：把导航各阶段与失败原因写 wk.log（真机无控制台可看）。
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    WKProbeLog(@"nav start");
+}
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    WKProbeLog(@"nav finish ok");
+}
+- (void)webView:(WKWebView *)webView
+    didFailProvisionalNavigation:(WKNavigation *)navigation
+                       withError:(NSError *)error {
+    WKProbeLog([NSString stringWithFormat:@"nav fail-provisional domain=%@ code=%d desc=%@",
+                error.domain, (int)error.code, error.localizedDescription]);
+}
+- (void)webView:(WKWebView *)webView
+      didFailNavigation:(WKNavigation *)navigation
+              withError:(NSError *)error {
+    WKProbeLog([NSString stringWithFormat:@"nav fail domain=%@ code=%d desc=%@",
+                error.domain, (int)error.code, error.localizedDescription]);
 }
 
 - (void)webView:(WKWebView *)webView
@@ -153,6 +183,7 @@
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)opts {
     ProbeViewController *vc = (ProbeViewController *)self.window.rootViewController;
     if (![url.scheme isEqualToString:@"vcam-probe"]) { return YES; }
+    if ([url.host isEqualToString:@"home"]) { return YES; }  // 只开主界面：供 UI 手工操作（不自动跑采集）
     NSString *host = nil;
     NSString *port = @"8077";
     BOOL minimal = NO;
