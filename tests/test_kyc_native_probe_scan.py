@@ -245,11 +245,15 @@ class AppContractTests(unittest.TestCase):
         for api in [
             "setActiveVideoMinFrameDuration", "setActiveVideoMaxFrameDuration",
             "cameraProperties", "collectCameraTelemetryForDevice",
-            "beginRearTorchPhase", "setTorchModeOnWithLevel", "maxAvailableTorchLevel",
+            "beginRearTorchPhase", "setTorchModeOnWithLevel",
             "frameLuma", "summarizeLumaWindow", '"rearTorch"',
             "CVPixelBufferGetBaseAddressOfPlane",
         ]:
             self.assertIn(api, src)
+        # 回归护栏：maxAvailableTorchLevel 是 Swift overlay-only（16.5 SDK ObjC 头没有，CI 编译错实证），
+        # ObjC 探针不得使用；level 失败必须有 torchMode On 回退。
+        self.assertNotIn("device.maxAvailableTorchLevel", src)
+        self.assertIn("level-fallback", src)
         # 时序契约：后置阶段在高低两阶段之后、finishProbe 之前；两偏移成对出现。
         self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 3)", src)
         self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 13)", src)

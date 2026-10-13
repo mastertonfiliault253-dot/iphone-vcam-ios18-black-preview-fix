@@ -812,13 +812,20 @@ static BOOL pathExists(NSString *p) {
     NSString *result = @"ok";
     @try {
         if (on) {
-            device.torchLevel = MIN(1.0, device.maxAvailableTorchLevel);
-            [device setTorchModeOnWithLevel:device.maxAvailableTorchLevel error:nil];
+            // maxAvailableTorchLevel 只在 Swift overlay 有（16.5 SDK ObjC 头没有该属性，CI 编译错实证）。
+            // ObjC 路径：先试 setTorchModeOnWithLevel:1.0（Persona2 同款 API），失败退回 torchMode On。
+            NSError *levelErr = nil;
+            [device setTorchModeOnWithLevel:1.0 error:&levelErr];
+            if (levelErr) {
+                device.torchMode = AVCaptureTorchModeOn;
+                result = [NSString stringWithFormat:@"level-fallback:%@", levelErr.localizedDescription ?: @"?"];
+            }
         } else {
             device.torchMode = AVCaptureTorchModeOff;
         }
     } @catch (NSException *e) {
         result = [NSString stringWithFormat:@"exception:%@", e.reason ?: e.name];
+        @try { device.torchMode = on ? AVCaptureTorchModeOn : AVCaptureTorchModeOff; } @catch (...) {}
     }
     [device unlockForConfiguration];
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
