@@ -585,11 +585,21 @@ iPhone14,6 即坐实（并在复测报告注明当前设备身份状态）。
 2. dpkg 升级后首次运行会弹相机权限（TCC 按二进制重置），需 VNC 点击"允许"
    （canvas 像素定位系统蓝按钮质心）。
 3. Choosy 式 per-app 排除（偏好 `TweakInject=NO`）对 TweakInject 无效；
-   移出 `/var/jb/usr/lib/TweakInject/` 文件的方法有效（已移至 `TweakInject-disabled/`，
-   Shadow/RSTLite/VCAM 客户端 4 组文件当前处于移出状态，复测前按需恢复）。
+   移出 `/var/jb/usr/lib/TweakInject/` 文件的方法有效（曾移至 `TweakInject-disabled/`；
+   2026-10-13 起 Shadow/RSTLite/VCAM 文件均已还原在位）。
 4. 设备重启 = 需人工在设备上启动 Dopamine 激活越狱（SSH/VNC 均依赖越狱守护）。
 5. 探针 App 自身进程内确有自动注入（Shadow+HookKit+RSTLite+ellekit），
    与 Safari 侧结论一致——对真实 KYC SDK 是设备指纹风险（见"越狱检测实测"）。
+6. **整机重启+重新激活越狱后，vcam 替换会静默失效**（2026-10-13 实测根因）：
+   SpringBoard 在激活前诞生则永不被注入，其 write broker（配置分发 +
+   shared requested active 同步，见 `VCAMConfiguration.isWriteBrokerHost`）
+   从未运行——即使 enabled=true、vcamd/cameracaptured 全新带钩也不替换；
+   沙盒 App（Safari）的 vcam 面板还会误报"真实相机（未替换）"。
+   检查法：`/var/tmp/vcam-springboard-client.log` 必须含当前 SpringBoard PID；
+   `broker-probe.log` 应有 `license verify ok=1 → shared requested mode →
+   broker starting pid=<当前 SpringBoard pid>` 三连。修复：`kill -9 <SpringBoard pid>`
+   （launchd 秒级重生且被注入；无需重启手机或用户空间）。修复过程与验证见
+   VCAM-RETEST-REPORT-ZH.md §1。
 
 ## 已实施项
 
