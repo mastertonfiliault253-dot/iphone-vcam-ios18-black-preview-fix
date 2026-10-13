@@ -70,6 +70,10 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, copy) NSString *currentFile;
 @property(nonatomic, assign) int phase;             // 0 low, 1 high, -1 recording off
 @property(nonatomic, assign) int phaseFrames;
+// 零帧定位：didDrop 计数与会话通知事件（RuntimeError/Interrupted）——
+// 若帧被管线丢弃或会话被打断/报错，此前在报告里完全不可见。
+@property(nonatomic, assign) int droppedVideoFrames;
+@property(nonatomic, strong) NSMutableArray *sessionEvents;
 @property(nonatomic, strong) NSOperationQueue *motionQueue;
 @property(nonatomic, assign) int faceFramesThisPhase;
 @property(nonatomic, assign) int totalFaceObjects;
@@ -97,6 +101,7 @@ static NSString *tmpPathNamed(NSString *name) {
         _faceSamples = [NSMutableArray array];
         _visionSamples = [NSMutableArray array];
         _exposureSamples = [NSMutableArray array];
+        _sessionEvents = [NSMutableArray array];
         _visionQueue = dispatch_queue_create("vcam.probe.vision", DISPATCH_QUEUE_SERIAL);
     }
     return self;
@@ -370,6 +375,19 @@ static BOOL pathExists(NSString *p) {
 
 - (void)configureAndStartSession {
     self.session = [[AVCaptureSession alloc] init];
+    // 零帧定位：会话级错误/打断事件只存在于这些通知里，不注册就完全不可见。
+    // selector 内统一 dispatch 到 sampleQueue 改 sessionEvents（与 report 同一线程）。
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self selector:@selector(onSessionNote:)
+               name:AVCaptureSessionRuntimeErrorNotification object:self.session];
+    [nc addObserver:self selector:@selector(onSessionNote:)
+               name:AVCaptureSessionWasInterruptedNotification object:self.session];
+    [nc addObserver:self selector:@selector(onSessionNote:)
+               name:AVCaptureSessionInterruptionEndedNotification object:self.session];
+    [nc addObserver:self selector:@selector(onSessionNote:)
+               name:AVCaptureSessionDidStartRunningNotification object:self.session];
+    [nc addObserver:self selector:@selector(onSessionNote:)
+               name:AVCaptureSessionDidStopRunningNotification object:self.session];
     AVCaptureDeviceDiscoverySession *disc =
         [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
                                                             mediaType:AVMediaTypeVideo
@@ -417,7 +435,11 @@ static BOOL pathExists(NSString *p) {
     self.sampleQueue = dispatch_queue_create("vcam.probe.samples", DISPATCH_QUEUE_SERIAL);
 
     BOOL minimal = [[NSUserDefaults standardUserDefaults] boolForKey:@"probeMinimal"];
+    // simple=1：不锁 activeFormat、保持会话默认 preset——单独测
+    // "InputPriority+锁小档"是否是 iOS 18 原生路径零帧的配置原因。
+    BOOL simple = [[NSUserDefaults standardUserDefaults] boolForKey:@"probeSimple"];
     self.reportMinimal = minimal;
+    ((NSMutableDictionary *)self.report)[@"simpleMode"] = @(simple);
     if (!minimal) {
         self.photoOutput = [[AVCapturePhotoOutput alloc] init];
         self.photoOutputSupported = [self.session canAddOutput:self.photoOutput];
@@ -455,7 +477,10 @@ static BOOL pathExists(NSString *p) {
     if (self.videoOutputSupported) { [self.session addOutput:self.videoOutput]; }
 
     // 低档先选 640x480（近似取最接近档）；随后阶段切换用 applyFormat。
-    [self applyFormat:[self pickFormatNearWidth:640 height:480] label:@"low"];
+    // simple 模式跳过格式锁定（会话 preset 保持默认），见上方注释。
+    if (!simple) {
+        [self applyFormat:[self pickFormatNearWidth:640 height:480] label:@"low"];
+    }
     self.sensorRangesSnapshot = [self collectSensorRanges];
     [self.session commitConfiguration];
 
@@ -471,6 +496,9 @@ static BOOL pathExists(NSString *p) {
             @"inputs": @(me.session.inputs.count),
             @"outputs": @(me.session.outputs.count),
             @"preset": me.session.sessionPreset ?: @"?",
+            @"framesSoFar": @(me.phaseFrames),
+            @"droppedSoFar": @(me.droppedVideoFrames),
+            @"eventsSoFar": @(me.sessionEvents.count),
         } mutableCopy];
         [me log:[NSString stringWithFormat:@"diag isRunning=%d in=%lu out=%lu\n",
                  (int)me.session.isRunning, (unsigned long)me.session.inputs.count,
@@ -490,6 +518,7 @@ static BOOL pathExists(NSString *p) {
     });
     self.phase = 0;
     self.phaseFrames = 0;
+    self.droppedVideoFrames = 0;
     self.attachments = [NSMutableDictionary dictionary];
 
     [self startMotion];
@@ -509,6 +538,7 @@ static BOOL pathExists(NSString *p) {
         @"videoOutputSupported": @(self.videoOutputSupported),
         @"depthOutputSupported": @(self.depthOutputSupported),
         @"minimalMode": @(self.reportMinimal),
+        @"sessionEvents": self.sessionEvents,  // 会话通知实时收集，报告上传时序列化
         @"photo": [NSMutableDictionary dictionary],
     } mutableCopy];
 
@@ -618,6 +648,40 @@ static BOOL pathExists(NSString *p) {
             CFRelease(sb);
         });
     }
+}
+
+// 零帧定位关键：帧被管线丢弃时 didOutput 不会调用，只有这里可见
+// （AVCaptureVideoDataOutput.h:261，iOS 6+）。
+- (void)captureOutput:(AVCaptureOutput *)output
+  didDropSampleBuffer:(CMSampleBufferRef)sb
+       fromConnection:(AVCaptureConnection *)connection {
+    if (output != self.videoOutput || self.phase < 0) { return; }
+    self.droppedVideoFrames++;
+    if (self.droppedVideoFrames == 1) {
+        [self log:@"first video sample DROPPED\n"];
+    }
+}
+
+// 会话级错误/打断/起止事件收集（名称均经 16.5 SDK 头 AVCaptureSession.h 核实）。
+- (void)onSessionNote:(NSNotification *)note {
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"event"] = note.name;
+    entry[@"t"] = @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000);
+    NSError *err = note.userInfo[AVCaptureSessionErrorKey];
+    if (err) {
+        entry[@"errDomain"] = err.domain ?: @"?";
+        entry[@"errCode"] = @(err.code);
+        entry[@"errDesc"] = err.localizedDescription ?: @"?";
+    }
+    id reason = note.userInfo[AVCaptureSessionInterruptionReasonKey];
+    if (reason) { entry[@"reason"] = reason; }
+    [self log:[NSString stringWithFormat:@"session event: %@ reason=%@ err=%@\n",
+               note.name, entry[@"reason"] ?: @"-", entry[@"errDesc"] ?: @"-"]];
+    // report/sessionEvents 只在 sampleQueue 上改（与帧回调同一串行队列）。
+    __weak ProbeRunner *me = self;
+    dispatch_async(self.sampleQueue ?: dispatch_get_main_queue(), ^{
+        [me.sessionEvents addObject:entry];
+    });
 }
 
 // device.exposureDuration / ISO（iOS 8/7 公开只读属性）：正在进行的自动曝光状态。
@@ -901,7 +965,9 @@ static BOOL pathExists(NSString *p) {
     // 文档标准：运行中经 lockForConfiguration + activeFormat 切到最接近 1920x1080 的格式；
     // 实际出帧维度以首帧实测为准（capturedW/H）。
     AVCaptureDeviceFormat *hi = [self pickFormatNearWidth:1920 height:1080];
-    dispatch_async(self.sessionQueue, ^{ [self applyFormat:hi label:@"high"]; });
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"probeSimple"]) {
+        dispatch_async(self.sessionQueue, ^{ [self applyFormat:hi label:@"high"]; });
+    }
     self.phase = 1;
     self.writerInput = nil;
     self.writer = nil;
@@ -927,6 +993,7 @@ static BOOL pathExists(NSString *p) {
 
 - (void)finishProbe {
     self.phase = -1;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self finalizeCurrentSessionWithLabel:@"high"];
     dispatch_async(self.sessionQueue, ^{ [self.session stopRunning]; });
     [self.motion stopDeviceMotionUpdates];
@@ -945,6 +1012,8 @@ static BOOL pathExists(NSString *p) {
                                 ? (NSMutableDictionary *)self.report[@"camera"] : nil);
     if (cam) {
         @synchronized (self.visionSamples) { cam[@"visionSamples"] = [self.visionSamples copy]; }
+    cam[@"droppedVideo"] = @(self.droppedVideoFrames);
+    cam[@"sessionEventsCount"] = @(self.sessionEvents.count);
         cam[@"faceSamples"] = [self.faceSamples copy];
         cam[@"exposureSamples"] = [self.exposureSamples copy];
         if (self.maxPhotoDimsSnapshot) { cam[@"maxPhotoDims"] = self.maxPhotoDimsSnapshot; }

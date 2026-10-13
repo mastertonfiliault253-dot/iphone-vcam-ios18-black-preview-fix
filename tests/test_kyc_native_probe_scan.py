@@ -201,8 +201,13 @@ class AppContractTests(unittest.TestCase):
             "currentRoute", "minExposureDuration", "maxISO",
             "videoFieldOfView", "videoHDRSupported",
             "AVCaptureDeviceTypeBuiltInTrueDepthCamera",
+            # 零帧定位三件套：丢弃计数 / 会话事件 / simple 模式开关
+            "didDropSampleBuffer", "AVCaptureSessionRuntimeErrorNotification",
+            "AVCaptureSessionInterruptionReasonKey", "onSessionNote",
         ]:
             self.assertIn(api, src)
+        main = self._read("main.m")
+        self.assertIn("probeSimple", main)   # simple=1 参数贯通（不锁格式的对照组）
         # 回归护栏：theos 16.5 SDK 没有这个名字（两轮 CI 编译错实证），不得回退。
         self.assertNotIn("CMFormatDescriptionGetDimensions(", src)
         mk = self._read("Makefile")

@@ -147,21 +147,26 @@
 // vcam-probe://run?host=192.168.2.181&port=8077 —— 无人值守经 uiopen 直接触发采集。
 // minimal=1 诊断模式：只挂 video 输出（不挂 photo/metadata），用于隔离
 // "多输出组合是否会阻断 iOS 18 帧流"（真机首轮出现全档零帧，Safari 同机正常）。
+// simple=1 叠加开关：不锁 activeFormat、用会话默认 preset——隔离
+// "InputPriority+锁 640x480 档"组合本身是否导致 iOS 18 原生管线零帧。
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)opts {
     ProbeViewController *vc = (ProbeViewController *)self.window.rootViewController;
     if (![url.scheme isEqualToString:@"vcam-probe"]) { return YES; }
     NSString *host = nil;
     NSString *port = @"8077";
     BOOL minimal = NO;
+    BOOL simple = NO;
     for (NSString *pair in [url.query componentsSeparatedByString:@"&"]) {
         NSArray *kv = [pair componentsSeparatedByString:@"="];
         if (kv.count == 2) {
             if ([kv[0] isEqualToString:@"host"]) { host = kv[1]; }
             if ([kv[0] isEqualToString:@"port"]) { port = kv[1]; }
             if ([kv[0] isEqualToString:@"minimal"]) { minimal = [kv[1] boolValue]; }
+            if ([kv[0] isEqualToString:@"simple"]) { simple = [kv[1] boolValue]; }
         }
     }
     [[NSUserDefaults standardUserDefaults] setBool:minimal forKey:@"probeMinimal"];
+    [[NSUserDefaults standardUserDefaults] setBool:simple forKey:@"probeSimple"];
     if (host.length) {
         vc.hostField.text = [NSString stringWithFormat:@"%@:%@", host, port];
     }

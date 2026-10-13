@@ -87,6 +87,17 @@ def analyze_extended(report):
     cam = report.get("camera", {})
     env = report.get("environment", {})
     out = []
+    # 零帧定位：会话事件与丢弃计数（探针增强版起才有这些键）。
+    for ev in cam.get("sessionEvents", []):
+        name = ev.get("event", "")
+        if "RuntimeError" in name:
+            out.append(("RISK", f"会话运行时错误: {ev.get('errDomain')} code={ev.get('errCode')} "
+                                f"{str(ev.get('errDesc'))[:120]}"))
+        elif "WasInterrupted" in name:
+            out.append(("RISK", f"会话被打断 reason={ev.get('reason')}"))
+    dropped = cam.get("droppedVideo")
+    if dropped and report.get("noFramesAfter5s"):
+        out.append(("RISK", f"帧被管线丢弃 droppedVideo={dropped}（didOutput 未到回调——在投递层，非会话启动层）"))
     idfv = env.get("identifierForVendor")
     if idfv and idfv != "none":
         audio = env.get("audio", {})
