@@ -18,13 +18,18 @@ class SpringBoardInjectionRecoveryTests(unittest.TestCase):
         media_filter = (ROOT / "VCAMMediaServerClient.plist").read_text(
             encoding="utf-8"
         )
+        # M 轮收缩：UI 注入只保留 SpringBoard（全局悬浮点），与
+        # tests/test_injection_monitor.py 同名契约一致。
         self.assertIn('"com.apple.springboard"', springboard_filter)
         self.assertIn('"SpringBoard"', springboard_filter)
-        self.assertIn('"com.apple.camera"', springboard_filter)
-        self.assertIn('"com.apple.mobilesafari"', springboard_filter)
-        self.assertIn('"com.google.chrome.ios"', springboard_filter)
-        self.assertIn('"com.microsoft.msedge"', springboard_filter)
-        self.assertIn('"org.mozilla.ios.Firefox"', springboard_filter)
+        for forbidden in (
+            '"com.apple.camera"',
+            '"com.apple.mobilesafari"',
+            '"com.google.chrome.ios"',
+            '"com.microsoft.msedge"',
+            '"org.mozilla.ios.Firefox"',
+        ):
+            self.assertNotIn(forbidden, springboard_filter)
         self.assertIn("cameracaptured", media_filter)
 
     def test_postinstall_keeps_springboard_on_ellekit_and_defers_cameracaptured(self) -> None:

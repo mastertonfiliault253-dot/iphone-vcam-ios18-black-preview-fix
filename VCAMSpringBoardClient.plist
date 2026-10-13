@@ -1,22 +1,10 @@
 {
     Filter = {
         Bundles = (
-            "com.apple.springboard",
-            "com.apple.camera",
-            "com.apple.mobilesafari",
-            "com.google.chrome.ios",
-            "com.google.GoogleMobile",
-            "com.microsoft.msedge",
-            "org.mozilla.ios.Firefox"
+            "com.apple.springboard"
         );
         Executables = (
-            "SpringBoard",
-            "Camera",
-            "MobileSafari",
-            "Google Chrome",
-            "Google",
-            "Microsoft Edge",
-            "Firefox"
+            "SpringBoard"
         );
     };
 }

@@ -51,9 +51,13 @@ class InjectionMonitorTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
         self.assertIn("SpringBoard and application clients use ElleKit auto-injection", source)
 
-    def test_springboard_plist_filter_keeps_application_clients(self) -> None:
+    def test_springboard_plist_filter_shrinks_to_springboard_only(self) -> None:
+        # M 轮收缩：全局悬浮点（SpringBoard 单例）已真机验证可悬浮于前台 App
+        # 之上，浏览器/Camera 不再需要 vcam dylib 足迹（消除重复点）。
+        # filter 必须只含 SpringBoard；浏览器条目不得回归。
         plist = (ROOT / "VCAMSpringBoardClient.plist").read_text(encoding="utf-8")
-        for expected in (
+        self.assertIn("com.apple.springboard", plist)
+        for forbidden in (
             "com.apple.camera",
             "com.apple.mobilesafari",
             "com.google.chrome.ios",
@@ -61,7 +65,7 @@ class InjectionMonitorTests(unittest.TestCase):
             "com.microsoft.msedge",
             "org.mozilla.ios.Firefox",
         ):
-            self.assertIn(expected, plist)
+            self.assertNotIn(forbidden, plist)
 
     def test_monitor_does_not_reinject_same_stable_pid_without_file_proof(self) -> None:
         source = (ROOT / "Sources" / "Daemon" / "VCAMInjectionMonitor.m").read_text(

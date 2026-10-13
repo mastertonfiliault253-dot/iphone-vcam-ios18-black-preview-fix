@@ -636,11 +636,13 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     // eat control taps.
     // SpringBoard can report Active even while an injected app is in the
     // foreground, so the resign-active notifications drive the visibility.
-    // 全局悬浮点开关（缺省 NO）：开启后 SpringBoard 宿主即使在被注入 App
-    // 处于前台时也保持悬浮点显示，即 hostInactive 强制视为 NO；面板打开
-    // （panelOpen）与锁屏（locked）的抑制保持不变。
+    // 全局悬浮点开关（缺省 YES）：注入 filter 已收缩为仅 SpringBoard，
+    // 全局点必须在前台 App 上也保持可见，所有软件才有悬浮窗；
+    // hostInactive 强制视为 NO。面板打开（panelOpen）与锁屏（locked）
+    // 的抑制保持不变。显式写 floatingDotGlobal=false 才回到旧行为。
     BOOL floatingDotGlobal = [self isSpringBoardHost] &&
-        [values[@"floatingDotGlobal"] boolValue];
+        (![values[@"floatingDotGlobal"] isKindOfClass:NSNumber.class] ||
+         [values[@"floatingDotGlobal"] boolValue]);
     BOOL hostInactive = !floatingDotGlobal && (self.hostResignedActive ||
         ([self isSpringBoardHost] &&
          UIApplication.sharedApplication.applicationState != UIApplicationStateActive));

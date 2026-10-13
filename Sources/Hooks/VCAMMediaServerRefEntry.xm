@@ -1351,24 +1351,25 @@ static void VCAMMaybeDumpBWGraphSymbols(void) {
 // setTorchLevel:/torchLevel。setTorchLevel: 即状态变更事件：任何 App（含
 // KYC SDK）打闪光活体时都会经过它，单点覆盖全部宿主，无需 App 侧注入。
 // 参数编码（float/double）随系统版本可能不同，安装时读取实际类型编码
-// 二选一，避免 ABI 错位。首帧时安装：此时 CMCapture/BWCore 必已加载。
-typedef void (*VCAMSetTorchLevelDoubleIMP)(id, SEL, double);
-typedef void (*VCAMSetTorchLevelFloatIMP)(id, SEL, float);
+// 二选一，避免 ABI 错位。真机实测编码 "i20@0:8f16"：该 setter 返回 int/BOOL，
+// 上层依据返回值判断 level 是否生效——包装必须原样转发返回值（03:23 真机
+// setTorchModeOnWithLevel: 报 level-fallback 的根因就是 void 包装吞了返回值）。
+// 首帧时安装：此时 CMCapture/BWCore 必已加载。
+typedef int (*VCAMSetTorchLevelDoubleIMP)(id, SEL, double);
+typedef int (*VCAMSetTorchLevelFloatIMP)(id, SEL, float);
 static VCAMSetTorchLevelDoubleIMP VCAMOriginalSetTorchLevelD;
 static VCAMSetTorchLevelFloatIMP VCAMOriginalSetTorchLevelF;
 
-static void VCAMReplacedSetTorchLevelD(id receiver, SEL selector, double level) {
+static int VCAMReplacedSetTorchLevelD(id receiver, SEL selector, double level) {
     VCAMSetObservedTorchLevel(level);
-    if (VCAMOriginalSetTorchLevelD != NULL) {
-        VCAMOriginalSetTorchLevelD(receiver, selector, level);
-    }
+    return VCAMOriginalSetTorchLevelD != NULL
+        ? VCAMOriginalSetTorchLevelD(receiver, selector, level) : 0;
 }
 
-static void VCAMReplacedSetTorchLevelF(id receiver, SEL selector, float level) {
+static int VCAMReplacedSetTorchLevelF(id receiver, SEL selector, float level) {
     VCAMSetObservedTorchLevel(level);
-    if (VCAMOriginalSetTorchLevelF != NULL) {
-        VCAMOriginalSetTorchLevelF(receiver, selector, level);
-    }
+    return VCAMOriginalSetTorchLevelF != NULL
+        ? VCAMOriginalSetTorchLevelF(receiver, selector, level) : 0;
 }
 
 static void VCAMInstallTorchObservationIfNeeded(void) {
