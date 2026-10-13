@@ -68,6 +68,7 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, strong) AVAssetWriter *writer;
 @property(nonatomic, strong) AVAssetWriterInput *writerInput;
 @property(nonatomic, assign) size_t writerW, writerH;  // 当前 writer 锁定的帧维度
+@property(nonatomic, assign) BOOL writerSessionStarted;
 @property(nonatomic, copy) NSString *currentFile;
 @property(nonatomic, assign) int phase;             // 0 low, 1 high, -1 recording off
 @property(nonatomic, assign) int phaseFrames;
@@ -877,6 +878,10 @@ static BOOL pathExists(NSString *p) {
     if (self.writerInput && self.writer.status == AVAssetWriterStatusWriting &&
         self.writerInput.readyForMoreMediaData) {
         @try {
+            if (!self.writerSessionStarted) {
+                [self.writer startSessionAtSourceTime:CMSampleBufferGetPTS(sb)];
+                self.writerSessionStarted = YES;
+            }
             [self.writerInput appendSampleBuffer:sb];
         } @catch (NSException *e) {
             // appendSampleBuffer 对未挂载 input / 非 Writing 状态会抛 ObjC 异常
@@ -1035,7 +1040,10 @@ static BOOL pathExists(NSString *p) {
     if (added) { [self.writer addInput:self.writerInput]; }
     // AVAssetWriter 必须先 startWriting 再 append：漏掉会让 append 静默失败、
     // writer 进 failed，收尾 markAsFinished 抛异常（std 容器出帧后才暴露此 bug）。
+    // 实时输入还需 startSessionAtSourceTime:（首帧 PTS），否则 append 直接抛
+    // "Must start a session using startSessionAtSourceTime:"。
     [self.writer startWriting];
+    self.writerSessionStarted = NO;
     if (!added || self.writer.status != AVAssetWriterStatusWriting) {
         [self log:[NSString stringWithFormat:@"writer diag addInput=%d status=%ld %@\n",
                    added, (long)self.writer.status,
@@ -1269,6 +1277,12 @@ static BOOL pathExists(NSString *p) {
                                   (long)writer.status, writer.error.localizedDescription ?: @"-"];
         [self log:[NSString stringWithFormat:@"skip finish %@ status=%ld %@\n", file,
                    (long)writer.status, writer.error.localizedDescription ?: @"-"]];
+        return;
+    }
+    if (!self.writerSessionStarted) {
+        // 没 append 过任何帧就 finishWriting 同样会抛（session 未启动）：直接取消。
+        summary[@"writeError"] = @"no samples appended";
+        [writer cancelWriting];
         return;
     }
     [input markAsFinished];
