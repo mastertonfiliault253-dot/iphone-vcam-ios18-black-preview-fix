@@ -1303,19 +1303,22 @@ static BOOL VCAMReplaceSampleBufferInPlace(
 
 // —— P0-1a BW 图符号发现（决定 torch/AE 状态观测走路线 A 还是 B）——
 // 设备侧没有工具链解析 dyld shared cache；cameracaptured 直接链接 BWCore，
-// 类与方法名在 ObjC runtime 里可见。`touch /var/mobile/Media/VCAM/bw_dump.request`
+// 类与方法名在 ObjC runtime 里可见。`touch /var/mobile/Library/VirtualCaptureCard/VCAM/bw_dump.request`
 // 后开一次相机，本 hook 把所有 BW* 前缀类中含 Torch/Exposure/Gain/Flash/Illum
 // 的方法名导出到 bw_symbols.log 并删除 marker（幂等、可重复触发；
 // 2s 节流让未触发时每帧只多一次 access()）。
+// 路径必须用 cameracaptured 沙箱已授权的 VirtualCaptureCard 目录：
+// /var/mobile/Media/VCAM 对它不可见（与模式配置走 notifyd 同一原因）。
 static void VCAMMaybeDumpBWGraphSymbols(void) {
-    static const char *requestPath = "/var/mobile/Media/VCAM/bw_dump.request";
+    static const char *requestPath =
+        "/var/mobile/Library/VirtualCaptureCard/VCAM/bw_dump.request";
     static CFAbsoluteTime lastCheck;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (lastCheck != 0 && now - lastCheck < 2.0) return;
     lastCheck = now;
     if (access(requestPath, F_OK) != 0) return;
     unlink(requestPath);
-    FILE *file = fopen("/var/mobile/Media/VCAM/bw_symbols.log", "w");
+    FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/bw_symbols.log", "w");
     if (file == NULL) return;
     unsigned int classCount = 0;
     Class *classes = objc_copyClassList(&classCount);

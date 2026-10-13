@@ -756,8 +756,13 @@ static volatile int32_t VCAMMetadataBranchReplace = 0; // metadataBranch=replace
 
 // 与 VCAMReadConfiguredModeFromFile 相同的裸文本策略：只在偏好变化时低频调用，
 // 不引入 Foundation 并发解析。返回 malloc 的文件全文（NUL 结尾），失败 NULL。
+// 注意：cameracaptured 的沙箱不能读 /var/mobile/Media/VCAM（既有
+// "configuration unreadable" 行为即为此），所以配置源是偏好写入方镜像到
+// cameracaptured 已获授权的 /var/mobile/Library/VirtualCaptureCard/VCAM/ 的副本
+// （见 VCAMConfiguration 写盘后的镜像步骤）。
 static char *VCAMCopyConfigFileContents(void) {
-    int descriptor = open("/var/mobile/Media/VCAM/com.codex.vcam.plist", O_RDONLY);
+    int descriptor = open("/var/mobile/Library/VirtualCaptureCard/VCAM/com.codex.vcam.plist",
+                          O_RDONLY);
     if (descriptor < 0) return NULL;
     struct stat metadata = {0};
     if (fstat(descriptor, &metadata) != 0 || metadata.st_size <= 0 ||
@@ -802,6 +807,20 @@ static const char *VCAMConfigValueSegment(const char *contents, const char *key,
     return start;
 }
 
+// 把 photoreal 状态发布到 notifyd：App 沙箱读不到任何文件通道，探针靠它
+// 对表（VCAMDetectProbe observedPhotoreal）。编码 state = round(level*1000)<<1 | enabled。
+static void VCAMPublishPhotorealState(void) {
+    static int stateToken = -1;
+    if (stateToken < 0 &&
+        notify_register_check("com.codex.vcam.ios18.photoreal.state", &stateToken) !=
+            NOTIFY_STATUS_OK) {
+        return;
+    }
+    uint64_t encoded = ((uint64_t)(VCAMPhotorealTorchLevel * 1000.0 + 0.5) << 1) |
+                       (uint64_t)(VCAMPhotorealEnabled != 0);
+    notify_set_state(stateToken, encoded);
+}
+
 static void VCAMReloadPhotorealAndBranchConfig(void) {
     int32_t enabled = 1;      // 缺省开启：目标就是画面跟随真实相机物理状态
     double level = 0.0;
@@ -839,6 +858,7 @@ static void VCAMReloadPhotorealAndBranchConfig(void) {
              "photoreal config photoreal=%d torch_level=%.2f metadata_replace=%d",
              (int)enabled, level, (int)branch);
     VCAMRefLog(message);
+    VCAMPublishPhotorealState();
 }
 
 int VCAMMetadataBranchReplaceEnabled(void) {
@@ -855,11 +875,13 @@ static void VCAMEmitPhotorealStateSnapshot(double torch) {
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (lastEmit != 0 && now - lastEmit < 2.0) return;
     lastEmit = now;
-    FILE *file = fopen("/var/mobile/Media/VCAM/photoreal_state.log", "a");
-    if (file == NULL) return;
-    fprintf(file, "t=%.2f photoreal=%d torch_level=%.3f\n",
-            now, (int)VCAMPhotorealEnabled, torch);
-    fclose(file);
+    FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/photoreal_state.log", "a");
+    if (file != NULL) {
+        fprintf(file, "t=%.2f photoreal=%d torch_level=%.3f\n",
+                now, (int)VCAMPhotorealEnabled, torch);
+        fclose(file);
+    }
+    VCAMPublishPhotorealState();
 }
 
 // 合成链上的物理增益：真相机在 torch 开启时被补光照亮，画面亮度出现正相关脉冲。

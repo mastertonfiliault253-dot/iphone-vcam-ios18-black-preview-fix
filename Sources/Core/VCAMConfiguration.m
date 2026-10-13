@@ -774,6 +774,15 @@ static SecKeyRef VCAMLicenseSecKey(void) {
     if (written && !VCAMSynchronizeSharedRequestedState(readBack, error)) {
         written = NO;
     }
+    // cameracaptured 的沙箱读不到 /var/mobile/Media/VCAM（模式走 notifyd 就是
+    // 这个原因）。photoreal/metadataBranch 这类相机侧新配置同样需要它在
+    // 已授权目录里的一份镜像；cameracaptured 只按文本扫这三个键，写整个合并
+    // 字典即可。镜像失败不回滚主配置（相机侧回落到缺省值，并在下次写入重试）。
+    if (written) {
+        NSString *mirrorPath =
+            @"/var/mobile/Library/VirtualCaptureCard/VCAM/com.codex.vcam.plist";
+        [merged writeToFile:mirrorPath atomically:YES];
+    }
     if (!written) {
         BOOL restored = previousFileExisted && previousData != nil
             ? [previousData writeToFile:path options:NSDataWritingAtomic error:nil]

@@ -15,6 +15,7 @@
 #import <math.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <notify.h>
 
 static const int kLowPhaseSeconds = 35;
 static const int kHighPhaseSeconds = 8;
@@ -1341,31 +1342,27 @@ static BOOL pathExists(NSString *p) {
     self.report[@"observedPhotoreal"] = [self readPhotorealStateTail];
 }
 
-// P0-3 对表：读 cameracaptured 写的 /var/mobile/Media/VCAM/photoreal_state.log，
-// 证实替换管线在探针窗口内确实带着 photoreal/torch_level 状态在跑。
-// 行格式 "t=<CFAbsoluteTime> photoreal=<0/1> torch_level=<0..1>"；
-// CFAbsoluteTime = Unix epoch - 970444800，可与 report.meta 时间戳直接对齐。
+// P0-3 对表：读 cameracaptured 经 notifyd 发布的 photoreal 状态，
+// 证实替换管线在探针窗口内确实带着 photoreal/torch_level 在跑。
+// 状态编码：state = (round(torchLevel*1000) << 1) | photorealEnabled。
+// （App 沙箱读不到任何 VCAM 文件目录，所以走 notifyd 而不是 photoreal_state.log。）
 - (NSDictionary *)readPhotorealStateTail {
-    NSString *path = @"/var/mobile/Media/VCAM/photoreal_state.log";
-    NSString *text = [NSString stringWithContentsOfFile:path
-                                              encoding:NSUTF8StringEncoding error:nil];
-    if (text.length == 0) { return @{@"present": @NO}; }
-    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
-    NSUInteger start = lines.count > 40 ? lines.count - 40 : 0;
-    NSMutableArray *entries = [NSMutableArray array];
-    for (NSUInteger i = start; i < lines.count; i++) {
-        NSString *line = lines[i];
-        if (![line hasPrefix:@"t="]) { continue; }
-        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-        for (NSString *pair in [line componentsSeparatedByString:@" "]) {
-            NSRange eq = [pair rangeOfString:@"="];
-            if (eq.location == NSNotFound || eq.location == 0) { continue; }
-            entry[[pair substringToIndex:eq.location]] =
-                @([[pair substringFromIndex:eq.location + 1] doubleValue]);
-        }
-        if (entry.count >= 2) { [entries addObject:entry]; }
+    int token = NOTIFY_TOKEN_INVALID;
+    if (notify_register_check("com.codex.vcam.ios18.photoreal.state",
+                              &token) != NOTIFY_STATUS_OK) {
+        return @{@"present": @NO, @"reason": @"token"};
     }
-    return @{@"present": @YES, @"count": @(entries.count), @"tail": entries};
+    uint64_t state = 0;
+    NSDictionary *result;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+        result = @{@"present": @NO, @"reason": @"state"};
+    } else {
+        result = @{@"present": @YES,
+                   @"photoreal": @((uint64_t)(state & 1)),
+                   @"torchLevel": @(((double)(state >> 1)) / 1000.0)};
+    }
+    notify_release(token);
+    return result;
 }
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {
