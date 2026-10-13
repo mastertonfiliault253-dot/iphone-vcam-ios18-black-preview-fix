@@ -116,6 +116,39 @@ jobs:
           path: probe-app/packages/*.deb
           retention-days: 7
 
+      # 标准容器变体：同一 arm64e 二进制仅换 identity（bundleID/scheme vcam-probe2），
+      # 产出未签名 ipa 供 Sideloadly 真签名安装——K 轮已证标准通道出帧，
+      # 此变体用于在标准容器补跑 native_probe 原生管线对照。
+      - name: Build std-container probe ipa (Sideloadly payload)
+        env:
+          THEOS: ${{ runner.temp }}/theos-rootless
+        run: |
+          set -euo pipefail
+          plist="$(find probe-app/.theos/_ -type f -name Info.plist -path '*/VCAMDetectProbe.app/*' -print -quit)"
+          appdir="$(dirname "$plist")"
+          test -n "$appdir"
+          rm -rf std-build && mkdir -p std-build/Payload
+          cp -R "$appdir" std-build/Payload/VCAMDetectProbe.app
+          python3 - "std-build/Payload/VCAMDetectProbe.app/Info.plist" <<'PYEOF'
+import plistlib, sys
+p = sys.argv[1]
+with open(p, 'rb') as f: d = plistlib.load(f)
+d['CFBundleIdentifier'] = 'com.codex.vcamdetectprobe.std'
+d['CFBundleName'] = 'VCAM Probe Std'
+d['CFBundleDisplayName'] = 'VCAM Probe Std'
+for e in d.get('CFBundleURLTypes', []):
+    e['CFBundleURLName'] = 'com.codex.vcamdetectprobe.std'
+    e['CFBundleURLSchemes'] = ['vcam-probe2']
+with open(p, 'wb') as f: plistlib.dump(d, f)
+PYEOF
+          (cd std-build && zip -qry ../vcam-probe-std.ipa Payload)
+          test -s vcam-probe-std.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-probe-std-ipa
+          path: vcam-probe-std.ipa
+          retention-days: 7
+
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-ios18-probe

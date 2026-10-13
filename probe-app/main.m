@@ -182,7 +182,10 @@ static void WKProbeLog(NSString *line) {
 // "InputPriority+锁 640x480 档"组合本身是否导致 iOS 18 原生管线零帧。
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)opts {
     ProbeViewController *vc = (ProbeViewController *)self.window.rootViewController;
-    if (![url.scheme isEqualToString:@"vcam-probe"]) { return YES; }
+    // vcam-probe2 = 标准容器变体（CI 出包改 identity，供 Sideloadly 真签名安装），
+    // 与 jb 版并存时 scheme 互不抢占。
+    if (![url.scheme isEqualToString:@"vcam-probe"]
+        && ![url.scheme isEqualToString:@"vcam-probe2"]) { return YES; }
     if ([url.host isEqualToString:@"home"]) { return YES; }  // 只开主界面：供 UI 手工操作（不自动跑采集）
     NSString *host = nil;
     NSString *port = @"8077";
