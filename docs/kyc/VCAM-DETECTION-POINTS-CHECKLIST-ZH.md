@@ -14,25 +14,66 @@
 两条路径的设备侧数据面最终都落在同一物理机相机管线（iOS 18 上第三方 App 的相机流由
 `cameracaptured` 服务提供，实测）——这正是 vcam 守护层替换能同时覆盖两条路径的原因。
 
-### 真实 App 实拆：Whatnot（设备已装，2026-10-13 二进制 grep 实证）
+### 真实 App 实拆：Whatnot / Whop / Tilt（设备已装，2026-10-13 二进制 grep 实证）
 
-Whatnot（AppStore 安装于 /var/containers/Bundle/Application/146D439A…/Whatnot.app）
-内嵌 **Persona2.framework 7.1MB**（Persona 原生 iOS SDK v2，含
-`PersonaInlineViewController` SwiftUI 内嵌组件）+ **MobileShieldKit.framework**
-（Persona 设备属性/防篡改模块）+ PPRiskMagnes（Braintree 指纹）+ SeonSDK +
-AgoraRtcKit（直播推流，与 KYC 无关）。对"真实 KYC 怎么调用相机"的直接回答：
+三台 KYC App 全部在设备真拆（framework 清单 + Mach-O 符号 grep），相互印证。
 
-- `Persona2` 二进制含符号：`AVCaptureSession`、`AVCaptureDeviceInput`、
-  **`AVCaptureVideoDataOutput`、`AVCapturePhotoOutput`**、`AVCaptureSessionPreset-*`、
-  `AVCaptureDeviceType-*`，无 WebRTC/私有相机协议痕迹。
-  ⇒ **Persona 原生路径 = 宿主 App 进程内标准 AVFoundation 自采集**
-  （VideoDataOutput 帧流 + PhotoOutput 高质量抓拍，前置含 mirror 逻辑），
-  与我们探针的调用形态完全同型——探针就是按它建模的。
-- 该版本 Persona2 **无 `AVCaptureDepthDataOutput` 符号** ⇒ iOS 原生路径不用深度流，
-  清单 S5-4（3D 深度）对本目标供应商降级。
-- MobileShieldKit 在场（其内部字符串混淆，jailbreak 具体探测项未从二进制直接读出；
-  "Persona 收集设备属性含越狱状态"按其公开文档为真，标 `行业`）。
-  S10-1 的"设备指纹模块在宿主进程内"由此从推测升级为**实拆存在**。
+**Whatnot**（/var/containers/…/146D439A…/Whatnot.app）内嵌 **Persona2.framework
+7.1MB**（Persona 原生 iOS SDK v2，含 `PersonaInlineViewController`）+
+**MobileShieldKit**（Persona 设备属性模块）+ PPRiskMagnes + SeonSDK + AgoraRtcKit（直播，与 KYC 无关）。
+
+- `Persona2` 符号：`AVCaptureSession`、`AVCaptureDeviceInput`、
+  **`AVCaptureVideoDataOutput`、`AVCapturePhotoOutput`**、`AVCaptureSessionPresetHigh/Photo`、
+  `AVCaptureDeviceType-*`、`setRespectAnimationFrameRate`；
+  人脸=**Vision**（`VNDetectFace*`、`VNFaceObservation`，符号 71 处）。
+- **无 `AVCaptureDepthDataOutput`**（TrueDepth 只是作为 RGB 设备被枚举）。
+- **torch 在场**：`setTorchMode/torchMode/torchLevel/MaxAvailableTorchLevel/hasTorch`、
+  `flash` 符号 ⇒ Persona 闪光活体（Glint 类）。
+- `Challenge/challenge` 符号 + `AVCaptureSystemPressureLevel*`（热压力监控）
+  ⇒ 主动挑战流程确证。
+- MobileShieldKit 在场（内部混淆，具体探测项未读出；"Persona 收集越狱状态"按公开文档为真，标 `行业`）。
+  S10-1 的"设备指纹模块在宿主进程内"由此升级为**实拆存在**。
+
+**Whop**（/var/containers/…/E74B292B…/Whop.app）内嵌 **IdensicMobileSDK**
+= **Sumsub** 移动端 SDK（二进制内 `https://api.sumsub.com`；主程序 sumsub×22、
+veriff、idensic 字符串）。
+
+- 采集=SDK 内 **原生 AVCapture**：`AVCaptureVideoDataOutputSampleBufferDelegate`、
+  `AVCaptureMovieFileOutput`（录像活体）、`AVCapturePhotoOutput`、
+  设备枚举含 LiDARDepth/DualWide 等全谱。
+- **显式锁格式与帧率**：`setActiveFormat`、`setFrameRate`、
+  `setActiveVideoMinFrameDuration`，且二进制内有 `1920x1080`、`1280x720` 字样
+  ⇒ 与我们 30fps/格式配置实验同型；SDK 会读 activeFormat 做质量校验。
+- 人脸=**CIDetector/CIDetectorTypeFace**（CoreImage，比 Vision 老一代）；
+  `liveness/Liveness×26`、`Challenge×10`、`passiveLiveness×1`、`hasTorch/setTorchMode`
+  ⇒ 挑战+被动双模式，同样有 torch 闪光。无 DepthDataOutput（TrueDepth 同样仅作 RGB）。
+- 另有 LiveKitWebRTC（语音/客服通话，非 KYC 采集）。
+
+**Tilt**（/var/containers/…/698D3934…/Tilt.app，retrolabs.retroapp.iOS）内嵌
+**LuciqSDK**（`https://api.luciq.ai`，KYC 后端 API）+ 主程序内 **Persona 符号×68**
+（Persona 引擎静态链入主二进制）+ RecaptchaEnterpriseSDK + AgoraRtcKit。
+LuciqSDK 本体几乎无相机符号（只 `setFrameRate`）；**相机采集在主程序内原生
+AVCapture**（`AVCaptureVideoPreviewLayer/Session/VideoDataOutput/
+DeviceTypeBuiltInWideAngle|DualWide|Triple`、`AVCaptureSessionPreset`），
+活体词=`Blink/blink×11`、`glint×2`、`Challenge×964` ⇒ 眨眼+glint 挑战活体。
+（Tilt 主程序未 grep 到 torch 符号，glint 可能用屏幕补光而非 torch——未钉，标待查。）
+
+**跨 App 结论（3/3 一致）**：
+
+1. **真实 App 过 KYC = 宿主进程内标准 AVFoundation 自采集**（VideoDataOutput 帧流 +
+   PhotoOutput/MovieFileOutput 抓拍），无一用 WKWebView/getUserMedia；Agora/LiveKit
+   只用于通话。我们的探针按此建模是对的。
+2. **深度流 3/3 不用**（无 DepthDataOutput）→ S5-4 进一步降级。
+3. **人脸检测作用于交付的帧**（Vision 或 CIDetector）→ 注入画面必须持续通过
+   人脸检测器（脸的完整性/尺寸/自然度），deepfake 特征在这层被消费。
+4. **主动挑战（转头/眨眼）+ torch 闪光活体是主流实现**（Whatnot/Whop 实证，Tilt 眨眼+glint）
+   → 预生成视频无法响应随机挑战（S6 从"推测 NA"升级为"实拆确证的硬限制"）。
+5. **新增检测点：torch 状态 ↔ 画面亮度一致性**——SDK 会 `setTorchMode` 打闪光，
+   真相机画面里人脸会随 torch 亮灭产生亮度脉冲；vcam 替换帧若无对应变化，
+   是强注入信号。可行对策：vcam 的 `VCAMMediaServerClient` 就在 cameracaptured 内，
+   可监听同一会话的 torch 状态变化并在输出帧上合成对应亮度脉冲（候选项，见方案文档）。
+6. SDK 会读/锁 activeFormat 与 frameRate（Whop 实证）→ 我们的 30fps/分辨率一致性
+   配置（S4-1）必须继续保持与源一致。
 
 ---
 
