@@ -879,7 +879,7 @@ static BOOL pathExists(NSString *p) {
         self.writerInput.readyForMoreMediaData) {
         @try {
             if (!self.writerSessionStarted) {
-                [self.writer startSessionAtSourceTime:CMSampleBufferGetPTS(sb)];
+                [self.writer startSessionAtSourceTime:CMSampleBufferGetPresentationTimeStamp(sb)];
                 self.writerSessionStarted = YES;
             }
             [self.writerInput appendSampleBuffer:sb];
