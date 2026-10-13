@@ -874,8 +874,25 @@ static BOOL pathExists(NSString *p) {
         [self finalizeCurrentSessionWithLabel:(self.phase == 0 ? @"low" : @"high")];
         [self startWriterForSampleBuffer:sb];
     }
-    if (self.writerInput && self.writerInput.readyForMoreMediaData) {
-        [self.writerInput appendSampleBuffer:sb];
+    if (self.writerInput && self.writer.status == AVAssetWriterStatusWriting &&
+        self.writerInput.readyForMoreMediaData) {
+        @try {
+            [self.writerInput appendSampleBuffer:sb];
+        } @catch (NSException *e) {
+            // appendSampleBuffer 对未挂载 input / 非 Writing 状态会抛 ObjC 异常
+            //（std 首帧实测）。把 reason 记进报告并降级为"只统计不录像"：
+            // 帧统计是零帧对照的主证据，录像失败不能带走整个报告。
+            NSMutableDictionary *cam = (NSMutableDictionary *)self.report[@"camera"];
+            if (cam) {
+                cam[@"appendException"] = [NSString stringWithFormat:@"%@: %@ | writerStatus=%ld %@",
+                                          e.name, e.reason ?: @"-", (long)self.writer.status,
+                                          self.writer.error.localizedDescription ?: @"-"];
+            }
+            [self log:[NSString stringWithFormat:@"append exception: %@: %@ (status=%ld)\n",
+                       e.name, e.reason ?: @"-", (long)self.writer.status]];
+            self.writer = nil;
+            self.writerInput = nil;
+        }
     }
 
     self.phaseFrames++;
@@ -1014,10 +1031,16 @@ static BOOL pathExists(NSString *p) {
     };
     self.writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
     self.writerInput.expectsMediaDataInRealTime = YES;
-    if ([self.writer canAddInput:self.writerInput]) { [self.writer addInput:self.writerInput]; }
+    BOOL added = [self.writer canAddInput:self.writerInput];
+    if (added) { [self.writer addInput:self.writerInput]; }
     // AVAssetWriter 必须先 startWriting 再 append：漏掉会让 append 静默失败、
     // writer 进 failed，收尾 markAsFinished 抛异常（std 容器出帧后才暴露此 bug）。
     [self.writer startWriting];
+    if (!added || self.writer.status != AVAssetWriterStatusWriting) {
+        [self log:[NSString stringWithFormat:@"writer diag addInput=%d status=%ld %@\n",
+                   added, (long)self.writer.status,
+                   self.writer.error.localizedDescription ?: @"-"]];
+    }
     self.currentFile = name;
     self.phaseFrames = 0;
     self.faceFramesThisPhase = 0;
