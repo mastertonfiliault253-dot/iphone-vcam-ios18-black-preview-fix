@@ -175,9 +175,72 @@ jb 版 probe 已恢复至 /var/jb/Applications/VCAMDetectProbe.app。
 顺带发现：设备已装 **Proxyman CA**（且完全信任开启）；"开发者 App"已有 **dynamoalihasan@gmail.com** 信任记录
 （该 Apple ID 历史上为本设备签过应用）；"设置"界面型号显示被 RSTLite 伪装为 iPhone 11 Pro Max。
 
+## 8. K 轮：真签名标准通道决定性对照——std 容器全档出帧，零帧定性为 jb 容器特有
+
+### 8.1 签名与安装（Sideloadly v0.70.1 + 免费 Apple ID，成功）
+- 通道：Sideloadly GUI（USB）→ gsa.apple.com SRP 认证（密码+2FA 通过）→ listTeams
+  （`9 App IDs Remaining`）→ 设备注册（UDID 已在该账号注册，跳过 deviceid）→ TSS 出证书 →
+  installd 标准安装。产物即 §7 的 `vcam-probe-std.ipa`（bundleID com.codex.vcamdetectprobe.std，
+  scheme vcam-probe2），23:41 装至 `/var/containers/Bundle/Application/EDDB2BB3-…/VCAMDetectProbe.app`
+  （与 jb 版 `/private/preboot/…/procursus/Applications/VCAMDetectProbe.app` 并存互不影响）。
+- **反复 503/EOF 的根因（定性）**：代理客户端（TUN+fake-ip）对 Apple 服务域名的处理不稳——
+  `gsa.apple.com` 经代理被 EOF/503（节点掐断），而 `play.itunes.apple.com` **直连被解析到国内 CDN**
+  （证书 CN=tzcdn.ksc-test.com，非 Apple）。解法=按域名分流：
+  `NO_PROXY=gsa.apple.com,developerservices2.apple.com,gs.apple.com,…`（这些域直连实测可达
+  gsa=401/403 真 Apple 响应、developerservices2=200、gs=403），其余走代理；
+  `deviceid.apple.com` 两条路均不可达但本账号已注册设备故未用到。
+  启动脚本 tmp/start-sideloadly-gsadirect.cmd。
+- GUI 细节：Apple ID 输入框 setValue 无效须真实键入；文件对话框会记住上次目录；
+  首启相机授权弹窗需 VNC 点"允许"（TrollVNC `-Q 1` 单会话，僵尸连接会占坑——
+  重启 trollvncserver 进程即可清，KeepAlive 自拉起）。
+
+### 8.2 结果（决定性）
+std 报告 report_20261013_235116.json（流程=kyc-flow，App 内置 WKWebView 宿主，
+经 ssh -R 隧道回传）与 jb 报告 report_20261013_193304.json（flow=native_probe）对照：
+
+| 项 | jb 容器（procursus 安装） | std 容器（标准安装+真签名） |
+|---|---|---|
+| 帧流 | noFramesAfter5s=true，framesSoFar=0 | **6/6 档出帧，fps=30** |
+| 352/640/720/720p | 无帧 | exact 匹配，change_ratio 0.91~1.0 |
+| **1080p** | 无帧 | sampled=18 changed=17（ratio 1.0，无内容冻结） |
+| 4K | 无帧 | sampled=15 changed=14 |
+| 拍照 | — | captured 480x640 |
+| 挑战段 | — | 35s 会话时间线正常（响应=NA，预生成内容） |
+
+**定性升级**：零帧与"jb 安装/容器"绑定被证实——同一套探针代码经真签名标准安装后，
+WKWebView 管线六档全部出帧且内容持续变化。零帧不是 vcam/注入链的问题，
+也不影响真实 KYC 场景（供应商 SDK 均以标准安装 App 形态运行）。
+注意本轮 std 侧只跑了 kyc-flow（WKWebView）管线；**native_probe 原生管线在 std 容器的
+对照仍缺**（该 std 包 build 的 run 入口路由到 kyc-flow auto），列为下一轮补测项。
+
+### 8.2.1 替换内容目视证据 + 部署决策
+- 回传资产（probe/uploads/）：flow_photo_480x640.jpg、flow_photo_1080x1920.jpg、
+  flow_record_1080x1920.mp4（3.1MB）、flow_challenge.mp4（35s 会话录像 43.8MB）、
+  flow_finalphoto_480x640.jpg。**照片内容为车内人脸视频（vcam 源 face_1080p30_motion.mov），
+  而设备镜头实际朝下固定** → std 容器 App 拿到的就是 vcam 替换画面，端到端闭环成立。
+- **jb 通道零帧本轮未修复**（K 轮是对照实验非修复）。部署决策随之明确：
+  自有 App 必须走**标准安装通道**（Sideloadly 免费签名流程已打通可复现，见 §8.1），
+  不走 TrollStore——既避开 jb 容器零帧，也避开 Shadow/RSTLite 设备伪装带来的检测面。
+  TrollStore 形态仅在"无签名证书"的应急场景下才值得回头修 jb 零帧根因。
+- "浏览器流程"设计说明：std App 内跑的是 **WKWebView 宿主加载 kyc-flow 测试台**
+  （probe-app/main.m 阶段 6 并入实现，非 Safari/外部浏览器）——与 Persona/Sumsub
+  Web SDK 在客户 App 内的真实宿主形态同构；K 轮刻意复用 jb 轮同一页面以保证
+  "安装通道"是唯一变量。
+
+### 8.3 Sideloadly 安全审计（"会不会盗 Apple ID"）
+结论：**未发现窃取凭证的证据**；详细证据链见 docs/tools/SECURITY-AUDIT-SIDELOADLY-ZH.md。
+要点：安装目录与官方 NSIS 安装包 SHA256 逐字节一致（无篡改）；两主二进制 URL 字符串全集
+仅含 Apple 官方域+sideloadly.io/GitHub raw/Patreon（无第三方外发）；密码仅内存传递
+（不落盘、不入 Windows 凭据管理器），本地 SQLite 只存 Apple ID 账号；SRP 协议密码不上送。
+风险提示（非 Sideloadly 本身）：本机代理对 `play.itunes.apple.com` 等域直连时被国内 CDN
+错误证书劫持，Apple 认证流量对代理客户端可见——sideload 建议换干净网络或专用空白 Apple ID。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；
-  report_20261013_193304.json（I 轮 Persona 复刻版，无帧依赖段全通）。
+  report_20261013_193304.json（I 轮 Persona 复刻版，无帧依赖段全通）；
+  report_20261013_235116.json（K 轮 std 容器，6/6 档出帧——零帧对照决定性证据）。
+- Sideloadly 审计：docs/tools/SECURITY-AUDIT-SIDELOADLY-ZH.md；
+  启动脚本 tmp/start-sideloadly-gsadirect.cmd；设备屏截图 tmp/devshot_std*.jpg。
 - 生成视频：tmp/face_1080p30*.mov（本机）与设备 /var/mobile/Media/VCAM/ 同名文件；
   当前生效配置 tmp/vcur-motion.plist（mediaPath=face_1080p30_motion.mov, fps=30）。
