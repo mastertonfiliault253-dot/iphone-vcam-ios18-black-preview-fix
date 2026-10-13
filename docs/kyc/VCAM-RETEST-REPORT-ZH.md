@@ -1,4 +1,4 @@
-# vcam 复测报告（2026-10-13 G 轮：环境修复 + 帧率链 + 源规范验证）
+# vcam 复测报告（2026-10-13 G 轮：环境修复 + 帧率链 + 源规范验证；H 轮增补 §4 零帧定性）
 
 对应方案：docs/kyc/VCAM-DETECTION-OPTIMIZATION-PLAN-ZH.md；
 检测点全清单：docs/kyc/VCAM-DETECTION-POINTS-CHECKLIST-ZH.md（本轮新建）。
@@ -68,13 +68,41 @@ dup 高反映的是**源内容运动不足**，属生成侧规格问题，不是
 "IMU↔画面运动矛盾"（画面出现缓慢平移而 IMU 静止——矛盾方向反而更明显），
 真实 KYC 会话建议配合手持场景或接受该信号。
 
-## 4. 原生 App（AVCapture）零帧状态
+## 4. 原生 App（AVCapture）零帧：MiniRunner 决定性实验与定性（H 轮）
 
-R3（124150，环境修复后重跑）：仍零帧（isRunning=1、0 帧、0 丢弃、仅 DidStartRunning）。
-⇒ jb 通道自研 App 的零帧与 vcam 无关、与 SpringBoard 环境无关。
-AppStore 原生 App（Whatnot/SumUpINT）对照与 probe 内 WKWebView 对照未跑通
-（WKWebView 页空白，疑为加载失败，需下一轮先修 WK 空白或改用真实 App）。
-对真实供应商 App 路径的含义未钉死——见清单 S10-4。
+**实验**：完全独立的教科书最小实现 `probe-app/MiniRunner.m`
+（defaultDeviceWithDeviceType 前置广角、`AVCaptureSessionPresetHigh` 不锁格式、
+sampleBufferDelegate 挂主队列、独立日志 `/var/mobile/Media/VCAM/mini.log`，
+与 ProbeRunner 无任何共享代码；CI run 38352384697 产物装机）：
+
+```
+start pid=…  configured inputs=1 outputs=1 preset=high
+startRunning isRunning=1 running=1
+tick t=2..12  frames=0 isRunning=1        finish frames=0 drops=0
+```
+
+⇒ 探针代码缺陷排除（教科书实现同样零帧，且 didDrop 从未触发、无会话错误）。
+
+**逐项排除（本轮实证）**：
+
+| 嫌疑 | 检查 | 结果 |
+|---|---|---|
+| 代码签名缺失 | `ldid -S` 读二进制（/var/jb/Applications/VCAMDetectProbe.app） | 已有 CS blob（ad-hoc、无 entitlements）；重签幂等（hash 不变）→ 排除 |
+| TCC 拒绝/DR 错配 | rootless 用户级 TCC 在 **/var/mobile/Library/TCC/TCC.db**（无 sqlite3 时拉回主机查）：camera=allow(2/2)；再删除该记录→VNC 对当前二进制 cdhash 重新点"允许"→重跑 | 仍零帧 → 排除 |
+| 无沙盒/launchd 域异常 | `launchctl procinfo`：CFFIXED_USER_HOME 数据容器在位、uid=501、spawn type=app(1) role=ui focal | 正常应用启动 → 排除 |
+| Tweak 注入干扰 | TweakInject 四组 dylib 在场/不在场两态均零帧；进程 env `DYLD_INSERT_LIBRARIES` 仅 Dopamine systemhook（所有进程都有，Safari 带着它出帧正常） | 排除 |
+| jb 安装路径 | 把同一 bundle 复制到 /var/containers/Bundle/Application/<UUID>/ 后启动：系统 `lsregister` 在设备上未找到，`uicache` 只扫 /var/jb/Applications → LaunchServices 不注册，实验未跑通 | **未钉**（见待办） |
+
+**对照组**：Safari（WebKit）与系统相机 App 出帧正常；AppStore App（Whatnot/SumUp/Whop）
+在 TCC 里有真实相机授权记录，用户实测真实 App 出帧非零。
+
+**定性结论**：原生探针零帧是 **jb 通道（dpkg palette 安装）客户端的环境限制**——
+相机服务客户端识别层对 palette App 静默不投递样本（无错误、无丢弃回调），
+与 vcam、探针代码、TCC、签名存在性、沙盒、注入均无关。
+具体判定字段（安装路径 vs 签名锚）未进一步钉死，唯一受阻实验是容器路径启动。
+**对主线的影响**：真实 KYC App（Persona2 标准 AVFoundation 自采集）走 AppStore 通道，
+本机出帧已由用户实测证实 ⇒ 供应商原生路径可行，此项不构成 vcam 缺陷，降级归档；
+原生侧信号改由"真实 App 实测 + Whatnot 实拆 + probe 内 WKWebView 对照"提供。
 
 ## 5. 本轮结论
 

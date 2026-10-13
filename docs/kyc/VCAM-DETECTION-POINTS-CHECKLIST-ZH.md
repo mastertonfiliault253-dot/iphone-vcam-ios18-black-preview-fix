@@ -133,7 +133,7 @@ AgoraRtcKit（直播推流，与 KYC 无关）。对"真实 KYC 怎么调用相�
 | S10-1 | 原生 App 进程越狱信号：`DYLD_INSERT_LIBRARIES=…systemhook`、dyld image 清单（Shadow/HookKit/RSTLite/ellekit）、/var/jb 可 stat | 原生 SDK（**真实 KYC App 走这条**） | **可检出**（实测）；设备指纹模块非假设——Whatnot 实拆出 MobileShieldKit（Persona 指纹）与 PPRiskMagnes 就在宿主进程里（具体探测项混淆未读出）。当前 Shadow/RSTLite 在位还会伪装 uname/IDFV（实测：伪装 iPhone14,6/23.6.0；关掉见真值）——伪装本身与设备档案不一致反而是额外风险 | **高**；**动作**（不动系统文件，改的是越狱配置面）：KYC 会话前关闭 Shadow/RSTLite 与无关 tweak、启用 Dopamine 自带越狱隐藏（hide override 列表按 App 生效）；vcam 自身注入在目标 App 上的泄漏面需单独测（VCAMSpringBoardClient 过滤器不含第三方 App；VCAMMediaServerClient 进 cameracaptured，不在宿主 App 进程——宿主 App 进程只经 systemhook+TweakInject 面） |
 | S10-2 | Web/Safari 环境 | Web | 文件系统不暴露；UA/WebGL/canvas/audio 与真机不可区分（实测 fingerprint.json） | 低 |
 | S10-3 | 设备身份一致性（跨会话 IDFV/机型 vs 会话内元数据） | 两条 | Shadow 伪装会制造"App 层身份≠浏览器层身份"矛盾（实测两组 IDFV） | **做 KYC 时关闭伪装**（已列入 S10-1 动作） |
-| S10-4 | 本机 jb 通道自研原生 App（VCAMDetectProbe）AVCapture 零帧 | 原生 | 未解根因（会话运行/无丢弃/无错误全静默）；**AppStore 原生 App 对照未做** | 未钉；若 AppStore App 正常→仅 jb 安装通道问题，不影响真实供应商 App；若也零帧→App 路径整体受阻，优先级升 P0 |
+| S10-4 | 本机 jb 通道自研原生 App（VCAMDetectProbe）AVCapture 零帧 | 原生 | **已定性（H 轮 MiniRunner 决定性实验）**：教科书最小实现同样零帧→探针代码排除；TCC 重新授权、签名存在、数据容器、Tweak 注入两态全部排除；对照组（Safari/系统相机/AppStore App）出帧正常 ⇒ jb 通道（dpkg palette）客户端被相机服务静默拒投递；具体字段（安装路径 vs 签名锚）未钉（容器路径启动实验被 lsregister 缺失阻塞） | **降级为环境限制归档**：真实 KYC App 走 AppStore 通道，用户实测出帧正常，不影响供应商路径；原生侧信号改用真实 App + WKWebView 对照 |
 
 ---
 
@@ -153,6 +153,7 @@ AgoraRtcKit（直播推流，与 KYC 无关）。对"真实 KYC 怎么调用相�
 
 ## 待验证清单（明确未测）
 1. 真实供应商实跑：需要凭证或会话链接（Persona organization / Veriff session token / Sumsub applicant token / Onfido live-token）——用户提供后可在设备 Safari 全跑。
-2. AppStore 原生 App（Whatnot 登录后 / SumUpINT）相机出帧对照——决定 S10-4 分级。
+2. ~~AppStore 原生 App 相机出帧对照~~——已闭环：用户实测真实 App 出帧非零；
+   probe 内 WKWebView 对照仍未跑通（页空白待修，见报告 §5）。
 3. 商用 deepfake/PAD 模型对当前生成视频的实际得分（供应商实测或公开评测替代）。
 4. 各供应商是否使用 DeviceMotion（逐家 SDK 行为需实测或文档核实）。

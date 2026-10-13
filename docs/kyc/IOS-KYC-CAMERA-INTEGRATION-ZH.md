@@ -600,6 +600,14 @@ iPhone14,6 即坐实（并在复测报告注明当前设备身份状态）。
    broker starting pid=<当前 SpringBoard pid>` 三连。修复：`kill -9 <SpringBoard pid>`
    （launchd 秒级重生且被注入；无需重启手机或用户空间）。修复过程与验证见
    VCAM-RETEST-REPORT-ZH.md §1。
+7. 越狱设备权限（TCC）查询（H 轮）：用户级 TCC.db 在 **/var/mobile/Library/TCC/TCC.db**
+   （非 iOS 标准 Application Support 路径）。设备缺 sqlite3 时可
+   `/var/jb/usr/bin/apt-get install -y sqlite3`（会触发 shadow 规则集重建，无害）；
+   也可把 db 拉回主机用 Python sqlite3 查。删除某 client 的记录后，下次访问重新弹授权。
+8. jb palette App 只注册在 /var/jb/Applications（`uicache` 只扫这里）；把 .app 手工
+   复制到 /var/containers/Bundle/Application/ 不会生效——系统 lsregister 在该设备
+   上未找到，LaunchServices 不注册，uiopen 静默不启动（H 轮容器路径对照实验因此
+   受阻，见 VCAM-RETEST-REPORT-ZH.md §4）。
 
 ## 已实施项
 
