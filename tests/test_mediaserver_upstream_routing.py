@@ -189,6 +189,8 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
         # iOS 16 left Camera's QR detector on the physical-camera branch while
         # replacing only the visible preview. Preserve that behavior on iOS 18
         # so a QR code in front of the lens still produces the system link UI.
+        # KYC opt-in (`metadataBranch=replace`) may route this branch through
+        # the replacement, but the default must stay on the physical camera.
         self.assertIn('@"BWFanOutNode"', self.route_function)
         self.assertIn('@"Preview Splitter"', self.route_function)
         self.assertIn('@"MetadataObject"', self.route_function)
@@ -197,7 +199,11 @@ class MediaServerUpstreamRoutingTests(unittest.TestCase):
             '// Stock Camera\'s physical QR/metadata detector consumes this exact fan-out',
             "if (VCAMOutputIsKnownInternalGraphStage",
         )
-        self.assertIn("return VCAMReplacementRouteNone;", metadata_route)
+        self.assertIn(
+            "return VCAMMetadataBranchReplaceEnabled() ? VCAMReplacementRouteUniversalVideo",
+            metadata_route,
+        )
+        self.assertIn(": VCAMReplacementRouteNone;", metadata_route)
         self.assertNotIn("VCAMReplacementRouteQRAnalysis", self.route_function)
         self.assertNotIn('@"BWInferenceNode"', self.route_function)
 
