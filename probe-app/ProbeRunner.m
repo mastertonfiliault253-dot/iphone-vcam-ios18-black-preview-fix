@@ -67,6 +67,7 @@ static NSString *tmpPathNamed(NSString *name) {
 
 @property(nonatomic, strong) AVAssetWriter *writer;
 @property(nonatomic, strong) AVAssetWriterInput *writerInput;
+@property(nonatomic, assign) size_t writerW, writerH;  // 当前 writer 锁定的帧维度
 @property(nonatomic, copy) NSString *currentFile;
 @property(nonatomic, assign) int phase;             // 0 low, 1 high, -1 recording off
 @property(nonatomic, assign) int phaseFrames;
@@ -865,6 +866,14 @@ static BOOL pathExists(NSString *p) {
     }
     if (self.phase < 0) { return; }
     if (!self.writerInput) { [self startWriterForSampleBuffer:sb]; }
+    // 切档竞态：phase 置位后 applyFormat 是异步的，phase1 首帧可能仍是旧维度，
+    // writer 锁定旧尺寸后维度突变帧会让 writer failed——按维度重建 writer 分段录。
+    CVImageBufferRef cur = CMSampleBufferGetImageBuffer(sb);
+    if (self.writerInput && cur &&
+        (CVPixelBufferGetWidth(cur) != self.writerW || CVPixelBufferGetHeight(cur) != self.writerH)) {
+        [self finalizeCurrentSessionWithLabel:(self.phase == 0 ? @"low" : @"high")];
+        [self startWriterForSampleBuffer:sb];
+    }
     if (self.writerInput && self.writerInput.readyForMoreMediaData) {
         [self.writerInput appendSampleBuffer:sb];
     }
@@ -986,6 +995,7 @@ static BOOL pathExists(NSString *p) {
     size_t w = CVPixelBufferGetWidth(pb);
     size_t h = CVPixelBufferGetHeight(pb);
     if (self.phase >= 0 && self.phase < 2) { _capturedW[self.phase] = (int)w; _capturedH[self.phase] = (int)h; }
+    self.writerW = w; self.writerH = h;
     NSString *name = [NSString stringWithFormat:@"probe_phase%d_%zux%zu.mp4", self.phase, w, h];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
     [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -1005,6 +1015,9 @@ static BOOL pathExists(NSString *p) {
     self.writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
     self.writerInput.expectsMediaDataInRealTime = YES;
     if ([self.writer canAddInput:self.writerInput]) { [self.writer addInput:self.writerInput]; }
+    // AVAssetWriter 必须先 startWriting 再 append：漏掉会让 append 静默失败、
+    // writer 进 failed，收尾 markAsFinished 抛异常（std 容器出帧后才暴露此 bug）。
+    [self.writer startWriting];
     self.currentFile = name;
     self.phaseFrames = 0;
     self.faceFramesThisPhase = 0;
@@ -1218,20 +1231,30 @@ static BOOL pathExists(NSString *p) {
 
 - (void)finalizeCurrentSessionWithLabel:(NSString *)label {
     if (!self.writer) { return; }
-    AVAssetWriterInput *input = self.writerInput;
-    [input markAsFinished];
     AVAssetWriter *writer = self.writer;
+    AVAssetWriterInput *input = self.writerInput;
     NSString *file = self.currentFile;
     NSMutableDictionary *summary = [self sessionSummaryWithLabel:label];
     [(NSMutableArray *)self.report[@"camera"][@"sessions"] addObject:summary];
+    self.writer = nil;
+    self.writerInput = nil;
+    // AVFoundation 对 failed/cancelled 状态的 writer 调 markAsFinished/finishWriting
+    // 会抛 NSException（std 容器实测崩溃 AVFCore markCurrentPassAsFinished SIGABRT）：
+    // 先判状态，非 Writing 只记错误不收尾，报告仍照常产出。
+    if (writer.status != AVAssetWriterStatusWriting) {
+        summary[@"writeError"] = [NSString stringWithFormat:@"status=%ld %@",
+                                  (long)writer.status, writer.error.localizedDescription ?: @"-"];
+        [self log:[NSString stringWithFormat:@"skip finish %@ status=%ld %@\n", file,
+                   (long)writer.status, writer.error.localizedDescription ?: @"-"]];
+        return;
+    }
+    [input markAsFinished];
     __weak ProbeRunner *me = self;
     [writer finishWritingWithCompletionHandler:^{
         if (file) { [me uploadFile:tmpPathNamed(file) name:file]; }
         [me log:[NSString stringWithFormat:@"wrote %@ frames=%d status=%ld\n", file,
                  (int)[summary[@"frames"] integerValue], (long)writer.status]];
     }];
-    self.writer = nil;
-    self.writerInput = nil;
 }
 
 - (void)finishProbe {
