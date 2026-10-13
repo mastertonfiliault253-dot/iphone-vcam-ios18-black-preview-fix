@@ -87,6 +87,16 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, assign) BOOL videoOutputSupported;
 @property(nonatomic, assign) BOOL reportMinimal;
 @property(nonatomic, assign) CFAbsoluteTime startClock;
+
+// —— Whatnot/Persona 复刻扩展（docs/kyc/VCAM-DETECTION-POINTS-CHECKLIST-ZH.md "复刻规格"）——
+// Persona2 实证：AVVideoSettings 显式锁帧时长、cameraProperties{width,height,aspectRatio,
+// frameRate,selectedCameraIndex} 遥测、torch 全 API 使用 ⇒ 探针对齐这三项，
+// 并把"torch 脉冲 ↔ 画面亮度一致性"（检测点 #5）做成可量化窗口。
+@property(nonatomic, strong) AVCaptureDevice *rearDevice;
+@property(nonatomic, assign) BOOL rearTorchActive;      // 后置 torch 脉冲阶段（front 无 torch 时的真实测试）
+@property(nonatomic, assign) BOOL lumaWindowActive;
+@property(nonatomic, assign) int lumaFrameCounter;
+@property(nonatomic, strong) NSMutableArray *lumaSamples;  // {t,luma,win} 仅 sampleQueue
 @end
 
 @implementation ProbeRunner
@@ -101,6 +111,7 @@ static NSString *tmpPathNamed(NSString *name) {
         _faceSamples = [NSMutableArray array];
         _visionSamples = [NSMutableArray array];
         _exposureSamples = [NSMutableArray array];
+        _lumaSamples = [NSMutableArray array];
         _sessionEvents = [NSMutableArray array];
         _visionQueue = dispatch_queue_create("vcam.probe.vision", DISPATCH_QUEUE_SERIAL);
     }
@@ -308,6 +319,26 @@ static BOOL pathExists(NSString *p) {
     }
     @try {
         self.frontDevice.activeFormat = fmt;
+        // Persona 复刻：Persona2 有 AVVideoSettings 键 VideoMin/MaxFrameDuration（锁帧时长），
+        // 这里对 30fps 做同样锁定；设备档位不支持 30 时如实记录，不静默降级。
+        BOOL supports30 = NO;
+        for (AVFrameRateRange *r in fmt.videoSupportedFrameRateRanges) {
+            if (r.minFrameRate <= 30.0 && r.maxFrameRate >= 30.0) { supports30 = YES; break; }
+        }
+        if (supports30) {
+            @try {
+                CMTime frameDuration = CMTimeMake(1, 30);
+                [self.frontDevice setActiveVideoMinFrameDuration:frameDuration];
+                [self.frontDevice setActiveVideoMaxFrameDuration:frameDuration];
+                af[[label stringByAppendingString:@"_fpsLock"]] = @"30";
+                [self log:[NSString stringWithFormat:@"format %s fpsLock=30\n", label.UTF8String]];
+            } @catch (NSException *e) {
+                af[[label stringByAppendingString:@"_fpsLock"]] =
+                    [NSString stringWithFormat:@"exception:%@", e.reason ?: e.name];
+            }
+        } else {
+            af[[label stringByAppendingString:@"_fpsLock"]] = @"30-unsupported";
+        }
     } @catch (NSException *e) {
         af[label] = [NSString stringWithFormat:@"exception:%@", e.reason ?: e.name];
         [self log:[NSString stringWithFormat:@"format %s exception: %@\n", label.UTF8String, e.reason]];
@@ -507,6 +538,10 @@ static BOOL pathExists(NSString *p) {
             [me log:@"session not running despite input — retry startRunning\n"];
             [me.session startRunning];
         }
+        // Persona 复刻（复刻规格 5）：Persona2 随 inquiry 上报
+        // cameraProperties{width,height,aspectRatio,frameRate,selectedCameraIndex,kind...}。
+        // 这里按同名语义产出，供分析器与真实上报口径对表。
+        [me collectCameraTelemetryForDevice:me.frontDevice position:@"front"];
     });
     // 5s 无任何帧 → 记一条诊断信号（结合 Safari 同机对照可定位层级）。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), self.sampleQueue, ^{
@@ -549,11 +584,21 @@ static BOOL pathExists(NSString *p) {
     if (hasTorch) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), self.sampleQueue, ^{ [me setTorch:YES]; });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), self.sampleQueue, ^{ [me setTorch:NO]; });
+        // 检测点 #5：torch 开/关窗口内的画面亮度轨迹（前置真有 torch 时直接量）。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.5 * NSEC_PER_SEC)), self.sampleQueue,
+                       ^{ me.lumaWindowActive = YES; me.lumaFrameCounter = 0; });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.5 * NSEC_PER_SEC)), self.sampleQueue,
+                       ^{ me.lumaWindowActive = NO; [me summarizeLumaWindow:@"front"]; });
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kLowPhaseSeconds * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me finishLowPhase]; });
+    // Persona 复刻阶段（复刻规格 4/5）：把会话输入切到后置摄像头做真实 torch 脉冲，
+    // 同步采帧亮度；随后 finishProbe 汇总。前置无 torch 是常态，此阶段是该检测点的主证据来源。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 2) * NSEC_PER_SEC)),
+                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 3) * NSEC_PER_SEC)),
+                   self.sampleQueue, ^{ [me beginRearTorchPhase]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 13) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me finishProbe]; });
 }
 
@@ -615,11 +660,202 @@ static BOOL pathExists(NSString *p) {
     [(NSMutableDictionary *)self.report[@"camera"][@"torch"] addEntriesFromDictionary:@{@"cycled": @YES}];
 }
 
+#pragma mark - Persona 复刻（cameraProperties 遥测 / torch 亮度窗）
+
+// 与 Persona2 上报字段同语义的相机遥测（见清单文档"复刻规格"第 5 条）。
+// 只在 sampleQueue 上调用；activeFormat 读值不要求持锁。
+- (void)collectCameraTelemetryForDevice:(AVCaptureDevice *)device position:(NSString *)position {
+    if (!device) { return; }
+    CMFormatDescriptionRef fd = device.activeFormat.formatDescription;
+    CMVideoDimensions dims = fd ? CMVideoFormatDescriptionGetDimensions(fd) : (CMVideoDimensions){0, 0};
+    double fps = 0;
+    for (AVFrameRateRange *r in device.activeFormat.videoSupportedFrameRateRanges) {
+        fps = MAX(fps, r.maxFrameRate);
+    }
+    double minDurS = CMTimeGetSeconds(device.activeVideoMinFrameDuration);
+    double maxDurS = CMTimeGetSeconds(device.activeVideoMaxFrameDuration);
+    NSMutableArray *telemetry = (NSMutableArray *)self.report[@"cameraProperties"];
+    if (![telemetry isKindOfClass:NSMutableArray.class]) {
+        telemetry = [NSMutableArray array];
+        self.report[@"cameraProperties"] = telemetry;
+    }
+    [telemetry addObject:@{
+        @"position": position,
+        @"deviceType": device.deviceType ?: @"?",
+        @"uniqueID": device.uniqueID ?: @"?",
+        @"width": @(dims.width),
+        @"height": @(dims.height),
+        @"aspectRatio": dims.height > 0 ? @(round((double)dims.width / dims.height * 1000) / 1000) : @0,
+        @"activeMaxFPS": @(fps),
+        @"activeMinFrameDurationS": minDurS > 0 ? @(minDurS) : (id)NSNull.null,
+        @"activeMaxFrameDurationS": maxDurS > 0 ? @(maxDurS) : (id)NSNull.null,
+        @"hasTorch": @(device.hasTorch),
+        @"hasFlash": @(device.hasFlash),
+        @"selectedCameraIndex": @0,
+        @"client": @"VCAMDetectProbe",
+        @"platform": @"ios",
+    }];
+}
+
+// NV12/420v Y 平面均值（隔行隔列采样，帧队列上开销可忽略）；失败返回 -1。
+- (double)frameLuma:(CMSampleBufferRef)sb {
+    CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+    if (!pb) { return -1; }
+    if (CVPixelBufferGetPlaneCount(pb) < 1) { return -1; }
+    if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) { return -1; }
+    double sum = 0;
+    long count = 0;
+    uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 0);
+    size_t rows = CVPixelBufferGetHeightOfPlane(pb, 0);
+    size_t cols = CVPixelBufferGetWidthOfPlane(pb, 0);
+    size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
+    if (base && rows && cols) {
+        for (size_t y = 0; y < rows; y += 4) {
+            const uint8_t *row = base + y * stride;
+            for (size_t x = 0; x < cols; x += 4) { sum += row[x]; count++; }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    return count > 0 ? sum / (double)count : -1;
+}
+
+// 汇总一个亮度窗：分"前/中/后"三段均值与最大增量（torch 开→画面应出现亮度阶跃；
+// vcam 替换帧若不跟随，Δ≈0 即是检测点 #5 的直接证据）。
+- (void)summarizeLumaWindow:(NSString *)window {
+    NSMutableArray *mine = [NSMutableArray array];
+    for (NSDictionary *s in self.lumaSamples) {
+        if ([s[@"win"] isEqualToString:window]) { [mine addObject:s]; }
+    }
+    if (mine.count < 4) {
+        self.report[[NSString stringWithFormat:@"lumaWindow_%@", window]] =
+            @{@"error": @"insufficient samples", @"n": @(mine.count)};
+        return;
+    }
+    double firstHalf = 0, secondHalf = 0;
+    NSUInteger half = mine.count / 2;
+    for (NSUInteger i = 0; i < mine.count; i++) {
+        double v = [mine[i][@"luma"] doubleValue];
+        if (i < half) { firstHalf += v; } else { secondHalf += v; }
+    }
+    firstHalf /= (double)half;
+    secondHalf /= (double)(mine.count - half);
+    self.report[[NSString stringWithFormat:@"lumaWindow_%@", window]] = @{
+        @"n": @(mine.count),
+        @"meanFirstHalf": @(round(firstHalf * 100) / 100.0),
+        @"meanSecondHalf": @(round(secondHalf * 100) / 100.0),
+        @"delta": @(round((secondHalf - firstHalf) * 100) / 100.0),
+        @"samples": mine,
+    };
+}
+
+// 把会话输入切到后置（Persona 证件流程同款设备），做 off→on→off torch 脉冲 + 亮度窗。
+// 入口在 sampleQueue；会话增删按文档回到 sessionQueue。
+- (void)beginRearTorchPhase {
+    [self finalizeCurrentSessionWithLabel:@"high"];
+    self.phase = -1;
+    AVCaptureDeviceDiscoverySession *disc =
+        [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+                                                             mediaType:AVMediaTypeVideo
+                                                              position:AVCaptureDevicePositionBack];
+    self.rearDevice = disc.devices.firstObject;
+    if (!self.rearDevice) {
+        self.report[@"rearTorch"] = @{@"error": @"no rear device"};
+        [self log:@"rear phase: no rear device\n"];
+        return;
+    }
+    __weak ProbeRunner *me = self;
+    dispatch_async(self.sessionQueue, ^{
+        NSError *err = nil;
+        AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:me.rearDevice error:&err];
+        if (!input) {
+            dispatch_async(me.sampleQueue, ^{ me.report[@"rearTorch"] =
+                [NSDictionary dictionaryWithObjectsAndKeys:err.localizedDescription ?: @"?", @"inputError", nil]; });
+            return;
+        }
+        [me.session beginConfiguration];
+        for (AVCaptureInput *old in me.session.inputs) { [me.session removeInput:old]; }
+        if ([me.session canAddInput:input]) { [me.session addInput:input]; }
+        [me.session commitConfiguration];
+        dispatch_async(me.sampleQueue, ^{
+            me.rearTorchActive = YES;
+            me.lumaFrameCounter = 0;
+            me.lumaWindowActive = YES;
+            [me collectCameraTelemetryForDevice:me.rearDevice position:@"rear"];
+            [me log:@"rear phase started (input swapped)\n"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), me.sessionQueue, ^{
+                [me setRearTorch:YES];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), me.sessionQueue, ^{
+                    [me setRearTorch:NO];
+                });
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), me.sampleQueue, ^{
+                me.lumaWindowActive = NO;
+                [me summarizeLumaWindow:@"rear"];
+            });
+        });
+    });
+}
+
+// 与 setTorch: 对应，但走后置设备；用 setTorchModeOnWithLevel: （Persona2 同款 API）。
+- (void)setRearTorch:(BOOL)on {
+    AVCaptureDevice *device = self.rearDevice;
+    if (!device.hasTorch) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        entry[@"rearHasTorch"] = @NO;
+        [self mergeRearTorchEntry:entry];
+        return;
+    }
+    if (![device lockForConfiguration:nil]) {
+        [self mergeRearTorchEntry:@{@"lockFail": @YES}];
+        return;
+    }
+    NSString *result = @"ok";
+    @try {
+        if (on) {
+            device.torchLevel = MIN(1.0, device.maxAvailableTorchLevel);
+            [device setTorchModeOnWithLevel:device.maxAvailableTorchLevel error:nil];
+        } else {
+            device.torchMode = AVCaptureTorchModeOff;
+        }
+    } @catch (NSException *e) {
+        result = [NSString stringWithFormat:@"exception:%@", e.reason ?: e.name];
+    }
+    [device unlockForConfiguration];
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"rearHasTorch"] = @YES;
+    entry[on ? @"on" : @"off"] = result;
+    [self mergeRearTorchEntry:entry];
+}
+
+- (void)mergeRearTorchEntry:(NSDictionary *)entry {
+    // report 只在 sampleQueue 上改；setRearTorch 从 sessionQueue 调用，这里统一回投。
+    dispatch_async(self.sampleQueue, ^{
+        NSMutableDictionary *rear = (NSMutableDictionary *)self.report[@"rearTorch"];
+        if (![rear isKindOfClass:NSMutableDictionary.class]) {
+            rear = [NSMutableDictionary dictionary];
+            self.report[@"rearTorch"] = rear;
+        }
+        [rear addEntriesFromDictionary:entry];
+    });
+}
+
 #pragma mark - sample buffer
 
 - (void)captureOutput:(AVCaptureOutput *)out
   didOutputSampleBuffer:(CMSampleBufferRef)sb
          fromConnection:(AVCaptureConnection *)conn {
+    // torch↔亮度一致性窗口（检测点 #5）：后置 torch 阶段 phase<0，必须先于 phase 检查采样。
+    if (self.lumaWindowActive && (self.phase >= 0 || self.rearTorchActive) &&
+        self.lumaSamples.count < 400 && (self.lumaFrameCounter++ % 2 == 0)) {
+        double luma = [self frameLuma:sb];
+        if (luma >= 0) {
+            [self.lumaSamples addObject:@{
+                @"t": @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000),
+                @"luma": @(round(luma * 100) / 100.0),
+                @"win": self.rearTorchActive ? @"rear" : @"front",
+            }];
+        }
+    }
     if (self.phase < 0) { return; }
     if (!self.writerInput) { [self startWriterForSampleBuffer:sb]; }
     if (self.writerInput && self.writerInput.readyForMoreMediaData) {

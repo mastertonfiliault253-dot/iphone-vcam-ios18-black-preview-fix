@@ -151,6 +151,45 @@ def analyze_extended(report):
     return out
 
 
+def analyze_persona_replica(report):
+    """Persona 复刻段（清单文档"复刻规格"）：锁帧结果、cameraProperties 遥测、
+    torch 脉冲 ↔ 画面亮度一致性（检测点 #5）。"""
+    out = []
+    af = report.get("appliedFormat", {})
+    for label in ("low", "high"):
+        lock = af.get(f"{label}_fpsLock")
+        if lock == "30":
+            out.append(("INFO", f"activeFormat {label} 档已锁 30fps（对齐 Persona 锁帧时长行为）"))
+        elif lock:
+            out.append(("RISK", f"activeFormat {label} 档锁帧失败: {lock}"))
+    cps = report.get("cameraProperties", [])
+    if cps:
+        lines = ", ".join(f"{c.get('position')}={c.get('width')}x{c.get('height')}@{c.get('activeMaxFPS')}fps"
+                          for c in cps)
+        out.append(("INFO", f"cameraProperties 遥测在场（Persona 同款上报口径）: {lines}"))
+    else:
+        out.append(("NA", "无 cameraProperties 遥测（旧版探针）"))
+    rear = report.get("rearTorch")
+    luma = report.get("lumaWindow_rear")
+    if rear is None and luma is None:
+        out.append(("NA", "无后置 torch 脉冲阶段（旧版探针或设备无后置）"))
+        return out
+    if isinstance(rear, dict) and rear.get("error"):
+        out.append(("NA", f"后置 torch 阶段未运行: {rear['error']}"))
+        return out
+    if not isinstance(luma, dict) or luma.get("error"):
+        why = report.get("noFramesAfter5s") and "零帧通道限制（jb 通道不投递帧）" or "无亮度样本"
+        out.append(("NA", f"torch 亮度窗无样本: {luma.get('error') if isinstance(luma, dict) else '缺段'}（{why}）"))
+        return out
+    n, delta = luma.get("n", 0), luma.get("delta", 0)
+    if abs(delta) < 2:
+        out.append(("RISK", f"torch off→on→off 脉冲期间画面亮度无响应 Δ={delta}（n={n}）"
+                            f"——检测点#5：注入画面未跟随 torch，是真机可测的强注入信号"))
+    else:
+        out.append(("PASS", f"torch 脉冲与画面亮度一致 Δ={delta}（n={n}）"))
+    return out
+
+
 def cross_compare(native_items, browser_report):
     rows = []
     bitems = {}
@@ -182,6 +221,7 @@ def analyze(report_path, browser_path=None, videos=None):
     verdicts += analyze_motion(report.get("motion"))
     verdicts += analyze_photo(cam.get("photo"))
     verdicts += analyze_extended(report)
+    verdicts += analyze_persona_replica(report)
 
     print("\n-- verdicts --")
     for lvl, msg in verdicts:

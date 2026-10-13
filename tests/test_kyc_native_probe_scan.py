@@ -213,6 +213,50 @@ class AppContractTests(unittest.TestCase):
         mk = self._read("Makefile")
         self.assertIn("Vision", mk)
 
+    def test_analyzer_persona_replica_verdicts(self):
+        # torch↔亮度一致性判读：Δ≈0 必须 RISK（检测点 #5），Δ 显著必须 PASS，
+        # 无样本/旧版必须 NA（不得谎报）。
+        base = {"appliedFormat": {"low_fpsLock": "30"},
+                "cameraProperties": [{"position": "front", "width": 640, "height": 480,
+                                      "activeMaxFPS": 30}]}
+        flat = dict(base, rearTorch={"rearHasTorch": True, "on": "ok", "off": "ok"},
+                    lumaWindow_rear={"n": 120, "meanFirstHalf": 51.2,
+                                     "meanSecondHalf": 51.3, "delta": 0.1})
+        got = kyc_native_probe_scan.analyze_persona_replica(flat)
+        self.assertTrue(any(lvl == "RISK" and "torch" in m for lvl, m in got))
+        resp = dict(base, rearTorch={"rearHasTorch": True},
+                    lumaWindow_rear={"n": 120, "meanFirstHalf": 50.0,
+                                     "meanSecondHalf": 78.0, "delta": 28.0})
+        got = kyc_native_probe_scan.analyze_persona_replica(resp)
+        self.assertTrue(any(lvl == "PASS" and "一致" in m for lvl, m in got))
+        na = kyc_native_probe_scan.analyze_persona_replica(
+            {"noFramesAfter5s": True, "rearTorch": {"rearHasTorch": True},
+             "lumaWindow_rear": {"error": "insufficient samples", "n": 0}})
+        self.assertTrue(all(lvl in ("NA", "RISK") for lvl, _ in na))
+        self.assertTrue(any("零帧通道" in m for lvl, m in na if lvl == "NA"))
+
+    def test_probe_runner_persona_replica_sections(self):
+        # Whatnot/Persona 复刻契约（docs/kyc 清单文档"复刻规格"）：
+        # 1) 锁帧时长（Persona2 的 VideoMin/MaxFrameDuration 行为对齐）；
+        # 2) cameraProperties 遥测（与 Persona 上报字段同语义）；
+        # 3) 后置真实 torch 脉冲（setTorchModeOnWithLevel 同款 API）+ 逐帧亮度窗
+        #    （检测点 #5 torch↔亮度一致性的量化证据）。
+        src = self._read("ProbeRunner.m")
+        for api in [
+            "setActiveVideoMinFrameDuration", "setActiveVideoMaxFrameDuration",
+            "cameraProperties", "collectCameraTelemetryForDevice",
+            "beginRearTorchPhase", "setTorchModeOnWithLevel", "maxAvailableTorchLevel",
+            "frameLuma", "summarizeLumaWindow", '"rearTorch"',
+            "CVPixelBufferGetBaseAddressOfPlane",
+        ]:
+            self.assertIn(api, src)
+        # 时序契约：后置阶段在高低两阶段之后、finishProbe 之前；两偏移成对出现。
+        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 3)", src)
+        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 13)", src)
+        # 亮度采样必须先于 phase<0 早退（否则后置阶段采不到帧）。
+        self.assertLess(src.index("if (self.lumaWindowActive &&"),
+                        src.index("if (self.phase < 0) { return; }"))
+
     def test_mini_runner_textbook_reference_exists(self):
         # 零帧根因隔离用：与 ProbeRunner 完全隔离的最小 AVCapture 参考实现，
         # 入口经 mini=1 参数贯通，结果写设备本地 mini.log（不依赖测试台）。

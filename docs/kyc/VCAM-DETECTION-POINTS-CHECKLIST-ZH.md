@@ -64,6 +64,38 @@
   Tilt/Whop 主二进制（5.2MB/128MB/177MB）因此只有 grep 符号级结论，无函数级结论；
   同一二进制重试会再付一次分析时间，已按"小请求"原则放弃函数级深挖。
 
+**Whatnot 真实 KYC 流程复刻规格（I 轮，供测试 App 重构直接引用）**：
+
+Persona 自拍侧完整管线（符号+字符串实证）：
+
+1. **提示**：`SelfiePromptViewController` 展示指令；`en.lproj/Persona.strings` 内
+   **没有**挑战文案（只有一些设置引导）⇒ 挑战文案随 inquiry 由服务端下发。
+2. **采集装配**：`VideoCaptureManager(Impl)`/`VideoRecordingManager(Impl)`/
+   `videoCaptureMethods` 多路装配；AVVideoSettings 键 `VideoMinFrameDuration`/
+   `VideoMaxFrameDuration` ⇒ **显式锁帧时长**（与 Sumsub 同型）；
+   `VideoHDREnabled`、`VideoZoomFactor`、`VideoGravityResizeAspectFill`、
+   `VideoFormatDescriptionGetDimensions`（校验交付尺寸）、`VideoFrameStore`。
+3. **取景与质量门**：`SelfieOverlayView/PoseGuide/PoseGuideSuccess`（构图引导）、
+   `SelfieReviewViewController`（拍后用户确认）、`selfieType`；端侧质量遥测字符串
+   `exposure×28`、`blur detection/blurry`、错误事件 `failedToAcquireDeviceLock/
+   resizeFailed/photoOutputFailed/noImageFound`；人脸几何=Vision（前述 71 处）。
+   客户端无 CoreML 模型资源 ⇒ 打分在服务端。
+4. **torch**：用户可点 `TorchButton`（证件 4 处 + 自拍 2 处 `torchButtonTapped`），
+   底层 `setTorchMode(:OnWithLevel:)` 全 API（见上）。
+5. **上报**：`uploadSelfies`/`uploadSingleFile`/`multipart`，图片经
+   `AVAssetExportSession`+`AVVideoCodecTypeJPEG`；**`cameraProperties` 遥测随
+   inquiry 上报：width/height/aspectRatio/frameRate/client/platform/kind/
+   selectedCameraIndex** ⇒ "声明的相机参数/帧率"进入服务端证据链，
+   与内容实际运动不一致即可被交叉核验（我们的 1080p 内容冻结风险即此维度）。
+6. **设备侧**：`MobileShieldKit` 用 **`_dyld_register_func_for_add_image` 枚举已加载
+   镜像**（注入检测原语 API 级确证）；Persona 还请求**定位权限**
+   （`locationServiceSettingsPrompt`）。
+
+测试 App（VCAMDetectProbe）重构按 1→6 对齐：会话按 min/max frame duration 锁帧 +
+交付尺寸校验；pose/人脸门用 Vision；torch off→on→off 脉冲 + 逐帧亮度轨迹上报；
+拍照走 PhotoOutput（flash on/off 两拍，JPEG）；上报前生成 cameraProperties 遥测；
+dyld 镜像枚举自检项保留。
+
 **Whop**（/var/containers/…/E74B292B…/Whop.app）内嵌 **IdensicMobileSDK**
 = **Sumsub** 移动端 SDK（二进制内 `https://api.sumsub.com`；主程序 sumsub×22、
 veriff、idensic 字符串）。
