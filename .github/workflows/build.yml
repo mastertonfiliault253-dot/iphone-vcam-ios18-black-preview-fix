@@ -129,18 +129,18 @@ jobs:
           test -n "$appdir"
           rm -rf std-build && mkdir -p std-build/Payload
           cp -R "$appdir" std-build/Payload/VCAMDetectProbe.app
-          python3 - "std-build/Payload/VCAMDetectProbe.app/Info.plist" <<'PYEOF'
-import plistlib, sys
-p = sys.argv[1]
-with open(p, 'rb') as f: d = plistlib.load(f)
-d['CFBundleIdentifier'] = 'com.codex.vcamdetectprobe.std'
-d['CFBundleName'] = 'VCAM Probe Std'
-d['CFBundleDisplayName'] = 'VCAM Probe Std'
-for e in d.get('CFBundleURLTypes', []):
-    e['CFBundleURLName'] = 'com.codex.vcamdetectprobe.std'
-    e['CFBundleURLSchemes'] = ['vcam-probe2']
-with open(p, 'wb') as f: plistlib.dump(d, f)
-PYEOF
+          python3 - <<'PYEOF'
+          import plistlib
+          p = "std-build/Payload/VCAMDetectProbe.app/Info.plist"
+          d = plistlib.load(open(p, "rb"))
+          d["CFBundleIdentifier"] = "com.codex.vcamdetectprobe.std"
+          d["CFBundleName"] = "VCAM Probe Std"
+          d["CFBundleDisplayName"] = "VCAM Probe Std"
+          for e in d.get("CFBundleURLTypes", []):
+              e["CFBundleURLName"] = "com.codex.vcamdetectprobe.std"
+              e["CFBundleURLSchemes"] = ["vcam-probe2"]
+          plistlib.dump(d, open(p, "wb"))
+          PYEOF
           (cd std-build && zip -qry ../vcam-probe-std.ipa Payload)
           test -s vcam-probe-std.ipa
       - uses: actions/upload-artifact@v4
