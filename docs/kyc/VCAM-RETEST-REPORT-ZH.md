@@ -133,6 +133,48 @@ CI run 38370895770 产物（torch API 修复后）装机，`uiopen --url "vcam-p
 与**真机相机能力**（maxPhotoDims 4032x2268、TrueDepth、FOV 73.29、maxFPS 60）——机型↔相机规格矛盾，
 供应商交叉核对可命中；同报告 dyld 枚举可见 5 个注入镜像（RSTLite/ellekit/Shadow/HookKit×2）。
 
+## 7. J 轮：零帧"安装通道"决定论实验——itms 标准安装被签名门槛挡住
+
+目标：隔离零帧定性中的最后两个绑定变量——"安装/注册通道"（jb procursus vs 标准安装器）与
+"签名链"（ad-hoc vs 真签名）。理想实验=同一个 ad-hoc 二进制经 installd 装进标准容器再跑探针。
+
+### 7.1 设备 UI 自动化通道（打通，可复用）
+内置浏览器直连设备 noVNC：`http://192.168.2.39:5801/` → 首页按钮进入
+`/novnc/vnc.html?autoconnect=true&host=192.168.2.39&port=5901&encrypt=0`（claim 该标签页）。
+截图=canvas `toDataURL("image/png")` 导出（浏览器 screenshot 通道因持续重绘会超时，不可用）；
+点击/滑动=向 canvas `dispatchEvent` Pointer/Mouse 事件，坐标映射 设备帧×1.0406+canvas 偏移（本地缩放均匀，可靠）。
+系统弹窗（installd/SpringBoard）同样可点，但注意其队列行为：多个确认弹窗会排队，必须逐个关闭后续任务才会推进。
+
+自写 RFB 客户端结论（TrollVNC 3.2-272 实测，解释"每次重连都有弹窗"）：raw 编码整帧 ~7.5MB、传输约 20s；
+连接发送完整帧后服务端约 20s 内必断连；小区域请求无法被满足时约 6s 后断开；`SetContinuousUpdates` 不可用。
+即 TrollVNC 无法保持长连接，noVNC 的反复弹窗就是它自动重连造成的——UI 操作以 noVNC 页面为操作面最稳。
+
+### 7.2 CA 信任链（完成）
+itms 安装源要求可信 HTTPS：自建 CA（CN=VCAM Test CA）+ 服务器证书（SAN IP:192.168.2.181, :8443）+
+`ca.mobileconfig` 描述文件。设备 UI 全程：Safari 下载"允许" → 设置>VPN 与设备管理>"VCAM Test CA"安装（含未签名警告确认）
+→ 设置>通用>关于本机>证书信任设置 启用完全信任（`prefs:root=General&path=About` 深链可用）。
+
+### 7.3 itms 安装实验与结论
+- HTTP 源（:8077）被拒："无法安装，因为 '192.168.2.181' 的证书无效"。
+- HTTPS 源（:8443，CA 已受信）：manifest 拉取 200 → 用户确认弹窗流程通过 → installd 建容器
+  `/var/containers/Bundle/Application/0C26962A-…/VCAM Probe Std.app`，**但落地只是占位壳**：
+  bundle 内仅 192B stub Info.plist（CFBundleExecutable="Executable"），无二进制；
+  `BundleMetadata.plist` 记录 `placeholderFailureReason=NSURLErrorDomain -999（已取消）`，
+  failing URL=ipa；8443 访问日志证实设备只取过 manifest-std.plist（2 次 200），
+  **从未发出 `GET /vcam-probe-std.ipa`**——下载在发起前即被取消。
+- 换 bundleID（com.codex.vcamdetectprobe.std + scheme vcam-probe2）排除旧注册冲突干扰后结果相同。
+- 结论：**标准安装通道（installd/itms）要求真签名**，对 ad-hoc ipa 在取包前取消下载（无显式签名错误 UI，
+  证据在占位元数据）。"jb 非标准容器"与"ad-hoc 签名"在 iOS 侧绑死：要构造"同二进制经标准通道安装=是否出帧"
+  的决定性对照，必须先用真证书（免费 Apple ID 签名）出包——该步需要 USB（AltServer/Sideloadly 首次配对）或 Mac，
+  远端设备无 USB 无法完成。零帧定性结论不受影响（见 §4：与三个 AppStore App/Safari 的天然对照已隔离通道变量）。
+
+实验噪声记录：jb 时代 LS 残留注册会导致新装同名 bundleID 冲突弹窗，`killall lsd` 不清除非活动记录；
+最终用换 bundleID 绕过。实验残留目录（顶层 VCAMDetectProbe.app、7A9E2C10-…、占位 0C26962A-…）已删除，
+jb 版 probe 已恢复至 /var/jb/Applications/VCAMDetectProbe.app。
+
+顺带发现：设备已装 **Proxyman CA**（且完全信任开启）；"开发者 App"已有 **dynamoalihasan@gmail.com** 信任记录
+（该 Apple ID 历史上为本设备签过应用）；"设置"界面型号显示被 RSTLite 伪装为 iPhone 11 Pro Max。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；

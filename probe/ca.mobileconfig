@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadCertificateFileName</key><string>vcam-test-ca.der</string>
+            <key>PayloadContent</key><data>MIIDDzCCAfegAwIBAgIUdohrXwqCqWbewWcH+l7WolUxhWcwDQYJKoZIhvcNAQELBQAwFzEVMBMGA1UEAwwMVkNBTSBUZXN0IENBMB4XDTI2MTAxMzEyMDg0NloXDTM2MTAxMDEyMDg0NlowFzEVMBMGA1UEAwwMVkNBTSBUZXN0IENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAya4y3Rrc/d0yv9tJ7Idt/SaZQhYfWKq4oM9V92+Uq6Nq10SJZfGWCPKYKiidyJM9O3lCO9upHT18Z6s6EJ/jX657rWU7mr6XPOvWtwLXtX6crwwxkr0i14wLvPV6z+obGthx8RHJOHCMpND296u9EScID1XOZoTV8dmHgyYKbqfOMmjMVjdG7wQxUrq4DsDBAgtm54Y58KDwXvj1Piv7x+i50fmhT1A+oXOI37QKlAWhCwP/nBfQWeaplNfFdGuRgB8phUqAtfHStoD108qm3f7IqY5JOTASYdaskkMWL/f0x9n7JnRtS4AEYq7+Em1WfxydmkVkYem3ixh/se2aHQIDAQABo1MwUTAdBgNVHQ4EFgQUGPbGOLZp0U5Ga3XkGATod+Hl3s4wHwYDVR0jBBgwFoAUGPbGOLZp0U5Ga3XkGATod+Hl3s4wDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAkRPe8xzDwJZAvP5LMvBVAMcCjAG7z/8UrbOnQIJxifZOBVoquXXPayohcdjaz1Z49NehV7A5yMsfJrSQMOJUfrKKTA1VWZlFpjRMYxP8Uw0tU3CZGwaP7+2WuCIEgzNTUlwx73z6q5HAjijK9AXX2WXggGMcA9O1lE+8XKdrHLJ8TDpWW47eQkbFShmB7+KDEiR1CLfwiWnQpIwJ2yW+ZZ7sLo0wDKkAPhZl9mmzWTDGdJfJU/U7usTf3DupBrlJ0RSE59iqYMHJJypSoc4Ln5Zrk7UMEcnfQBex3I2R/QnTSXMK0w6xSUvkwTJVciAVDT1cKF2AWwQa+U+zkTO8sg==</data>
+            <key>PayloadIdentifier</key><string>com.codex.vcam.test.ca</string>
+            <key>PayloadType</key><string>com.apple.security.root</string>
+            <key>PayloadUUID</key><string>3FF219EE-7982-4DAE-9840-09C59A2C4EA5</string>
+            <key>PayloadVersion</key><integer>1</integer>
+        </dict>
+    </array>
+    <key>PayloadDisplayName</key><string>VCAM Test CA</string>
+    <key>PayloadIdentifier</key><string>com.codex.vcam.test.profile</string>
+    <key>PayloadRemovalDisallowed</key><false/>
+    <key>PayloadType</key><string>Configuration</string>
+    <key>PayloadUUID</key><string>E33BF62C-0D33-400B-9BAA-28CECC0EB77C</string>
+    <key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>
