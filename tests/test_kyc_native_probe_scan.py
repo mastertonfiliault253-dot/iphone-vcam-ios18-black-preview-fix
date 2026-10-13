@@ -237,6 +237,15 @@ class AppContractTests(unittest.TestCase):
         mk = self._read("Makefile")
         self.assertIn("WebKit", mk)
 
+    def test_cli_probe_target_exists(self):
+        # 非 App 身份的原生采集载体（隔离零帧根因用）：Makefile 必须有 tool 目标，
+        # CLI 复用 MiniRunner 同一实现，保证两种载体的观测可对比。
+        mk = self._read("Makefile")
+        self.assertIn("TOOL_NAME = vcamprobcli", mk)
+        self.assertIn("include $(THEOS_MAKE_PATH)/tool.mk", mk)
+        src = self._read("cli_main.m")
+        self.assertIn("MiniRunner startWithDurationSeconds", src)
+
     def test_wk_navigation_diagnostics_and_home_short_circuit(self):
         # 真机 WK 页空白必须可归因：导航失败原因写 /var/mobile/Media/VCAM/wk.log；
         # home host 只开主界面（否则每次 uiopen 都触发一次自动采集，干扰 UI 验证）。
