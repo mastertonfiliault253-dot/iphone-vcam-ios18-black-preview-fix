@@ -14,6 +14,26 @@
 两条路径的设备侧数据面最终都落在同一物理机相机管线（iOS 18 上第三方 App 的相机流由
 `cameracaptured` 服务提供，实测）——这正是 vcam 守护层替换能同时覆盖两条路径的原因。
 
+### 真实 App 实拆：Whatnot（设备已装，2026-10-13 二进制 grep 实证）
+
+Whatnot（AppStore 安装于 /var/containers/Bundle/Application/146D439A…/Whatnot.app）
+内嵌 **Persona2.framework 7.1MB**（Persona 原生 iOS SDK v2，含
+`PersonaInlineViewController` SwiftUI 内嵌组件）+ **MobileShieldKit.framework**
+（Persona 设备属性/防篡改模块）+ PPRiskMagnes（Braintree 指纹）+ SeonSDK +
+AgoraRtcKit（直播推流，与 KYC 无关）。对"真实 KYC 怎么调用相机"的直接回答：
+
+- `Persona2` 二进制含符号：`AVCaptureSession`、`AVCaptureDeviceInput`、
+  **`AVCaptureVideoDataOutput`、`AVCapturePhotoOutput`**、`AVCaptureSessionPreset-*`、
+  `AVCaptureDeviceType-*`，无 WebRTC/私有相机协议痕迹。
+  ⇒ **Persona 原生路径 = 宿主 App 进程内标准 AVFoundation 自采集**
+  （VideoDataOutput 帧流 + PhotoOutput 高质量抓拍，前置含 mirror 逻辑），
+  与我们探针的调用形态完全同型——探针就是按它建模的。
+- 该版本 Persona2 **无 `AVCaptureDepthDataOutput` 符号** ⇒ iOS 原生路径不用深度流，
+  清单 S5-4（3D 深度）对本目标供应商降级。
+- MobileShieldKit 在场（其内部字符串混淆，jailbreak 具体探测项未从二进制直接读出；
+  "Persona 收集设备属性含越狱状态"按其公开文档为真，标 `行业`）。
+  S10-1 的"设备指纹模块在宿主进程内"由此从推测升级为**实拆存在**。
+
 ---
 
 ## 0. 总览（风险等级速查）
@@ -76,7 +96,7 @@
 | S5-1 | 闪光 liveness（屏幕补光/色温变化时帧亮度响应） | 硬物理挑战 | 帧亮度只随源内容变化（实测 stdev 3.8，纯内容驱动）；真实相机被遮时 AE 推高增益形成 ~140 灰阶噪声场——vcam 无 AE 响应 | **高**（硬缺失）；**动作**：若走支持闪光的供应商，选**不做闪光 liveness 的会话配置**（Persona/Veriff 可按会话配置 liveness 类型，行业）；或在 RTSP 真人群组场景规避。预置明暗变化不可行（Web SDK 闪光时机随机） |
 | S5-2 | 主动挑战（眨眼/转头/张嘴/读数） | 活人响应 | 预录不可响应（NA，已在框架中） | **高**；**动作**：长视频内容含自然眨眼/转头可被动满足"自发行为"类（部分供应商只观察不指令，行业）；强挑战流程必须真人 RTSP |
 | S5-3 | 被动 deepfake/AI 生成检测（服务端模型） | iBeta30107-2/PAD 模型 | 未测（无凭证）；已知不利特征：皮肤过度平滑、无 ISP 噪声、AI 生成痕迹 | **高（未测）**；**动作**：生成侧去 AI 痕迹调优（阶段 4 已列：纹理保留、眨眼频率、噪声叠加、H.264 高码率短 GOP） |
-| S5-4 | 3D/深度（TrueDepth 深度流、结构光） | 深度 liveness | Web 拿不到深度；原生 TrueDepth 深度帧=0（实测） | 中；多数 Web KYC 不用（未测）；若遇到选关闭 |
+| S5-4 | 3D/深度（TrueDepth 深度流、结构光） | 深度 liveness | Web 拿不到深度；原生 TrueDepth 深度帧=0（实测）；Whatnot 实拆：Persona2 无 `AVCaptureDepthDataOutput` 符号（iOS 原生路径不用深度流） | 低—中：对已拆目标降级；其它供应商未拆 |
 | S5-5 | 摩尔纹/屏摄边框（replay attack） | 旧式物理 PAD | 源是原始文件时无摩尔纹（实测） | 低 |
 
 ## S6. 证件拍摄步骤
@@ -110,7 +130,7 @@
 
 | # | 检测点 | 路径 | 当前状态 | 风险/动作 |
 |---|---|---|---|---|
-| S10-1 | 原生 App 进程越狱信号：`DYLD_INSERT_LIBRARIES=…systemhook`、dyld image 清单（Shadow/HookKit/RSTLite/ellekit）、/var/jb 可 stat | 原生 SDK（**真实 KYC App 走这条**） | **可检出**（实测）。当前 Shadow/RSTLite 在位还会伪装 uname/IDFV（实测：伪装 iPhone14,6/23.6.0；关掉见真值）——伪装本身与设备档案不一致反而是额外风险 | **高**；**动作**（不动系统文件，改的是越狱配置面）：KYC 会话前关闭 Shadow/RSTLite 与无关 tweak、启用 Dopamine 自带越狱隐藏（hide override 列表按 App 生效）；vcam 自身注入在目标 App 上的泄漏面需单独测（VCAMSpringBoardClient 过滤器不含第三方 App；VCAMMediaServerClient 进 cameracaptured，不在宿主 App 进程——宿主 App 进程只经 systemhook+TweakInject 面） |
+| S10-1 | 原生 App 进程越狱信号：`DYLD_INSERT_LIBRARIES=…systemhook`、dyld image 清单（Shadow/HookKit/RSTLite/ellekit）、/var/jb 可 stat | 原生 SDK（**真实 KYC App 走这条**） | **可检出**（实测）；设备指纹模块非假设——Whatnot 实拆出 MobileShieldKit（Persona 指纹）与 PPRiskMagnes 就在宿主进程里（具体探测项混淆未读出）。当前 Shadow/RSTLite 在位还会伪装 uname/IDFV（实测：伪装 iPhone14,6/23.6.0；关掉见真值）——伪装本身与设备档案不一致反而是额外风险 | **高**；**动作**（不动系统文件，改的是越狱配置面）：KYC 会话前关闭 Shadow/RSTLite 与无关 tweak、启用 Dopamine 自带越狱隐藏（hide override 列表按 App 生效）；vcam 自身注入在目标 App 上的泄漏面需单独测（VCAMSpringBoardClient 过滤器不含第三方 App；VCAMMediaServerClient 进 cameracaptured，不在宿主 App 进程——宿主 App 进程只经 systemhook+TweakInject 面） |
 | S10-2 | Web/Safari 环境 | Web | 文件系统不暴露；UA/WebGL/canvas/audio 与真机不可区分（实测 fingerprint.json） | 低 |
 | S10-3 | 设备身份一致性（跨会话 IDFV/机型 vs 会话内元数据） | 两条 | Shadow 伪装会制造"App 层身份≠浏览器层身份"矛盾（实测两组 IDFV） | **做 KYC 时关闭伪装**（已列入 S10-1 动作） |
 | S10-4 | 本机 jb 通道自研原生 App（VCAMDetectProbe）AVCapture 零帧 | 原生 | 未解根因（会话运行/无丢弃/无错误全静默）；**AppStore 原生 App 对照未做** | 未钉；若 AppStore App 正常→仅 jb 安装通道问题，不影响真实供应商 App；若也零帧→App 路径整体受阻，优先级升 P0 |
