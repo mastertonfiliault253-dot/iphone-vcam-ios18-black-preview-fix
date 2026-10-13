@@ -1353,16 +1353,13 @@ static BOOL pathExists(NSString *p) {
         return @{@"present": @NO, @"reason": @"token"};
     }
     uint64_t state = 0;
-    NSDictionary *result;
     if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
-        result = @{@"present": @NO, @"reason": @"state"};
-    } else {
-        result = @{@"present": @YES,
-                   @"photoreal": @((uint64_t)(state & 1)),
-                   @"torchLevel": @(((double)(state >> 1)) / 1000.0)};
+        return @{@"present": @NO, @"reason": @"state"};
     }
-    notify_release(token);
-    return result;
+    // 该 SDK 的 notify.h 没有 notify_release；token 随探针进程退出回收。
+    return @{@"present": @YES,
+             @"photoreal": @((uint64_t)(state & 1)),
+             @"torchLevel": @(((double)(state >> 1)) / 1000.0)};
 }
 
 - (NSMutableDictionary *)sessionSummaryWithLabel:(NSString *)label {
