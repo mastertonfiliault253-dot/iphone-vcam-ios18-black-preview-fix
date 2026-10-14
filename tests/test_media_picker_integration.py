@@ -490,7 +490,8 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
         self.assertNotIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
         self.assertNotIn("decodeOneHardwareSession", rtsp)
-        self.assertNotIn("VCAMHardwareVideoDecoder", rtsp)
+        # Direct-VT (VCAMHardwareVideoDecoder) is now the preferred path; the
+        # FFmpeg software pipeline below must stay intact as the fallback.
         self.assertIn("decodeOneFFmpegSession", rtsp)
         self.assertNotIn("avcodec_get_hw_config", rtsp)
         self.assertNotIn("av_hwdevice_ctx_create", rtsp)
@@ -1087,8 +1088,11 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn('sourceTitle = @"RTSP 软件解码已启用"', picker)
-        self.assertIn('playbackKind = @"FFmpeg 软件解码"', picker)
+        self.assertIn('sourceTitle = @"RTSP 推流已启用"', picker)
+        # RTSP reports the measured decode path from the frame attachment;
+        # both verdicts come from the same streamStatus telemetry.
+        self.assertIn('playbackKind = [streamStatus[@"decodeHardware"] boolValue]', picker)
+        self.assertIn('@"FFmpeg 解复用 + 硬件解码" : @"FFmpeg 软件解码"', picker)
         self.assertIn('playbackKind = @"系统原生播放"', picker)
         status = picker.split("- (NSDictionary<NSString *, NSString *> *)currentStatus", 1)[1].split(
             "- (void)refreshStatus", 1

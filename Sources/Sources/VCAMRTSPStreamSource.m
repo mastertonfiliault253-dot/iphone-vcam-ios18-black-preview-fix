@@ -1,4 +1,5 @@
 #import "VCAMRTSPStreamSource.h"
+#import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import "../Daemon/VCAMPixelConverter.h"
 #import "../Shared/VCAMSharedFrame.h"
 #import <QuartzCore/QuartzCore.h>
@@ -16,6 +17,12 @@ static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
+// RTSP prefers a direct VTDecompressionSession over the proven FFmpeg
+// software decoder. Sessions that start a VT session but never yield a
+// decoded frame (the historical -12780 device-level failure mode) set this
+// flag so later reconnects go straight to software instead of retrying
+// hardware in a loop within this process.
+static volatile int gVCAMRTSPHardwareSessionsDisabled = 0;
 
 // Beyond this age the last decoded frame counts as lost and the source
 // reports no video. Same window as VCAMOBSStreamSource.
@@ -90,6 +97,16 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
+static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
+    if (packet == NULL) return kCMTimeInvalid;
+    int64_t pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+    if (pts == AV_NOPTS_VALUE) return kCMTimeZero;
+    AVRational timeBase = stream != NULL ? stream->time_base : (AVRational){1, 600};
+    double seconds = (double)pts * av_q2d(timeBase);
+    if (!isfinite(seconds) || seconds < 0) seconds = 0;
+    return CMTimeMakeWithSeconds(seconds, 600);
+}
+
 @interface VCAMRTSPStreamSource () {
     CVPixelBufferRef _latestPixelBuffer;
     CFTimeInterval _latestFrameHostTime;
@@ -103,7 +120,7 @@ static int VCAMCompareRTSPInterval(const void *left, const void *right) {
     CFTimeInterval _diagnosticWindowStart;
     CFTimeInterval _diagnosticLastFrameTime;
     NSUInteger _diagnosticFrames;
-    BOOL _loggedFirstSoftwareFrame;
+    BOOL _loggedFirstDecodedFrame;
     double _diagnosticFrameIntervals[256];
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
@@ -214,7 +231,7 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
                 pixelBuffer = [self copyBGRAFromSoftwareFrame:frame];
             }
             if (pixelBuffer != NULL) {
-                [self acceptDecodedPixelBuffer:pixelBuffer];
+                [self acceptDecodedPixelBuffer:pixelBuffer hardware:NO];
                 CVPixelBufferRelease(pixelBuffer);
             } else {
                 static dispatch_once_t conversionFailureToken;
@@ -285,16 +302,17 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     }
 }
 
-- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+- (void)acceptDecodedPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                        hardware:(BOOL)hardware {
     CVPixelBufferRetain(pixelBuffer);
-    // RTSP is deliberately software-only on iOS 16.0-16.5. Tag the decoded
-    // frame explicitly so the panel cannot misreport the transport as hardware.
+    // Tag the decoded frame with its real decode path so the panel reports
+    // the truth for both the direct-VT and FFmpeg software pipelines.
     CVBufferSetAttachment(pixelBuffer, CFSTR("com.codex.vcam.decodeHardware"),
-                          kCFBooleanFalse,
+                          hardware ? kCFBooleanTrue : kCFBooleanFalse,
                           kCVAttachmentMode_ShouldPropagate);
     CFTimeInterval now = CACurrentMediaTime();
     NSDictionary<NSString *, id> *snapshot = nil;
-    BOOL logFirstSoftwareFrame = NO;
+    BOOL logFirstDecodedFrame = NO;
     @synchronized (self) {
         if (!self.running) {
             CVPixelBufferRelease(pixelBuffer);
@@ -305,9 +323,9 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         _latestFrameHostTime = now;
         _latestFrameSequence += 1;
         _diagnosticFrames += 1;
-        if (!_loggedFirstSoftwareFrame) {
-            _loggedFirstSoftwareFrame = YES;
-            logFirstSoftwareFrame = YES;
+        if (!_loggedFirstDecodedFrame) {
+            _loggedFirstDecodedFrame = YES;
+            logFirstDecodedFrame = YES;
         }
         if (_diagnosticLastFrameTime > 0 && _diagnosticFrameIntervalCount < 256) {
             _diagnosticFrameIntervals[_diagnosticFrameIntervalCount++] =
@@ -338,10 +356,10 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
             _diagnosticFrameIntervalCount = 0;
         }
     }
-    if (logFirstSoftwareFrame) {
+    if (logFirstDecodedFrame) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"%@ first software pixel buffer format=%08x size=%zux%zu",
-            self.streamName,
+            @"%@ first %@ pixel buffer format=%08x size=%zux%zu",
+            self.streamName, hardware ? @"hardware" : @"software",
             (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
             CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)]];
     }
@@ -387,6 +405,58 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         [VCAMConfiguration appendProcessLog:line];
     }
     return [self enqueueLatestSoftwareFrame:decodedFrame];
+}
+
+// Drains one RTSP session through a direct VTDecompressionSession. Returns
+// YES when at least one frame was published. A session that never produces
+// a frame (the historical -12780 device-level failure mode) returns NO so
+// the caller can fall back to the FFmpeg software decoder.
+- (BOOL)decodePacketsWithHardwareSession:(VCAMHardwareVideoDecoder *)hardwareDecoder
+                                 packet:(AVPacket *)packet
+                        formatContext:(AVFormatContext *)formatContext
+                          videoStream:(int)videoStreamIndex
+                               stream:(AVStream *)stream {
+    BOOL producedFrame = NO;
+    BOOL waitingForKeyFrame = YES;
+    NSUInteger hardwarePacketsWithoutFrame = 0;
+    while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStreamIndex) {
+            BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            // Joining mid-GOP without reference frames only ever yields
+            // recoverable ReferenceMissing errors; wait for the first IDR.
+            if (waitingForKeyFrame && !isKeyFrame) {
+                av_packet_unref(packet);
+                continue;
+            }
+            waitingForKeyFrame = NO;
+            [hardwareDecoder decodePacket:packet->data
+                                   length:(size_t)packet->size
+                         presentationTime:VCAMRTSPPacketTime(packet, stream)
+                               decodeTime:kCMTimeInvalid
+                                 duration:kCMTimeInvalid
+                               isKeyFrame:isKeyFrame];
+            hardwarePacketsWithoutFrame += 1;
+            CVPixelBufferRef output = NULL;
+            CMTime outputPts = kCMTimeInvalid;
+            while ((output = [hardwareDecoder copyNextOutputFrame:&outputPts]) != NULL) {
+                [self acceptDecodedPixelBuffer:output hardware:YES];
+                CVPixelBufferRelease(output);
+                producedFrame = YES;
+                hardwarePacketsWithoutFrame = 0;
+            }
+            // Same stall window as the software path: a VT session that keeps
+            // accepting packets without any output ends the session for the
+            // caller to evaluate and fall back.
+            if (hardwarePacketsWithoutFrame >= 300) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ hardware decoder produced no frames packets=300; ending session",
+                    self.streamName]];
+                break;
+            }
+        }
+        av_packet_unref(packet);
+    }
+    return producedFrame;
 }
 
 - (BOOL)decodeOneFFmpegSession {
@@ -459,6 +529,50 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     fprintf(stderr, "vcam %s\n", sessionLine.UTF8String ?: "(nil)");
     fflush(stderr);
     [VCAMConfiguration appendProcessLog:sessionLine];
+
+    // Prefer decoding the demuxed packets through the direct-VT decoder that
+    // local media playback already uses in production. FFmpeg's VideoToolbox
+    // hwaccel wrapper historically produced zero frames on RTSP, so this path
+    // bypasses it; init failure or a zero-frame session falls through to the
+    // FFmpeg software decoder below.
+    if (gVCAMRTSPHardwareSessionsDisabled == 0 &&
+        (stream->codecpar->codec_id == AV_CODEC_ID_H264 ||
+         stream->codecpar->codec_id == AV_CODEC_ID_HEVC) &&
+        stream->codecpar->extradata != NULL && stream->codecpar->extradata_size > 0) {
+        VCAMHardwareVideoDecoder *hardwareDecoder =
+            [[VCAMHardwareVideoDecoder alloc] initWithCodecParameters:stream->codecpar];
+        NSError *hardwareError = nil;
+        if (hardwareDecoder != nil && [hardwareDecoder start:&hardwareError]) {
+            AVPacket *hardwarePacket = av_packet_alloc();
+            BOOL hardwareProduced = NO;
+            if (hardwarePacket != NULL) {
+                hardwareProduced = [self decodePacketsWithHardwareSession:hardwareDecoder
+                                                                  packet:hardwarePacket
+                                                         formatContext:formatContext
+                                                           videoStream:videoStream
+                                                                stream:stream];
+                av_packet_free(&hardwarePacket);
+            }
+            [hardwareDecoder stop];
+            if (hardwareProduced) {
+                producedFrame = YES;
+                goto cleanup;
+            }
+            // A started VT session that never produced a frame: stop paying
+            // the hardware retry cost for the rest of this process.
+            if (self.running) {
+                gVCAMRTSPHardwareSessionsDisabled = 1;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ hardware decode disabled; using FFmpeg software decoder",
+                    self.streamName]];
+            }
+        } else {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ hardware decoder unavailable error=%@", self.streamName,
+                hardwareError.localizedDescription ?: @"(init failed)"]];
+        }
+    }
+
     codecContext = avcodec_alloc_context3(decoder);
     if (codecContext == NULL || avcodec_parameters_to_context(codecContext, stream->codecpar) < 0) goto cleanup;
     fprintf(stderr, "vcam extradata first bytes: %02x %02x %02x %02x %02x %02x %02x %02x size=%d\n",
@@ -474,9 +588,10 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     fflush(stderr);
 
     codecContext->err_recognition = AV_EF_CAREFUL;
-    // Keep FFmpeg on its software decoder for the entire RTSP session. The
-    // previous VideoToolbox paths repeatedly produced zero frames or rejected
-    // valid packets on the supported iOS 16 devices, delaying every reconnect.
+    // This is the software fallback: reached only when the direct-VT decoder
+    // above was unavailable or produced a zero-frame session (the historical
+    // iOS 16 -12780 device-level failure mode). FFmpeg's VideoToolbox
+    // hwaccel wrapper remains avoided.
     codecContext->thread_count = 0;
     if (avcodec_open2(codecContext, decoder, NULL) < 0) {
         fprintf(stderr, "vcam avcodec_open2 FAILED\n");

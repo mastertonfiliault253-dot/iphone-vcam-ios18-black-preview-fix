@@ -124,7 +124,9 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                // RTSP is always decoded by FFmpeg's software decoder in vcamd.
+                // RTSP prefers direct-VT hardware decoding inside the stream
+                // source and falls back to the FFmpeg software decoder when a
+                // VT session cannot produce frames on this device.
                 if (self.consumerDemandActive) {
                     self.source = [self newRTSPSource];
                 }

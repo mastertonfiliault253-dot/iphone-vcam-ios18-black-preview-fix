@@ -330,17 +330,26 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
-    def test_rtsp_uses_ffmpeg_software_decoder_only(self) -> None:
+    def test_rtsp_prefers_direct_vt_with_software_fallback(self) -> None:
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
+        # Direct-VT is the preferred decode path (same proven decoder class as
+        # local media playback) with a zero-frame self-healing fallback to the
+        # FFmpeg software decoder. The FFmpeg VideoToolbox hwaccel wrapper
+        # remains banned: it historically produced zero frames on RTSP.
+        self.assertIn("VCAMHardwareVideoDecoder", rtsp)
+        self.assertIn("[[VCAMHardwareVideoDecoder alloc] initWithCodecParameters:stream->codecpar]", rtsp)
+        self.assertIn("decodePacketsWithHardwareSession", rtsp)
+        self.assertIn("hardware decode disabled; using FFmpeg software decoder", rtsp)
+        self.assertIn("gVCAMRTSPHardwareSessionsDisabled", rtsp)
+        self.assertIn("acceptDecodedPixelBuffer:output hardware:YES", rtsp)
         self.assertIn("avcodec_find_decoder", rtsp)
         self.assertIn("avcodec_send_packet(codecContext, packet)", rtsp)
         self.assertIn("avcodec_receive_frame(codecContext, frame)", rtsp)
         self.assertIn("codecContext->thread_count = 0", rtsp)
         self.assertIn("enqueueLatestSoftwareFrame", rtsp)
-        self.assertNotIn("VCAMHardwareVideoDecoder", rtsp)
-        self.assertNotIn("decodeOneHardwareSession", rtsp)
+        self.assertIn("acceptDecodedPixelBuffer:pixelBuffer hardware:NO", rtsp)
         self.assertNotIn("VCAMRequestVideoToolboxFormat", rtsp)
         self.assertNotIn("AV_PIX_FMT_VIDEOTOOLBOX", rtsp)
         self.assertNotIn("AV_HWDEVICE_TYPE_VIDEOTOOLBOX", rtsp)
@@ -382,13 +391,16 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("stalledOut", session)
         self.assertNotIn("useHardware", session)
 
-    def test_rtsp_reconnect_loop_stays_software_only(self) -> None:
+    def test_rtsp_reconnect_loop_stays_decoder_agnostic(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
         reconnect = stream.split("- (void)decodeReconnectLoop", 1)[1].split(
             "- (void)acceptDecodedPixelBuffer", 1
         )[0]
+        # The reconnect loop only drives sessions; decode-path selection lives
+        # inside decodeOneFFmpegSession. The earlier per-session hardware
+        # retry state machines must not come back.
         self.assertIn("decodeOneFFmpegSession", reconnect)
         self.assertNotIn("decodeOneSession", reconnect)
         self.assertNotIn("hardwareRejected", stream)
@@ -428,7 +440,7 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertFalse((ROOT / "Sources" / "Sources" / "VCAMHLSStreamSource.m").exists())
 
 
-    def test_daemon_software_decode_is_the_only_rtsp_path(self) -> None:
+    def test_daemon_is_the_only_rtsp_host(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
             encoding="utf-8"

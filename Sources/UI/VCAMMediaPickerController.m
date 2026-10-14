@@ -1277,7 +1277,7 @@ static void VCAMSampleSelfCPUWindowForSampler(void) {
         sourceTitle = @"HLS 原生播放已启用";
         detail = values[@"hlsURL"] ?: @"未配置地址";
     } else if (enabled && [source isEqualToString:@"rtsp"]) {
-        sourceTitle = @"RTSP 软件解码已启用";
+        sourceTitle = @"RTSP 推流已启用";
         detail = values[@"rtspURL"] ?: @"未设置地址";
     }
     NSInteger rotation = [values[@"rotationDegrees"] integerValue] % 360;
@@ -1298,7 +1298,10 @@ static void VCAMSampleSelfCPUWindowForSampler(void) {
     } else if ([streamStatus[@"receiving"] boolValue]) {
         NSString *playbackKind = @"原始帧";
         if ([source isEqualToString:@"rtsp"]) {
-            playbackKind = @"FFmpeg 软件解码";
+            // The stream source tags every published frame with its real
+            // decode path; report the measured value, not a static claim.
+            playbackKind = [streamStatus[@"decodeHardware"] boolValue]
+                ? @"FFmpeg 解复用 + 硬件解码" : @"FFmpeg 软件解码";
         } else if ([source isEqualToString:@"hls"] ||
                    [source isEqualToString:@"local"]) {
             // AVPlayer does not expose a public per-playback hardware-decoder
