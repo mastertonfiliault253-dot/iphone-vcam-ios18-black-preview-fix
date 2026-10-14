@@ -886,10 +886,9 @@ static BOOL pathExists(NSString *p) {
         CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
         CMTime maxDuration = device.activeFormat.maxExposureDuration;
         if (CMTIME_COMPARE_INLINE(duration, >, maxDuration)) { duration = maxDuration; }
-        // min/maxVideoISO 在 16.5 SDK ObjC 头没有（同 maxAvailableTorchLevel 先例），KVC 运行时读取。
-        double minISO = 1.0, maxISO = 6400.0;
-        minISO = [[device.activeFormat valueForKey:@"minVideoISO"] doubleValue];
-        maxISO = [[device.activeFormat valueForKey:@"maxVideoISO"] doubleValue];
+        // ISO 范围用公开属性 minISO/maxISO（iOS 7+；带 Video 前缀的 ISO 属性不存在，真机 KVC 实证）。
+        double minISO = device.activeFormat.minISO;
+        double maxISO = device.activeFormat.maxISO;
         double iso = isoTarget;
         if (iso < minISO) { iso = minISO; }
         if (iso > maxISO) { iso = maxISO; }

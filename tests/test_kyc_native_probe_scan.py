@@ -266,12 +266,12 @@ class AppContractTests(unittest.TestCase):
             "setRearExposurePulse", "setExposureTargetBias",
             "setExposureModeCustomWithDuration", '"exposurePulse"',
             'lumaWindowLabel = @"exposure"', 'summarizeLumaWindow:@"exposure"',
-            # min/maxVideoISO 在 16.5 SDK ObjC 头没有（CI 编译错实证），必须 KVC 运行时读取。
-            'valueForKey:@"minVideoISO"', 'valueForKey:@"maxVideoISO"',
+            # ISO 范围用公开属性 minISO/maxISO（minVideoISO 不存在，真机 KVC 实证）。
+            "activeFormat.minISO", "activeFormat.maxISO",
         ]:
             self.assertIn(api, src)
-        self.assertNotIn("activeFormat.minVideoISO)", src)
-        self.assertNotIn("activeFormat.maxVideoISO)", src)
+        self.assertNotIn("minVideoISO", src)
+        self.assertNotIn("maxVideoISO", src)
 
     def test_mini_runner_textbook_reference_exists(self):
         # 零帧根因隔离用：与 ProbeRunner 完全隔离的最小 AVCapture 参考实现，
