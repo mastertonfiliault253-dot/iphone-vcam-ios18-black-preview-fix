@@ -136,44 +136,74 @@ static BOOL VCAMAverageCGImageInto(int *rgbOut, CGImageRef image) {
 static BOOL VCAMScreenshotManagerInFlight = NO;
 static int64_t VCAMScreenshotManagerInFlightMs = 0;
 
+// 自诊断：iOS 18 上 SBScreenshotManager 的方法形制未公开确认，一次性把实际存在的
+// screenshot 相关选择子打进日志（类方法+实例方法），下一轮据此精确适配。
+static NSString *VCAMScreenshotManagerShape(Class cls) {
+    if (cls == nil) return @"class missing";
+    NSMutableArray<NSString *> *names = [NSMutableArray new];
+    Class cursors[] = { cls, object_getClass(cls) };
+    for (int c = 0; c < 2 && names.count < 40; c++) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(cursors[c], &count);
+        for (unsigned int i = 0; i < count && names.count < 40; i++) {
+            NSString *name = NSStringFromSelector(method_getName(methods[i]));
+            if ([name rangeOfString:@"creenshot"].location != NSNotFound ||
+                [name isEqualToString:@"sharedInstance"]) {
+                [names addObject:[NSString stringWithFormat:@"%s:%@",
+                                  c == 0 ? "i" : "c", name]];
+            }
+        }
+        free(methods);
+    }
+    return names.count ? [names componentsJoinedByString:@"|"] : @"no screenshot selectors";
+}
+
 static BOOL VCAMRequestScreenshotAverage(void) {
     Class managerClass = objc_getClass("SBScreenshotManager");
     SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
+    static BOOL shapeLogged = NO;
+    NSString *shape = nil;
     if (managerClass == nil ||
         ![((NSObject *)managerClass) respondsToSelector:sharedSelector]) {
-        return NO;
-    }
-    id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
-    SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
-    if (![manager respondsToSelector:takeSelector]) {
-        return NO;
-    }
-    VCAMScreenshotManagerInFlight = YES;
-    VCAMScreenshotManagerInFlightMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
-    void (^completion)(CGImageRef, NSDictionary *) = ^(CGImageRef image, NSDictionary *info) {
-        (void)info;
-        VCAMScreenshotManagerInFlight = NO;
-        int rgb[3] = {0, 0, 0};
-        if (VCAMAverageCGImageInto(rgb, image)) {
-            VCAMPublishScreenTintSample(rgb[0], rgb[1], rgb[2]);
-            static int lastLoggedRGB[3] = {-1, -1, -1};
-            static CFAbsoluteTime lastSampleLoggedAt = 0;
-            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            int delta = abs(rgb[0] - lastLoggedRGB[0]) +
-                        abs(rgb[1] - lastLoggedRGB[1]) +
-                        abs(rgb[2] - lastLoggedRGB[2]);
-            if (delta > 24 || now - lastSampleLoggedAt > 30.0) {
-                lastLoggedRGB[0] = rgb[0];
-                lastLoggedRGB[1] = rgb[1];
-                lastLoggedRGB[2] = rgb[2];
-                lastSampleLoggedAt = now;
-                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                    @"screen-tint sample rgb=%d,%d,%d path=screenshot", rgb[0], rgb[1], rgb[2]]];
-            }
+        if (!shapeLogged) { shape = VCAMScreenshotManagerShape(managerClass); shapeLogged = YES; }
+    } else {
+        id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
+        if (manager != nil && [manager respondsToSelector:takeSelector]) {
+            VCAMScreenshotManagerInFlight = YES;
+            VCAMScreenshotManagerInFlightMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+            void (^completion)(CGImageRef, NSDictionary *) = ^(CGImageRef image, NSDictionary *info) {
+                (void)info;
+                VCAMScreenshotManagerInFlight = NO;
+                int rgb[3] = {0, 0, 0};
+                if (VCAMAverageCGImageInto(rgb, image)) {
+                    VCAMPublishScreenTintSample(rgb[0], rgb[1], rgb[2]);
+                    static int lastLoggedRGB[3] = {-1, -1, -1};
+                    static CFAbsoluteTime lastSampleLoggedAt = 0;
+                    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                    int delta = abs(rgb[0] - lastLoggedRGB[0]) +
+                                abs(rgb[1] - lastLoggedRGB[1]) +
+                                abs(rgb[2] - lastLoggedRGB[2]);
+                    if (delta > 24 || now - lastSampleLoggedAt > 30.0) {
+                        lastLoggedRGB[0] = rgb[0];
+                        lastLoggedRGB[1] = rgb[1];
+                        lastLoggedRGB[2] = rgb[2];
+                        lastSampleLoggedAt = now;
+                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                            @"screen-tint sample rgb=%d,%d,%d path=screenshot", rgb[0], rgb[1], rgb[2]]];
+                    }
+                }
+            };
+            ((void (*)(id, SEL, id))objc_msgSend)(manager, takeSelector, completion);
+            return YES;
         }
-    };
-    ((void (*)(id, SEL, id))objc_msgSend)(manager, takeSelector, completion);
-    return YES;
+        if (!shapeLogged) { shape = VCAMScreenshotManagerShape([manager class] ?: managerClass); shapeLogged = YES; }
+    }
+    if (shape != nil) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"screen-tint screenshot manager shape: %@", shape]];
+    }
+    return NO;
 }
 
 // 把当前显示抓进缓存的全屏 CALayer 并 32×32 缩采样求平均 RGB。
