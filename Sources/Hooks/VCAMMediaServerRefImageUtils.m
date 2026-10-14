@@ -996,13 +996,15 @@ static int VCAMConfiguredMetalRendererRequested(void) {
     return requested;
 }
 
-// Metal 上下文探针验证：8x8 小图渲染，1.5s watchdog 取消；等待方 2.5s 封顶，
-// 即使 cancel 无效也不无限等待（滞留线程不影响进程）。通过才返回可用上下文，
-// 帧路径不会遇到未验证的 Metal 上下文（ponytail 挂起事故的正确性边界）。
+// Metal 上下文探针验证：8x8 小图渲染在独立队列等待，2.5s 封顶（16.5 SDK 无
+// CIContext contextWithMetalDevice: 选择器，用 UseSoftwareRenderer=NO 表达 GPU
+// 上下文；CIRenderTask 无 cancel，超时即弃用该上下文——探针线程滞留一次无碍，
+// 进程级不采用即可）。通过才返回可用上下文，帧路径不会遇到未验证的 Metal
+// 上下文（ponytail 挂起事故的正确性边界）。
 static CIContext *VCAMCreateProbedMetalContext(id<MTLDevice> device) {
-    CIContext *candidate = [CIContext contextWithMetalDevice:device
-                                                     format:kCIFormatARGB8
-                                                 colorSpace:VCAMStandardColorSpace];
+    (void)device;
+    CIContext *candidate =
+        [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
     if (candidate == nil) return nil;
     CVPixelBufferRef probeBuffer = NULL;
     if (CVPixelBufferCreate(kCFAllocatorDefault, 8, 8, kCVPixelFormatType_32BGRA,
@@ -1029,10 +1031,6 @@ static CIContext *VCAMCreateProbedMetalContext(id<MTLDevice> device) {
             BOOL ok = [task waitUntilCompletedAndReturnError:&waitError] != nil;
             dispatch_semaphore_signal(semaphore);
             if (ok) completed = YES;   // 写后 signal，读在 wait 返回之后，无竞争
-        });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            [task cancel];
         });
         if (dispatch_semaphore_wait(
                 semaphore, dispatch_time(DISPATCH_TIME_NOW,
@@ -1233,7 +1231,7 @@ static CIImage *VCAMApplyChannelGains(CIImage *image) {
         kCIInputImageKey: image,
         @"inputRVector": [CIVector vectorWithX:factor[0] Y:0 Z:0 W:0],
         @"inputGVector": [CIVector vectorWithX:0 Y:factor[1] Z:0 W:0],
-        @"inputBVector": [CIVector vectorWithX:0 Y:factor[2] W:0],
+        @"inputBVector": [CIVector vectorWithX:0 Y:0 Z:factor[2] W:0],
         @"inputAVector": [CIVector vectorWithX:0 Y:0 Z:0 W:1],
         @"inputBiasVector": [CIVector vectorWithX:0 Y:0 Z:0 W:0],
     }];
@@ -2819,18 +2817,38 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                              toDestination:destination
                                                    atPoint:CGPointZero
                                                      error:&startError];
-        if (task != nil && __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
-            // Metal 帧路径 watchdog：1.5s 未完成即取消（本帧失败可接受，
-            // 挂起不可接受）。失败处理在下方：永久回退软件上下文。
-            CIRenderTask *watchedTask = task;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                [watchedTask cancel];
-            });
-        }
         NSError *completionError = nil;
-        CIRenderInfo *renderInfo = task == nil ? nil
-            : [task waitUntilCompletedAndReturnError:&completionError];
+        CIRenderInfo *renderInfo = nil;
+        if (task != nil) {
+            if (__sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
+                // Metal 帧路径有界等待：CIRenderTask 没有 cancel，把阻塞等待放到
+                // 独立串行渲染队列，主路径 1.5s 超时即返回（超时=本帧失败，触发
+                // 下方永久回退软件；滞留队列至多一个、其持有的像素缓冲一次性
+                // 泄漏 ~8MB，远小于每帧被挂起阻塞的风险）。
+                static dispatch_queue_t metalRenderQueue;
+                static dispatch_once_t metalQueueToken;
+                dispatch_once(&metalQueueToken, ^{
+                    metalRenderQueue = dispatch_queue_create("com.codex.vcam.metal-render",
+                                                             DISPATCH_QUEUE_SERIAL);
+                });
+                dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+                __block CIRenderInfo *completedInfo = nil;
+                __block NSError *waitError = nil;
+                dispatch_async(metalRenderQueue, ^{
+                    completedInfo = [task waitUntilCompletedAndReturnError:&waitError];
+                    dispatch_semaphore_signal(semaphore);
+                });
+                if (dispatch_semaphore_wait(
+                        semaphore, dispatch_time(DISPATCH_TIME_NOW,
+                                                (int64_t)(1.5 * NSEC_PER_SEC))) == 0) {
+                    renderInfo = completedInfo;
+                    completionError = waitError;
+                }
+                // 超时保持 renderInfo=NULL：本帧按失败处理，下一帧起走软件上下文。
+            } else {
+                renderInfo = [task waitUntilCompletedAndReturnError:&completionError];
+            }
+        }
         BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
         rendered = coreImageRendered &&

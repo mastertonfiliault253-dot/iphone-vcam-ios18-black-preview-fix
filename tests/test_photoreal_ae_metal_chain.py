@@ -58,9 +58,12 @@ class PhotorealAEMetalChainTests(unittest.TestCase):
         # 缺省仍软件渲染（ponytail 历史结论不因实验翻转缺省）。
         self.assertIn("kCIContextUseSoftwareRenderer", source)
         self.assertIn('VCAMConfigValueSegment(contents, "metalRenderer", &end)', source)
-        # 采用前必须探针验证；帧路径 watchdog；任何真实帧失败永久回退。
+        # 采用前必须探针验证；帧路径有界等待（CIRenderTask 无 cancel，16.5 SDK
+        # 也无 contextWithMetalDevice:——用 UseSoftwareRenderer=NO + 独立队列超时）；
+        # 任何真实帧失败永久回退。
         self.assertIn("VCAMCreateProbedMetalContext", source)
-        self.assertIn("[task cancel]", source)
+        self.assertIn("kCIContextUseSoftwareRenderer: @NO", source)
+        self.assertIn("com.codex.vcam.metal-render", source)
         self.assertIn("permanently falling back to software context", source)
         self.assertIn("VCAMMetalContextActive", source)
 
