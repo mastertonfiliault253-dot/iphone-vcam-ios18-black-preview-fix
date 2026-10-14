@@ -176,6 +176,48 @@ static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
     return names.count ? [names componentsJoinedByString:@" | "] : @"no screenshot classes";
 }
 
+// 候选 1 实现：从 SBScreenshotManager 的 eligible providers 里取主屏 provider 的
+// captureScreenshot（真机类扫描证实 _SBMainScreenScreenshotProvider/_SBDefaultScreenshotProvider
+// 有该同步方法）。返回 UIImage 则取其 CGImage 求平均。任一环节不满足返回 NO。
+static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) {
+    Class managerClass = objc_getClass("SBScreenshotManager");
+    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    if (managerClass == nil ||
+        ![((NSObject *)managerClass) respondsToSelector:sharedSelector]) {
+        if (failureReasonOut) *failureReasonOut = @"screenshot manager shared missing";
+        return NO;
+    }
+    id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
+    SEL fetchSelector =
+        NSSelectorFromString(@"_fetchEligibleScreenshotProvidersForSnapshotting");
+    if (manager == nil || ![manager respondsToSelector:fetchSelector]) {
+        if (failureReasonOut) *failureReasonOut = @"fetch providers missing";
+        return NO;
+    }
+    id providers = ((id (*)(id, SEL))objc_msgSend)(manager, fetchSelector);
+    if (![providers isKindOfClass:NSArray.class] || [(NSArray *)providers count] == 0) {
+        if (failureReasonOut) *failureReasonOut = @"no eligible providers";
+        return NO;
+    }
+    SEL captureSelector = NSSelectorFromString(@"captureScreenshot");
+    for (id provider in (NSArray *)providers) {
+        if (![provider respondsToSelector:captureSelector]) continue;
+        id captured = ((id (*)(id, SEL))objc_msgSend)(provider, captureSelector);
+        CGImageRef image = NULL;
+        if ([captured isKindOfClass:UIImage.class]) {
+            image = ((UIImage *)captured).CGImage;
+        } else if ([captured isKindOfClass:NSValue.class]) {
+            // NSValue 包装 CGImage（some providers 返回值形制）。
+            image = (CGImageRef)[(NSValue *)captured pointerValue];
+        }
+        if (image != NULL && VCAMAverageCGImageInto(rgbOut, image)) {
+            return YES;
+        }
+    }
+    if (failureReasonOut) *failureReasonOut = @"no provider produced image";
+    return NO;
+}
+
 static BOOL VCAMRequestScreenshotAverage(void) {
     // 候选 0：UIKit 历史私有符号 UIGetScreenImage（dlsym 探测，不存在则跳过）。
     static UIImage *(*getScreenImageIMP)(void);
@@ -201,6 +243,30 @@ static BOOL VCAMRequestScreenshotAverage(void) {
                 return YES;
             }
         }
+    }
+    // 候选 1（iOS 18 实测通道）：屏幕截图提供器。真机类扫描显示
+    // SBScreenshotManager 在 iOS 18 只有 saveScreenshots*（存相册），但它经
+    // _fetchEligibleScreenshotProvidersForSnapshotting 持有的
+    // _SBMainScreenScreenshotProvider 有同步 captureScreenshot——这才是取屏入口。
+    int providerRGB[3] = {0, 0, 0};
+    NSString *providerReason = nil;
+    if (VCAMProviderScreenCapture(providerRGB, &providerReason)) {
+        VCAMPublishScreenTintSample(providerRGB[0], providerRGB[1], providerRGB[2]);
+        static int lastProviderLoggedRGB[3] = {-1, -1, -1};
+        static CFAbsoluteTime lastProviderLogAt = 0;
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        int delta = abs(providerRGB[0] - lastProviderLoggedRGB[0]) +
+                    abs(providerRGB[1] - lastProviderLoggedRGB[1]) +
+                    abs(providerRGB[2] - lastProviderLoggedRGB[2]);
+        if (delta > 24 || now - lastProviderLogAt > 30.0) {
+            lastProviderLoggedRGB[0] = providerRGB[0];
+            lastProviderLoggedRGB[1] = providerRGB[1];
+            lastProviderLoggedRGB[2] = providerRGB[2];
+            lastProviderLogAt = now;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"screen-tint sample rgb=%d,%d,%d path=provider", providerRGB[0], providerRGB[1], providerRGB[2]]];
+        }
+        return YES;
     }
     Class managerClass = objc_getClass("SBScreenshotManager");
     SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
@@ -467,10 +533,11 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
     });
 }
 
-// 屏幕色采样循环（仅 SpringBoard 宿主）：0.5s 一次；开关/模式不满足时发布
+// 屏幕色采样循环（仅 SpringBoard 宿主）：1.0s 一次（provider 通道是整屏截图，
+// 0.5s 过重；活体色脉冲每档 ≥1s，1Hz 足够）。开关/模式不满足时发布
 // 一次"清零"（valid=0）后空转，不重复写。诊断日志只在色变跳变或 30s 心跳时写。
 - (void)startScreenTintSampler {
-    static const NSTimeInterval sampleInterval = 0.5;
+    static const NSTimeInterval sampleInterval = 1.0;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(sampleInterval * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{

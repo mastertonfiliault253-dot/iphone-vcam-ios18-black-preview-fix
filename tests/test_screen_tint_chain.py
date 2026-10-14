@@ -48,10 +48,13 @@ class ScreenTintChainTests(unittest.TestCase):
         self.assertIn('"com.codex.vcam.ios18.screen-tint.state"', controller)
         # 抓屏走 dlsym 的私有符号，不允许直接链接期依赖（缺失时降级而不是崩）。
         self.assertIn('dlsym(RTLD_DEFAULT, "CARenderServerRenderDisplay")', controller)
-        # iOS 18 实测 CARenderServerRenderDisplay 的 layer.contents 为空，
-        # 首选回退=SpringBoard 自身截图通道 SBScreenshotManager。
+        # iOS 18 实测 CARenderServerRenderDisplay 的 layer.contents 为空；
+        # SBScreenshotManager 只剩 saveScreenshots*（存相册），真机类扫描证实
+        # 取屏入口=其 eligible providers 的 captureScreenshot（_SBMainScreenScreenshotProvider）。
         self.assertIn('objc_getClass("SBScreenshotManager")', controller)
-        self.assertIn('takeScreenshotWithCompletionHandler:', controller)
+        self.assertIn('_fetchEligibleScreenshotProvidersForSnapshotting', controller)
+        self.assertIn('captureScreenshot', controller)
+        self.assertIn('path=provider', controller)
         self.assertIn("startScreenTintSampler", controller)
         # 采样只允许挂在 SpringBoard 宿主（保持 filter 收缩结论：零 App 注入）。
         self.assertIn("if ([self isSpringBoardHost]) {\n            BOOL enabled = "
