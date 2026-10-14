@@ -2803,8 +2803,26 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = [[image imageByCompositingOverImage:background]
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
+        // 增益函数在无节点时原样返回入参对象；两处理后仍是同一对象
+        // ⇒ 亮度增益 ≤0.001 且 AE/屏幕染色都不活跃，下面快速路径据此判"恒等"。
+        CIImage *preGainImage = image;
         image = VCAMApplyPhotorealGain(image);
         image = VCAMApplyChannelGains(image);
+
+        // 实时同尺寸零增益快速路径：源=目标尺寸的 BGRA、scale=1.0、无旋转/镜像
+        // 且无增益 filter 节点时，上面整张 CI 图在像素上等价"源→目标直通"。跳过
+        // CIRenderTask，用合成链最后一级同一写回函数直接转源缓冲——真机 rear
+        // 1080p 全幅合成 p50 ~32ms 的主要成本（软件 CoreImage 吞吐上限）只在这
+        // 种场景消掉；颜色语义与常规路径完全一致，输出质量不变。
+        BOOL passthroughFastPath = image == preGainImage &&
+            realtimeCompensation && planarTarget && !compressedTarget &&
+            !webKitRotatedForStorage && !webKitFrontPresentation &&
+            fabs((double)scale - 1.0) < 0.001 &&
+            renderWidth == targetWidth && renderHeight == targetHeight &&
+            !CVPixelBufferIsPlanar(ciSourceBuffer) &&
+            CVPixelBufferGetPixelFormatType(ciSourceBuffer) == kCVPixelFormatType_32BGRA &&
+            CVPixelBufferGetWidth(ciSourceBuffer) == targetWidth &&
+            CVPixelBufferGetHeight(ciSourceBuffer) == targetHeight;
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];
@@ -2812,7 +2830,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         destination.colorSpace = VCAMStandardColorSpace;
         NSError *startError = nil;
         CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
-        CIRenderTask *task = [VCAMContext startTaskToRender:image
+        CIRenderTask *task = passthroughFastPath ? nil
+            : [VCAMContext startTaskToRender:image
                                                   fromRect:image.extent
                                              toDestination:destination
                                                    atPoint:CGPointZero
@@ -2851,18 +2870,31 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         }
         BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
-        rendered = coreImageRendered &&
-            (compressedTarget
-                ? VCAMTransferIntoCompressedTarget(
-                    stagingBuffer, targetBuffer, compressedReplacementBuffer)
-                : (!planarTarget ||
-                   (planarComposedWidth != targetWidth ||
-                    planarComposedHeight != targetHeight
-                       ? VCAMCopyScaledBGRAToPlanarTarget(
-                           stagingBuffer, planarComposedWidth, planarComposedHeight,
-                           targetBuffer)
-                       : VCAMTransferBGRAIntoPlanarTarget(
-                           stagingBuffer, targetBuffer))));
+        if (passthroughFastPath) {
+            static volatile int passthroughFastPathLogs = 0;
+            int fastCount = __sync_add_and_fetch(&passthroughFastPathLogs, 1);
+            if (fastCount <= 3 || fastCount % 300 == 0) {
+                char message[160] = {0};
+                snprintf(message, sizeof(message),
+                         "bgra passthrough fast path count=%d target=%zux%zu",
+                         fastCount, targetWidth, targetHeight);
+                VCAMRefLog(message);
+            }
+            rendered = VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer);
+        } else {
+            rendered = coreImageRendered &&
+                (compressedTarget
+                    ? VCAMTransferIntoCompressedTarget(
+                        stagingBuffer, targetBuffer, compressedReplacementBuffer)
+                    : (!planarTarget ||
+                       (planarComposedWidth != targetWidth ||
+                        planarComposedHeight != targetHeight
+                           ? VCAMCopyScaledBGRAToPlanarTarget(
+                               stagingBuffer, planarComposedWidth, planarComposedHeight,
+                               targetBuffer)
+                           : VCAMTransferBGRAIntoPlanarTarget(
+                               stagingBuffer, targetBuffer))));
+        }
         if (rendered && previewCacheEligible) {
             VCAMRememberPreviewTarget(
                 targetBuffer, presentation, planarTarget, metadata,
@@ -2888,14 +2920,15 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             *replacementBufferOut = CVPixelBufferRetain(compressedReplacementBuffer);
         }
         elapsed = CFAbsoluteTimeGetCurrent() - started;
-        if (!coreImageRendered && __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
+        if (!coreImageRendered && !passthroughFastPath &&
+            __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
             // Metal 真实帧首次失败（含 watchdog 取消）：永久回退软件上下文。
             // 本帧不重试——单帧失败远小于"每帧都可能挂起"的风险；下一帧起走软件。
             (void)__sync_lock_test_and_set(&VCAMMetalContextActive, 0);
             VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
             VCAMRefLog("metal render failed; permanently falling back to software context");
         }
-        if (!coreImageRendered) {
+        if (!coreImageRendered && !passthroughFastPath) {
             static dispatch_once_t renderFailureToken;
             dispatch_once(&renderFailureToken, ^{
                 NSString *message = [NSString stringWithFormat:

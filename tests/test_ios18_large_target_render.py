@@ -51,9 +51,23 @@ class LargeTargetRenderTests(unittest.TestCase):
         # 未钳制（尺寸相等）时仍走原 VCAMTransferBGRAIntoPlanarTarget 路径。
         self.assertIn(
             "VCAMTransferBGRAIntoPlanarTarget(\n"
-            "                           stagingBuffer, targetBuffer)",
+            "                               stagingBuffer, targetBuffer)",
             self.source,
         )
+
+    def test_realtime_identity_composition_bypasses_render_task(self) -> None:
+        # 2026-10-14 发热/丢帧优化：实时同尺寸零增益时整张 CI 图等价直通——
+        # 跳过 CIRenderTask，用同一写回函数直接转源缓冲（rear 1080p 全幅
+        # 软渲染 p50 ~32ms 的主要成本）。恒等判定依赖增益函数无节点时
+        # 原样返回入参对象（image == preGainImage）。
+        self.assertIn("BOOL passthroughFastPath = image == preGainImage", self.source)
+        self.assertIn("CIRenderTask *task = passthroughFastPath ? nil", self.source)
+        self.assertIn(
+            "rendered = VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer);",
+            self.source,
+        )
+        # 快速路径命中不是渲染失败：不得触发 Metal 永久回退或失败日志。
+        self.assertEqual(2, self.source.count("!coreImageRendered && !passthroughFastPath"))
 
 
 if __name__ == "__main__":
