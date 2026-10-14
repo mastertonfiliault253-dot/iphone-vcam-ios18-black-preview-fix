@@ -256,10 +256,18 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("level-fallback", src)
         # 时序契约：后置阶段在高低两阶段之后、finishProbe 之前；两偏移成对出现。
         self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 3)", src)
-        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 13)", src)
+        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 22)", src)
         # 亮度采样必须先于 phase<0 早退（否则后置阶段采不到帧）。
         self.assertLess(src.index("if (self.lumaWindowActive &&"),
                         src.index("if (self.phase < 0) { return; }"))
+        # AE 端到端触发段（O 轮）：公共 API 显式设曝光命中 vcam 控制路径 hook；
+        # 独立亮度窗 lumaWindow_exposure 验证替换画面随 AE 增益变亮/回落。
+        for api in [
+            "setRearExposurePulse", "setExposureTargetBias",
+            "setExposureModeCustomWithDuration", '"exposurePulse"',
+            'lumaWindowLabel = @"exposure"', 'summarizeLumaWindow:@"exposure"',
+        ]:
+            self.assertIn(api, src)
 
     def test_mini_runner_textbook_reference_exists(self):
         # 零帧根因隔离用：与 ProbeRunner 完全隔离的最小 AVCapture 参考实现，

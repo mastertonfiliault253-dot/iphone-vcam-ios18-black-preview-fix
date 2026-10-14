@@ -100,6 +100,7 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, assign) BOOL lumaWindowActive;
 @property(nonatomic, assign) int lumaFrameCounter;
 @property(nonatomic, strong) NSMutableArray *lumaSamples;  // {t,luma,win} 仅 sampleQueue
+@property(nonatomic, copy) NSString *lumaWindowLabel;      // 非 nil 时覆盖 win 标签（exposure 窗）
 @end
 
 @implementation ProbeRunner
@@ -601,7 +602,7 @@ static BOOL pathExists(NSString *p) {
                                  (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 3) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me beginRearTorchPhase]; });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 13) * NSEC_PER_SEC)),
+                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 22) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me finishProbe]; });
 }
 
@@ -795,6 +796,27 @@ static BOOL pathExists(NSString *p) {
                 me.lumaWindowActive = NO;
                 [me summarizeLumaWindow:@"rear"];
             });
+            // AE 端到端触发段：显式设手动曝光（KYC App 锁曝光同款行为）命中 vcam 控制路径
+            // hook（custom/bias）；lumaWindow_exposure 验证替换画面亮度随 AE 增益跟随
+            // （ISO 400→800 应出现变亮阶跃，恢复 ISO 400 应回落）。
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.5 * NSEC_PER_SEC)), me.sampleQueue, ^{
+                me.lumaFrameCounter = 0;
+                me.lumaWindowLabel = @"exposure";
+                me.lumaWindowActive = YES;
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.5 * NSEC_PER_SEC)), me.sessionQueue,
+                           ^{ [me setRearExposurePulse:400 tag:@"setA"]; });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.5 * NSEC_PER_SEC)), me.sessionQueue,
+                           ^{ [me setRearExposurePulse:800 tag:@"setB"]; });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(16 * NSEC_PER_SEC)), me.sessionQueue,
+                           ^{ [me setRearExposurePulse:400 tag:@"restoreA"]; });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(17 * NSEC_PER_SEC)), me.sessionQueue,
+                           ^{ [me setRearExposureBias:-1.0 tag:@"biasDown"]; });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(18.5 * NSEC_PER_SEC)), me.sampleQueue, ^{
+                me.lumaWindowActive = NO;
+                me.lumaWindowLabel = nil;
+                [me summarizeLumaWindow:@"exposure"];
+            });
         });
     });
 }
@@ -849,6 +871,70 @@ static BOOL pathExists(NSString *p) {
     });
 }
 
+// —— AE 端到端触发：显式设手动曝光（AVCaptureDevice 公共 API，KYC App 锁曝光同款），
+// 命中 vcam 侧对私有 setter 的控制路径 hook。实际取值钳制到 activeFormat 范围并回报。
+- (void)setRearExposurePulse:(double)isoTarget tag:(NSString *)tag {
+    AVCaptureDevice *device = self.rearDevice;
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"requestedISO"] = @(isoTarget);
+    if (![device lockForConfiguration:nil]) {
+        entry[@"lockFail"] = @YES;
+        [self mergeExposurePulseEntry:tag entry:entry];
+        return;
+    }
+    @try {
+        CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
+        CMTime maxDuration = device.activeFormat.maxExposureDuration;
+        if (CMTIME_COMPARE_INLINE(duration, >, maxDuration)) { duration = maxDuration; }
+        double iso = isoTarget;
+        if (iso < device.activeFormat.minVideoISO) { iso = device.activeFormat.minVideoISO; }
+        if (iso > device.activeFormat.maxVideoISO) { iso = device.activeFormat.maxVideoISO; }
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        [device setExposureModeCustomWithDuration:duration ISO:(float)iso
+                                completionHandler:^(CMTime syncTime) { (void)syncTime; dispatch_semaphore_signal(done); }];
+        long waited = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
+        entry[@"ok"] = @(waited == 0);
+        entry[@"iso"] = @(iso);
+        entry[@"exposureUs"] = @(round(CMTimeGetSeconds(duration) * 1e6));
+    } @catch (NSException *e) {
+        entry[@"exception"] = e.reason ?: e.name;
+    }
+    [device unlockForConfiguration];
+    [self mergeExposurePulseEntry:tag entry:entry];
+}
+
+- (void)setRearExposureBias:(double)biasEV tag:(NSString *)tag {
+    AVCaptureDevice *device = self.rearDevice;
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"biasEV"] = @(biasEV);
+    if (![device lockForConfiguration:nil]) {
+        entry[@"lockFail"] = @YES;
+        [self mergeExposurePulseEntry:tag entry:entry];
+        return;
+    }
+    @try {
+        [device setExposureTargetBias:(float)biasEV completionHandler:nil];
+        entry[@"ok"] = @YES;
+    } @catch (NSException *e) {
+        entry[@"exception"] = e.reason ?: e.name;
+    }
+    [device unlockForConfiguration];
+    [self mergeExposurePulseEntry:tag entry:entry];
+}
+
+- (void)mergeExposurePulseEntry:(NSString *)tag entry:(NSDictionary *)entry {
+    dispatch_async(self.sampleQueue, ^{
+        NSMutableDictionary *pulse = (NSMutableDictionary *)self.report[@"exposurePulse"];
+        if (![pulse isKindOfClass:NSMutableDictionary.class]) {
+            pulse = [NSMutableDictionary dictionary];
+            self.report[@"exposurePulse"] = pulse;
+        }
+        NSMutableDictionary *item = [entry mutableCopy];
+        item[@"t"] = @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 100) / 100.0);
+        pulse[tag] = item;
+    });
+}
+
 #pragma mark - sample buffer
 
 - (void)captureOutput:(AVCaptureOutput *)out
@@ -862,7 +948,7 @@ static BOOL pathExists(NSString *p) {
             [self.lumaSamples addObject:@{
                 @"t": @(round((CFAbsoluteTimeGetCurrent() - self.startClock) * 10000) / 10000),
                 @"luma": @(round(luma * 100) / 100.0),
-                @"win": self.rearTorchActive ? @"rear" : @"front",
+                @"win": self.lumaWindowLabel ?: (self.rearTorchActive ? @"rear" : @"front"),
             }];
         }
     }
