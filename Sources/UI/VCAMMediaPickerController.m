@@ -8,6 +8,8 @@
 #import <limits.h>
 #import <math.h>
 #import <notify.h>
+#import <dlfcn.h>
+#import <stdlib.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <unistd.h>
@@ -71,6 +73,91 @@ static BOOL VCAMPublishedVirtualModeActive(void) {
 static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void *observer,
                                            CFStringRef name, const void *object,
                                            CFDictionaryRef userInfo);
+
+// —— 路线 2：屏幕色采样器（与小白点同宿主=SpringBoard，零 App 注入）——
+// KYC"三色活体"用屏幕颜色改变环境光；该信号不经过任何相机 API，相机侧不可观测。
+// SpringBoard 进程可以用 CARenderServerRenderDisplay 把当前显示渲染进全屏 CALayer，
+// 取其 contents 缩采样求平均色，经 notifyd 低频发布给 cameracaptured 合成链做染色。
+// 只在"虚拟模式开 && 三色调光开关开"时运行（0.5s 采样、32×32 缩采样）。
+// 状态编码 state = (tick<<32) | (1<<31) | (r<<16) | (g<<8) | b：每次发布 tick+1，
+// 相机侧以 tick 新鲜度判断采样器是否存活（2s 未推进=无数据，不染色）。
+static int VCAMScreenTintStateToken = NOTIFY_TOKEN_INVALID;
+static uint64_t VCAMScreenTintPublishTick = 0;
+static BOOL VCAMScreenTintCleared = YES;
+
+static void VCAMPublishScreenTintSample(int r, int g, int b) {
+    if (VCAMScreenTintStateToken == NOTIFY_TOKEN_INVALID &&
+        notify_register_check("com.codex.vcam.ios18.screen-tint.state",
+                              &VCAMScreenTintStateToken) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    VCAMScreenTintPublishTick += 1;
+    uint64_t encoded = (VCAMScreenTintPublishTick << 32) | (1ull << 31) |
+                       ((uint64_t)(r & 0xFF) << 16) | ((uint64_t)(g & 0xFF) << 8) |
+                       (uint64_t)(b & 0xFF);
+    notify_set_state(VCAMScreenTintStateToken, encoded);
+    VCAMScreenTintCleared = NO;
+}
+
+static void VCAMClearScreenTintState(void) {
+    if (VCAMScreenTintStateToken == NOTIFY_TOKEN_INVALID || VCAMScreenTintCleared) return;
+    notify_set_state(VCAMScreenTintStateToken, 0);
+    VCAMScreenTintCleared = YES;
+}
+
+// 把当前显示抓进缓存的全屏 CALayer 并 32×32 缩采样求平均 RGB。
+// 失败（符号缺失/contents 为空）返回 NO 并给出原因，由调用方限频记日志。
+static BOOL VCAMSampleDisplayAverageRGB(int *rgbOut, NSString **failureReasonOut) {
+    typedef void (*VCARRRenderDisplayIMP)(int, CFStringRef, CALayer *, int, int);
+    static VCARRRenderDisplayIMP renderDisplay;
+    static dispatch_once_t lookupToken;
+    dispatch_once(&lookupToken, ^{
+        renderDisplay =
+            (VCARRRenderDisplayIMP)dlsym(RTLD_DEFAULT, "CARenderServerRenderDisplay");
+    });
+    if (renderDisplay == NULL) {
+        if (failureReasonOut) *failureReasonOut = @"CARenderServerRenderDisplay missing";
+        return NO;
+    }
+    CGSize pixels = CGSizeMake(UIScreen.mainScreen.bounds.size.width * UIScreen.mainScreen.scale,
+                               UIScreen.mainScreen.bounds.size.height * UIScreen.mainScreen.scale);
+    static CALayer *captureLayer;
+    if (captureLayer == nil ||
+        captureLayer.frame.size.width != pixels.width ||
+        captureLayer.frame.size.height != pixels.height) {
+        captureLayer = [CALayer layer];
+        captureLayer.frame = CGRectMake(0, 0, pixels.width, pixels.height);
+    }
+    renderDisplay(0x34B, CFSTR("LCD"), captureLayer, 0, 0);  // 0x34B = kCGSServiceForDisplay
+    CGImageRef displayImage = (CGImageRef)captureLayer.contents;
+    if (displayImage == NULL) {
+        if (failureReasonOut) *failureReasonOut = @"display layer empty";
+        return NO;
+    }
+    enum { kSampleSide = 32 };
+    unsigned char buffer[kSampleSide * kSampleSide * 4] = {0};
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(buffer, kSampleSide, kSampleSide, 8,
+                                                 kSampleSide * 4, colorSpace,
+                                                 kCGImageAlphaPremultipliedLast);
+    if (colorSpace) CGColorSpaceRelease(colorSpace);
+    if (context == NULL) {
+        if (failureReasonOut) *failureReasonOut = @"bitmap context failed";
+        return NO;
+    }
+    CGContextDrawImage(context, CGRectMake(0, 0, kSampleSide, kSampleSide), displayImage);
+    CGContextRelease(context);
+    unsigned long long sums[3] = {0};
+    for (int i = 0; i < kSampleSide * kSampleSide; i++) {
+        sums[0] += buffer[i * 4];
+        sums[1] += buffer[i * 4 + 1];
+        sums[2] += buffer[i * 4 + 2];
+    }
+    rgbOut[0] = (int)(sums[0] / (kSampleSide * kSampleSide));
+    rgbOut[1] = (int)(sums[1] / (kSampleSide * kSampleSide));
+    rgbOut[2] = (int)(sums[2] / (kSampleSide * kSampleSide));
+    return YES;
+}
 
 static BOOL VCAMEnsureAppForegroundStateToken(void) {
     if (VCAMAppForegroundStateToken != NOTIFY_TOKEN_INVALID) return YES;
@@ -242,6 +329,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
                                             CFSTR("com.codex.vcam/app.foreground-state"),
                                             NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
             VCAMPickerAppForegroundChanged(NULL, (__bridge void *)self, NULL, NULL, NULL);
+            [self startScreenTintSampler];
         }
         [self installButtonWhenWindowIsReady];
         [self startStatusRefresh];
@@ -249,6 +337,54 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
             UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
             VCAMPickerPostAppActive(YES);
         }
+    });
+}
+
+// 屏幕色采样循环（仅 SpringBoard 宿主）：0.5s 一次；开关/模式不满足时发布
+// 一次"清零"（valid=0）后空转，不重复写。诊断日志只在色变跳变或 30s 心跳时写。
+- (void)startScreenTintSampler {
+    static const NSTimeInterval sampleInterval = 0.5;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(sampleInterval * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!VCAMPickerUIStarted || !self.started) return;
+        if ([self isSpringBoardHost]) {
+            BOOL enabled = [[VCAMConfiguration currentValues][@"screenTintEnabled"] boolValue];
+            if (enabled && VCAMPublishedVirtualModeActive()) {
+                int rgb[3] = {0, 0, 0};
+                NSString *failureReason = nil;
+                if (VCAMSampleDisplayAverageRGB(rgb, &failureReason)) {
+                    VCAMPublishScreenTintSample(rgb[0], rgb[1], rgb[2]);
+                    static int lastLoggedRGB[3] = {-1, -1, -1};
+                    static CFAbsoluteTime lastSampleLoggedAt = 0;
+                    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                    int delta = abs(rgb[0] - lastLoggedRGB[0]) +
+                                abs(rgb[1] - lastLoggedRGB[1]) +
+                                abs(rgb[2] - lastLoggedRGB[2]);
+                    if (delta > 24 || now - lastSampleLoggedAt > 30.0) {
+                        lastLoggedRGB[0] = rgb[0];
+                        lastLoggedRGB[1] = rgb[1];
+                        lastLoggedRGB[2] = rgb[2];
+                        lastSampleLoggedAt = now;
+                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                            @"screen-tint sample rgb=%d,%d,%d", rgb[0], rgb[1], rgb[2]]];
+                    }
+                } else {
+                    static CFAbsoluteTime lastFailureLoggedAt = 0;
+                    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                    if (now - lastFailureLoggedAt > 30.0) {
+                        lastFailureLoggedAt = now;
+                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                            @"screen-tint sampler unavailable reason=%@",
+                            failureReason ?: @"unknown"]];
+                    }
+                    VCAMClearScreenTintState();
+                }
+            } else {
+                VCAMClearScreenTintState();
+            }
+        }
+        [self startScreenTintSampler];
     });
 }
 
@@ -798,6 +934,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
         @"detail": detail,
         @"mirror": [values[@"mirrorHorizontally"] boolValue] ? @"开启" : @"关闭",
         @"loop": values[@"loopMedia"] == nil || [values[@"loopMedia"] boolValue] ? @"开启" : @"关闭",
+        @"screenTint": [values[@"screenTintEnabled"] boolValue] ? @"开启" : @"关闭",
         @"contentMode": modeNames[mode] ?: @"裁切填满",
         @"stream": streamText,
     };
@@ -935,6 +1072,11 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 - (void)controlPanelDidRequestLoopToggle:(VCAMControlPanelViewController *)panel {
     (void)panel;
     [self toggleLoopPlayback];
+}
+
+- (void)controlPanelDidRequestScreenTintToggle:(VCAMControlPanelViewController *)panel {
+    (void)panel;
+    [self toggleScreenTint];
 }
 
 - (void)controlPanelDidRequestEnableVirtualCamera:(VCAMControlPanelViewController *)panel {
@@ -1427,6 +1569,16 @@ didCompleteWithError:(NSError *)error {
     BOOL current = values[@"loopMedia"] == nil ? YES : [values[@"loopMedia"] boolValue];
     BOOL enabled = !current;
     if (![self updatePreferences:@{@"loopMedia": @(enabled)}]) return;
+    [self postConfigurationChanged];
+    [self.panel updateStatus:[self currentStatus]];
+}
+
+// 三色调光开关（路线 2 的用户入口）：写 screenTintEnabled 偏好并经既有镜像通道
+// 同步到 cameracaptured 可读目录；采色器与相机侧染色都读同一权威值。
+- (void)toggleScreenTint {
+    NSDictionary *values = [VCAMConfiguration currentValues];
+    BOOL enabled = ![values[@"screenTintEnabled"] boolValue];
+    if (![self updatePreferences:@{@"screenTintEnabled": @(enabled)}]) return;
     [self postConfigurationChanged];
     [self.panel updateStatus:[self currentStatus]];
 }

@@ -11,6 +11,7 @@
 @property(nonatomic, strong, nullable) UIButton *mirrorButton;
 @property(nonatomic, strong, nullable) UIButton *contentModeButton;
 @property(nonatomic, strong, nullable) UIButton *loopButton;
+@property(nonatomic, strong, nullable) UIButton *screenTintButton;
 @property(nonatomic, strong, nullable) UILabel *licenseStatusLabel;
 @end
 
@@ -110,6 +111,8 @@
         UIStackView *br = [UIStackView new]; br.axis=UILayoutConstraintAxisHorizontal; br.distribution=UIStackViewDistributionFillEqually; br.spacing=8.0;
         UIButton *loopButton = [self actionButton:[NSString stringWithFormat:@"视频循环：%@", self.status[@"loop"] ?: @"开启"] symbol:@"repeat" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(loopTapped)];
         [br addArrangedSubview:loopButton]; self.loopButton = loopButton;
+        UIButton *screenTintButton = [self actionButton:[NSString stringWithFormat:@"三色调光：%@", self.status[@"screenTint"] ?: @"关闭"] symbol:@"paintpalette" color:[UIColor colorWithRed:0.20 green:0.27 blue:0.38 alpha:1] action:@selector(screenTintTapped)];
+        [br addArrangedSubview:screenTintButton]; self.screenTintButton = screenTintButton;
         [stack addArrangedSubview:br];
     }
     [stack addArrangedSubview:[self sectionLabel:@"相机切换"]];
@@ -214,6 +217,7 @@
     [self updateButton:self.mirrorButton label:@"镜像" value:status[@"mirror"] ?: @"关闭"];
     [self updateButton:self.contentModeButton label:@"填充方式" value:status[@"contentMode"] ?: @"裁切填满"];
     [self updateButton:self.loopButton label:@"视频循环" value:status[@"loop"] ?: @"开启"];
+    [self updateButton:self.screenTintButton label:@"三色调光" value:status[@"screenTint"] ?: @"关闭"];
 }
 
 - (void)startStatusRefresh {
@@ -289,6 +293,7 @@
 - (void)mirrorTapped { [self.delegate controlPanelDidRequestMirrorToggle:self]; }
 - (void)contentModeTapped { [self.delegate controlPanelDidRequestContentModeCycle:self]; }
 - (void)loopTapped { [self.delegate controlPanelDidRequestLoopToggle:self]; }
+- (void)screenTintTapped { [self.delegate controlPanelDidRequestScreenTintToggle:self]; }
 - (void)copyDeviceIDTapped {
     char buf[64] = {0}; size_t len = sizeof(buf);
     NSString *udid = @"请在终端执行: sysctl -n kern.uuid";

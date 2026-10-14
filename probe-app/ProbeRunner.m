@@ -1340,6 +1340,63 @@ static BOOL pathExists(NSString *p) {
         };
     }
     self.report[@"observedPhotoreal"] = [self readPhotorealStateTail];
+    self.report[@"observedScreenTint"] = [self runScreenTintChallenge];
+}
+
+// 读 SpringBoard 采屏器（路线 2）经 notifyd 发布的屏幕色状态。
+// 状态编码：state = (tick<<32)|(valid<<31)|(r<<16)|(g<<8)|b；valid=0 = 采样器未运行。
+- (NSDictionary *)readScreenTintState {
+    int token = NOTIFY_TOKEN_INVALID;
+    if (notify_register_check("com.codex.vcam.ios18.screen-tint.state",
+                              &token) != NOTIFY_STATUS_OK) {
+        return @{@"present": @NO, @"reason": @"token"};
+    }
+    uint64_t state = 0;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+        return @{@"present": @NO, @"reason": @"state"};
+    }
+    if (((state >> 31) & 1ull) == 0) {
+        return @{@"present": @YES, @"valid": @NO};
+    }
+    return @{@"present": @YES, @"valid": @YES,
+             @"tick": @(state >> 32),
+             @"rgb": @[@((int)((state >> 16) & 0xFF)), @((int)((state >> 8) & 0xFF)),
+                       @((int)(state & 0xFF))]};
+}
+
+// 路线 2 端到端自测：探针自己画一层全屏红，读相机侧通道应"看见"红。
+// 没有已知颜色对照就无法证明采屏器数值正确，这里以探针自身为可控光源。
+// （红窗存在 ~3.2s > 基线 EMA 时间常数无关：判定用采样值本身，不用相机侧 strength。）
+- (NSDictionary *)runScreenTintChallenge {
+    NSMutableDictionary *out = [@{@"expect": @[@255, @0, @0]} mutableCopy];
+    out[@"before"] = [self readScreenTintState];
+    __block UIWindow *overlay = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            UIWindow *window = [[UIWindow alloc] initWithWindowScene:windowScene];
+            window.frame = windowScene.coordinateSpace.bounds;
+            window.backgroundColor = UIColor.redColor;
+            window.windowLevel = UIWindowLevelAlert + 1000.0;
+            window.hidden = NO;
+            overlay = window;
+            break;
+        }
+    });
+    out[@"overlay"] = @(overlay != nil);
+    if (overlay != nil) {
+        [NSThread sleepForTimeInterval:1.6];
+        out[@"during1"] = [self readScreenTintState];
+        [NSThread sleepForTimeInterval:1.6];
+        out[@"during2"] = [self readScreenTintState];
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            overlay.hidden = YES;
+            overlay = nil;
+        });
+    }
+    out[@"after"] = [self readScreenTintState];
+    return out;
 }
 
 // P0-3 对表：读 cameracaptured 经 notifyd 发布的 photoreal 状态，

@@ -114,8 +114,9 @@ static BOOL VCAMMediaPathIsAllowed(NSString *path) {
 static BOOL VCAMConfigurationValueIsValid(NSString *key, id value) {
     if (![key isKindOfClass:NSString.class] || value == nil) return NO;
     // floatingDotGlobal 为布尔开关（缺省 NO），与其余开关共用 NSNumber 校验。
+    // screenTintEnabled=三色调光开关（缺省 NO）：SpringBoard 采屏色→notifyd→相机侧染色。
     if ([@[@"enabled", @"loopMedia", @"mirrorHorizontally", @"replaceAudio",
-           @"floatingDotGlobal"] containsObject:key]) {
+           @"floatingDotGlobal", @"screenTintEnabled"] containsObject:key]) {
         return [value isKindOfClass:NSNumber.class];
     }
     if ([@[@"preferredFramesPerSecond", @"rotationDegrees"] containsObject:key]) {
@@ -682,7 +683,7 @@ static SecKeyRef VCAMLicenseSecKey(void) {
             @"replaceAudio", @"contentMode", @"obsWebSocketURL", @"rtspURL", @"hlsURL",
             @"depthImagePath", @"livePhotoStillPath", @"livePhotoMoviePath", @"photoMetadata",
             @"floatingButtonPositions", @"floatingButtonVisibility", @"savedStreams",
-            @"floatingDotGlobal",
+            @"floatingDotGlobal", @"screenTintEnabled",
         ]];
     });
     return keys;

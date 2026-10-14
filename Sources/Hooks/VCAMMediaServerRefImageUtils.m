@@ -12,6 +12,7 @@
 
 #include <fcntl.h>
 #include <errno.h>
+#include <math.h>
 #include <notify.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -753,6 +754,7 @@ static BOOL VCAMReadConfiguredModeFromFile(BOOL *enabledOut) {
 static volatile int32_t VCAMPhotorealEnabled = 1;      // photorealisticExposure
 static volatile double VCAMPhotorealTorchLevel = 0.0;  // 0..1 注入/观测 torch 电平
 static volatile int32_t VCAMMetadataBranchReplace = 0; // metadataBranch=replace
+static volatile int32_t VCAMScreenTintEnabled = 0;     // screenTintEnabled（三色调光，缺省关）
 
 // 与 VCAMReadConfiguredModeFromFile 相同的裸文本策略：只在偏好变化时低频调用，
 // 不引入 Foundation 并发解析。返回 malloc 的文件全文（NUL 结尾），失败 NULL。
@@ -845,6 +847,7 @@ static void VCAMReloadPhotorealAndBranchConfig(void) {
     int32_t enabled = 1;      // 缺省开启：目标就是画面跟随真实相机物理状态
     double level = 0.0;
     int32_t branch = 0;       // metadataBranch 缺省 passthrough（保持既有 QR 行为）
+    int32_t tint = 0;         // screenTintEnabled 缺省关：新特性先经真机验证再开
     char *contents = VCAMCopyConfigFileContents();
     if (contents != NULL) {
         const char *end = NULL;
@@ -868,15 +871,20 @@ static void VCAMReloadPhotorealAndBranchConfig(void) {
         if (segment != NULL && strstr(segment, "<string>replace") != NULL) {
             branch = 1;
         }
+        segment = VCAMConfigValueSegment(contents, "screenTintEnabled", &end);
+        if (segment != NULL) {
+            tint = strstr(segment, "<true") != NULL ? 1 : 0;
+        }
         free(contents);
     }
     (void)__sync_lock_test_and_set(&VCAMPhotorealEnabled, enabled);
     VCAMPhotorealTorchLevel = level;
     (void)__sync_lock_test_and_set(&VCAMMetadataBranchReplace, branch);
-    char message[128];
+    (void)__sync_lock_test_and_set(&VCAMScreenTintEnabled, tint);
+    char message[160];
     snprintf(message, sizeof(message),
-             "photoreal config photoreal=%d torch_level=%.2f metadata_replace=%d",
-             (int)enabled, level, (int)branch);
+             "photoreal config photoreal=%d torch_level=%.2f metadata_replace=%d screen_tint=%d",
+             (int)enabled, level, (int)branch, (int)tint);
     VCAMRefLog(message);
     VCAMPublishPhotorealState();
 }
@@ -922,6 +930,101 @@ static CIImage *VCAMApplyPhotorealGain(CIImage *image) {
     if (brightness > 1.0) brightness = 1.0;
     return [image imageByApplyingFilter:@"CIColorControls" withInputParameters:
         @{kCIInputImageKey: image, kCIInputBrightnessKey: @(brightness)}];
+}
+
+// —— 路线 2：屏幕色染色（三色活体，docs/kyc 检测点补全）——
+// SpringBoard 进程采屏器（VCAMMediaPickerController.m）经 notifyd 发布屏幕平均色：
+// state = (tick<<32)|(valid<<31)|(r<<16)|(g<<8)|b。物理模型：屏幕发出的光改变被照
+// 面的反射光通道分布，颜色切换在 ~1s 内让真实场景"染色"。这里做"相对基线的偏差"
+// 通道增益：基线=时间常数 20s 的慢滑均（EMA），跟随普通 UI 内容的慢漂移（含人脸
+// 预览自身的肤色自污染）；活体挑战的色脉冲（每档 0.5–2s）相对基线大幅偏离才触发，
+// 普通界面因此不会误染色。tick 2s 未推进=采样器已停（开关/模式关闭、熄屏），不染色。
+static int VCAMScreenTintReadToken = -1;
+static uint64_t VCAMScreenTintLastTick = 0;
+static int64_t VCAMScreenTintTickTimeMs = 0;
+static double VCAMScreenTintBaseline[3] = {0, 0, 0};  // 全 0 = 未初始化（首样即基线）
+static int64_t VCAMScreenTintLastApplyMs = 0;
+
+static CIImage *VCAMApplyScreenTint(CIImage *image) {
+    if (!VCAMScreenTintEnabled) return image;
+    if (VCAMScreenTintReadToken < 0 &&
+        notify_register_check("com.codex.vcam.ios18.screen-tint.state",
+                              &VCAMScreenTintReadToken) != NOTIFY_STATUS_OK) {
+        return image;
+    }
+    uint64_t state = 0;
+    if (notify_get_state(VCAMScreenTintReadToken, &state) != NOTIFY_STATUS_OK ||
+        ((state >> 31) & 1ull) == 0) {
+        return image;
+    }
+    uint64_t tick = state >> 32;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (tick != VCAMScreenTintLastTick) {
+        // 采样器重启（此前停摆 >2s）：丢弃旧基线，避免跨场景误判。
+        if (VCAMScreenTintTickTimeMs != 0 && nowMs - VCAMScreenTintTickTimeMs > 2000) {
+            VCAMScreenTintBaseline[0] = VCAMScreenTintBaseline[1] = VCAMScreenTintBaseline[2] = 0;
+        }
+        VCAMScreenTintLastTick = tick;
+        VCAMScreenTintTickTimeMs = nowMs;
+    }
+    if (nowMs - VCAMScreenTintTickTimeMs > 2000) return image;
+    double rgb[3] = {(double)((state >> 16) & 0xFF), (double)((state >> 8) & 0xFF),
+                     (double)(state & 0xFF)};
+    if (rgb[0] + rgb[1] + rgb[2] < 24.0) return image;  // 黑屏/熄屏不算颜色
+    if (VCAMScreenTintBaseline[0] == 0) {
+        VCAMScreenTintBaseline[0] = rgb[0];
+        VCAMScreenTintBaseline[1] = rgb[1];
+        VCAMScreenTintBaseline[2] = rgb[2];
+        VCAMScreenTintLastApplyMs = nowMs;
+        return image;
+    }
+    double dt = VCAMScreenTintLastApplyMs == 0
+        ? 0.033
+        : (double)(nowMs - VCAMScreenTintLastApplyMs) / 1000.0;
+    VCAMScreenTintLastApplyMs = nowMs;
+    if (dt < 0.0) dt = 0.0;
+    if (dt > 5.0) dt = 5.0;
+    double alpha = 1.0 - exp(-dt / 20.0);
+    double factor[3];
+    double maxDeviation = 0.0;
+    for (int i = 0; i < 3; i++) {
+        VCAMScreenTintBaseline[i] += alpha * (rgb[i] - VCAMScreenTintBaseline[i]);
+        if (VCAMScreenTintBaseline[i] < 1.0) VCAMScreenTintBaseline[i] = 1.0;
+        factor[i] = rgb[i] / VCAMScreenTintBaseline[i];
+        if (factor[i] < 0.5) factor[i] = 0.5;
+        if (factor[i] > 2.0) factor[i] = 2.0;
+        double deviation = factor[i] > 1.0 ? factor[i] - 1.0 : 1.0 - factor[i];
+        if (deviation > maxDeviation) maxDeviation = deviation;
+    }
+    if (maxDeviation < 0.10) return image;  // 中性屏幕：不染色
+    double strength = (maxDeviation - 0.10) / 0.35;
+    if (strength > 1.0) strength = 1.0;
+    static CFAbsoluteTime lastTintLog = 0;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - lastTintLog >= 2.0) {
+        lastTintLog = now;
+        FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/screen_tint.log", "a");
+        if (file != NULL) {
+            fprintf(file,
+                    "t=%.2f rgb=%.0f,%.0f,%.0f baseline=%.0f,%.0f,%.0f strength=%.2f "
+                    "factors=%.2f,%.2f,%.2f\n",
+                    now, rgb[0], rgb[1], rgb[2],
+                    VCAMScreenTintBaseline[0], VCAMScreenTintBaseline[1],
+                    VCAMScreenTintBaseline[2], strength, factor[0], factor[1], factor[2]);
+            fclose(file);
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        factor[i] = 1.0 + strength * (factor[i] - 1.0);
+    }
+    return [image imageByApplyingFilter:@"CIColorMatrix" withInputParameters:@{
+        kCIInputImageKey: image,
+        @"inputRVector": [CIVector vectorWithX:factor[0] Y:0 Z:0 W:0],
+        @"inputGVector": [CIVector vectorWithX:0 Y:factor[1] Z:0 W:0],
+        @"inputBVector": [CIVector vectorWithX:0 Y:0 Z:factor[2] W:0],
+        @"inputAVector": [CIVector vectorWithX:0 Y:0 Z:0 W:1],
+        @"inputBiasVector": [CIVector vectorWithX:0 Y:0 Z:0 W:0],
+    }];
 }
 
 static void VCAMReloadConfiguredMode(void) {
@@ -2474,6 +2577,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         image = [[image imageByCompositingOverImage:background]
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = VCAMApplyPhotorealGain(image);
+        image = VCAMApplyScreenTint(image);
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];
