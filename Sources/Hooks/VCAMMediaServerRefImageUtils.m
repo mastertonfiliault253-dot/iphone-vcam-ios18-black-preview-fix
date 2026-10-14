@@ -3166,6 +3166,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                          targetFormat, targetWidth, targetHeight);
                 VCAMRefLog(message);
             }
+            CFAbsoluteTime rotateStarted = CFAbsoluteTimeGetCurrent();
+            CFAbsoluteTime transferStarted = rotateStarted;
             if (rotatedFastPath) {
                 CVPixelBufferRef rotatedBuffer = NULL;
                 if (VCAMCreateLocalRotatedBGRABuffer(
@@ -3173,6 +3175,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                         &rotatedBuffer) == kCVReturnSuccess &&
                     rotatedBuffer != NULL &&
                     VCAMRotateBGRA90CounterClockwise(ciSourceBuffer, rotatedBuffer)) {
+                    transferStarted = CFAbsoluteTimeGetCurrent();
                     rendered = VCAMTransferBGRAIntoPlanarTarget(rotatedBuffer,
                                                                 targetBuffer);
                 }
@@ -3183,6 +3186,21 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                     : VCAMCopyNV12IntoPlanarTargetWithGain(
                         ciSourceBuffer, targetBuffer,
                         diagonalActive ? diagFactor[0] : 1.0);
+                transferStarted = CFAbsoluteTimeGetCurrent();
+            }
+            CFAbsoluteTime fastPathDone = CFAbsoluteTimeGetCurrent();
+            // 分段计时（v6 真机实证：命中后整帧仍 57ms=比 CI 全链更差，
+            // 必须钉出旋转与写回各自占比再定优化目标）。
+            static volatile int fastPathTimingLogs = 0;
+            int timingCount = __sync_add_and_fetch(&fastPathTimingLogs, 1);
+            if (timingCount <= 6 || timingCount % 300 == 0) {
+                char message[200] = {0};
+                snprintf(message, sizeof(message),
+                         "fast path timing count=%d rot=%d rotateMs=%.2f transferMs=%.2f",
+                         timingCount, (int)rotatedFastPath,
+                         (transferStarted - rotateStarted) * 1000.0,
+                         (fastPathDone - transferStarted) * 1000.0);
+                VCAMRefLog(message);
             }
         } else {
             rendered = coreImageRendered &&
