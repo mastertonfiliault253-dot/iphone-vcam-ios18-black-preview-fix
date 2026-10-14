@@ -414,24 +414,33 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 // service is reachable from this daemon at all. The connection handler
 // reports service_missing / invalidation, which distinguishes "the service
 // cannot be launched or accepted here" from "the service decoded the sample
-// and refused it". Do not import <xpc/xpc.h>: under ARC the SDK header maps
-// xpc_object_t to an ObjC class and xpc_release to a -release message send,
-// and neither the 16.5 nor the 18.5 SDK declares xpc_service_create, so use
-// the plain-C libxpc prototypes below instead. libSystem re-exports libxpc,
-// so these symbols link against the already-loaded Foundation stack.
+// and refused it".
+//
+// SDK xpc headers differ and only compile against one side:
+// - 18.5 SDK: <xpc/xpc.h> maps xpc_object_t to an ObjC class under ARC and
+//   turns xpc_release/xpc_connection_activate into message-send macros, so
+//   the probe must not declare them as plain C functions and must not call
+//   xpc_release (ARC manages the connection object).
+// - 16.5 SDK: no <xpc/xpc.h>, so declare the plain-C libxpc prototypes;
+// xpc_service_create is absent from both SDK headers; it is exported by
+// libxpc in libSystem, so declare it against each side's own type mode.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+xpc_object_t xpc_service_create(const char *name) __attribute__((ns_returns_not_owned));
+#else
 typedef struct OpaqueXPCObject *xpc_object_t;
-typedef const struct _xpc_type_s *xpc_type_t;
+xpc_object_t xpc_service_create(const char *name);
 extern const struct _xpc_type_s _xpc_type_connection;
 extern const struct _xpc_type_s _xpc_type_error;
 #define XPC_TYPE_CONNECTION (&_xpc_type_connection)
 #define XPC_TYPE_ERROR (&_xpc_type_error)
-xpc_object_t xpc_service_create(const char *name);
-xpc_type_t xpc_get_type(xpc_object_t object);
+const void *xpc_get_type(xpc_object_t object);
 void xpc_connection_set_event_handler(xpc_object_t connection,
-                                     void (^handler)(xpc_object_t event));
+                                    void (^handler)(xpc_object_t event));
 void xpc_connection_activate(xpc_object_t object);
 const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
 void xpc_release(xpc_object_t object);
+#endif
 
 // XPC_ERROR_KEY_DESCRIPTION is a libxpc data symbol that the iOS SDK stub
 // omits, so the link cannot reference it directly. Resolve it at runtime;
@@ -465,7 +474,10 @@ static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"[DEBUG-vtprobe] videodecodeservice probe %@", outcome]];
     }
+#if !__has_include(<xpc/xpc.h>)
+    // Under the ObjC-class xpc types ARC releases the connection itself.
     xpc_release(connection);
+#endif
 }
 
 // Drains one RTSP session through a direct VTDecompressionSession. Returns
