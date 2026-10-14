@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 #include <math.h>
 #include <stdatomic.h>
@@ -1297,6 +1298,143 @@ static void VCAMSpringBoardMediaConsumerActivity(
                 self.player.currentItem.error.domain,
                 (long)self.player.currentItem.error.code]),
     };
+}
+
+#ifndef kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder
+#define kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder \
+    CFSTR("UsingHardwareAcceleratedVideoDecoder")
+#endif
+
+typedef struct {
+    dispatch_semaphore_t done;
+    BOOL sawCallback;
+    OSStatus firstCallbackStatus;
+    int decodedFrames;
+} VCAMSpringBoardVTSelfTestState;
+
+static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRefCon,
+                                              OSStatus status, VTDecodeInfoFlags infoFlags,
+                                              CVImageBufferRef imageBuffer,
+                                              CMTime presentationTimeStamp,
+                                              CMTime presentationDuration) {
+    (void)sourceFrameRefCon; (void)infoFlags;
+    (void)presentationTimeStamp; (void)presentationDuration;
+    VCAMSpringBoardVTSelfTestState *state = (VCAMSpringBoardVTSelfTestState *)refcon;
+    if (!state->sawCallback) {
+        state->sawCallback = YES;
+        state->firstCallbackStatus = status;
+    }
+    if (status == noErr && imageBuffer != NULL) state->decodedFrames += 1;
+    dispatch_semaphore_signal(state->done);
+}
+
+// Direct-VT self-test from the SpringBoard (GUI app) process. vcamd's daemon
+// context created a VT hardware session and reported UsingHardware=1, yet
+// every sample callback failed with -12911 (kVTVideoDecoderMalfunctionErr).
+// AVPlayer decodes the same file fine from this process, so this feeds the
+// compressed samples AVAssetReader hands us straight into a
+// VTDecompressionSession to see whether the process context is the gate.
+- (void)runVideoToolboxHardwareSelfTest {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *path = [VCAMConfiguration loadCurrent].mediaPath;
+        if (path.length == 0 || access(path.UTF8String, F_OK) != 0) {
+            [VCAMConfiguration appendProcessLog:
+                @"[DEBUG-vtsb] self-test skipped: no readable media file"];
+            return;
+        }
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            AVURLAsset *asset = [AVURLAsset URLAssetWithURL:
+                [NSURL fileURLWithPath:path] options:nil];
+            AVAssetTrack *track = asset.tracks.firstObject;
+            if (track == nil) {
+                [VCAMConfiguration appendProcessLog:
+                    @"[DEBUG-vtsb] self-test skipped: no track"];
+                return;
+            }
+            NSError *readerError = nil;
+            AVAssetReader *reader =
+                [AVAssetReader assetReaderWithAsset:asset error:&readerError];
+            // outputSettings:nil yields the compressed samples verbatim, the
+            // same length-prefixed AVCC access units the hardware decoder
+            // consumes in the RTSP pipeline.
+            AVAssetReaderTrackOutput *output =
+                [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track
+                                                           outputSettings:nil];
+            if (reader && [reader canAddOutput:output]) [reader addOutput:output];
+            if (!reader || ![reader startReading]) {
+                NSError *failure = reader.error ?: readerError;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"[DEBUG-vtsb] self-test reader failed errorDomain=%@ code=%ld",
+                    failure.domain ?: @"(none)", (long)failure.code]];
+                return;
+            }
+            VCAMSpringBoardVTSelfTestState state = {0};
+            state.done = dispatch_semaphore_create(0);
+            CMVideoFormatDescriptionRef formatDescription = NULL;
+            VTDecompressionSessionRef session = NULL;
+            OSStatus firstStatus = 0;
+            int fedSamples = 0;
+            while (fedSamples < 16) {
+                CMSampleBufferRef sample = [output copyNextSampleBuffer];
+                if (sample == NULL) break;
+                if (formatDescription == NULL) {
+                    formatDescription = (CMVideoFormatDescriptionRef)CFRetain(
+                        CMSampleBufferGetFormatDescription(sample));
+                    NSDictionary *destination = @{
+                        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+                    };
+                    VTDecompressionOutputCallbackRecord callback = {
+                        .decompressionOutputCallback = VCAMSpringBoardVTSelfTestCallback,
+                        .decompressionOutputRefCon = &state,
+                    };
+                    (void)VTDecompressionSessionCreate(kCFAllocatorDefault,
+                        formatDescription, NULL,
+                        (__bridge CFDictionaryRef)destination, &callback, &session);
+                    if (session == NULL) {
+                        [VCAMConfiguration appendProcessLog:
+                            @"[DEBUG-vtsb] self-test session create failed"];
+                        CFRelease(sample);
+                        break;
+                    }
+                }
+                VTDecodeInfoFlags flags = 0;
+                OSStatus status = VTDecompressionSessionDecodeFrame(
+                    session, sample, 0, NULL, &flags);
+                if (fedSamples == 0) firstStatus = status;
+                fedSamples += 1;
+                CFRelease(sample);
+                if (status != noErr) break;
+                // One outstanding frame at a time keeps the session and the
+                // stack-allocated state alive across the callback.
+                (void)dispatch_semaphore_wait(state.done,
+                    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
+            }
+            (void)dispatch_semaphore_wait(state.done,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
+            BOOL usingHardware = NO;
+            if (session != NULL) {
+                CFTypeRef value = NULL;
+                if (VTSessionCopyProperty(session,
+                        kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+                        kCFAllocatorDefault, &value) == noErr &&
+                    value != NULL && CFGetTypeID(value) == CFBooleanGetTypeID()) {
+                    usingHardware = CFBooleanGetValue((CFBooleanRef)value);
+                }
+                if (value != NULL) CFRelease(value);
+                VTDecompressionSessionInvalidate(session);
+                CFRelease(session);
+            }
+            if (formatDescription != NULL) CFRelease(formatDescription);
+            [reader cancelReading];
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"[DEBUG-vtsb] self-test fed=%d decoded=%d firstStatus=%d "
+                 @"firstCallbackStatus=%d sawCallback=%d usingHardware=%d",
+                fedSamples, state.decodedFrames, (int)firstStatus,
+                (int)state.firstCallbackStatus, state.sawCallback, usingHardware]];
+        });
+    });
 }
 
 @end

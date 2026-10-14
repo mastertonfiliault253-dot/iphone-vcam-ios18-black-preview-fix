@@ -3,6 +3,7 @@
 #import "../Daemon/VCAMPixelConverter.h"
 #import "../Shared/VCAMSharedFrame.h"
 #import <QuartzCore/QuartzCore.h>
+#import <dlfcn.h>
 #import <errno.h>
 #import <math.h>
 #import <stdarg.h>
@@ -407,6 +408,68 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
 
+// One-shot diagnostic for the zero-frame hardware fallback: -12911
+// (kVTVideoDecoderMalfunctionErr) matches the historical device-level
+// failure pattern, so probe whether VideoToolbox's hardware decode XPC
+// service is reachable from this daemon at all. The connection handler
+// reports service_missing / invalidation, which distinguishes "the service
+// cannot be launched or accepted here" from "the service decoded the sample
+// and refused it". The iOS SDK ships no <xpc/xpc.h>, so declare the small
+// set of libxpc public prototypes the probe needs; libSystem re-exports
+// libxpc, so the symbols link against the already-loaded Foundation stack.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+#else
+typedef struct OpaqueXPCObject *xpc_object_t;
+typedef const struct _xpc_type_s *xpc_type_t;
+extern const struct _xpc_type_s _xpc_type_connection;
+extern const struct _xpc_type_s _xpc_type_error;
+#define XPC_TYPE_CONNECTION (&_xpc_type_connection)
+#define XPC_TYPE_ERROR (&_xpc_type_error)
+xpc_object_t xpc_service_create(const char *name);
+xpc_type_t xpc_get_type(xpc_object_t object);
+void xpc_connection_set_event_handler(xpc_object_t connection,
+                                     void (^handler)(xpc_object_t event));
+void xpc_connection_activate(xpc_object_t object);
+const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
+void xpc_release(xpc_object_t object);
+#endif
+
+// XPC_ERROR_KEY_DESCRIPTION is a libxpc data symbol that the iOS SDK stub
+// omits, so the link cannot reference it directly. Resolve it at runtime;
+// the fallback literal is the symbol's own value on the device.
+static const char *VCAMXPCErrorKeyDescription(void) {
+    const char *key = (const char *)dlsym(RTLD_DEFAULT, "XPC_ERROR_KEY_DESCRIPTION");
+    return key ?: "XPC_ERROR_KEY_DESCRIPTION";
+}
+
+static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
+    xpc_object_t connection = xpc_service_create("com.apple.coremedia.videodecodeservice");
+    if (connection == NULL) {
+        [VCAMConfiguration appendProcessLog:@"[DEBUG-vtprobe] xpc_service_create returned NULL"];
+        return;
+    }
+    __block NSString *outcome = @"pending";
+    xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
+        if (xpc_get_type(event) == XPC_TYPE_CONNECTION) {
+            @synchronized ([VCAMRTSPStreamSource class]) { outcome = @"connected"; };
+        } else if (xpc_get_type(event) == XPC_TYPE_ERROR) {
+            const char *reason = xpc_dictionary_get_string(event,
+                                                           VCAMXPCErrorKeyDescription());
+            NSString *description = [NSString stringWithFormat:@"error=%s",
+                                     reason ?: "(none)"];
+            @synchronized ([VCAMRTSPStreamSource class]) { outcome = description; };
+        }
+    });
+    xpc_connection_activate(connection);
+    [NSThread sleepForTimeInterval:1.5];
+    @synchronized ([VCAMRTSPStreamSource class]) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vtprobe] videodecodeservice probe %@", outcome]];
+    }
+    xpc_release(connection);
+}
+
 // Drains one RTSP session through a direct VTDecompressionSession. Returns
 // YES when at least one frame was published. A session that never produces
 // a frame (the historical -12780 device-level failure mode) returns NO so
@@ -565,6 +628,7 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ hardware decode disabled; using FFmpeg software decoder",
                     self.streamName]];
+                VCAMRTSPProbeVideoDecodeServiceXPC();
             }
         } else {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:

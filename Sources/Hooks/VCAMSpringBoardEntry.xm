@@ -34,5 +34,11 @@ static void VCAMWriteClientProof(void) {
                        dispatch_get_main_queue(), ^{
             [[VCAMSpringBoardMediaBridge sharedBridge] start];
         });
+        // One-shot: prove whether direct VT hardware decode works from the
+        // GUI app process at all (vcamd's daemon context failed -12911).
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [[VCAMSpringBoardMediaBridge sharedBridge] runVideoToolboxHardwareSelfTest];
+        });
     }
 }

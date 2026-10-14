@@ -37,7 +37,7 @@ VCAMSpringBoardClient_FILES = \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)
 VCAMSpringBoardClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=1 $(VCAM_MODULE_CACHE_FLAGS)
-VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers
+VCAMSpringBoardClient_FRAMEWORKS = AVFoundation CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal PhotosUI QuartzCore UIKit UniformTypeIdentifiers VideoToolbox
 
 # vcamd is package-owned and is not injected. OBS and RTSP live here; retained
 # local-image/video and HLS decoders are explicit rollback paths only. For
