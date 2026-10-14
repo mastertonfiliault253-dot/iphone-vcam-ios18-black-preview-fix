@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>screen tint 校准页</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: #d01010; }
+  #stamp { position: fixed; left: 8px; bottom: 8px; font: 14px monospace; color: #fff; }
+  #cam { position: fixed; left: 8px; top: 8px; padding: 12px 18px; font: 16px monospace; }
+  video { position: fixed; left: -9999px; top: 0; width: 320px; height: 240px; }
+</style>
+<button id="cam">START CAM</button>
+<video id="v" autoplay playsinline muted></video>
+<div id="stamp"></div>
+<script>
+// 全屏红底 + 秒表 + 隐藏相机流：页面保持纯红，同时让虚拟相机出帧，
+// 用于验证"屏幕红色 → 采屏器 → 相机侧染色"的完整链路。
+setInterval(function () {
+  document.getElementById('stamp').textContent = 'RED ' + new Date().toTimeString().slice(0, 8);
+}, 1000);
+document.getElementById('cam').addEventListener('click', function () {
+  var self = this;
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+    .then(function (stream) {
+      document.getElementById('v').srcObject = stream;
+      self.textContent = 'CAM ON';
+    })
+    .catch(function (e) { self.textContent = 'ERR ' + e.name; });
+});
+</script>
