@@ -886,9 +886,13 @@ static BOOL pathExists(NSString *p) {
         CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
         CMTime maxDuration = device.activeFormat.maxExposureDuration;
         if (CMTIME_COMPARE_INLINE(duration, >, maxDuration)) { duration = maxDuration; }
+        // min/maxVideoISO 在 16.5 SDK ObjC 头没有（同 maxAvailableTorchLevel 先例），KVC 运行时读取。
+        double minISO = 1.0, maxISO = 6400.0;
+        minISO = [[device.activeFormat valueForKey:@"minVideoISO"] doubleValue];
+        maxISO = [[device.activeFormat valueForKey:@"maxVideoISO"] doubleValue];
         double iso = isoTarget;
-        if (iso < device.activeFormat.minVideoISO) { iso = device.activeFormat.minVideoISO; }
-        if (iso > device.activeFormat.maxVideoISO) { iso = device.activeFormat.maxVideoISO; }
+        if (iso < minISO) { iso = minISO; }
+        if (iso > maxISO) { iso = maxISO; }
         dispatch_semaphore_t done = dispatch_semaphore_create(0);
         [device setExposureModeCustomWithDuration:duration ISO:(float)iso
                                 completionHandler:^(CMTime syncTime) { (void)syncTime; dispatch_semaphore_signal(done); }];
