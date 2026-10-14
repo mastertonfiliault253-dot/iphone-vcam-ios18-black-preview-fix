@@ -145,6 +145,7 @@ static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
     NSMutableArray<NSString *> *names = [NSMutableArray new];
     NSMutableSet<NSString *> *seenClassNames = [NSMutableSet set];
     static const char *kProbeSubstrings[] = {"capture", "take", "fetch", "Screenshot", "snapshot"};
+    const size_t probeCount = sizeof(kProbeSubstrings) / sizeof(kProbeSubstrings[0]);
     for (unsigned int i = 0; i < classCount && names.count < 60; i++) {
         NSString *className = NSStringFromClass(classes[i]);
         if (![className containsString:@"Screenshot"]) continue;
@@ -157,11 +158,10 @@ static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
             for (unsigned int m = 0; m < methodCount && names.count < 60; m++) {
                 NSString *selectorName = NSStringFromSelector(method_getName(methods[m]));
                 BOOL matches = NO;
-                for (const char *probe : kProbeSubstrings) {
-                    if ([selectorName rangeOfString:[NSString stringWithUTF8String:probe]
+                for (size_t p = 0; p < probeCount && !matches; p++) {
+                    if ([selectorName rangeOfString:[NSString stringWithUTF8String:kProbeSubstrings[p]]
                                            options:NSCaseInsensitiveSearch].location != NSNotFound) {
                         matches = YES;
-                        break;
                     }
                 }
                 if (matches) {
