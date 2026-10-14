@@ -1346,7 +1346,9 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             AVURLAsset *asset = [AVURLAsset URLAssetWithURL:
                 [NSURL fileURLWithPath:path] options:nil];
-            AVAssetTrack *track = asset.tracks.firstObject;
+            // The self-test decodes video; an audio-first track would hand
+            // compressed audio samples to the VT session.
+            AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
             if (track == nil) {
                 [VCAMConfiguration appendProcessLog:
                     @"[DEBUG-vtsb] self-test skipped: no track"];
@@ -1379,8 +1381,17 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
                 CMSampleBufferRef sample = [output copyNextSampleBuffer];
                 if (sample == NULL) break;
                 if (formatDescription == NULL) {
-                    formatDescription = (CMVideoFormatDescriptionRef)CFRetain(
-                        CMSampleBufferGetFormatDescription(sample));
+                    CMFormatDescriptionRef sampleFormat =
+                        CMSampleBufferGetFormatDescription(sample);
+                    if (sampleFormat == NULL) {
+                        // CFRetain(NULL) traps; AVAssetReader can emit
+                        // samples without a usable format description.
+                        [VCAMConfiguration appendProcessLog:
+                            @"[DEBUG-vtsb] self-test sample without format description"];
+                        CFRelease(sample);
+                        break;
+                    }
+                    formatDescription = (CMVideoFormatDescriptionRef)CFRetain(sampleFormat);
                     NSDictionary *destination = @{
                         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
                         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
