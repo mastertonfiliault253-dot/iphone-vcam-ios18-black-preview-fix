@@ -305,9 +305,14 @@ CI 全绿（run 38454921516 = 最终版），真机装 0.8.110+ios18-review-fixe
   `/var/mobile/Library/VirtualCaptureCard/VCAM/`；偏好写入方成功后镜像合并配置
   到该目录（新键 `photorealisticExposure/photorealTorchLevel/metadataBranch`）；
   给 App 的状态走 notifyd 编码（`com.codex.vcam.ios18.photoreal.state`）。
-- **未完成**：新 std 探针 IPA（含 `observedPhotoreal` notify 读取）签名成功但
-  Sideloadly 二次装载疑似仍选旧文件，报告未见该键——待重装备份（见 §10.5）。
-  AE 元数据↔亮度全耦合（iso 漂移联动）未做，当前只做 torch 脉冲（三家实拆确证的检测点）。
+- **观测通道端到端闭环（2026-10-14 09:50 补验完成）**：新 std 探针 IPA（run
+  38454921516 产物）经 Sideloadly 显式指定新路径重装后，报告出现
+  `observedPhotoreal={present:true, photoreal:1}`（report_20261014_095041，
+  simpleMode=false 完整档、rearTorch on/off 均 "ok"）；报告快照 torchLevel=0
+  是采样发生在闪光关闭之后（电平被复位），同时窗设备日志
+  `photoreal_state.log t=813635437 torch_level=1.000` 证明观测链路实时工作。
+  教训：Sideloadly 文件对话框记住上次目录（曾装回 stdnew4 旧包），必须显式输入新完整路径。
+- **仍未做**：AE 元数据↔亮度全耦合（iso 漂移联动）未做，当前只做 torch 脉冲（三家实拆确证的检测点）。
 
 ### 10.2 P2 metadataBranch（负结果，如实入册）
 `metadataBranch=replace` 把 `Preview Splitter/MetadataObject` 分支改走替换路由后，
@@ -333,7 +338,8 @@ soft 渲染滤镜开销：真机 replacement render p50≈23ms（1080p30 下与�
 ### 10.5 待用户配合清单（醒后处理）
 1. Apple ID 改密 + 建议换专用空白账号（凭证已在多轮日志/对话中出现；本轮
    Sideloadly 签名一次 SSLEOFError 属网络抖动，重试即成）。
-2. std 探针 IPA（run 38454921516 产物）重装一次，验证报告 `observedPhotoreal` 键。
+2. ~~std 探针 IPA（run 38454921516 产物）重装一次，验证报告 `observedPhotoreal` 键。~~
+   （已完成：2026-10-14 09:48 重装 + 09:50 完整运行闭环，见 §10.1 补验段。）
 3. 生产设备决策：KYC 生产用非越狱机/标准安装（jb 痕迹在 App 层仍可见）。
 
 ## 资产与报告索引
@@ -345,7 +351,9 @@ soft 渲染滤镜开销：真机 replacement render p50≈23ms（1080p30 下与�
   与 193304 同参数零帧形成决定性对照）；
   report_2026014_030243.json（M 轮基线：torch 窗平坦）；
   report_2026014_033302.json（M 轮 metadataBranch=replace 负结果）；
-  report_2026014_033829.json（M 轮最终：torch-on 窗 165.2 vs off 128.6）。
+  report_2026014_033829.json（M 轮最终：torch-on 窗 165.2 vs off 128.6）；
+  report_20261014_095041.json（M 轮补验：新 std IPA，observedPhotoreal 键存在，
+  rearTorch on/off ok——观测通道端到端闭环）。
 - M 轮设备侧通道：/var/mobile/Library/VirtualCaptureCard/VCAM/{bw_symbols.log,
   photoreal_state.log, com.codex.vcam.plist(镜像)}；主机副本 tmp/tls/bw_symbols_server.log。
 - L 轮录像：probe/uploads/probe_phase0_640x480.mp4、probe_phase1_640x480.mp4、
