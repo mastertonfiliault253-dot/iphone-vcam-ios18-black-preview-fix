@@ -129,7 +129,8 @@ static BOOL VCAMSampleDisplayAverageRGB(int *rgbOut, NSString **failureReasonOut
         captureLayer.frame = CGRectMake(0, 0, pixels.width, pixels.height);
     }
     renderDisplay(0x34B, CFSTR("LCD"), captureLayer, 0, 0);  // 0x34B = kCGSServiceForDisplay
-    CGImageRef displayImage = (CGImageRef)captureLayer.contents;
+    // contents 由 layer 持有（同步调用返回后立即有效），借用（__bridge）不转移所有权。
+    CGImageRef displayImage = (__bridge CGImageRef)captureLayer.contents;
     if (displayImage == NULL) {
         if (failureReasonOut) *failureReasonOut = @"display layer empty";
         return NO;
