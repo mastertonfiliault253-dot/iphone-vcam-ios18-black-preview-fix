@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
@@ -68,6 +69,8 @@ static CFDictionaryRef VCAMLastCompressedVirtualFrameCreationAttributes;
 static CVPixelBufferRef VCAMLastVirtualFrame;
 static CFAbsoluteTime VCAMLastVirtualFrameHostTime;
 static CIContext *VCAMContext;
+// metalRenderer 配置生效且探针渲染通过时才为 1；任何真实帧失败即永久回退 0。
+static volatile int32_t VCAMMetalContextActive = 0;
 static CGColorSpaceRef VCAMStandardColorSpace;
 static NSLock *VCAMReaderLock;
 static NSLock *VCAMPixelTransferLock;
@@ -93,8 +96,13 @@ static volatile int VCAMConfiguredMode = 0;
 // consumer's front-camera mirror without changing routing or graph contracts.
 static volatile int VCAMCurrentCameraIsFront = 0;
 
+// 前/后摄像头切换=物理设备切换：AE/torch 观测与基线必须作废（前置无硬件
+// torch、前后曝光量程不同，跨设备复用基线会产生错误增益）。实现见 AE 观测段。
+
 void VCAMSetLastCameraIsFront(BOOL isFront) {
-    __sync_lock_test_and_set(&VCAMCurrentCameraIsFront, isFront ? 1 : 0);
+    int value = isFront ? 1 : 0;
+    int previous = __sync_lock_test_and_set(&VCAMCurrentCameraIsFront, value);
+    if (previous != value) VCAMResetObservedPhysicalState();
 }
 
 BOOL VCAMLastCameraIsFront(void) {
@@ -462,6 +470,35 @@ static void VCAMRecordPreviewPerformance(BOOL cacheHit, BOOL fullRender,
                  p50, p95, maximum);
         VCAMRefLog(metrics);
     }
+}
+
+// 设备没有 top/ps CPU（实测该 ps 的 TIME 列恒 0、无 top/pmset），getrusage
+// 自测是唯一可靠的 CPU 来源。60s 窗口自报：替换链 CPU 成本=本进程 CPU 时间
+// 增量/窗长。每帧一次 syscall（微秒级），只在虚拟模式开启的渲染路径调用。
+// 用于渲染路径改动（如 metalRenderer）前后对比；日志行以 "self-cpu window" 开头。
+static void VCAMSampleSelfCPUWindow(void) {
+    static int64_t windowStartMs = 0;
+    static double windowStartCPUSeconds = 0.0;
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return;
+    double cpuSeconds = (double)usage.ru_utime.tv_sec + (double)usage.ru_utime.tv_usec / 1e6 +
+                        (double)usage.ru_stime.tv_sec + (double)usage.ru_stime.tv_usec / 1e6;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (windowStartMs == 0) {
+        windowStartMs = nowMs;
+        windowStartCPUSeconds = cpuSeconds;
+        return;
+    }
+    if (nowMs - windowStartMs < 60000) return;
+    double elapsedSeconds = (double)(nowMs - windowStartMs) / 1000.0;
+    double cpuDelta = cpuSeconds - windowStartCPUSeconds;
+    char metrics[192];
+    snprintf(metrics, sizeof(metrics),
+             "self-cpu window elapsedS=%.0f cpuS=%.1f pct=%.1f",
+             elapsedSeconds, cpuDelta, elapsedSeconds > 0 ? 100.0 * cpuDelta / elapsedSeconds : 0.0);
+    VCAMRefLog(metrics);
+    windowStartMs = nowMs;
+    windowStartCPUSeconds = cpuSeconds;
 }
 
 // A same-generation mmap bootstrap is already process-local data. Do not put
@@ -843,6 +880,48 @@ void VCAMSetObservedTorchLevel(double level) {
     VCAMPublishPhotorealState();
 }
 
+// —— 路线 A-2：真实 AE 观测（P0 遗留项补齐：AE 元数据↔亮度全耦合）——
+// 模型：传感器曝光量 = 曝光时长 × ISO，对最终成像亮度是乘性因子。
+// 观测来源两条通道（Entry .xm）：显式控制路径（setExposureModeCustom...ISO:
+// setter，KYC App 常用固定曝光时直接命中）与数据路径（输出 sample buffer
+// 的 attachment，auto-AE 内部环路不经过 setter，只有 attachment 携带终值）。
+// 增益侧用 20s EMA 基线归一：缓慢的 AE 漂移按同速率复现，避免阶跃。
+static volatile double VCAMObservedExposureDurationS = -1.0; // -1 = 从未观测
+static volatile double VCAMObservedExposureISO = -1.0;
+static volatile int64_t VCAMObservedExposureTimeMs = 0;
+static volatile double VCAMObservedExposureBiasEV = 0.0;
+
+void VCAMSetObservedExposure(double durationSeconds, double iso) {
+    // 数值防御：时长合理区间 (0,1]s、ISO>0；异常值直接丢弃不污染基线。
+    if (!(durationSeconds > 0.0 && durationSeconds <= 1.0) || !(iso > 0.0)) return;
+    VCAMObservedExposureDurationS = durationSeconds;
+    VCAMObservedExposureISO = iso;
+    VCAMObservedExposureTimeMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+}
+
+void VCAMSetObservedExposureBias(double biasEV) {
+    if (!(biasEV >= -8.0 && biasEV <= 8.0)) return;
+    VCAMObservedExposureBiasEV = biasEV;
+}
+
+// 曝光增益的 EMA 基线（文件级：前后面切换/设备实例切换时需要作废）。
+static volatile double VCAMExposureBaselineIndex = 0.0;  // 0 = 未初始化
+static volatile int64_t VCAMExposureBaselineLastApplyMs = 0;
+
+// 观测状态作废：物理设备变了（前后摄像头切换、或 BW 设备实例更换）。
+// torch 观测同样作废——前置的"闪光"活体是屏幕闪光，走屏幕采样通道，
+// 不应把后置 torch 状态带进前置会话（反之亦然）。
+void VCAMResetObservedPhysicalState(void) {
+    VCAMObservedExposureDurationS = -1.0;
+    VCAMObservedExposureISO = -1.0;
+    VCAMObservedExposureTimeMs = 0;
+    VCAMObservedExposureBiasEV = 0.0;
+    VCAMExposureBaselineIndex = 0.0;
+    VCAMExposureBaselineLastApplyMs = 0;
+    VCAMObservedTorchLevel = -1.0;
+    VCAMObservedTorchTimeMs = 0;
+}
+
 static void VCAMReloadPhotorealAndBranchConfig(void) {
     int32_t enabled = 1;      // 缺省开启：目标就是画面跟随真实相机物理状态
     double level = 0.0;
@@ -897,6 +976,74 @@ BOOL VCAMPhotorealCouplingEnabled(void) {
     return VCAMPhotorealEnabled != 0;
 }
 
+// —— metalRenderer 配置（性能实验开关，缺省 0=软件渲染保持既有行为）——
+// 只在进程初始化时读一次（CIContext 生命周期=进程）；改动需重启
+// cameracaptured 生效。与 photoreal 同一镜像配置通道、同一裸文本解析策略。
+static int VCAMConfiguredMetalRendererRequested(void) {
+    int requested = 0;
+    char *contents = VCAMCopyConfigFileContents();
+    if (contents != NULL) {
+        const char *end = NULL;
+        const char *segment = VCAMConfigValueSegment(contents, "metalRenderer", &end);
+        if (segment != NULL) {
+            const char *integerTag = strstr(segment, "<integer>");
+            if (integerTag != NULL && integerTag < end) {
+                requested = atoi(integerTag + strlen("<integer>")) != 0 ? 1 : 0;
+            }
+        }
+        free(contents);
+    }
+    return requested;
+}
+
+// Metal 上下文探针验证：8x8 小图渲染，1.5s watchdog 取消；等待方 2.5s 封顶，
+// 即使 cancel 无效也不无限等待（滞留线程不影响进程）。通过才返回可用上下文，
+// 帧路径不会遇到未验证的 Metal 上下文（ponytail 挂起事故的正确性边界）。
+static CIContext *VCAMCreateProbedMetalContext(id<MTLDevice> device) {
+    CIContext *candidate = [CIContext contextWithMetalDevice:device
+                                                     format:kCIFormatARGB8
+                                                 colorSpace:VCAMStandardColorSpace];
+    if (candidate == nil) return nil;
+    CVPixelBufferRef probeBuffer = NULL;
+    if (CVPixelBufferCreate(kCFAllocatorDefault, 8, 8, kCVPixelFormatType_32BGRA,
+                            NULL, &probeBuffer) != kCVReturnSuccess) {
+        return nil;
+    }
+    __block CIRenderTask *task = nil;
+    @try {
+        CIImage *probeImage = [[CIImage imageWithColor:CIColor.whiteColor]
+            imageByCroppingToRect:CGRectMake(0, 0, 8, 8)];
+        CIRenderDestination *destination =
+            [[CIRenderDestination alloc] initWithPixelBuffer:probeBuffer];
+        task = [candidate startTaskToRender:probeImage fromRect:probeImage.extent
+                              toDestination:destination atPoint:CGPointZero error:NULL];
+    } @catch (NSException *exception) {
+        CVPixelBufferRelease(probeBuffer);
+        return nil;
+    }
+    __block BOOL completed = NO;
+    if (task != nil) {
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *waitError = nil;
+            BOOL ok = [task waitUntilCompletedAndReturnError:&waitError] != nil;
+            dispatch_semaphore_signal(semaphore);
+            if (ok) completed = YES;   // 写后 signal，读在 wait 返回之后，无竞争
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            [task cancel];
+        });
+        if (dispatch_semaphore_wait(
+                semaphore, dispatch_time(DISPATCH_TIME_NOW,
+                                        (int64_t)(2.5 * NSEC_PER_SEC))) == 0 && completed) {
+            completed = YES;
+        }
+    }
+    CVPixelBufferRelease(probeBuffer);
+    return completed ? candidate : nil;
+}
+
 // 状态快照低频导出：探针 native_probe 报告读它做 torch↔亮度一致性对表。
 static void VCAMEmitPhotorealStateSnapshot(double torch) {
     static CFAbsoluteTime lastEmit = 0;
@@ -905,8 +1052,11 @@ static void VCAMEmitPhotorealStateSnapshot(double torch) {
     lastEmit = now;
     FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/photoreal_state.log", "a");
     if (file != NULL) {
-        fprintf(file, "t=%.2f photoreal=%d torch_level=%.3f\n",
-                now, (int)VCAMPhotorealEnabled, torch);
+        // obs_exp/obs_iso/obs_bias=真实 AE 观测值，与探针 exposureSamples 对表。
+        fprintf(file, "t=%.2f photoreal=%d torch_level=%.3f obs_exp_s=%.6f obs_iso=%.1f obs_bias=%.2f\n",
+                now, (int)VCAMPhotorealEnabled, torch,
+                VCAMObservedExposureDurationS, VCAMObservedExposureISO,
+                VCAMObservedExposureBiasEV);
         fclose(file);
     }
     VCAMPublishPhotorealState();
@@ -945,17 +1095,20 @@ static int64_t VCAMScreenTintTickTimeMs = 0;
 static double VCAMScreenTintBaseline[3] = {0, 0, 0};  // 全 0 = 未初始化（首样即基线）
 static int64_t VCAMScreenTintLastApplyMs = 0;
 
-static CIImage *VCAMApplyScreenTint(CIImage *image) {
-    if (!VCAMScreenTintEnabled) return image;
+// 计算本帧的屏幕色染色因子：门控条件不满足时返回 0（不染色）；
+// 通过时写入 outFactor[3] 返回 1。门控逻辑与原 VCAMApplyScreenTint 完全一致。
+static int VCAMComputeScreenTintFactors(double outFactor[3]) {
+    outFactor[0] = outFactor[1] = outFactor[2] = 1.0;
+    if (!VCAMScreenTintEnabled) return 0;
     if (VCAMScreenTintReadToken < 0 &&
         notify_register_check("com.codex.vcam.ios18.screen-tint.state",
                               &VCAMScreenTintReadToken) != NOTIFY_STATUS_OK) {
-        return image;
+        return 0;
     }
     uint64_t state = 0;
     if (notify_get_state(VCAMScreenTintReadToken, &state) != NOTIFY_STATUS_OK ||
         ((state >> 31) & 1ull) == 0) {
-        return image;
+        return 0;
     }
     uint64_t tick = state >> 32;
     int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
@@ -967,16 +1120,16 @@ static CIImage *VCAMApplyScreenTint(CIImage *image) {
         VCAMScreenTintLastTick = tick;
         VCAMScreenTintTickTimeMs = nowMs;
     }
-    if (nowMs - VCAMScreenTintTickTimeMs > 2000) return image;
+    if (nowMs - VCAMScreenTintTickTimeMs > 2000) return 0;
     double rgb[3] = {(double)((state >> 16) & 0xFF), (double)((state >> 8) & 0xFF),
                      (double)(state & 0xFF)};
-    if (rgb[0] + rgb[1] + rgb[2] < 24.0) return image;  // 黑屏/熄屏不算颜色
+    if (rgb[0] + rgb[1] + rgb[2] < 24.0) return 0;  // 黑屏/熄屏不算颜色
     if (VCAMScreenTintBaseline[0] == 0) {
         VCAMScreenTintBaseline[0] = rgb[0];
         VCAMScreenTintBaseline[1] = rgb[1];
         VCAMScreenTintBaseline[2] = rgb[2];
         VCAMScreenTintLastApplyMs = nowMs;
-        return image;
+        return 0;
     }
     double dt = VCAMScreenTintLastApplyMs == 0
         ? 0.033
@@ -996,7 +1149,7 @@ static CIImage *VCAMApplyScreenTint(CIImage *image) {
         double deviation = factor[i] > 1.0 ? factor[i] - 1.0 : 1.0 - factor[i];
         if (deviation > maxDeviation) maxDeviation = deviation;
     }
-    if (maxDeviation < 0.10) return image;  // 中性屏幕：不染色
+    if (maxDeviation < 0.10) return 0;  // 中性屏幕：不染色
     double strength = (maxDeviation - 0.10) / 0.35;
     if (strength > 1.0) strength = 1.0;
     static CFAbsoluteTime lastTintLog = 0;
@@ -1015,13 +1168,72 @@ static CIImage *VCAMApplyScreenTint(CIImage *image) {
         }
     }
     for (int i = 0; i < 3; i++) {
-        factor[i] = 1.0 + strength * (factor[i] - 1.0);
+        outFactor[i] = 1.0 + strength * (factor[i] - 1.0);
     }
+    return 1;
+}
+
+// —— A-2 + 路线 2 合并：合成链唯一的通道增益节点（CIColorMatrix 对角）——
+// AE 曝光增益=乘性中性系数（(E*ISO)/EMA 基线），屏幕色染色=通道因子；
+// 两者相乘后只走一条 filter pass，同时激活也不多一次渲染。torch 补光是
+// 加性偏移，保持在 VCAMApplyPhotorealGain（CIColorControls），物理同型不混用。
+// 注意：增益只来自真实相机实时曝光变化（相对调制），替换内容自身的亮度
+// 差异完全保留——换更亮/更暗的视频，输出仍保持该亮度差，叠加的只是真实
+// 环境曝光变化的同向曲线。
+static CIImage *VCAMApplyChannelGains(CIImage *image) {
+    double factor[3] = {1.0, 1.0, 1.0};
+    BOOL active = NO;
+    // —— AE 曝光增益（缓变，相对基线）——
+    if (VCAMPhotorealCouplingEnabled()) {
+        double duration = VCAMObservedExposureDurationS;
+        double iso = VCAMObservedExposureISO;
+        int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+        if (duration > 0.0 && iso > 0.0 && nowMs - VCAMObservedExposureTimeMs <= 10000) {
+            double exposureIndex = duration * iso;
+            if (VCAMExposureBaselineIndex == 0.0) {
+                VCAMExposureBaselineIndex = exposureIndex;
+            } else {
+                double dt = (double)(nowMs - VCAMExposureBaselineLastApplyMs) / 1000.0;
+                if (dt < 0.0) dt = 0.0;
+                if (dt > 5.0) dt = 5.0;
+                // 时间常数 20s：慢于 AE 响应但快于场景常态漂移。
+                VCAMExposureBaselineIndex +=
+                    (1.0 - exp(-dt / 20.0)) * (exposureIndex - VCAMExposureBaselineIndex);
+            }
+            VCAMExposureBaselineLastApplyMs = nowMs;
+            double gain = exposureIndex / VCAMExposureBaselineIndex;
+            if (gain < 0.5) gain = 0.5;
+            if (gain > 2.0) gain = 2.0;
+            if (fabs(gain - 1.0) >= 0.05) {
+                factor[0] *= gain;
+                factor[1] *= gain;
+                factor[2] *= gain;
+                active = YES;
+                static CFAbsoluteTime lastExposureLog = 0;
+                CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                if (now - lastExposureLog >= 2.0) {
+                    lastExposureLog = now;
+                    FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/screen_tint.log", "a");
+                    if (file != NULL) {
+                        fprintf(file, "t=%.2f ae_gain=%.3f exposure_index=%.6f baseline=%.6f\n",
+                                now, gain, exposureIndex, VCAMExposureBaselineIndex);
+                        fclose(file);
+                    }
+                }
+            }
+        }
+    }
+    double tintFactor[3];
+    if (VCAMComputeScreenTintFactors(tintFactor)) {
+        for (int i = 0; i < 3; i++) factor[i] *= tintFactor[i];
+        active = YES;
+    }
+    if (!active) return image;
     return [image imageByApplyingFilter:@"CIColorMatrix" withInputParameters:@{
         kCIInputImageKey: image,
         @"inputRVector": [CIVector vectorWithX:factor[0] Y:0 Z:0 W:0],
         @"inputGVector": [CIVector vectorWithX:0 Y:factor[1] Z:0 W:0],
-        @"inputBVector": [CIVector vectorWithX:0 Y:0 Z:factor[2] W:0],
+        @"inputBVector": [CIVector vectorWithX:0 Y:factor[2] W:0],
         @"inputAVector": [CIVector vectorWithX:0 Y:0 Z:0 W:1],
         @"inputBiasVector": [CIVector vectorWithX:0 Y:0 Z:0 W:0],
     }];
@@ -1145,9 +1357,24 @@ void loadReplacementMedia(void) {
         notify_post(device != nil
             ? "com.codex.vcam.ios18.metal"
             : "com.codex.vcam.ios18.metalnil");
-        // ponytail: cameracaptured Metal render hangs; force software renderer.
-        VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
         VCAMStandardColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        // 历史决策（原 ponytail 注释）：初版 Metal 渲染在 cameracaptured 内挂起，
+        // 整体切到软件渲染。软件渲染 1080p 每帧数十 ms CPU——这是发热与丢帧的
+        // 首要嫌疑。现在改为"配置驱动 + 探针验证"：metalRenderer=1 才尝试，
+        // 小图探针通过 watchdog 验证后才采用；帧路径永远不会遇到未验证的上下文。
+        VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        if (VCAMConfiguredMetalRendererRequested() && device != nil) {
+            CIContext *candidate = VCAMCreateProbedMetalContext(device);
+            if (candidate != nil) {
+                VCAMContext = candidate;
+                (void)__sync_lock_test_and_set(&VCAMMetalContextActive, 1);
+                VCAMRefLog("coreimage context=metal probe=ok");
+            } else {
+                VCAMRefLog("coreimage context=software probe=failed");
+            }
+        } else {
+            VCAMRefLog("coreimage context=software metal=off");
+        }
         VCAMReaderLock = [NSLock new];
         VCAMPixelTransferLock = [NSLock new];
         VCAMPreviewCacheLock = [NSLock new];
@@ -2132,6 +2359,8 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMInvalidatePreviewCache();
             return NO;
         }
+        // 虚拟模式实际工作期间的 CPU 自测窗（见函数注释：设备侧无其它 CPU 来源）。
+        VCAMSampleSelfCPUWindow();
         BOOL surfaceCopied = VCAMSharedSurfaceReaderCopyLatest(
             VCAMSurfaceReader, 1000000000ULL, &surfaceFrame);
         VCAMSharedSurfaceReaderFailure surfaceFailure =
@@ -2577,7 +2806,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         image = [[image imageByCompositingOverImage:background]
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = VCAMApplyPhotorealGain(image);
-        image = VCAMApplyScreenTint(image);
+        image = VCAMApplyChannelGains(image);
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];
@@ -2590,6 +2819,15 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
                                              toDestination:destination
                                                    atPoint:CGPointZero
                                                      error:&startError];
+        if (task != nil && __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
+            // Metal 帧路径 watchdog：1.5s 未完成即取消（本帧失败可接受，
+            // 挂起不可接受）。失败处理在下方：永久回退软件上下文。
+            CIRenderTask *watchedTask = task;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                [watchedTask cancel];
+            });
+        }
         NSError *completionError = nil;
         CIRenderInfo *renderInfo = task == nil ? nil
             : [task waitUntilCompletedAndReturnError:&completionError];
@@ -2632,6 +2870,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             *replacementBufferOut = CVPixelBufferRetain(compressedReplacementBuffer);
         }
         elapsed = CFAbsoluteTimeGetCurrent() - started;
+        if (!coreImageRendered && __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
+            // Metal 真实帧首次失败（含 watchdog 取消）：永久回退软件上下文。
+            // 本帧不重试——单帧失败远小于"每帧都可能挂起"的风险；下一帧起走软件。
+            (void)__sync_lock_test_and_set(&VCAMMetalContextActive, 0);
+            VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+            VCAMRefLog("metal render failed; permanently falling back to software context");
+        }
         if (!coreImageRendered) {
             static dispatch_once_t renderFailureToken;
             dispatch_once(&renderFailureToken, ^{

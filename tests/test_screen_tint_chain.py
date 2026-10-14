@@ -63,8 +63,10 @@ class ScreenTintChainTests(unittest.TestCase):
         self.assertIn('screen-tint-provider-probe.count', controller)
         self.assertIn("startScreenTintSampler", controller)
         # 采样只允许挂在 SpringBoard 宿主（保持 filter 收缩结论：零 App 注入）。
-        self.assertIn("if ([self isSpringBoardHost]) {\n            BOOL enabled = "
-                      "[[VCAMConfiguration currentValues][@\"screenTintEnabled\"] boolValue];",
+        self.assertIn("if ([self isSpringBoardHost]) {\n            "
+                      "VCAMSampleSelfCPUWindowForSampler();",
+                      controller)
+        self.assertIn('[[VCAMConfiguration currentValues][@"screenTintEnabled"] boolValue]',
                       controller)
 
     def test_mediaserver_reads_channel_and_tints_only_with_gate(self) -> None:
@@ -72,7 +74,9 @@ class ScreenTintChainTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"com.codex.vcam.ios18.screen-tint.state"', source)
-        self.assertIn("VCAMApplyScreenTint(image);", source)
+        # 屏幕染色与 AE 曝光增益合并为单一增益节点（同时激活也只一条 filter）。
+        self.assertIn("VCAMApplyChannelGains(image);", source)
+        self.assertIn("VCAMComputeScreenTintFactors", source)
         self.assertIn('@"inputRVector"', source)
         # 缺省关闭 + 镜像配置解析
         self.assertIn("VCAMScreenTintEnabled = 0", source)

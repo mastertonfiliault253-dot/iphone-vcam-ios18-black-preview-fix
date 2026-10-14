@@ -13,6 +13,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <unistd.h>
+#import <sys/resource.h>
 #import "../Core/VCAMConfiguration.h"
 
 static const NSInteger VCAMWindowDiscoveryRetryCount = 240;
@@ -682,6 +683,32 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
 // 屏幕色采样循环（仅 SpringBoard 宿主）：1.0s 一次（provider 通道是整屏截图，
 // 0.5s 过重；活体色脉冲每档 ≥1s，1Hz 足够）。开关/模式不满足时发布
 // 一次"清零"（valid=0）后空转，不重复写。诊断日志只在色变跳变或 30s 心跳时写。
+// 采屏器 CPU 开销量化：设备无 top/ps CPU（实测该 ps TIME 恒 0、无 top），
+// 唯一可靠来源=本进程 getrusage。60s 自报窗在开关两侧都持续输出（tick 本身
+// 1s 一次，syscall 微秒级），对比 screenTintEnabled 开/关两段窗即得采样成本。
+static void VCAMSampleSelfCPUWindowForSampler(void) {
+    static int64_t windowStartMs = 0;
+    static double windowStartCPUSeconds = 0.0;
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return;
+    double cpuSeconds = (double)usage.ru_utime.tv_sec + (double)usage.ru_utime.tv_usec / 1e6 +
+                        (double)usage.ru_stime.tv_sec + (double)usage.ru_stime.tv_usec / 1e6;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (windowStartMs == 0) {
+        windowStartMs = nowMs;
+        windowStartCPUSeconds = cpuSeconds;
+        return;
+    }
+    if (nowMs - windowStartMs < 60000) return;
+    double elapsedSeconds = (double)(nowMs - windowStartMs) / 1000.0;
+    double cpuDelta = cpuSeconds - windowStartCPUSeconds;
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"screen-tint self-cpu window elapsedS=%.0f cpuS=%.1f pct=%.1f",
+        elapsedSeconds, cpuDelta, elapsedSeconds > 0 ? 100.0 * cpuDelta / elapsedSeconds : 0.0]];
+    windowStartMs = nowMs;
+    windowStartCPUSeconds = cpuSeconds;
+}
+
 - (void)startScreenTintSampler {
     static const NSTimeInterval sampleInterval = 1.0;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -689,6 +716,7 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
                    dispatch_get_main_queue(), ^{
         if (!VCAMPickerUIStarted || !self.started) return;
         if ([self isSpringBoardHost]) {
+            VCAMSampleSelfCPUWindowForSampler();
             BOOL enabled = [[VCAMConfiguration currentValues][@"screenTintEnabled"] boolValue];
             if (enabled && VCAMPublishedVirtualModeActive()) {
                 int rgb[3] = {0, 0, 0};

@@ -1400,11 +1400,244 @@ static void VCAMInstallTorchObservationIfNeeded(void) {
     VCAMRefLog(message);
 }
 
+// —— 路线 A-2：真实 AE 观测（P0 遗留项补齐：AE 元数据↔亮度全耦合）——
+// 两条通道：
+// 1) 显式控制路径：BWFigVideoCaptureDevice 的
+//    setExposureModeCustomWithExposureDuration:minFrameRate:maxFrameRate:ISO:requestID:
+//    （手动曝光=曝光时长+ISO 终值；KYC App 常见做法是锁曝光采集，直接命中）
+//    与 setExposureTargetBias:requestID:（EV 偏移，仅记录对表，增益用终值）。
+//    包装与 torch 同款：读实际类型编码选 float/double 变体、原样转发返回值。
+// 2) 数据路径：输出 sample buffer 的 attachment（auto-AE 内部环不走 ObjC setter，
+//    只有 attachment 携带终值）。键名 Apple 未公开：前 3 个样本把顶层与已知
+//    子字典的键转储到 ae_attach.log 钉键，同时按候选键防御式解析；取不到
+//    则如实按局限处理（控制路径仍覆盖显式设曝光的场景）。
+// 前/后摄像头：receiver 实例变化=物理设备切换，作废全部观测/基线
+// （前后面标志翻转另有 SetLastCameraIsFront 入口，两处都会复位）。
+static void *VCAMLastObservedDeviceInstance = NULL;
+
+static void VCAMNoteObservedDevice(id receiver) {
+    void *instance = (__bridge void *)receiver;
+    if (VCAMLastObservedDeviceInstance == NULL) {
+        VCAMLastObservedDeviceInstance = instance;
+        return;
+    }
+    if (VCAMLastObservedDeviceInstance != instance) {
+        VCAMLastObservedDeviceInstance = instance;
+        VCAMResetObservedPhysicalState();
+    }
+}
+
+typedef int (*VCAMSetExposureCustomFloatIMP)(id, SEL, CMTime, float, float, float, id);
+typedef int (*VCAMSetExposureCustomDoubleIMP)(id, SEL, CMTime, double, double, double, id);
+static VCAMSetExposureCustomFloatIMP VCAMOriginalSetExposureCustomF;
+static VCAMSetExposureCustomDoubleIMP VCAMOriginalSetExposureCustomD;
+
+static int VCAMReplacedSetExposureCustomF(id receiver, SEL selector, CMTime exposureDuration,
+                                          float minFrameRate, float maxFrameRate, float ISO,
+                                          id requestID) {
+    VCAMNoteObservedDevice(receiver);
+    if (CMTIME_IS_NUMERIC(exposureDuration) && ISO > 0.0f) {
+        VCAMSetObservedExposure(CMTimeGetSeconds(exposureDuration), (double)ISO);
+    }
+    return VCAMOriginalSetExposureCustomF != NULL
+        ? VCAMOriginalSetExposureCustomF(receiver, selector, exposureDuration, minFrameRate,
+                                         maxFrameRate, ISO, requestID) : 0;
+}
+
+static int VCAMReplacedSetExposureCustomD(id receiver, SEL selector, CMTime exposureDuration,
+                                          double minFrameRate, double maxFrameRate, double ISO,
+                                          id requestID) {
+    VCAMNoteObservedDevice(receiver);
+    if (CMTIME_IS_NUMERIC(exposureDuration) && ISO > 0.0) {
+        VCAMSetObservedExposure(CMTimeGetSeconds(exposureDuration), ISO);
+    }
+    return VCAMOriginalSetExposureCustomD != NULL
+        ? VCAMOriginalSetExposureCustomD(receiver, selector, exposureDuration, minFrameRate,
+                                         maxFrameRate, ISO, requestID) : 0;
+}
+
+typedef int (*VCAMSetExposureBiasFloatIMP)(id, SEL, float, id);
+typedef int (*VCAMSetExposureBiasDoubleIMP)(id, SEL, double, id);
+static VCAMSetExposureBiasFloatIMP VCAMOriginalSetExposureBiasF;
+static VCAMSetExposureBiasDoubleIMP VCAMOriginalSetExposureBiasD;
+
+static int VCAMReplacedSetExposureBiasF(id receiver, SEL selector, float biasEV, id requestID) {
+    VCAMNoteObservedDevice(receiver);
+    VCAMSetObservedExposureBias((double)biasEV);
+    return VCAMOriginalSetExposureBiasF != NULL
+        ? VCAMOriginalSetExposureBiasF(receiver, selector, biasEV, requestID) : 0;
+}
+
+static int VCAMReplacedSetExposureBiasD(id receiver, SEL selector, double biasEV, id requestID) {
+    VCAMNoteObservedDevice(receiver);
+    VCAMSetObservedExposureBias(biasEV);
+    return VCAMOriginalSetExposureBiasD != NULL
+        ? VCAMOriginalSetExposureBiasD(receiver, selector, biasEV, requestID) : 0;
+}
+
+static void VCAMInstallAEObservationIfNeeded(void) {
+    static BOOL installed = NO;
+    if (installed) return;
+    Class deviceClass = objc_getClass("BWFigVideoCaptureDevice");
+    if (deviceClass == NULL) return;
+    SEL customSelector = sel_registerName(
+        "setExposureModeCustomWithExposureDuration:minFrameRate:maxFrameRate:ISO:requestID:");
+    Method customMethod = class_getInstanceMethod(deviceClass, customSelector);
+    if (customMethod != NULL) {
+        const char *encoding = method_getTypeEncoding(customMethod);
+        if (encoding != NULL && strchr(encoding, 'f') != NULL) {
+            MSHookMessageEx(deviceClass, customSelector, (IMP)VCAMReplacedSetExposureCustomF,
+                            (IMP *)&VCAMOriginalSetExposureCustomF);
+        } else {
+            MSHookMessageEx(deviceClass, customSelector, (IMP)VCAMReplacedSetExposureCustomD,
+                            (IMP *)&VCAMOriginalSetExposureCustomD);
+        }
+    }
+    SEL biasSelector = sel_registerName("setExposureTargetBias:requestID:");
+    Method biasMethod = class_getInstanceMethod(deviceClass, biasSelector);
+    if (biasMethod != NULL) {
+        const char *encoding = method_getTypeEncoding(biasMethod);
+        if (encoding != NULL && strchr(encoding, 'f') != NULL) {
+            MSHookMessageEx(deviceClass, biasSelector, (IMP)VCAMReplacedSetExposureBiasF,
+                            (IMP *)&VCAMOriginalSetExposureBiasF);
+        } else {
+            MSHookMessageEx(deviceClass, biasSelector, (IMP)VCAMReplacedSetExposureBiasD,
+                            (IMP *)&VCAMOriginalSetExposureBiasD);
+        }
+    }
+    installed = YES;
+    VCAMRefLog(customMethod != NULL && biasMethod != NULL
+                   ? "ae control observation installed custom+bias"
+                   : customMethod != NULL
+                         ? "ae control observation installed custom-only"
+                         : biasMethod != NULL
+                               ? "ae control observation installed bias-only"
+                               : "ae control observation unavailable");
+}
+
+static double VCAMAttachmentDouble(CFTypeRef value) {
+    if (value == NULL) return -1.0;
+    if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+        double result = 0;
+        if (CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &result)) return result;
+        return -1.0;
+    }
+    if (CFGetTypeID(value) == CFStringGetTypeID()) {
+        const char *text = CFStringGetCStringPtr((CFStringRef)value, kCFStringEncodingUTF8);
+        char buffer[64];
+        if (text == NULL &&
+            CFStringGetCString((CFStringRef)value, buffer, sizeof(buffer), kCFStringEncodingUTF8)) {
+            text = buffer;
+        }
+        if (text != NULL) return strtod(text, NULL);
+    }
+    return -1.0;
+}
+
+// 候选键防御式查找（深度≤2：顶层 + EXIF 子字典）。真实键名以 ae_attach.log 诊断为准。
+static const char *const kExposureAttachmentKeys[] = {
+    "ExposureTime", "ExposureTimeSeconds", "Exposure Time", "ExposureTimeSecondsFloat"};
+static const char *const kISOAttachmentKeys[] = {
+    "ISOSpeedRatings", "ISOSpeed", "ISO", "ISOValue", "ISO Speed", "ISO Speed Ratings"};
+
+static double VCAMFindAttachmentCandidate(CFDictionaryRef dict, const char *const *keys,
+                                         size_t keyCount, int depth) {
+    for (size_t i = 0; i < keyCount; i++) {
+        CFStringRef candidateKey = CFStringCreateWithCString(
+            kCFAllocatorDefault, keys[i], kCFStringEncodingUTF8);
+        if (candidateKey == NULL) continue;
+        CFTypeRef value = NULL;
+        BOOL found = CFDictionaryGetValueIfPresent(dict, candidateKey, &value);
+        CFRelease(candidateKey);
+        if (found) {
+            double result = VCAMAttachmentDouble(value);
+            if (result > 0.0) return result;
+        }
+    }
+    if (depth >= 2) return -1.0;
+    // 已知 EXIF 容器再挖一层。
+    static const char *const kNestedContainers[] = {
+        "ExifDict", "Apple3Note", "Apple10Note", "Apple11Note", "Apple12Note", "MakerNote"};
+    for (size_t i = 0; i < sizeof(kNestedContainers) / sizeof(kNestedContainers[0]); i++) {
+        CFStringRef containerKey = CFStringCreateWithCString(
+            kCFAllocatorDefault, kNestedContainers[i], kCFStringEncodingUTF8);
+        CFTypeRef container = containerKey != NULL
+            ? CFDictionaryGetValue(dict, containerKey) : NULL;
+        if (containerKey != NULL) CFRelease(containerKey);
+        if (container != NULL && CFGetTypeID(container) == CFDictionaryGetTypeID()) {
+            double result = VCAMFindAttachmentCandidate((CFDictionaryRef)container, keys,
+                                                       keyCount, depth + 1);
+            if (result > 0.0) return result;
+        }
+    }
+    return -1.0;
+}
+
+static void VCAMDumpAttachmentKeys(FILE *file, CFDictionaryRef dict, const char *prefix,
+                                  int depth) {
+    CFIndex count = CFDictionaryGetCount(dict);
+    if (count <= 0 || count > 96) return;
+    const void *keys[96];
+    const void *values[96];
+    CFDictionaryGetKeysAndValues(dict, keys, values);
+    for (CFIndex i = 0; i < count; i++) {
+        if (CFGetTypeID(keys[i]) != CFStringGetTypeID()) continue;
+        char keyText[128];
+        if (!CFStringGetCString((CFStringRef)keys[i], keyText, sizeof(keyText),
+                               kCFStringEncodingUTF8)) {
+            continue;
+        }
+        CFStringRef description = CFCopyTypeIDDescription(CFGetTypeID(values[i]));
+        char valueClass[64];
+        snprintf(valueClass, sizeof(valueClass), "%s",
+                 description != NULL ? CFBridgingRelease(description).UTF8String : "unknown");
+        fprintf(file, "%s%s (%s)\n", prefix, keyText, valueClass);
+        if (depth < 1 && CFGetTypeID(values[i]) == CFDictionaryGetTypeID()) {
+            VCAMDumpAttachmentKeys(file, (CFDictionaryRef)values[i], "  ", depth + 1);
+        }
+    }
+}
+
+static void VCAMObserveSampleBufferExposure(CMSampleBufferRef sampleBuffer, BOOL withKeyDump) {
+    CFTypeRef attachment = CMGetAttachment(sampleBuffer, kCGImageAuxiliaryDataInfo, NULL);
+    CFTypeRef root = NULL;
+    if (attachment != NULL && CFGetTypeID(attachment) == CFDataGetTypeID()) {
+        root = CFPropertyListCreateWithData(kCFAllocatorDefault, (CFDataRef)attachment,
+                                           kCFPropertyListImmutable, NULL, NULL);
+    } else if (attachment != NULL && CFGetTypeID(attachment) == CFDictionaryGetTypeID()) {
+        root = CFRetain(attachment);
+    }
+    if (withKeyDump) {
+        FILE *file = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/ae_attach.log", "a");
+        if (file != NULL) {
+            fprintf(file, "t=%.2f aux_present=%d\n", CFAbsoluteTimeGetCurrent(),
+                    attachment != NULL ? 1 : 0);
+            if (root != NULL && CFGetTypeID(root) == CFDictionaryGetTypeID()) {
+                VCAMDumpAttachmentKeys(file, (CFDictionaryRef)root, "  ", 0);
+            }
+            fclose(file);
+        }
+    }
+    if (root != NULL && CFGetTypeID(root) == CFDictionaryGetTypeID()) {
+        double exposure = VCAMFindAttachmentCandidate(
+            (CFDictionaryRef)root, kExposureAttachmentKeys,
+            sizeof(kExposureAttachmentKeys) / sizeof(kExposureAttachmentKeys[0]), 0);
+        double iso = VCAMFindAttachmentCandidate(
+            (CFDictionaryRef)root, kISOAttachmentKeys,
+            sizeof(kISOAttachmentKeys) / sizeof(kISOAttachmentKeys[0]), 0);
+        if (exposure > 0.0 && iso > 0.0) {
+            VCAMSetObservedExposure(exposure, iso);
+        }
+    }
+    if (root != NULL) CFRelease(root);
+}
+
 %hook BWNodeOutput
 
 - (void)emitSampleBuffer:(CMSampleBufferRef)sampleBuffer {
     VCAMMaybeDumpBWGraphSymbols();
     VCAMInstallTorchObservationIfNeeded();
+    VCAMInstallAEObservationIfNeeded();
     if (sampleBuffer == NULL) {
         %orig(sampleBuffer);
         return;
@@ -1441,6 +1674,14 @@ static void VCAMInstallTorchObservationIfNeeded(void) {
     if (!VCAMVirtualModeIsEnabled()) {
         %orig(sampleBuffer);
         return;
+    }
+
+    // AE 数据路径观测（auto-AE 终值只在 attachment 里）：前 3 个样本做键诊断
+    // 转储，此后每 120 帧（约 4s@30fps）取一次——AE 漂移是慢过程，无需每帧。
+    static volatile int aeObservationCount = 0;
+    int aeCount = __sync_add_and_fetch(&aeObservationCount, 1);
+    if (aeCount <= 3 || aeCount % 120 == 0) {
+        VCAMObserveSampleBufferExposure(sampleBuffer, aeCount <= 3);
     }
 
     // Consumer-activity evidence for HLS/RTSP demand: only frames that
