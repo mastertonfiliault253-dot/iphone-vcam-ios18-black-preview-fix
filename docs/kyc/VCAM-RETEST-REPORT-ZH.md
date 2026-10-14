@@ -419,6 +419,68 @@ observedPhotoreal 同时在场。三条独立证据链（SpringBoard 采样日�
 **剩余**：provider 抓屏 1Hz 的 CPU 开销未单独量化（渲染窗口 p50 未见
 回归可作间接证据）。
 
+## 10.7 O 轮：探针转 Sideloadly IPA 通道、AE 端到端触发与 rear 1080p 性能量化（2026-10-14 夜）
+
+**通道裁决**：deb 版探针（dpkg 环境：ad-hoc 签名、/var/jb 路径）与商业
+App 不等价，结论不可外推（用户裁决"不能绕过"）→ 探针改走 Sideloadly
+签名 IPA（bundle com.codex.vcamdetectprobe.std，scheme vcam-probe2://，
+与 deb 版不冲突）。完整 GUI 流程：点 IPA 图标→对话框选包→Start；
+"卡 88%"实为设备"信任此电脑"弹窗挡住 pairing 的 UI 假死，noVNC 截屏
+找蓝色按钮像素→tab.cua.click 点掉即可（"系统弹窗点不动"旧结论推翻）。
+
+**minISO 修复真机验证 ✓**：setRearExposurePulse 用 activeFormat.minISO
+（minVideoISO 不存在的修复）后 setA(ISO400) ok=1，exposureUs=33333
+（20:39/20:48/23:01 三跑一致）。
+
+**torch↔亮度耦合复核 ✓（强）**：20:48 单会话 report_20261014_204816
+rear delta=11.37；v2 IPA 23:01 report_20261014_230100 rear delta=24.08、
+阶跃清晰（t=52.17 luma 128.57→202.13）。此前 M 轮"耦合弱"是 Safari
+双会话干扰，非 vcam 缺陷。
+
+**lumaWindow_exposure 三跑缺失的根因（已修）**：不是序列化竞态
+（+24 修复后仍缺）——真因=setB 的 custom 请求 completion 不回、
+pending 请求占住设备配置锁，随后 restoreA/biasDown 的无限
+lockForConfiguration 永久阻塞 → sessionQueue 冻结 → exposure 窗开/关
+块连锁丢失。修复 97cbf09：曝光请求改异步发起（去同步信号量），锁改
+tryLockForConfigurationWithTime(2s)；ok=0=发起未确认，completion 到达
+异步补 ok=1。同时发现 v2 探针 rear 阶段伴随
+`AVCaptureSessionRuntimeErrorNotification err=Cannot Complete Action`
+与 assetWriter status=2（v3 复跑观察）。
+
+**obs=-1（未解，遗留）**：App 公开曝光 API（setExposureModeCustom/
+setExposureTargetBias）在 iOS 18.3.1 不走 BWFigVideoCaptureDevice 的
+ObjC setter——hook 安装成功、方法存在于 bw_symbols.log 但未触发
+（同层 setTorchLevel: 正常）。控制路径观测点需重设计（候选：轮询 BW
+设备状态 getter 或找真实 XPC 入口）。
+
+**rear 1080p 性能量化与 Metal 裁决（负）**：
+- 软件渲染 23:01 单会话（对照基准）：front 640x480 p50=10.7ms 正常；
+  rear 1920x1080 p50=31.5-35.0ms / p95=33.7-68.6ms——30fps 预算 33.3ms
+  下 p50 已贴预算、p95 必超 → 偶发丢帧+发热的主成本。droppedSoFar=1，
+  帧流本身不断（"suppressing 断流"是 22:50 那次 provider 异常期现象）。
+- Metal(metalRenderer=1) 22:50：rear p50=35.26/p95=77.65/max=84.53
+  **劣于软件**，且运行中 cameracaptured 异常退出（无 crash 报告，
+  launchd 惰性重启）；front 阶段与软件持平（10.4ms）。Round B 的
+  "Metal 无收益"此前只测过 front，本轮补上 rear 1080p 直接证据。
+  → metalRenderer 保持关闭（设备 plist 已删键恢复默认）。
+- 用户裁决："我的证件也是通过图片替换的，并不是真实拍摄"——rear 必须
+  保留替换，方向=不降质量的渲染优化（"rear 直通真实帧"方案作废）。
+- 优化 c4e195d：实时同尺寸零增益 **BGRA 直通快速路径**——源=目标尺寸
+  BGRA、scale=1.0、无旋转/镜像且亮度/通道增益都无 filter 节点时，
+  跳过 CIRenderTask，用合成链同一写回函数直接转目标（颜色语义完全
+  一致、零质量变化）。证件视频源 1080p=目标 1080p 正中此场景；
+  AE/torch 激活时自动回 CI 原链（增益跟随不受影响）。真机 p50 收益
+  待下一轮实测。
+- preview cache（sequence 不变即复用）只对静态帧生效；视频源每帧
+  sequence 变化不命中，快速路径是视频场景的对应优化。
+
+**探针 v2 验证**：UILaunchScreen 修复 ✓（真机全屏，截图确认）。
+exposurePulse setB ok=0 属 v2 预期（5s 等待版），v3（97cbf09）转异步。
+
+**新增报告索引**：report_20261014_203930/204042（双会话干扰）、
+204816（单会话 rear delta 11.37）、230100（v2：torch delta 24.08、
+dropped=1、exposure 窗缺失根因样本）。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；
