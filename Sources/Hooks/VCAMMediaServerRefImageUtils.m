@@ -1,6 +1,7 @@
 #import "VCAMMediaServerRefImageUtils.h"
 #import "../Shared/VCAMProcessIdentity.h"
 
+#import <Accelerate/Accelerate.h>
 #import <CoreImage/CoreImage.h>
 #import <CoreVideo/CVPixelBufferIOSurface.h>
 #import <CoreVideo/CVPixelFormatDescription.h>
@@ -53,6 +54,11 @@ static size_t VCAMCPUBGRAScratchHeight;
 static CVPixelBufferPoolRef VCAMLocalSourcePool;
 static size_t VCAMLocalSourceWidth;
 static size_t VCAMLocalSourceHeight;
+// 旋转快速路径的 BGRA 缓冲：尺寸与源池互为转置且同帧共存，共用源池会每帧
+// 乒乓重建，因此独立持池。
+static CVPixelBufferPoolRef VCAMLocalRotatePool;
+static size_t VCAMLocalRotateWidth;
+static size_t VCAMLocalRotateHeight;
 static CVPixelBufferPoolRef VCAMPlanarRenderPool;
 static size_t VCAMPlanarRenderWidth;
 static size_t VCAMPlanarRenderHeight;
@@ -1780,6 +1786,81 @@ static CVReturn VCAMCreateLocalBGRASourceBuffer(size_t width, size_t height,
     return bufferStatus;
 }
 
+static CVReturn VCAMCreateLocalRotatedBGRABuffer(size_t width, size_t height,
+                                                 CVPixelBufferRef *bufferOut) {
+    if (bufferOut == NULL || VCAMPixelTransferLock == nil) {
+        return kCVReturnInvalidArgument;
+    }
+    *bufferOut = NULL;
+    [VCAMPixelTransferLock lock];
+    if (VCAMLocalRotatePool == NULL ||
+        VCAMLocalRotateWidth != width || VCAMLocalRotateHeight != height) {
+        CVPixelBufferPoolRef replacementPool = NULL;
+        CVReturn poolStatus = VCAMCreateStagingPool(
+            kCVPixelFormatType_32BGRA, width, height, &replacementPool);
+        if (poolStatus != kCVReturnSuccess) {
+            [VCAMPixelTransferLock unlock];
+            return poolStatus;
+        }
+        if (VCAMLocalRotatePool != NULL) {
+            CVPixelBufferPoolRelease(VCAMLocalRotatePool);
+        }
+        VCAMLocalRotatePool = replacementPool;
+        VCAMLocalRotateWidth = width;
+        VCAMLocalRotateHeight = height;
+    }
+    CVReturn bufferStatus = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, VCAMLocalRotatePool, bufferOut);
+    [VCAMPixelTransferLock unlock];
+    return bufferStatus;
+}
+
+// 旋转快速路径的 90° 分量：rear WebKit 真机日志钉出"竖源 1080x1920 → 横目标
+// 1920x1080"是该链路的常态，CI 全链（旋转+合成+软渲染）p50 ~32ms 全部花在这次
+// 转置上。kRotate90DegreesCounterClockwise 与 imageByApplyingOrientation:
+// kCGImagePropertyOrientationLeft 逐像素一致（EXIF 8：视觉逆时针 90°），且
+// vImage 头注明四通道函数与通道序无关（BGRA 原样可用）。
+static BOOL VCAMRotateBGRA90CounterClockwise(CVPixelBufferRef source,
+                                             CVPixelBufferRef destination) {
+    if (source == NULL || destination == NULL ||
+        CVPixelBufferIsPlanar(source) || CVPixelBufferIsPlanar(destination) ||
+        CVPixelBufferGetPixelFormatType(source) != kCVPixelFormatType_32BGRA ||
+        CVPixelBufferGetPixelFormatType(destination) != kCVPixelFormatType_32BGRA ||
+        CVPixelBufferGetWidth(source) != CVPixelBufferGetHeight(destination) ||
+        CVPixelBufferGetHeight(source) != CVPixelBufferGetWidth(destination)) {
+        return NO;
+    }
+    CVReturn sourceLock = CVPixelBufferLockBaseAddress(
+        source, kCVPixelBufferLock_ReadOnly);
+    if (sourceLock != kCVReturnSuccess) return NO;
+    CVReturn destinationLock = CVPixelBufferLockBaseAddress(destination, 0);
+    if (destinationLock != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+    const void *sourceBase = CVPixelBufferGetBaseAddress(source);
+    void *destinationBase = CVPixelBufferGetBaseAddress(destination);
+    BOOL rotated = NO;
+    if (sourceBase != NULL && destinationBase != NULL) {
+        vImage_Buffer sourceBuffer = {
+            (void *)sourceBase,
+            CVPixelBufferGetHeight(source), CVPixelBufferGetWidth(source),
+            CVPixelBufferGetBytesPerRow(source)};
+        vImage_Buffer destinationBuffer = {
+            destinationBase,
+            CVPixelBufferGetHeight(destination), CVPixelBufferGetWidth(destination),
+            CVPixelBufferGetBytesPerRow(destination)};
+        const Pixel_8888 background = {0, 0, 0, 0};
+        rotated = vImageRotate90_ARGB8888(&sourceBuffer, &destinationBuffer,
+                                          kRotate90DegreesCounterClockwise,
+                                          background, kvImageNoFlags) ==
+                  kvImageNoError;
+    }
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferUnlockBaseAddress(destination, 0);
+    return rotated;
+}
+
 static BOOL VCAMCopyBGRASourceToLocal(CVPixelBufferRef sourceBuffer,
                                       CVPixelBufferRef localBuffer) {
     if (sourceBuffer == NULL || localBuffer == NULL ||
@@ -2985,21 +3066,39 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             CVPixelBufferGetHeight(ciSourceBuffer) == targetHeight &&
             ((sourceIsSameBGRA && (!diagonalActive || localSourceBuffer != NULL)) ||
              (sourceIsSameNV12 && diagonalNeutral));
-        if (passthroughFastPath && diagonalActive && sourceIsSameBGRA) {
+        // 旋转存储快速路径（v4，rear 常态）：真机 reject 日志钉出源=竖 BGRA、
+        // 因子中性、scale=1，唯一失配是 webKitRotatedForStorage 的 90° 转置。
+        // 旋转与其余分量（对角因子、格式转换）逐像素正交，用 vImage NEON 旋转
+        // 等价替换。front 额外带镜像，不走此路径。
+        BOOL rotatedFastPath = !passthroughFastPath &&
+            webKitRotatedForStorage && !currentCameraIsFront &&
+            !additiveActive && realtimeCompensation && planarTarget &&
+            !compressedTarget && !webKitFrontPresentation &&
+            fabs((double)scale - 1.0) < 0.001 &&
+            renderWidth == targetWidth && renderHeight == targetHeight &&
+            !CVPixelBufferIsPlanar(ciSourceBuffer) &&
+            CVPixelBufferGetPixelFormatType(ciSourceBuffer) ==
+                kCVPixelFormatType_32BGRA &&
+            CVPixelBufferGetWidth(ciSourceBuffer) == targetHeight &&
+            CVPixelBufferGetHeight(ciSourceBuffer) == targetWidth &&
+            (!diagonalActive || localSourceBuffer != NULL);
+        BOOL fastPathActive = passthroughFastPath || rotatedFastPath;
+        if (fastPathActive && diagonalActive && sourceIsSameBGRA) {
             VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);
         }
         // 未命中的拒绝原因诊断（目标场景每 300 帧一条，下轮真机钉原因用）。
-        if (!passthroughFastPath && realtimeCompensation && planarTarget &&
+        if (!fastPathActive && realtimeCompensation && planarTarget &&
             !compressedTarget) {
             static volatile int fastPathRejectLogs = 0;
             int rejectCount = __sync_add_and_fetch(&fastPathRejectLogs, 1);
             if (rejectCount <= 3 || rejectCount % 300 == 0) {
                 char message[256] = {0};
                 snprintf(message, sizeof(message),
-                         "fast path reject count=%d additive=%d srcBGRA=%d srcNV12same=%d diagActive=%d diagNeutral=%d scale=%.4f fmt=%08x/%08x src=%zux%zu target=%zux%zu",
+                         "fast path reject count=%d additive=%d srcBGRA=%d srcNV12same=%d diagActive=%d diagNeutral=%d rotate=%d front=%d scale=%.4f fmt=%08x/%08x src=%zux%zu target=%zux%zu",
                          rejectCount, (int)additiveActive, (int)sourceIsSameBGRA,
                          (int)sourceIsSameNV12, (int)diagonalActive,
-                         (int)diagonalNeutral, (double)scale,
+                         (int)diagonalNeutral, (int)webKitRotatedForStorage,
+                         (int)currentCameraIsFront, (double)scale,
                          CVPixelBufferGetPixelFormatType(ciSourceBuffer),
                          targetFormat,
                          CVPixelBufferGetWidth(ciSourceBuffer),
@@ -3015,7 +3114,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         destination.colorSpace = VCAMStandardColorSpace;
         NSError *startError = nil;
         CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
-        CIRenderTask *task = passthroughFastPath ? nil
+        CIRenderTask *task = fastPathActive ? nil
             : [VCAMContext startTaskToRender:image
                                                   fromRect:image.extent
                                              toDestination:destination
@@ -3055,22 +3154,36 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         }
         BOOL coreImageRendered = task != nil && renderInfo != nil &&
             startError == nil && completionError == nil;
-        if (passthroughFastPath) {
+        if (fastPathActive) {
             static volatile int passthroughFastPathLogs = 0;
             int fastCount = __sync_add_and_fetch(&passthroughFastPathLogs, 1);
             if (fastCount <= 3 || fastCount % 300 == 0) {
-                char message[160] = {0};
+                char message[200] = {0};
                 snprintf(message, sizeof(message),
-                         "passthrough fast path count=%d src=%08x target=%08x size=%zux%zu",
-                         fastCount, CVPixelBufferGetPixelFormatType(ciSourceBuffer),
+                         "passthrough fast path count=%d rot=%d src=%08x target=%08x size=%zux%zu",
+                         fastCount, (int)rotatedFastPath,
+                         CVPixelBufferGetPixelFormatType(ciSourceBuffer),
                          targetFormat, targetWidth, targetHeight);
                 VCAMRefLog(message);
             }
-            rendered = sourceIsSameBGRA
-                ? VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer)
-                : VCAMCopyNV12IntoPlanarTargetWithGain(
-                    ciSourceBuffer, targetBuffer,
-                    diagonalActive ? diagFactor[0] : 1.0);
+            if (rotatedFastPath) {
+                CVPixelBufferRef rotatedBuffer = NULL;
+                if (VCAMCreateLocalRotatedBGRABuffer(
+                        targetWidth, targetHeight,
+                        &rotatedBuffer) == kCVReturnSuccess &&
+                    rotatedBuffer != NULL &&
+                    VCAMRotateBGRA90CounterClockwise(ciSourceBuffer, rotatedBuffer)) {
+                    rendered = VCAMTransferBGRAIntoPlanarTarget(rotatedBuffer,
+                                                                targetBuffer);
+                }
+                if (rotatedBuffer != NULL) CFRelease(rotatedBuffer);
+            } else {
+                rendered = sourceIsSameBGRA
+                    ? VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer)
+                    : VCAMCopyNV12IntoPlanarTargetWithGain(
+                        ciSourceBuffer, targetBuffer,
+                        diagonalActive ? diagFactor[0] : 1.0);
+            }
         } else {
             rendered = coreImageRendered &&
                 (compressedTarget
@@ -3110,7 +3223,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             *replacementBufferOut = CVPixelBufferRetain(compressedReplacementBuffer);
         }
         elapsed = CFAbsoluteTimeGetCurrent() - started;
-        if (!coreImageRendered && !passthroughFastPath &&
+        if (!coreImageRendered && !fastPathActive &&
             __sync_fetch_and_add(&VCAMMetalContextActive, 0) != 0) {
             // Metal 真实帧首次失败（含 watchdog 取消）：永久回退软件上下文。
             // 本帧不重试——单帧失败远小于"每帧都可能挂起"的风险；下一帧起走软件。
@@ -3118,7 +3231,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             VCAMContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
             VCAMRefLog("metal render failed; permanently falling back to software context");
         }
-        if (!coreImageRendered && !passthroughFastPath) {
+        if (!coreImageRendered && !fastPathActive) {
             static dispatch_once_t renderFailureToken;
             dispatch_once(&renderFailureToken, ^{
                 NSString *message = [NSString stringWithFormat:

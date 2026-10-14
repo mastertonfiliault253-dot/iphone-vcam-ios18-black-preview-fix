@@ -60,14 +60,23 @@ class LargeTargetRenderTests(unittest.TestCase):
         # CI 图等价直通——跳过 CIRenderTask，用同一写回函数直接转源缓冲
         #（rear 1080p 全幅软渲染 p50 ~32ms 的主要成本）。对角增益（AE×染色）
         # 不算失配：先在私有 BGRA 拷贝上做等价的逐像素定点乘法。
+        # v4：真机 reject 日志钉出 rear 常态是"竖源 1080x1920→横目标 1920x1080
+        # 的 90° 转置"（webKitRotatedForStorage），旋转与其余分量正交——用
+        # vImage NEON 旋转（kRotate90DegreesCounterClockwise == CG orientation
+        # Left）+ 既有转换函数等价替换，同样跳过 CIRenderTask。仅 rear 走此
+        # 路径（front 额外带镜像）。
         self.assertIn("BOOL passthroughFastPath = !additiveActive", self.source)
         self.assertIn("VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);",
                       self.source)
-        self.assertIn("CIRenderTask *task = passthroughFastPath ? nil", self.source)
+        self.assertIn("CIRenderTask *task = fastPathActive ? nil", self.source)
+        self.assertIn("webKitRotatedForStorage && !currentCameraIsFront", self.source)
+        self.assertIn("kRotate90DegreesCounterClockwise", self.source)
+        self.assertIn("VCAMRotateBGRA90CounterClockwise(ciSourceBuffer, rotatedBuffer)",
+                      self.source)
         self.assertIn("? VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer)",
                       self.source)
         # 快速路径命中不是渲染失败：不得触发 Metal 永久回退或失败日志。
-        self.assertEqual(2, self.source.count("!coreImageRendered && !passthroughFastPath"))
+        self.assertEqual(2, self.source.count("!coreImageRendered && !fastPathActive"))
         # NV12 源同格式直通（视频解码通道常见）：仅中性对角因子（三通道同
         # 系数，编码 YUV 上线性组合与标量乘交换）；非中性回全链。拒绝原因
         # 必须可诊断（真机 23:42 一轮"为何未命中"无法定论的教训）。
