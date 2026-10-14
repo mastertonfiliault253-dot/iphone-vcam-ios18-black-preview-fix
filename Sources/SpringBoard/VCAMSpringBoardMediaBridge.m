@@ -1357,32 +1357,13 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
             NSError *readerError = nil;
             AVAssetReader *reader =
                 [AVAssetReader assetReaderWithAsset:asset error:&readerError];
-            // outputSettings:nil decodes to uncompressed pixels whose sample
-            // has no usable format description for VT. The public way to get
-            // compressed pass-through samples is an outputSettings request
-            // naming the track's own codec (AVVideoCodecKey); samples then
-            // carry the same AVCC/HEVC access units the RTSP pipeline feeds
-            // into the hardware decoder.
-            NSString *codecKey = nil;
-            if (track.formatDescriptions.count > 0) {
-                CMFormatDescriptionRef trackFormat =
-                    (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
-                OSType mediaSubtype = CMFormatDescriptionGetMediaSubType(trackFormat);
-                if (mediaSubtype == kCMVideoCodecType_HEVC) {
-                    codecKey = AVVideoCodecTypeHEVC;
-                } else if (mediaSubtype == kCMVideoCodecType_H264) {
-                    codecKey = AVVideoCodecTypeH264;
-                }
-            }
-            if (codecKey == nil) {
-                [VCAMConfiguration appendProcessLog:
-                    @"[DEBUG-vtsb] self-test skipped: unsupported track codec"];
-                return;
-            }
+            // outputSettings:nil requests compressed pass-through samples
+            // (AVVideoCodecKey here would throw NSInvalidArgumentException:
+            // that key is writer-only). The compressed stream begins with
+            // samples without a format description; those are skipped below.
             AVAssetReaderTrackOutput *output =
                 [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track
-                                                           outputSettings:
-                    @{ AVVideoCodecKey: codecKey }];
+                                                           outputSettings:nil];
             if (reader && [reader canAddOutput:output]) [reader addOutput:output];
             if (!reader || ![reader startReading]) {
                 NSError *failure = reader.error ?: readerError;
@@ -1391,25 +1372,32 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
                     failure.domain ?: @"(none)", (long)failure.code]];
                 return;
             }
-            VCAMSpringBoardVTSelfTestState state = {0};
-            state.done = dispatch_semaphore_create(0);
+            // Heap-allocated so a late VideoToolbox callback can never touch
+            // freed stack memory; a one-shot diagnostic may leak this small
+            // struct instead of racing the callback with a free().
+            VCAMSpringBoardVTSelfTestState *state =
+                calloc(1, sizeof(*state));
+            state->done = dispatch_semaphore_create(0);
             CMVideoFormatDescriptionRef formatDescription = NULL;
             VTDecompressionSessionRef session = NULL;
             OSStatus firstStatus = 0;
             int fedSamples = 0;
-            while (fedSamples < 16) {
+            int skippedSamples = 0;
+            while (fedSamples < 16 && skippedSamples < 32) {
                 CMSampleBufferRef sample = [output copyNextSampleBuffer];
                 if (sample == NULL) break;
                 if (formatDescription == NULL) {
                     CMFormatDescriptionRef sampleFormat =
                         CMSampleBufferGetFormatDescription(sample);
                     if (sampleFormat == NULL) {
-                        // CFRetain(NULL) traps; AVAssetReader can emit
-                        // samples without a usable format description.
-                        [VCAMConfiguration appendProcessLog:
-                            @"[DEBUG-vtsb] self-test sample without format description"];
+                        // CFRetain(NULL) traps. A compressed pass-through
+                        // stream begins with formatless metadata samples;
+                        // skip those. If the skip never ends, the reader
+                        // emitted uncompressed pixels, which VideoToolbox
+                        // cannot consume.
+                        skippedSamples += 1;
                         CFRelease(sample);
-                        break;
+                        continue;
                     }
                     formatDescription = (CMVideoFormatDescriptionRef)CFRetain(sampleFormat);
                     NSDictionary *destination = @{
@@ -1418,7 +1406,7 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
                     };
                     VTDecompressionOutputCallbackRecord callback = {
                         .decompressionOutputCallback = VCAMSpringBoardVTSelfTestCallback,
-                        .decompressionOutputRefCon = &state,
+                        .decompressionOutputRefCon = state,
                     };
                     (void)VTDecompressionSessionCreate(kCFAllocatorDefault,
                         formatDescription, NULL,
@@ -1438,11 +1426,11 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
                 CFRelease(sample);
                 if (status != noErr) break;
                 // One outstanding frame at a time keeps the session and the
-                // stack-allocated state alive across the callback.
-                (void)dispatch_semaphore_wait(state.done,
+                // heap-allocated state alive across the callback.
+                (void)dispatch_semaphore_wait(state->done,
                     dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
             }
-            (void)dispatch_semaphore_wait(state.done,
+            (void)dispatch_semaphore_wait(state->done,
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
             BOOL usingHardware = NO;
             if (session != NULL) {
@@ -1460,10 +1448,11 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
             if (formatDescription != NULL) CFRelease(formatDescription);
             [reader cancelReading];
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"[DEBUG-vtsb] self-test fed=%d decoded=%d firstStatus=%d "
-                 @"firstCallbackStatus=%d sawCallback=%d usingHardware=%d",
-                fedSamples, state.decodedFrames, (int)firstStatus,
-                (int)state.firstCallbackStatus, state.sawCallback, usingHardware]];
+                @"[DEBUG-vtsb] self-test fed=%d skipped=%d decoded=%d "
+                 @"firstStatus=%d firstCallbackStatus=%d sawCallback=%d "
+                 @"usingHardware=%d",
+                fedSamples, skippedSamples, state->decodedFrames, (int)firstStatus,
+                (int)state->firstCallbackStatus, state->sawCallback, usingHardware]];
         });
     });
 }
