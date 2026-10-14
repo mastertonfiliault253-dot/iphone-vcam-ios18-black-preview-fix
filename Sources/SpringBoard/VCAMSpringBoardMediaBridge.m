@@ -1357,12 +1357,32 @@ static void VCAMSpringBoardVTSelfTestCallback(void *refcon, void *sourceFrameRef
             NSError *readerError = nil;
             AVAssetReader *reader =
                 [AVAssetReader assetReaderWithAsset:asset error:&readerError];
-            // outputSettings:nil yields the compressed samples verbatim, the
-            // same length-prefixed AVCC access units the hardware decoder
-            // consumes in the RTSP pipeline.
+            // outputSettings:nil decodes to uncompressed pixels whose sample
+            // has no usable format description for VT. The public way to get
+            // compressed pass-through samples is an outputSettings request
+            // naming the track's own codec (AVVideoCodecKey); samples then
+            // carry the same AVCC/HEVC access units the RTSP pipeline feeds
+            // into the hardware decoder.
+            NSString *codecKey = nil;
+            if (track.formatDescriptions.count > 0) {
+                CMFormatDescriptionRef trackFormat =
+                    (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+                OSType mediaSubtype = CMFormatDescriptionGetMediaSubType(trackFormat);
+                if (mediaSubtype == kCMVideoCodecType_HEVC) {
+                    codecKey = AVVideoCodecTypeHEVC;
+                } else if (mediaSubtype == kCMVideoCodecType_H264) {
+                    codecKey = AVVideoCodecTypeH264;
+                }
+            }
+            if (codecKey == nil) {
+                [VCAMConfiguration appendProcessLog:
+                    @"[DEBUG-vtsb] self-test skipped: unsupported track codec"];
+                return;
+            }
             AVAssetReaderTrackOutput *output =
                 [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track
-                                                           outputSettings:nil];
+                                                           outputSettings:
+                    @{ AVVideoCodecKey: codecKey }];
             if (reader && [reader canAddOutput:output]) [reader addOutput:output];
             if (!reader || ![reader startReading]) {
                 NSError *failure = reader.error ?: readerError;
