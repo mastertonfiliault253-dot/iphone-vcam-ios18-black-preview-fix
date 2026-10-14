@@ -196,13 +196,29 @@ static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) 
     }
     id providers = ((id (*)(id, SEL))objc_msgSend)(manager, fetchSelector);
     if (![providers isKindOfClass:NSArray.class] || [(NSArray *)providers count] == 0) {
-        if (failureReasonOut) *failureReasonOut = @"no eligible providers";
+        // 诊断需要真实返回类型/数量：selector 存在不代表签名或返回形制符合预期。
+        unsigned long count = 0;
+        if ([providers respondsToSelector:@selector(count)]) {
+            count = (unsigned long)[(id <NSObject>)providers count];
+        }
+        if (failureReasonOut) {
+            *failureReasonOut = [NSString stringWithFormat:
+                @"providers class=%@ count=%lu",
+                providers ? NSStringFromClass([providers class]) : @"nil", count];
+        }
         return NO;
     }
     SEL captureSelector = NSSelectorFromString(@"captureScreenshot");
+    NSMutableArray<NSString *> *providerDiag = [NSMutableArray new];
     for (id provider in (NSArray *)providers) {
-        if (![provider respondsToSelector:captureSelector]) continue;
+        NSString *providerClass = NSStringFromClass([provider class]) ?: @"?";
+        if (![provider respondsToSelector:captureSelector]) {
+            [providerDiag addObject:[providerClass stringByAppendingString:@":no-sel"]];
+            continue;
+        }
         id captured = ((id (*)(id, SEL))objc_msgSend)(provider, captureSelector);
+        [providerDiag addObject:[NSString stringWithFormat:@"%@->%@", providerClass,
+                                captured ? NSStringFromClass([captured class]) : @"nil"]];
         CGImageRef image = NULL;
         if ([captured isKindOfClass:UIImage.class]) {
             image = ((UIImage *)captured).CGImage;
@@ -214,11 +230,14 @@ static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) 
             return YES;
         }
     }
-    if (failureReasonOut) *failureReasonOut = @"no provider produced image";
+    if (failureReasonOut) {
+        *failureReasonOut = [NSString stringWithFormat:@"no image [%@]",
+                             [providerDiag componentsJoinedByString:@" "]];
+    }
     return NO;
 }
 
-static BOOL VCAMRequestScreenshotAverage(void) {
+static BOOL VCAMRequestScreenshotAverage(NSString **screenshotReasonOut) {
     // 候选 0：UIKit 历史私有符号 UIGetScreenImage（dlsym 探测，不存在则跳过）。
     static UIImage *(*getScreenImageIMP)(void);
     static dispatch_once_t uiSymbolToken;
@@ -268,6 +287,7 @@ static BOOL VCAMRequestScreenshotAverage(void) {
         }
         return YES;
     }
+    if (screenshotReasonOut) *screenshotReasonOut = providerReason;
     Class managerClass = objc_getClass("SBScreenshotManager");
     SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
     SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
@@ -573,14 +593,16 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
                             @"screen-tint screenshot completion timeout"];
                     }
                     if (!VCAMScreenshotManagerInFlight) {
-                        if (!VCAMRequestScreenshotAverage()) {
+                        NSString *screenshotReason = nil;
+                        if (!VCAMRequestScreenshotAverage(&screenshotReason)) {
                             static CFAbsoluteTime lastFailureLoggedAt = 0;
                             CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
                             if (now - lastFailureLoggedAt > 30.0) {
                                 lastFailureLoggedAt = now;
                                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                                    @"screen-tint sampler unavailable reason=%@",
-                                    failureReason ?: @"unknown"]];
+                                    @"screen-tint sampler unavailable reason=%@ shot=%@",
+                                    failureReason ?: @"unknown",
+                                    screenshotReason ?: @"unknown"]];
                             }
                             VCAMClearScreenTintState();
                         }
