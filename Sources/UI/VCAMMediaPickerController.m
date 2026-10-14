@@ -136,29 +136,72 @@ static BOOL VCAMAverageCGImageInto(int *rgbOut, CGImageRef image) {
 static BOOL VCAMScreenshotManagerInFlight = NO;
 static int64_t VCAMScreenshotManagerInFlightMs = 0;
 
-// 自诊断：iOS 18 上 SBScreenshotManager 的方法形制未公开确认，一次性把实际存在的
-// screenshot 相关选择子打进日志（类方法+实例方法），下一轮据此精确适配。
-static NSString *VCAMScreenshotManagerShape(Class cls) {
-    if (cls == nil) return @"class missing";
+// 自诊断：iOS 18 上屏幕截图的原生入口形制未公开确认。一次性扫描进程内所有含
+// "Screenshot" 的类，列出其中的 capture/take/fetch 与 screenshot 相关选择子，
+// 下一轮据此精确适配（输出有长度上限防爆）。
+static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
     NSMutableArray<NSString *> *names = [NSMutableArray new];
-    Class cursors[] = { cls, object_getClass(cls) };
-    for (int c = 0; c < 2 && names.count < 40; c++) {
-        unsigned int count = 0;
-        Method *methods = class_copyMethodList(cursors[c], &count);
-        for (unsigned int i = 0; i < count && names.count < 40; i++) {
-            NSString *name = NSStringFromSelector(method_getName(methods[i]));
-            if ([name rangeOfString:@"creenshot"].location != NSNotFound ||
-                [name isEqualToString:@"sharedInstance"]) {
-                [names addObject:[NSString stringWithFormat:@"%s:%@",
-                                  c == 0 ? "i" : "c", name]];
+    NSMutableSet<NSString *> *seenClassNames = [NSMutableSet set];
+    static const char *kProbeSubstrings[] = {"capture", "take", "fetch", "Screenshot", "snapshot"};
+    for (unsigned int i = 0; i < classCount && names.count < 60; i++) {
+        NSString *className = NSStringFromClass(classes[i]);
+        if (![className containsString:@"Screenshot"]) continue;
+        if ([className containsString:@"."] || [seenClassNames containsObject:className]) continue;
+        [seenClassNames addObject:className];
+        Class cursors[] = { classes[i], object_getClass(classes[i]) };
+        for (int c = 0; c < 2 && names.count < 60; c++) {
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(cursors[c], &methodCount);
+            for (unsigned int m = 0; m < methodCount && names.count < 60; m++) {
+                NSString *selectorName = NSStringFromSelector(method_getName(methods[m]));
+                BOOL matches = NO;
+                for (const char *probe : kProbeSubstrings) {
+                    if ([selectorName rangeOfString:[NSString stringWithUTF8String:probe]
+                                           options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                        matches = YES;
+                        break;
+                    }
+                }
+                if (matches) {
+                    [names addObject:[NSString stringWithFormat:@"%@%s:%@", className,
+                                      c == 0 ? "#" : "+", selectorName]];
+                }
             }
+            free(methods);
         }
-        free(methods);
     }
-    return names.count ? [names componentsJoinedByString:@"|"] : @"no screenshot selectors";
+    free(classes);
+    return names.count ? [names componentsJoinedByString:@" | "] : @"no screenshot classes";
 }
 
 static BOOL VCAMRequestScreenshotAverage(void) {
+    // 候选 0：UIKit 历史私有符号 UIGetScreenImage（dlsym 探测，不存在则跳过）。
+    static UIImage *(*getScreenImageIMP)(void);
+    static dispatch_once_t uiSymbolToken;
+    dispatch_once(&uiSymbolToken, ^{
+        getScreenImageIMP =
+            (UIImage *(*)(void))dlsym(RTLD_DEFAULT, "UIGetScreenImage");
+    });
+    if (getScreenImageIMP != NULL) {
+        UIImage *snapshot = getScreenImageIMP();
+        CGImageRef snapshotImage = snapshot.CGImage;
+        if (snapshotImage != NULL) {
+            int rgb[3] = {0, 0, 0};
+            if (VCAMAverageCGImageInto(rgb, snapshotImage)) {
+                VCAMPublishScreenTintSample(rgb[0], rgb[1], rgb[2]);
+                static CFAbsoluteTime lastSampleLoggedAt = 0;
+                CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                if (now - lastSampleLoggedAt > 30.0) {
+                    lastSampleLoggedAt = now;
+                    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                        @"screen-tint sample rgb=%d,%d,%d path=uiget", rgb[0], rgb[1], rgb[2]]];
+                }
+                return YES;
+            }
+        }
+    }
     Class managerClass = objc_getClass("SBScreenshotManager");
     SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
     SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
