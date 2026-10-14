@@ -185,7 +185,11 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("commitConfiguration", src)
         self.assertIn("videoSupportedFrameRateRanges", src)
         self.assertIn("activeFormat", src)
-        self.assertIn("lockForConfiguration", src)
+        # 设备锁必须带超时：无限 lockForConfiguration 在前一 custom 曝光请求
+        # pending 时永久阻塞（三跑真机实证 restoreA/biasDown 缺失、队列冻结连锁）。
+        self.assertIn("tryLockForConfigurationWithTime", src)
+        # 曝光请求发起即返回（异步 completion 观察），不得同步等待信号量。
+        self.assertNotIn("dispatch_semaphore", src)
 
     def test_probe_runner_collects_all_extended_signals(self):
         # "可扩展收集的信息全部入探针"的契约：每项都必须在源码中有对应 API 调用点。

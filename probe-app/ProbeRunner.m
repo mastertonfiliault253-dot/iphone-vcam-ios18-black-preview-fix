@@ -880,11 +880,19 @@ static BOOL pathExists(NSString *p) {
     AVCaptureDevice *device = self.rearDevice;
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
     entry[@"requestedISO"] = @(isoTarget);
-    if (![device lockForConfiguration:nil]) {
-        entry[@"lockFail"] = @YES;
+    // tryLock 带超时（原 lockForConfiguration:nil 无限等待）：custom 请求 pending
+    // 会占住设备锁——三跑实证 setB 后 restoreA/biasDown 永无返回、sessionQueue
+    // 冻结连带后续 sampleQueue 时序（exposure 窗两次缺失）。等待 completion 的
+    // 同步信号量同被移除：目标只是"像 KYC App 一样发起曝光请求并观察画面响应"，
+    // 不需要同步 API 语义。ok=0 表示发起成功但 completion 未到（序列化时刻），
+    // 到齐后异步再 merge 一份 ok=1。
+    if (![device tryLockForConfigurationWithTime:
+            [NSDate dateWithTimeIntervalSinceNow:2.0]]) {
+        entry[@"lockTimeout"] = @YES;
         [self mergeExposurePulseEntry:tag entry:entry];
         return;
     }
+    entry[@"ok"] = @0;
     @try {
         CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
         CMTime maxDuration = device.activeFormat.maxExposureDuration;
@@ -895,15 +903,15 @@ static BOOL pathExists(NSString *p) {
         double iso = isoTarget;
         if (iso < minISO) { iso = minISO; }
         if (iso > maxISO) { iso = maxISO; }
-        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        __weak ProbeRunner *me = self;
         [device setExposureModeCustomWithDuration:duration ISO:(float)iso
-                                completionHandler:^(CMTime syncTime) { (void)syncTime; dispatch_semaphore_signal(done); }];
-        // 5s（原 2s）：2s 下 setB(ISO 800) 两跑均超时 ok=0 而 setA(400) 秒回——
-        // 第二次 custom 请求需等前一次应用+AE 收敛，2s 不够；超时还会让设备配置锁
-        // 被 pending 请求占住，连带 restoreA 的 lockForConfiguration 永久阻塞
-        //（两跑 restoreA/biasDown 均缺失的根因）。
-        long waited = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
-        entry[@"ok"] = @(waited == 0);
+                                completionHandler:^(CMTime syncTime) {
+            (void)syncTime;
+            ProbeRunner *strongMe = me;
+            if (strongMe == nil) return;
+            entry[@"ok"] = @1;  // 单字段写入；两次 merge 先后快照自洽
+            [strongMe mergeExposurePulseEntry:tag entry:entry];
+        }];
         entry[@"iso"] = @(iso);
         entry[@"exposureUs"] = @(round(CMTimeGetSeconds(duration) * 1e6));
     } @catch (NSException *e) {
@@ -917,8 +925,10 @@ static BOOL pathExists(NSString *p) {
     AVCaptureDevice *device = self.rearDevice;
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
     entry[@"biasEV"] = @(biasEV);
-    if (![device lockForConfiguration:nil]) {
-        entry[@"lockFail"] = @YES;
+    // 同 setRearExposurePulse：无限锁在前一 custom 请求 pending 时会永久阻塞。
+    if (![device tryLockForConfigurationWithTime:
+            [NSDate dateWithTimeIntervalSinceNow:2.0]]) {
+        entry[@"lockTimeout"] = @YES;
         [self mergeExposurePulseEntry:tag entry:entry];
         return;
     }
