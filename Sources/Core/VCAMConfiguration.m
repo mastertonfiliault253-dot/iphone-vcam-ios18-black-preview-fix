@@ -782,7 +782,15 @@ static SecKeyRef VCAMLicenseSecKey(void) {
     if (written) {
         NSString *mirrorPath =
             @"/var/mobile/Library/VirtualCaptureCard/VCAM/com.codex.vcam.plist";
-        [merged writeToFile:mirrorPath atomically:YES];
+        // cameracaptured 按裸文本扫 <key> 标签解析镜像；NSDictionary writeToFile
+        // 缺省写 binary plist（无文本标签），曾导致相机侧所有配置键静默回落缺省值。
+        // 镜像必须以 XML 文本格式写出。
+        NSError *mirrorError = nil;
+        NSData *mirrorData = [NSPropertyListSerialization dataWithPropertyList:merged
+            format:NSPropertyListXMLFormat_v1_0 options:0 error:&mirrorError];
+        if (mirrorData != nil) {
+            [mirrorData writeToFile:mirrorPath atomically:YES];
+        }
     }
     if (!written) {
         BOOL restored = previousFileExisted && previousData != nil

@@ -21,6 +21,8 @@ class ScreenTintChainTests(unittest.TestCase):
                       source)
         self.assertIn('@"floatingDotGlobal", @"screenTintEnabled",', source)
         self.assertEqual(source.count('@"screenTintEnabled"'), 2)
+        # 镜像必须是 XML 文本：相机侧按 <key> 标签裸文本扫描，binary plist 读不到。
+        self.assertIn("NSPropertyListXMLFormat_v1_0", source)
 
     def test_panel_exposes_screen_tint_toggle(self) -> None:
         header = (ROOT / "Sources" / "UI" / "VCAMControlPanelViewController.h").read_text(
@@ -46,6 +48,10 @@ class ScreenTintChainTests(unittest.TestCase):
         self.assertIn('"com.codex.vcam.ios18.screen-tint.state"', controller)
         # 抓屏走 dlsym 的私有符号，不允许直接链接期依赖（缺失时降级而不是崩）。
         self.assertIn('dlsym(RTLD_DEFAULT, "CARenderServerRenderDisplay")', controller)
+        # iOS 18 实测 CARenderServerRenderDisplay 的 layer.contents 为空，
+        # 首选回退=SpringBoard 自身截图通道 SBScreenshotManager。
+        self.assertIn('objc_getClass("SBScreenshotManager")', controller)
+        self.assertIn('takeScreenshotWithCompletionHandler:', controller)
         self.assertIn("startScreenTintSampler", controller)
         # 采样只允许挂在 SpringBoard 宿主（保持 filter 收缩结论：零 App 注入）。
         self.assertIn("if ([self isSpringBoardHost]) {\n            BOOL enabled = "

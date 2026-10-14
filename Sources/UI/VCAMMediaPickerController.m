@@ -105,6 +105,77 @@ static void VCAMClearScreenTintState(void) {
     VCAMScreenTintCleared = YES;
 }
 
+// 把 CGImage 32×32 缩采样求平均 RGB（两条抓屏路径共用）。
+static BOOL VCAMAverageCGImageInto(int *rgbOut, CGImageRef image) {
+    if (image == NULL) return NO;
+    enum { kSampleSide = 32 };
+    unsigned char buffer[kSampleSide * kSampleSide * 4] = {0};
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(buffer, kSampleSide, kSampleSide, 8,
+                                                 kSampleSide * 4, colorSpace,
+                                                 kCGImageAlphaPremultipliedLast);
+    if (colorSpace) CGColorSpaceRelease(colorSpace);
+    if (context == NULL) return NO;
+    CGContextDrawImage(context, CGRectMake(0, 0, kSampleSide, kSampleSide), image);
+    CGContextRelease(context);
+    unsigned long long sums[3] = {0};
+    for (int i = 0; i < kSampleSide * kSampleSide; i++) {
+        sums[0] += buffer[i * 4];
+        sums[1] += buffer[i * 4 + 1];
+        sums[2] += buffer[i * 4 + 2];
+    }
+    rgbOut[0] = (int)(sums[0] / (kSampleSide * kSampleSide));
+    rgbOut[1] = (int)(sums[1] / (kSampleSide * kSampleSide));
+    rgbOut[2] = (int)(sums[2] / (kSampleSide * kSampleSide));
+    return YES;
+}
+
+// iOS 18 首选：BackBoardServices 的 SBScreenshotManager——SpringBoard 用户截图
+// 走的就是它（真机验证 CARenderServerRenderDisplay 的 CALayer.contents 在 iOS 18
+// 已为空）。完成回调在主队列拿 CGImage，就地求平均并发布；in-flight 防重入。
+static BOOL VCAMScreenshotManagerInFlight = NO;
+static int64_t VCAMScreenshotManagerInFlightMs = 0;
+
+static BOOL VCAMRequestScreenshotAverage(void) {
+    Class managerClass = objc_getClass("SBScreenshotManager");
+    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    if (managerClass == nil ||
+        ![((NSObject *)managerClass) respondsToSelector:sharedSelector]) {
+        return NO;
+    }
+    id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
+    SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
+    if (![manager respondsToSelector:takeSelector]) {
+        return NO;
+    }
+    VCAMScreenshotManagerInFlight = YES;
+    VCAMScreenshotManagerInFlightMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    void (^completion)(CGImageRef, NSDictionary *) = ^(CGImageRef image, NSDictionary *info) {
+        (void)info;
+        VCAMScreenshotManagerInFlight = NO;
+        int rgb[3] = {0, 0, 0};
+        if (VCAMAverageCGImageInto(rgb, image)) {
+            VCAMPublishScreenTintSample(rgb[0], rgb[1], rgb[2]);
+            static int lastLoggedRGB[3] = {-1, -1, -1};
+            static CFAbsoluteTime lastSampleLoggedAt = 0;
+            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+            int delta = abs(rgb[0] - lastLoggedRGB[0]) +
+                        abs(rgb[1] - lastLoggedRGB[1]) +
+                        abs(rgb[2] - lastLoggedRGB[2]);
+            if (delta > 24 || now - lastSampleLoggedAt > 30.0) {
+                lastLoggedRGB[0] = rgb[0];
+                lastLoggedRGB[1] = rgb[1];
+                lastLoggedRGB[2] = rgb[2];
+                lastSampleLoggedAt = now;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"screen-tint sample rgb=%d,%d,%d path=screenshot", rgb[0], rgb[1], rgb[2]]];
+            }
+        }
+    };
+    ((void (*)(id, SEL, id))objc_msgSend)(manager, takeSelector, completion);
+    return YES;
+}
+
 // 把当前显示抓进缓存的全屏 CALayer 并 32×32 缩采样求平均 RGB。
 // 失败（符号缺失/contents 为空）返回 NO 并给出原因，由调用方限频记日志。
 static BOOL VCAMSampleDisplayAverageRGB(int *rgbOut, NSString **failureReasonOut) {
@@ -135,28 +206,10 @@ static BOOL VCAMSampleDisplayAverageRGB(int *rgbOut, NSString **failureReasonOut
         if (failureReasonOut) *failureReasonOut = @"display layer empty";
         return NO;
     }
-    enum { kSampleSide = 32 };
-    unsigned char buffer[kSampleSide * kSampleSide * 4] = {0};
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef context = CGBitmapContextCreate(buffer, kSampleSide, kSampleSide, 8,
-                                                 kSampleSide * 4, colorSpace,
-                                                 kCGImageAlphaPremultipliedLast);
-    if (colorSpace) CGColorSpaceRelease(colorSpace);
-    if (context == NULL) {
+    if (!VCAMAverageCGImageInto(rgbOut, displayImage)) {
         if (failureReasonOut) *failureReasonOut = @"bitmap context failed";
         return NO;
     }
-    CGContextDrawImage(context, CGRectMake(0, 0, kSampleSide, kSampleSide), displayImage);
-    CGContextRelease(context);
-    unsigned long long sums[3] = {0};
-    for (int i = 0; i < kSampleSide * kSampleSide; i++) {
-        sums[0] += buffer[i * 4];
-        sums[1] += buffer[i * 4 + 1];
-        sums[2] += buffer[i * 4 + 2];
-    }
-    rgbOut[0] = (int)(sums[0] / (kSampleSide * kSampleSide));
-    rgbOut[1] = (int)(sums[1] / (kSampleSide * kSampleSide));
-    rgbOut[2] = (int)(sums[2] / (kSampleSide * kSampleSide));
     return YES;
 }
 
@@ -371,15 +424,27 @@ static void VCAMPickerAppForegroundChanged(CFNotificationCenterRef center, void 
                             @"screen-tint sample rgb=%d,%d,%d", rgb[0], rgb[1], rgb[2]]];
                     }
                 } else {
-                    static CFAbsoluteTime lastFailureLoggedAt = 0;
-                    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-                    if (now - lastFailureLoggedAt > 30.0) {
-                        lastFailureLoggedAt = now;
-                        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                            @"screen-tint sampler unavailable reason=%@",
-                            failureReason ?: @"unknown"]];
+                    // 旧路径不可用（iOS 18 已实测 layer 为空）→ 走截图管理器异步路径。
+                    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+                    if (VCAMScreenshotManagerInFlight &&
+                        nowMs - VCAMScreenshotManagerInFlightMs > 5000) {
+                        VCAMScreenshotManagerInFlight = NO;  // 回调超时未见回，允许重发
+                        [VCAMConfiguration appendProcessLog:
+                            @"screen-tint screenshot completion timeout"];
                     }
-                    VCAMClearScreenTintState();
+                    if (!VCAMScreenshotManagerInFlight) {
+                        if (!VCAMRequestScreenshotAverage()) {
+                            static CFAbsoluteTime lastFailureLoggedAt = 0;
+                            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                            if (now - lastFailureLoggedAt > 30.0) {
+                                lastFailureLoggedAt = now;
+                                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                                    @"screen-tint sampler unavailable reason=%@",
+                                    failureReason ?: @"unknown"]];
+                            }
+                            VCAMClearScreenTintState();
+                        }
+                    }
                 }
             } else {
                 VCAMClearScreenTintState();
