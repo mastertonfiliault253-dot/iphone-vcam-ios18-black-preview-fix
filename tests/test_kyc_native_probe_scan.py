@@ -166,6 +166,8 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("NSCameraUsageDescription", info)
         self.assertIn("NSMotionUsageDescription", info)
         self.assertIn("vcam-probe", info)
+        # 缺启动屏声明时 iOS 以兼容模式放大渲染（真机实测画面不铺满）；UILaunchScreen 空 dict 即全屏。
+        self.assertIn("UILaunchScreen", info)
 
     def test_probe_runner_phases(self):
         src = self._read("ProbeRunner.m")

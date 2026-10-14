@@ -24,6 +24,10 @@
 	<array>
 		<string>arm64</string>
 	</array>
+	<!-- 空 dict=iOS13+ 原生分辨率启动屏声明：缺启动屏（storyboard 或 UILaunchScreen）
+		时 iOS 以兼容模式放大渲染，真机表现为 App 画面不铺满屏幕（用户实测）。 -->
+	<key>UILaunchScreen</key>
+	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
