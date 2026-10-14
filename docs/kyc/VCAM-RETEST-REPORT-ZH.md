@@ -401,9 +401,22 @@ glaussprenkel627-star/iphone-vcam-ios18-black-preview-fix（remote=glaussci）�
 b9dae74/38536694690/a5abd53-38538074615 均构建成功；备用账号
 josemahmutovic-cmyk 已在 gh keyring（按要求暂未建仓库）。
 
-**剩余**：探针 observedScreenTint 报告闭环未跑（设备上探针二进制已换新版含
-runScreenTintChallenge，但 Sideloadly 签名 App 换 binary 后进程挂起，待走
-正常重签安装）；provider 抓屏 1Hz 的 CPU 开销未单独量化（渲染窗口 p50 未见
+**探针 observedScreenTint 报告闭环 ✓（2026-10-14 17:41-17:45，
+report_20261014_174459.json）**：设备残留探针进程先杀，Sideloadly 经
+start-sideloadly-gsadirect.cmd 启动（trusted 会话仍有效、无 2FA），
+文件对话框对"文件名(N):" AXSetValue 完整绝对路径装新 IPA（旧目录同名旧包
+陷阱已按配方避开），标准容器安装成功且 grep 设备二进制确认含
+runScreenTintChallenge；`uiopen vcam-probe2://run?host=192.168.2.181`
+完整运行后报告回传：observedScreenTint 四段全 present/valid——
+before=154,155,157（测试台灰）→ during1/during2=**164,73,74**（红窗，
+R≈2.2×G/B）→ after 仍红（读取在窗口关闭前），tick 连续推进；
+observedPhotoreal 同时在场。三条独立证据链（SpringBoard 采样日志、
+相机侧 screen_tint.log 染色决策、消费端探针报告）全部闭合。
+注：redtest 采到 213,46,46、探针采到 164,73,74 都低于纯色理想值——
+缩采样取整屏平均（含状态栏/系统层），方向与比例正确即可，消费侧按
+相对基线的偏差判定，不依赖绝对色值。
+
+**剩余**：provider 抓屏 1Hz 的 CPU 开销未单独量化（渲染窗口 p50 未见
 回归可作间接证据）。
 
 ## 资产与报告索引
@@ -417,7 +430,9 @@ runScreenTintChallenge，但 Sideloadly 签名 App 换 binary 后进程挂起，
   report_2026014_033302.json（M 轮 metadataBranch=replace 负结果）；
   report_2026014_033829.json（M 轮最终：torch-on 窗 165.2 vs off 128.6）；
   report_20261014_095041.json（M 轮补验：新 std IPA，observedPhotoreal 键存在，
-  rearTorch on/off ok——观测通道端到端闭环）。
+  rearTorch on/off ok——观测通道端到端闭环）；
+  report_20261014_174459.json（N 轮路线2 闭环：observedScreenTint before=灰
+  → during=164,73,74 红窗——屏幕色通道消费端证明）。
 - M 轮设备侧通道：/var/mobile/Library/VirtualCaptureCard/VCAM/{bw_symbols.log,
   photoreal_state.log, com.codex.vcam.plist(镜像)}；主机副本 tmp/tls/bw_symbols_server.log。
 - L 轮录像：probe/uploads/probe_phase0_640x480.mp4、probe_phase1_640x480.mp4、
