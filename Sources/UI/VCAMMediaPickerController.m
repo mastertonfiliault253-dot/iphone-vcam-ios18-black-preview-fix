@@ -181,11 +181,11 @@ static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
 static id VCAMScreenshotManagerInstance(NSString **factoryOut) {
     Class managerClass = objc_getClass("SBScreenshotManager");
     if (managerClass == nil) return nil;
-    static NSString *const kFactoryNames[] = {@"sharedInstance", @"sharedScreenshotManager",
-                                              @"screenshotManager", @"sharedManager", @"manager"};
-    for (NSString *factoryName in kFactoryNames) {
+    NSArray<NSString *> *factoryNames = @[@"sharedInstance", @"sharedScreenshotManager",
+                                          @"screenshotManager", @"sharedManager", @"manager"];
+    for (NSString *factoryName in factoryNames) {
         SEL factorySelector = NSSelectorFromString(factoryName);
-        if (!((NSObject *)managerClass).respondsToSelector:factorySelector) continue;
+        if (![managerClass respondsToSelector:factorySelector]) continue;
         id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, factorySelector);
         if (manager != nil) {
             if (factoryOut) *factoryOut = factoryName;
@@ -201,10 +201,10 @@ static void VCAMDumpScreenshotClassesOnce(void) {
     static BOOL dumped = NO;
     if (dumped) return;
     dumped = YES;
-    static NSString *const kClassNames[] = {@"SBScreenshotManager",
-                                            @"_SBMainScreenScreenshotProvider",
-                                            @"_SBDefaultScreenshotProvider"};
-    for (NSString *className in kClassNames) {
+    NSArray<NSString *> *classNames = @[@"SBScreenshotManager",
+                                        @"_SBMainScreenScreenshotProvider",
+                                        @"_SBDefaultScreenshotProvider"];
+    for (NSString *className in classNames) {
         Class cls = objc_getClass(className.UTF8String);
         if (cls == nil) continue;
         NSMutableArray<NSString *> *lines = [NSMutableArray new];
