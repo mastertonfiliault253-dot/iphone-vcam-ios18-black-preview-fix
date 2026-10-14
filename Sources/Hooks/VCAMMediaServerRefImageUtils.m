@@ -1237,107 +1237,6 @@ static BOOL VCAMComputeCombinedChannelFactors(double outFactor[3]) {
     return YES;
 }
 
-// NV12→NV12 同尺寸直通写回（可选中性对角增益 gain；g==1 时纯拷贝）。
-// 中性系数（三 RGB 通道同因子）在编码 YUV 上精确等价：RGB→YUV 是线性组合、
-// 与标量乘可交换（编码值上同样成立，不要求线性光）。色度存储带 128 偏移：
-// U'=(U−128)·g+128。亮度无偏移：Y'=g·Y。与 CI 路径的差别仅在 g>1 高光处
-// 的 clip 形状（逐 RGB clip vs 逐 Y clip），小面积 ±2 LSB 级。
-static BOOL VCAMCopyNV12IntoPlanarTargetWithGain(CVPixelBufferRef sourceBuffer,
-                                                  CVPixelBufferRef targetBuffer,
-                                                  double gain) {
-    if (sourceBuffer == NULL || targetBuffer == NULL ||
-        !CVPixelBufferIsPlanar(sourceBuffer) ||
-        !CVPixelBufferIsPlanar(targetBuffer) ||
-        CVPixelBufferGetPlaneCount(sourceBuffer) != 2 ||
-        CVPixelBufferGetPlaneCount(targetBuffer) != 2 ||
-        CVPixelBufferGetWidth(sourceBuffer) !=
-            CVPixelBufferGetWidth(targetBuffer) ||
-        CVPixelBufferGetHeight(sourceBuffer) !=
-            CVPixelBufferGetHeight(targetBuffer) ||
-        CVPixelBufferGetPixelFormatType(sourceBuffer) !=
-            CVPixelBufferGetPixelFormatType(targetBuffer)) return NO;
-    OSType format = CVPixelBufferGetPixelFormatType(sourceBuffer);
-    if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
-        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
-    int fixedGain = (int)lround(gain * 1024.0);
-    if (fixedGain == 1024) return VCAMCopyPlanarPixels(sourceBuffer, targetBuffer);
-
-    size_t width = CVPixelBufferGetWidth(targetBuffer);
-    size_t height = CVPixelBufferGetHeight(targetBuffer);
-    IOSurfaceRef sourceSurface = CVPixelBufferGetIOSurface(sourceBuffer);
-    BOOL sourceSurfaceLocked = sourceSurface != NULL &&
-        IOSurfaceLock(sourceSurface, 1, NULL) == 0;
-    CVReturn sourceStatus = sourceSurfaceLocked
-        ? kCVReturnSuccess
-        : CVPixelBufferLockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
-    if (sourceStatus != kCVReturnSuccess) return NO;
-    IOSurfaceRef targetSurface = CVPixelBufferGetIOSurface(targetBuffer);
-    BOOL targetSurfaceLocked = targetSurface != NULL &&
-        IOSurfaceLock(targetSurface, 0, NULL) == 0;
-    CVReturn targetStatus = targetSurfaceLocked
-        ? kCVReturnSuccess
-        : CVPixelBufferLockBaseAddress(targetBuffer, 0);
-    if (targetStatus != kCVReturnSuccess) {
-        if (sourceSurfaceLocked) IOSurfaceUnlock(sourceSurface, 1, NULL);
-        else CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
-        return NO;
-    }
-
-    uint8_t *sourceY = sourceSurfaceLocked
-        ? IOSurfaceGetBaseAddressOfPlane(sourceSurface, 0)
-        : CVPixelBufferGetBaseAddressOfPlane(sourceBuffer, 0);
-    uint8_t *sourceUV = sourceSurfaceLocked
-        ? IOSurfaceGetBaseAddressOfPlane(sourceSurface, 1)
-        : CVPixelBufferGetBaseAddressOfPlane(sourceBuffer, 1);
-    uint8_t *targetY = targetSurfaceLocked
-        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 0)
-        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
-    uint8_t *targetUV = targetSurfaceLocked
-        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)
-        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
-    size_t sourceYBpr = sourceSurfaceLocked
-        ? IOSurfaceGetBytesPerRowOfPlane(sourceSurface, 0)
-        : CVPixelBufferGetBytesPerRowOfPlane(sourceBuffer, 0);
-    size_t sourceUVBpr = sourceSurfaceLocked
-        ? IOSurfaceGetBytesPerRowOfPlane(sourceSurface, 1)
-        : CVPixelBufferGetBytesPerRowOfPlane(sourceBuffer, 1);
-    size_t targetYBpr = targetSurfaceLocked
-        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0)
-        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
-    size_t targetUVBpr = targetSurfaceLocked
-        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1)
-        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
-    BOOL converted = sourceY != NULL && sourceUV != NULL &&
-        targetY != NULL && targetUV != NULL &&
-        sourceYBpr >= width && sourceUVBpr >= width &&
-        targetYBpr >= width && targetUVBpr >= width;
-    if (converted) {
-        for (size_t row = 0; row < height; row++) {
-            const uint8_t *srcYLine = sourceY + row * sourceYBpr;
-            uint8_t *dstYLine = targetY + row * targetYBpr;
-            for (size_t column = 0; column < width; column++) {
-                int v = (srcYLine[column] * fixedGain + 512) >> 10;
-                dstYLine[column] = (uint8_t)(v > 255 ? 255 : v);
-            }
-        }
-        for (size_t row = 0; row < height / 2; row++) {
-            const uint8_t *srcUVLine = sourceUV + row * sourceUVBpr;
-            uint8_t *dstUVLine = targetUV + row * targetUVBpr;
-            for (size_t column = 0; column < width; column++) {
-                int dev = (int)srcUVLine[column] - 128;
-                int v = (dev * fixedGain + (dev >= 0 ? 512 : -512)) / 1024 + 128;
-                dstUVLine[column] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-            }
-        }
-    }
-    if (targetSurfaceLocked) IOSurfaceUnlock(targetSurface, 0, NULL);
-    else CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
-    if (sourceSurfaceLocked) IOSurfaceUnlock(sourceSurface, 1, NULL);
-    else CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
-    if (converted) VCAMSetStandardColorAttachments(targetBuffer);
-    return converted;
-}
-
 // 对角增益的逐像素等价执行（与 CIColorMatrix 对角节点同语义）：不透明图像
 // premultiplied==straight，输入已是 8-bit 量化，factor 区间 [0.25,4] 定点
 // ×1024 不溢出；round-to-nearest 与 CoreImage 写 8-bit 目的地的取整一致。
@@ -2331,6 +2230,109 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
     if (copied) VCAMSetStandardColorAttachments(targetBuffer);
     return copied;
 }
+
+// NV12→NV12 同尺寸直通写回（可选中性对角增益 gain；g==1 时纯拷贝）。
+// 中性系数（三 RGB 通道同因子）在编码 YUV 上精确等价：RGB→YUV 是线性组合、
+// 与标量乘可交换（编码值上同样成立，不要求线性光）。色度存储带 128 偏移：
+// U'=(U−128)·g+128。亮度无偏移：Y'=g·Y。与 CI 路径的差别仅在 g>1 高光处
+// 的 clip 形状（逐 RGB clip vs 逐 Y clip），小面积 ±2 LSB 级。
+static BOOL VCAMCopyNV12IntoPlanarTargetWithGain(CVPixelBufferRef sourceBuffer,
+                                                  CVPixelBufferRef targetBuffer,
+                                                  double gain) {
+    if (sourceBuffer == NULL || targetBuffer == NULL ||
+        !CVPixelBufferIsPlanar(sourceBuffer) ||
+        !CVPixelBufferIsPlanar(targetBuffer) ||
+        CVPixelBufferGetPlaneCount(sourceBuffer) != 2 ||
+        CVPixelBufferGetPlaneCount(targetBuffer) != 2 ||
+        CVPixelBufferGetWidth(sourceBuffer) !=
+            CVPixelBufferGetWidth(targetBuffer) ||
+        CVPixelBufferGetHeight(sourceBuffer) !=
+            CVPixelBufferGetHeight(targetBuffer) ||
+        CVPixelBufferGetPixelFormatType(sourceBuffer) !=
+            CVPixelBufferGetPixelFormatType(targetBuffer)) return NO;
+    OSType format = CVPixelBufferGetPixelFormatType(sourceBuffer);
+    if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+        format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) return NO;
+    int fixedGain = (int)lround(gain * 1024.0);
+    if (fixedGain == 1024) return VCAMCopyPlanarPixels(sourceBuffer, targetBuffer);
+
+    size_t width = CVPixelBufferGetWidth(targetBuffer);
+    size_t height = CVPixelBufferGetHeight(targetBuffer);
+    IOSurfaceRef sourceSurface = CVPixelBufferGetIOSurface(sourceBuffer);
+    BOOL sourceSurfaceLocked = sourceSurface != NULL &&
+        IOSurfaceLock(sourceSurface, 1, NULL) == 0;
+    CVReturn sourceStatus = sourceSurfaceLocked
+        ? kCVReturnSuccess
+        : CVPixelBufferLockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    if (sourceStatus != kCVReturnSuccess) return NO;
+    IOSurfaceRef targetSurface = CVPixelBufferGetIOSurface(targetBuffer);
+    BOOL targetSurfaceLocked = targetSurface != NULL &&
+        IOSurfaceLock(targetSurface, 0, NULL) == 0;
+    CVReturn targetStatus = targetSurfaceLocked
+        ? kCVReturnSuccess
+        : CVPixelBufferLockBaseAddress(targetBuffer, 0);
+    if (targetStatus != kCVReturnSuccess) {
+        if (sourceSurfaceLocked) IOSurfaceUnlock(sourceSurface, 1, NULL);
+        else CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+
+    uint8_t *sourceY = sourceSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(sourceSurface, 0)
+        : CVPixelBufferGetBaseAddressOfPlane(sourceBuffer, 0);
+    uint8_t *sourceUV = sourceSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(sourceSurface, 1)
+        : CVPixelBufferGetBaseAddressOfPlane(sourceBuffer, 1);
+    uint8_t *targetY = targetSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 0)
+        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 0);
+    uint8_t *targetUV = targetSurfaceLocked
+        ? IOSurfaceGetBaseAddressOfPlane(targetSurface, 1)
+        : CVPixelBufferGetBaseAddressOfPlane(targetBuffer, 1);
+    size_t sourceYBpr = sourceSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(sourceSurface, 0)
+        : CVPixelBufferGetBytesPerRowOfPlane(sourceBuffer, 0);
+    size_t sourceUVBpr = sourceSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(sourceSurface, 1)
+        : CVPixelBufferGetBytesPerRowOfPlane(sourceBuffer, 1);
+    size_t targetYBpr = targetSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 0)
+        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 0);
+    size_t targetUVBpr = targetSurfaceLocked
+        ? IOSurfaceGetBytesPerRowOfPlane(targetSurface, 1)
+        : CVPixelBufferGetBytesPerRowOfPlane(targetBuffer, 1);
+    BOOL converted = sourceY != NULL && sourceUV != NULL &&
+        targetY != NULL && targetUV != NULL &&
+        sourceYBpr >= width && sourceUVBpr >= width &&
+        targetYBpr >= width && targetUVBpr >= width;
+    if (converted) {
+        for (size_t row = 0; row < height; row++) {
+            const uint8_t *srcYLine = sourceY + row * sourceYBpr;
+            uint8_t *dstYLine = targetY + row * targetYBpr;
+            for (size_t column = 0; column < width; column++) {
+                int v = (srcYLine[column] * fixedGain + 512) >> 10;
+                dstYLine[column] = (uint8_t)(v > 255 ? 255 : v);
+            }
+        }
+        for (size_t row = 0; row < height / 2; row++) {
+            const uint8_t *srcUVLine = sourceUV + row * sourceUVBpr;
+            uint8_t *dstUVLine = targetUV + row * targetUVBpr;
+            for (size_t column = 0; column < width; column++) {
+                int dev = (int)srcUVLine[column] - 128;
+                int v = (dev * fixedGain + (dev >= 0 ? 512 : -512)) / 1024 + 128;
+                dstUVLine[column] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            }
+        }
+    }
+    if (targetSurfaceLocked) IOSurfaceUnlock(targetSurface, 0, NULL);
+    else CVPixelBufferUnlockBaseAddress(targetBuffer, 0);
+    if (sourceSurfaceLocked) IOSurfaceUnlock(sourceSurface, 1, NULL);
+    else CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    if (converted) VCAMSetStandardColorAttachments(targetBuffer);
+    return converted;
+}
+
+
 
 static BOOL VCAMTransferBGRAIntoPlanarTarget(CVPixelBufferRef stagingBuffer,
                                               CVPixelBufferRef targetBuffer) {
