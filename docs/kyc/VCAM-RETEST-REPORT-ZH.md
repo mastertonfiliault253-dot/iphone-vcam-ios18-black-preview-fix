@@ -501,6 +501,24 @@ kRotate90DegreesCounterClockwise==CGOrientationLeft）+独立转置缓冲池
 dropped=1、exposure 窗缺失根因样本）、234315（v3：exposure 四段+窗口
 产出、obs=-1 决定性对照）。
 
+## 10.8 P 轮：RTSP 硬件解码需求——-12911 根因闭环与延迟基线（2026-10-15 凌晨）
+
+需求："rtsp实现硬件解码，必要时可以拉系统文件出来反编译查看硬件解码流程"+"全面考虑推流功能的性能与低延迟"。
+
+**软解基线（现产品行为，作为对照锚）**：桌面 mediamtx + ffmpeg 推 1920x1080@30（带时间戳画面已因 Fontconfig 缺失改无时钟 testsrc2），设备 Camera 取景，端到端（推流时间戳→VNC 屏显示）≈0.575 s、稳定 29.4 fps（含 VNC 传输，即上限口径）。
+
+**-12911 根因链（证据锚，全部真机实测）**：
+- vcamd（daemon）: session create status=0、decode 提交 status=0、callback 全样本 -12911、300 包零帧→`rtsp hardware decode disabled`→FFmpeg 软解回退。多轮（96a3aa6/22b430d 构建）行为完全一致。
+- SpringBoard（GUI 进程）直连 VT 自测（22b430d，`[DEBUG-vtsb]`）：**fed=16 skipped=1 decoded=16 firstStatus=0 sawCallback=1 usingHardware=1** → 同设备同文件硬件解码成功。定性：-12911 = daemon 进程上下文限制，非设备/文件/码流级。
+- XPC 探针（436bb51/21b6916）：vcamd 内 `xpc_connection_create("com.apple.coremedia.videodecodeservice")`+resume+空请求 3s → `[DEBUG-vtprobe] … probe pending`（无任何事件，静默不可达）；`xpc_service_create` 形式在 iOS 18.3 触发 libxpc `_xpc_api_misuse` SIGTRAP（vcamd .ips 栈已核），已弃用并加进程内一次性守卫。
+完整案例与配方已入 docs/VIDEOTOOLBOX-HARDWARE-DECODING-CASES.md E9。
+
+**CPU 侧量化（部分）**：`screen-tint self-cpu` 窗口——RTSP 会话活跃段 60s 窗 cpuS=8.8s(14.7%)（含硬件探测段），纯空闲窗 cpuS=1.5s(2.5%)。软解稳态的干净增量未取到（相机被锁屏/退出反复截断会话），如实记为未验证项。
+
+**架构决策（待用户选择）**：硬件解码必须发生在 GUI app 进程。B）vcamd 仅 demux、压缩样本送 SpringBoard VT 解码——保低延迟（软解 0.575s 量级），改动大；D′）vcamd 重封 LL-HLS + SpringBoard 走现有 AVPlayer 硬件路径——改动小，但延迟升至约 1-2s，与低延迟要求冲突。当前默认路径维持 FFmpeg 软解（功能与延迟均正常）。
+
+**运维记录**：真机两次 Safe Mode（SpringBoard 自测崩溃循环），解法=Exit Safe Mode 按钮；rootless 用户空间重启用 `launchctl reboot userspace`（ssh 直调 ldrestart 报 144 entitlement）。dpkg postinst 会重启 vcamd（安装即生效）。
+
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；

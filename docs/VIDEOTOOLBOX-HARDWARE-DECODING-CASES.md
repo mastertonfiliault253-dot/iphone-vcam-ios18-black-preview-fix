@@ -298,6 +298,20 @@ iPhoneOS 16.5 SDK 明确公开 `VTIsHardwareDecodeSupported`（iOS 11+），但�
 - `-12780` 保留原始数值和上下文，不给它错误命名。
 - 只有真机拿到连续非空 NV12 pixel buffers、画面内容正确、RTSP/HLS 持续播放及前后台恢复，才算硬件解码路径业务验收；session create、包安装或日志出现“hardware”均不算。
 
+### E9：iOS 18.3.1 `-12911` 与 GUI 进程对照（已完成，定性为 daemon 进程上下文限制）
+
+设备 iPhone XS Max / iOS 18.3.1 rootless，vcam 0.8.110 诊断版（CI `22b430d`/`436bb51`/`21b6916`）。RTSP 源为桌面 MediaMTX + FFmpeg（H.264 High、1920×1080、30 fps），本地文件 `face_1080p30_motion.mov`（H.264 High、1080×1454）用于离线自测。
+
+`vcamd` 侧多轮稳定复现：`VTDecompressionSessionCreate status=0`、`VTIsHardwareDecodeSupported=1`、每个样本 `VTDecompressionSessionDecodeFrame` 提交 `status=0`，但 callback 对全部样本返回 `-12911`（`kVTVideoDecoderMalfunctionErr`）、image buffer 为 NULL；300 包零帧后按设计结束会话、置 `rtsp hardware decode disabled` 并回退 FFmpeg 软件解码。该行为在 `96a3aa6` 与 `22b430d` 两个构建完全一致，与输入内容无关。
+
+同一设备上在 SpringBoard（GUI app 进程，foreground active）注入一次直连 VT 自测（`VCAMSpringBoardMediaBridge runVideoToolboxHardwareSelfTest`，读同一本地 MP4 的压缩样本、创建 session、提交 16 帧）：日志 `[DEBUG-vtsb] self-test fed=16 skipped=1 decoded=16 firstStatus=0 firstCallbackStatus=0 sawCallback=1 usingHardware=1`，即系统硬件解码器（`UsingHardwareAcceleratedVideoDecoder=true`）在 GUI 进程产出全部帧。因此 `-12911` 不是设备级、文件级或码流级失败，而是 `vcamd` daemon 进程上下文的限制：daemon 里 VT 会话能建立但底层解码服务不可用。
+
+补充探针：在 `vcamd` 内用经典 client API `xpc_connection_create("com.apple.coremedia.videodecodeservice", NULL)` + `resume` + 空请求，3 秒内既无 connected 也无 error 事件（`[DEBUG-vtprobe] … probe pending`），即 daemon 上下文对该 XPC 服务静默不可达。较新的 `xpc_service_create()` 形式在 iOS 18.3 上会在 `xpc_connection_set_event_handler` 处触发 libxpc `_xpc_api_misuse`（vcamd SIGTRAP，crash `.ips` 栈 `xpc_connection_set_event_handler+392 → _xpc_api_misuse`），生产诊断代码不使用它。
+
+AVFoundation 压缩样本读取配方（自测第一、二版崩溃教训，均已在真机验证）：`AVAssetReaderTrackOutput outputSettings:nil` 是透传压缩样本路径，但流首可能有无 format description 的样本，必须跳过（对 NULL 做 `CFRetain` 触发 SIGTRAP）；`AVVideoCodecKey` 是 writer-only 键，用作 reader outputSettings 会抛 `NSInvalidArgumentException`（未捕获即 SIGABRT）。SpringBoard tweak 崩溃循环会把设备带入 Safe Mode（所有 tweak 不注入），排查注入问题前必须先确认/退出 Safe Mode。
+
+对实现的含义：RTSP 硬件解码要工作，VT 解码必须发生在 GUI app 进程（历史注释 “production RTSP path: VT hardware decode runs in an app process” 与本次一致）。候选架构两条：B）`vcamd` 只做 demux，把压缩 access unit 送到已注入的 GUI 进程解码（保低延迟，改动大）；D′）`vcamd` 把 RTSP 重封为 LL-HLS，交给现有 SpringBoard AVPlayer 硬件路径（改动小，但端到端延迟升至约 1–2 s，与低延迟目标冲突）。当前 FFmpeg 软件解码在真机实测端到端约 0.575 s、29.4 fps，仍作为默认路径。
+
 ## 采用建议
 
 1. 保留当前 direct-VT 主路径；E0、E1、E1b 和固定单 slice 均已失败，不再叠加输出属性。
