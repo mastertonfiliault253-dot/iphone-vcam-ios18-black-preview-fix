@@ -55,6 +55,12 @@ class ScreenTintChainTests(unittest.TestCase):
         self.assertIn('_fetchEligibleScreenshotProvidersForSnapshotting', controller)
         self.assertIn('captureScreenshot', controller)
         self.assertIn('path=provider', controller)
+        # iOS 18.3.1 真机：SBScreenshotManager 已无 +sharedInstance；工厂探测 +
+        # 直接实例化 provider 的兜底必须有计数封顶（防 SpringBoard 崩溃循环）。
+        self.assertIn('manager factory missing', controller)
+        self.assertIn('objc_getClass("_SBMainScreenScreenshotProvider")', controller)
+        self.assertIn('path=provider-direct', controller)
+        self.assertIn('screen-tint-provider-probe.count', controller)
         self.assertIn("startScreenTintSampler", controller)
         # 采样只允许挂在 SpringBoard 宿主（保持 filter 收缩结论：零 App 注入）。
         self.assertIn("if ([self isSpringBoardHost]) {\n            BOOL enabled = "

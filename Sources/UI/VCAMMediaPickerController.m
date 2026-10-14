@@ -176,18 +176,65 @@ static NSString *VCAMScreenshotManagerShape(__unused Class preferred) {
     return names.count ? [names componentsJoinedByString:@" | "] : @"no screenshot classes";
 }
 
-// 候选 1 实现：从 SBScreenshotManager 的 eligible providers 里取主屏 provider 的
-// captureScreenshot（真机类扫描证实 _SBMainScreenScreenshotProvider/_SBDefaultScreenshotProvider
+// 取 SBScreenshotManager 实例：真机（iOS 18.3.1）已无 +sharedInstance，
+// 依次探测候选工厂选择子（responds 检查无副作用；命中哪个记入 factoryOut）。
+static id VCAMScreenshotManagerInstance(NSString **factoryOut) {
+    Class managerClass = objc_getClass("SBScreenshotManager");
+    if (managerClass == nil) return nil;
+    static NSString *const kFactoryNames[] = {@"sharedInstance", @"sharedScreenshotManager",
+                                              @"screenshotManager", @"sharedManager", @"manager"};
+    for (NSString *factoryName in kFactoryNames) {
+        SEL factorySelector = NSSelectorFromString(factoryName);
+        if (!((NSObject *)managerClass).respondsToSelector:factorySelector) continue;
+        id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, factorySelector);
+        if (manager != nil) {
+            if (factoryOut) *factoryOut = factoryName;
+            return manager;
+        }
+    }
+    return nil;
+}
+
+// 对三个关键类做方法全量转储（含类型编码），每进程一次。类扫描只证明了
+// "选择子存在"，类型编码和剩余的 init/工厂入口决定下一轮的真实签名适配。
+static void VCAMDumpScreenshotClassesOnce(void) {
+    static BOOL dumped = NO;
+    if (dumped) return;
+    dumped = YES;
+    static NSString *const kClassNames[] = {@"SBScreenshotManager",
+                                            @"_SBMainScreenScreenshotProvider",
+                                            @"_SBDefaultScreenshotProvider"};
+    for (NSString *className in kClassNames) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (cls == nil) continue;
+        NSMutableArray<NSString *> *lines = [NSMutableArray new];
+        Class cursors[] = {cls, object_getClass(cls)};
+        for (int c = 0; c < 2; c++) {
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(cursors[c], &methodCount);
+            for (unsigned int m = 0; m < methodCount && lines.count < 40; m++) {
+                [lines addObject:[NSString stringWithFormat:@"%s:%@ %s",
+                                  c == 0 ? "-" : "+",
+                                  NSStringFromSelector(method_getName(methods[m])),
+                                  method_getTypeEncoding(methods[m]) ?: "?"]];
+            }
+            free(methods);
+        }
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"screen-tint classdump %@: %@", className,
+            [lines componentsJoinedByString:@" | "]]];
+    }
+}
+
+// 候选 1 实现：取到 manager 实例后从它的 eligible providers 里调 captureScreenshot
+// （真机类扫描证实 _SBMainScreenScreenshotProvider/_SBDefaultScreenshotProvider
 // 有该同步方法）。返回 UIImage 则取其 CGImage 求平均。任一环节不满足返回 NO。
 static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) {
-    Class managerClass = objc_getClass("SBScreenshotManager");
-    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
-    if (managerClass == nil ||
-        ![((NSObject *)managerClass) respondsToSelector:sharedSelector]) {
-        if (failureReasonOut) *failureReasonOut = @"screenshot manager shared missing";
+    id manager = VCAMScreenshotManagerInstance(NULL);
+    if (manager == nil) {
+        if (failureReasonOut) *failureReasonOut = @"manager factory missing";
         return NO;
     }
-    id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
     SEL fetchSelector =
         NSSelectorFromString(@"_fetchEligibleScreenshotProvidersForSnapshotting");
     if (manager == nil || ![manager respondsToSelector:fetchSelector]) {
@@ -234,6 +281,59 @@ static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) 
     if (failureReasonOut) {
         *failureReasonOut = [NSString stringWithFormat:@"no image [%@]",
                              [providerDiag componentsJoinedByString:@" "]];
+    }
+    return NO;
+}
+
+// 候选 1b：直接实例化 _SBMainScreenScreenshotProvider 调 captureScreenshot。
+// 这是该路径唯一有崩溃风险的探测（provider 若依赖隐藏的初始化状态可能崩），
+// 用持久计数文件把全过程尝试封顶 3 次，防止 SpringBoard 崩溃循环。
+static BOOL VCAMDirectProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) {
+    static id cachedProvider = nil;
+    SEL captureSelector = NSSelectorFromString(@"captureScreenshot");
+    id provider = cachedProvider;
+    if (provider == nil) {
+        static NSString *const kProbeMarker =
+            @"/var/mobile/Library/Application Support/VCAM/screen-tint-provider-probe.count";
+        int attempts = [[NSString stringWithContentsOfFile:kProbeMarker
+                                                 encoding:NSUTF8StringEncoding error:nil] intValue];
+        if (attempts >= 3) {
+            if (failureReasonOut) *failureReasonOut = @"direct probe attempts exhausted";
+            return NO;
+        }
+        [[NSString stringWithFormat:@"%d", attempts + 1] writeToFile:kProbeMarker
+                                                         atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        Class providerClass = objc_getClass("_SBMainScreenScreenshotProvider");
+        if (providerClass == nil) providerClass = objc_getClass("_SBDefaultScreenshotProvider");
+        if (providerClass == nil) {
+            if (failureReasonOut) *failureReasonOut = @"direct provider class missing";
+            return NO;
+        }
+        if (![providerClass instancesRespondToSelector:captureSelector]) {
+            if (failureReasonOut) *failureReasonOut = @"direct provider lacks capture";
+            return NO;
+        }
+        id allocated = [providerClass alloc];
+        provider = [allocated init];
+        if (provider == nil) {
+            if (failureReasonOut) *failureReasonOut = @"direct provider init nil";
+            return NO;
+        }
+    }
+    id captured = ((id (*)(id, SEL))objc_msgSend)(provider, captureSelector);
+    CGImageRef image = NULL;
+    if ([captured isKindOfClass:UIImage.class]) {
+        image = ((UIImage *)captured).CGImage;
+    } else if ([captured isKindOfClass:NSValue.class]) {
+        image = (CGImageRef)[(NSValue *)captured pointerValue];
+    }
+    if (image != NULL && VCAMAverageCGImageInto(rgbOut, image)) {
+        cachedProvider = provider;
+        return YES;
+    }
+    if (failureReasonOut) {
+        *failureReasonOut = [NSString stringWithFormat:@"direct capture returned %@",
+                             captured ? NSStringFromClass([captured class]) : @"nil"];
     }
     return NO;
 }
@@ -288,18 +388,43 @@ static BOOL VCAMRequestScreenshotAverage(NSString **screenshotReasonOut) {
         }
         return YES;
     }
-    if (screenshotReasonOut) *screenshotReasonOut = providerReason;
-    Class managerClass = objc_getClass("SBScreenshotManager");
-    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    // manager 工厂缺失时转储全量方法（拿到真实签名供下一轮），并直接实例化 provider 试一次。
+    if ([providerReason isEqualToString:@"manager factory missing"]) {
+        VCAMDumpScreenshotClassesOnce();
+    }
+    int directRGB[3] = {0, 0, 0};
+    NSString *directReason = nil;
+    if (VCAMDirectProviderScreenCapture(directRGB, &directReason)) {
+        VCAMPublishScreenTintSample(directRGB[0], directRGB[1], directRGB[2]);
+        static int lastDirectLoggedRGB[3] = {-1, -1, -1};
+        static CFAbsoluteTime lastDirectLogAt = 0;
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        int delta = abs(directRGB[0] - lastDirectLoggedRGB[0]) +
+                    abs(directRGB[1] - lastDirectLoggedRGB[1]) +
+                    abs(directRGB[2] - lastDirectLoggedRGB[2]);
+        if (delta > 24 || now - lastDirectLogAt > 30.0) {
+            lastDirectLoggedRGB[0] = directRGB[0];
+            lastDirectLoggedRGB[1] = directRGB[1];
+            lastDirectLoggedRGB[2] = directRGB[2];
+            lastDirectLogAt = now;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"screen-tint sample rgb=%d,%d,%d path=provider-direct",
+                directRGB[0], directRGB[1], directRGB[2]]];
+        }
+        return YES;
+    }
+    if (screenshotReasonOut) {
+        *screenshotReasonOut = [NSString stringWithFormat:@"%@ | %@",
+                                providerReason ?: @"?", directReason ?: @"?"];
+    }
     SEL takeSelector = NSSelectorFromString(@"takeScreenshotWithCompletionHandler:");
     static BOOL shapeLogged = NO;
     NSString *shape = nil;
-    if (managerClass == nil ||
-        ![((NSObject *)managerClass) respondsToSelector:sharedSelector]) {
-        if (!shapeLogged) { shape = VCAMScreenshotManagerShape(managerClass); shapeLogged = YES; }
+    id manager = VCAMScreenshotManagerInstance(NULL);
+    if (manager == nil) {
+        if (!shapeLogged) { shape = VCAMScreenshotManagerShape(objc_getClass("SBScreenshotManager")); shapeLogged = YES; }
     } else {
-        id manager = ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector);
-        if (manager != nil && [manager respondsToSelector:takeSelector]) {
+        if ([manager respondsToSelector:takeSelector]) {
             VCAMScreenshotManagerInFlight = YES;
             VCAMScreenshotManagerInFlightMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
             void (^completion)(CGImageRef, NSDictionary *) = ^(CGImageRef image, NSDictionary *info) {
@@ -327,7 +452,7 @@ static BOOL VCAMRequestScreenshotAverage(NSString **screenshotReasonOut) {
             ((void (*)(id, SEL, id))objc_msgSend)(manager, takeSelector, completion);
             return YES;
         }
-        if (!shapeLogged) { shape = VCAMScreenshotManagerShape([manager class] ?: managerClass); shapeLogged = YES; }
+        if (!shapeLogged) { shape = VCAMScreenshotManagerShape([manager class]); shapeLogged = YES; }
     }
     if (shape != nil) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
