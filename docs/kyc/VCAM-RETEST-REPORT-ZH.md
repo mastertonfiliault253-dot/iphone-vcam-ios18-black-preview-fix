@@ -477,9 +477,29 @@ ObjC setter——hook 安装成功、方法存在于 bw_symbols.log 但未触发
 **探针 v2 验证**：UILaunchScreen 修复 ✓（真机全屏，截图确认）。
 exposurePulse setB ok=0 属 v2 预期（5s 等待版），v3（97cbf09）转异步。
 
+**v3 探针复跑（23:41，report_20261014_234315）——探针侧修复全部确认**：
+deviceOpQueue 版本下 exposurePulse 四段全部在场（setA ok=1、setB ok=0=
+completion 未到属系统侧真实行为、restoreA ok=0、biasDown ok=true——v2 中
+后两段整体缺失的队列冻结消失）；**lumaWindow_exposure 首次产出**
+（n=15）。其 delta=-0.24≈0 是 obs=-1 的决定性对照：AE 增益未被观测时
+替换画面确实不跟随 ISO 变化——AE 耦合主线唯一缺口=观测点，不是窗口
+机制。同跑 rear 渲染 p50 仍 31-39ms：对角增益快速路径**未命中**
+（无 passthrough 日志；该窗口 screen_tint 未激活排除染色嫌疑）。
+
+**快速路径未命中根因已钉（v5 复跑 23:59，reject 诊断日志）**：
+`fast path reject ... srcBGRA=1 additive=0 diagActive=0 scale=1.0000
+src=1080x1920 target=1920x1080`——源格式、增益、缩放全部合格，唯一
+失配=**90° 转置**：rear WebKit 协商横屏目标而共享帧为竖屏，
+webKitRotatedForStorage 分支必须旋转（v2"源格式非 BGRA"假设证伪；
+v1"染色激活"假设也只适用于其窗口）。旋转与其余分量逐像素正交，
+v4（557b817）用 vImage NEON CCW90（枚举语义经 16.5 SDK 头核对，
+kRotate90DegreesCounterClockwise==CGOrientationLeft）+独立转置缓冲池
+等价替换，仅 rear；真机 p50 收益与画面方向核对待下一轮实测。
+
 **新增报告索引**：report_20261014_203930/204042（双会话干扰）、
 204816（单会话 rear delta 11.37）、230100（v2：torch delta 24.08、
-dropped=1、exposure 窗缺失根因样本）。
+dropped=1、exposure 窗缺失根因样本）、234315（v3：exposure 四段+窗口
+产出、obs=-1 决定性对照）。
 
 ## 资产与报告索引
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
