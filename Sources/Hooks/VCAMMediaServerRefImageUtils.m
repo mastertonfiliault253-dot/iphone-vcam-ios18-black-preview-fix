@@ -1064,20 +1064,22 @@ static void VCAMEmitPhotorealStateSnapshot(double torch) {
 // CIColorControls.inputBrightness 是加性偏移（与补光物理同型），挂在既有 CoreImage
 // render task 里，零额外拷贝；幅度先取 0.45*level（真机基线采样后校准）。
 // 现阶段状态源=配置注入（photorealTorchLevel），BW 设备节点 hook 落地后覆盖。
-static CIImage *VCAMApplyPhotorealGain(CIImage *image) {
-    if (!VCAMPhotorealCouplingEnabled()) return image;
+// 加性增益与对角增益（VCAMComputeCombinedChannelFactors）拆开：只有加性激活时
+// 必须走 CoreImage 滤镜；对角增益在直通快速路径里用等价的逐像素乘法执行。
+static BOOL VCAMCurrentPhotorealBrightness(double *outBrightness) {
+    if (!VCAMPhotorealCouplingEnabled()) return NO;
     double level = VCAMPhotorealTorchLevel;
     double observed = VCAMObservedTorchLevel;
     int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
     if (observed >= 0 && nowMs - VCAMObservedTorchTimeMs <= 5000) {
         level = observed;  // 真实观测优先于配置注入（路线 A）
     }
-    if (level <= 0.001) return image;
+    if (level <= 0.001) return NO;
     VCAMEmitPhotorealStateSnapshot(level);
     double brightness = level * 0.45;
     if (brightness > 1.0) brightness = 1.0;
-    return [image imageByApplyingFilter:@"CIColorControls" withInputParameters:
-        @{kCIInputImageKey: image, kCIInputBrightnessKey: @(brightness)}];
+    *outBrightness = brightness;
+    return YES;
 }
 
 // —— 路线 2：屏幕色染色（三色活体，docs/kyc 检测点补全）——
@@ -1171,14 +1173,16 @@ static int VCAMComputeScreenTintFactors(double outFactor[3]) {
     return 1;
 }
 
-// —— A-2 + 路线 2 合并：合成链唯一的通道增益节点（CIColorMatrix 对角）——
-// AE 曝光增益=乘性中性系数（(E*ISO)/EMA 基线），屏幕色染色=通道因子；
-// 两者相乘后只走一条 filter pass，同时激活也不多一次渲染。torch 补光是
-// 加性偏移，保持在 VCAMApplyPhotorealGain（CIColorControls），物理同型不混用。
+// —— A-2 + 路线 2 合并：对角通道增益的唯一计算入口（factor[0]=R,1=G,2=B）——
+// AE 曝光增益=乘性中性系数（(E*ISO)/EMA 基线），屏幕色染色=通道因子；两者
+// 相乘后消费侧只走一种执行：CIColorMatrix filter pass（全链），或直通快速路径
+// 里语义等价的逐像素定点乘法（不透明图像 premultiplied==straight，8-bit
+// 量化顺序与 CI 相同）。torch 补光是加性偏移，保持在 CIColorControls
+//（VCAMCurrentPhotorealBrightness），物理同型不混用。
 // 注意：增益只来自真实相机实时曝光变化（相对调制），替换内容自身的亮度
 // 差异完全保留——换更亮/更暗的视频，输出仍保持该亮度差，叠加的只是真实
 // 环境曝光变化的同向曲线。
-static CIImage *VCAMApplyChannelGains(CIImage *image) {
+static BOOL VCAMComputeCombinedChannelFactors(double outFactor[3]) {
     double factor[3] = {1.0, 1.0, 1.0};
     BOOL active = NO;
     // —— AE 曝光增益（缓变，相对基线）——
@@ -1226,15 +1230,42 @@ static CIImage *VCAMApplyChannelGains(CIImage *image) {
         for (int i = 0; i < 3; i++) factor[i] *= tintFactor[i];
         active = YES;
     }
-    if (!active) return image;
-    return [image imageByApplyingFilter:@"CIColorMatrix" withInputParameters:@{
-        kCIInputImageKey: image,
-        @"inputRVector": [CIVector vectorWithX:factor[0] Y:0 Z:0 W:0],
-        @"inputGVector": [CIVector vectorWithX:0 Y:factor[1] Z:0 W:0],
-        @"inputBVector": [CIVector vectorWithX:0 Y:0 Z:factor[2] W:0],
-        @"inputAVector": [CIVector vectorWithX:0 Y:0 Z:0 W:1],
-        @"inputBiasVector": [CIVector vectorWithX:0 Y:0 Z:0 W:0],
-    }];
+    if (!active) return NO;
+    outFactor[0] = factor[0];
+    outFactor[1] = factor[1];
+    outFactor[2] = factor[2];
+    return YES;
+}
+
+// 对角增益的逐像素等价执行（与 CIColorMatrix 对角节点同语义）：不透明图像
+// premultiplied==straight，输入已是 8-bit 量化，factor 区间 [0.25,4] 定点
+// ×1024 不溢出；round-to-nearest 与 CoreImage 写 8-bit 目的地的取整一致。
+static void VCAMApplyBGRAChannelFactorsInPlace(CVPixelBufferRef buffer,
+                                               const double factor[3]) {
+    if (buffer == NULL ||
+        CVPixelBufferLockBaseAddress(buffer, 0) != kCVReturnSuccess) return;
+    uint8_t *base = CVPixelBufferGetBaseAddress(buffer);
+    if (base != NULL) {
+        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(buffer);
+        size_t width = CVPixelBufferGetWidth(buffer);
+        size_t height = CVPixelBufferGetHeight(buffer);
+        int fb = (int)(factor[2] * 1024.0);
+        int fg = (int)(factor[1] * 1024.0);
+        int fr = (int)(factor[0] * 1024.0);
+        for (size_t row = 0; row < height; row++) {
+            uint8_t *line = base + row * bytesPerRow;
+            for (size_t column = 0; column < width; column++) {
+                uint8_t *pixel = line + column * 4;
+                int b = (pixel[0] * fb + 512) >> 10;
+                int g = (pixel[1] * fg + 512) >> 10;
+                int r = (pixel[2] * fr + 512) >> 10;
+                pixel[0] = (uint8_t)(b > 255 ? 255 : b);
+                pixel[1] = (uint8_t)(g > 255 ? 255 : g);
+                pixel[2] = (uint8_t)(r > 255 ? 255 : r);
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, 0);
 }
 
 static void VCAMReloadConfiguredMode(void) {
@@ -2803,18 +2834,36 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
         image = [[image imageByCompositingOverImage:background]
             imageByCroppingToRect:CGRectMake(0, 0, renderWidth, renderHeight)];
-        // 增益函数在无节点时原样返回入参对象；两处理后仍是同一对象
-        // ⇒ 亮度增益 ≤0.001 且 AE/屏幕染色都不活跃，下面快速路径据此判"恒等"。
-        CIImage *preGainImage = image;
-        image = VCAMApplyPhotorealGain(image);
-        image = VCAMApplyChannelGains(image);
+        // 增益按物理形态分两类：加性（torch 补光→CIColorControls）必须走 CoreImage
+        // 滤镜；对角（AE 曝光增益 × 屏幕色染色）是逐通道乘法，快速路径里可用等价
+        // 的逐像素定点乘法执行（见 VCAMApplyBGRAChannelFactorsInPlace）。
+        double diagFactor[3] = {1.0, 1.0, 1.0};
+        BOOL diagonalActive = VCAMComputeCombinedChannelFactors(diagFactor);
+        double additiveBrightness = 0.0;
+        BOOL additiveActive = VCAMCurrentPhotorealBrightness(&additiveBrightness);
+        if (additiveActive) {
+            image = [image imageByApplyingFilter:@"CIColorControls" withInputParameters:
+                @{kCIInputImageKey: image, kCIInputBrightnessKey: @(additiveBrightness)}];
+        }
+        if (diagonalActive) {
+            image = [image imageByApplyingFilter:@"CIColorMatrix" withInputParameters:@{
+                kCIInputImageKey: image,
+                @"inputRVector": [CIVector vectorWithX:diagFactor[0] Y:0 Z:0 W:0],
+                @"inputGVector": [CIVector vectorWithX:0 Y:diagFactor[1] Z:0 W:0],
+                @"inputBVector": [CIVector vectorWithX:0 Y:diagFactor[2] Z:0 W:0],
+                @"inputAVector": [CIVector vectorWithX:0 Y:0 Z:0 W:1],
+                @"inputBiasVector": [CIVector vectorWithX:0 Y:0 Z:0 W:0],
+            }];
+        }
 
-        // 实时同尺寸零增益快速路径：源=目标尺寸的 BGRA、scale=1.0、无旋转/镜像
-        // 且无增益 filter 节点时，上面整张 CI 图在像素上等价"源→目标直通"。跳过
-        // CIRenderTask，用合成链最后一级同一写回函数直接转源缓冲——真机 rear
-        // 1080p 全幅合成 p50 ~32ms 的主要成本（软件 CoreImage 吞吐上限）只在这
-        // 种场景消掉；颜色语义与常规路径完全一致，输出质量不变。
-        BOOL passthroughFastPath = image == preGainImage &&
+        // 实时同尺寸快速路径（无加性增益时）：源=目标尺寸的 BGRA、scale=1.0、
+        // 无旋转/镜像，CI 图在像素上等价"源（×对角因子）→目标直通"。跳过
+        // CIRenderTask，用合成链最后一级同一写回函数直接转源缓冲——真机
+        // rear 1080p 全幅软渲染 p50 ~32ms 是丢帧/发热主成本（Metal 对照
+        // p50 35.3ms 更差，已回滚），此场景只保留一次格式转换。对角因子先
+        // 作用在私有 localSourceBuffer 拷贝上（共享 IOSurface 不可原地改），
+        // 复制失败的罕见情形回全链；输出质量不变。
+        BOOL passthroughFastPath = !additiveActive &&
             realtimeCompensation && planarTarget && !compressedTarget &&
             !webKitRotatedForStorage && !webKitFrontPresentation &&
             fabs((double)scale - 1.0) < 0.001 &&
@@ -2822,7 +2871,11 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             !CVPixelBufferIsPlanar(ciSourceBuffer) &&
             CVPixelBufferGetPixelFormatType(ciSourceBuffer) == kCVPixelFormatType_32BGRA &&
             CVPixelBufferGetWidth(ciSourceBuffer) == targetWidth &&
-            CVPixelBufferGetHeight(ciSourceBuffer) == targetHeight;
+            CVPixelBufferGetHeight(ciSourceBuffer) == targetHeight &&
+            (!diagonalActive || localSourceBuffer != NULL);
+        if (passthroughFastPath && diagonalActive) {
+            VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);
+        }
 
         CIRenderDestination *destination = [[CIRenderDestination alloc]
             initWithPixelBuffer:renderBuffer];

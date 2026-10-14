@@ -45,7 +45,7 @@ class PhotorealAEMetalChainTests(unittest.TestCase):
         # 增益是相对调制（替换内容自身亮度保留），且与屏幕染色共用一条 filter。
         self.assertIn("exposureIndex / VCAMExposureBaselineIndex", source)
         self.assertIn("ae_gain=%.3f exposure_index=%.6f baseline=%.6f", source)
-        self.assertIn("VCAMApplyChannelGains", source)
+        self.assertIn("VCAMComputeCombinedChannelFactors", source)
         # 前后面标志翻转立即作废全部物理观测。
         self.assertIn("if (previous != value) VCAMResetObservedPhysicalState();", source)
         # 观测值透传快照日志（与探针 exposureSamples 对表通道）。

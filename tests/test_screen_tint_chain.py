@@ -74,8 +74,9 @@ class ScreenTintChainTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"com.codex.vcam.ios18.screen-tint.state"', source)
-        # 屏幕染色与 AE 曝光增益合并为单一增益节点（同时激活也只一条 filter）。
-        self.assertIn("VCAMApplyChannelGains(image);", source)
+        # 屏幕染色与 AE 曝光增益合并为单一对角增益计算入口（全链时也只一条
+        # filter；快速路径走等价的逐像素对角乘法）。
+        self.assertIn("VCAMComputeCombinedChannelFactors(diagFactor)", source)
         self.assertIn("VCAMComputeScreenTintFactors", source)
         self.assertIn('@"inputRVector"', source)
         # 缺省关闭 + 镜像配置解析

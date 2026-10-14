@@ -56,11 +56,13 @@ class LargeTargetRenderTests(unittest.TestCase):
         )
 
     def test_realtime_identity_composition_bypasses_render_task(self) -> None:
-        # 2026-10-14 发热/丢帧优化：实时同尺寸零增益时整张 CI 图等价直通——
-        # 跳过 CIRenderTask，用同一写回函数直接转源缓冲（rear 1080p 全幅
-        # 软渲染 p50 ~32ms 的主要成本）。恒等判定依赖增益函数无节点时
-        # 原样返回入参对象（image == preGainImage）。
-        self.assertIn("BOOL passthroughFastPath = image == preGainImage", self.source)
+        # 2026-10-14 发热/丢帧优化：实时同尺寸、无加性(torch 补光)增益时
+        # CI 图等价直通——跳过 CIRenderTask，用同一写回函数直接转源缓冲
+        #（rear 1080p 全幅软渲染 p50 ~32ms 的主要成本）。对角增益（AE×染色）
+        # 不算失配：先在私有 BGRA 拷贝上做等价的逐像素定点乘法。
+        self.assertIn("BOOL passthroughFastPath = !additiveActive", self.source)
+        self.assertIn("VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);",
+                      self.source)
         self.assertIn("CIRenderTask *task = passthroughFastPath ? nil", self.source)
         self.assertIn(
             "rendered = VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer);",
