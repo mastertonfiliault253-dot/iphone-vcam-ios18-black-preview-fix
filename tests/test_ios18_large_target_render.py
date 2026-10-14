@@ -64,12 +64,16 @@ class LargeTargetRenderTests(unittest.TestCase):
         self.assertIn("VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);",
                       self.source)
         self.assertIn("CIRenderTask *task = passthroughFastPath ? nil", self.source)
-        self.assertIn(
-            "rendered = VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer);",
-            self.source,
-        )
+        self.assertIn("? VCAMTransferBGRAIntoPlanarTarget(ciSourceBuffer, targetBuffer)",
+                      self.source)
         # 快速路径命中不是渲染失败：不得触发 Metal 永久回退或失败日志。
         self.assertEqual(2, self.source.count("!coreImageRendered && !passthroughFastPath"))
+        # NV12 源同格式直通（视频解码通道常见）：仅中性对角因子（三通道同
+        # 系数，编码 YUV 上线性组合与标量乘交换）；非中性回全链。拒绝原因
+        # 必须可诊断（真机 23:42 一轮"为何未命中"无法定论的教训）。
+        self.assertIn("VCAMCopyNV12IntoPlanarTargetWithGain(", self.source)
+        self.assertIn("sourceIsSameNV12 && diagonalNeutral", self.source)
+        self.assertIn("fast path reject count=", self.source)
 
 
 if __name__ == "__main__":
