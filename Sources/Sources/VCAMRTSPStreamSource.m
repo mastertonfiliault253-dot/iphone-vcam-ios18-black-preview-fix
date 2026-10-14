@@ -18,19 +18,20 @@
 // The SDK xpc headers differ and only compile against one side, so the
 // declarations are conditional:
 // - 18.5 SDK: <xpc/xpc.h> maps xpc_object_t to an ObjC class under ARC and
-//   turns xpc_release/xpc_connection_activate into message-send macros, so
-//   the probe must not re-declare them as plain C functions and must not
-//   call xpc_release (ARC manages the connection object).
+//   turns xpc_release into a message-send macro, so the probe must not
+//   re-declare them as plain C functions and must not call xpc_release
+//   (ARC manages the connection object).
 // - 16.5 SDK: no <xpc/xpc.h>, so declare the plain-C libxpc prototypes and
 //   the pointer type, plus the XPC_TYPE_* comparators <xpc/xpc.h> defines.
-// xpc_service_create is absent from both SDK headers; it is exported by
-// libxpc in libSystem, so declare it against each side's own type mode.
+// The probe uses the classic xpc_connection_create()/xpc_connection_resume()
+// client API. The newer xpc_service_create() form is absent from both SDK
+// headers and faulted on iOS 18.3 in _xpc_api_misuse from
+// xpc_connection_set_event_handler (vcamd SIGTRAP), so it is not used.
 #if __has_include(<xpc/xpc.h>)
 #import <xpc/xpc.h>
-xpc_object_t xpc_service_create(const char *name);
 #else
 typedef struct OpaqueXPCObject *xpc_object_t;
-xpc_object_t xpc_service_create(const char *name);
+xpc_object_t xpc_connection_create(const char *name, xpc_object_t endpoint);
 extern const struct _xpc_type_s _xpc_type_connection;
 extern const struct _xpc_type_s _xpc_type_error;
 #define XPC_TYPE_CONNECTION (&_xpc_type_connection)
@@ -38,7 +39,7 @@ extern const struct _xpc_type_s _xpc_type_error;
 const void *xpc_get_type(xpc_object_t object);
 void xpc_connection_set_event_handler(xpc_object_t connection,
                                     void (^handler)(xpc_object_t event));
-void xpc_connection_activate(xpc_object_t object);
+void xpc_connection_resume(xpc_object_t connection);
 const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
 void xpc_release(xpc_object_t object);
 #endif
@@ -53,6 +54,8 @@ static int gFFmpegLastMessageCount = 0;
 // flag so later reconnects go straight to software instead of retrying
 // hardware in a loop within this process.
 static volatile int gVCAMRTSPHardwareSessionsDisabled = 0;
+// Guards the one-shot videodecodeservice reachability probe below.
+static volatile int gVCAMRTSPDecodeServiceProbed = 0;
 
 // Beyond this age the last decoded frame counts as lost and the source
 // reports no video. Same window as VCAMOBSStreamSource.
@@ -446,9 +449,16 @@ static const char *VCAMXPCErrorKeyDescription(void) {
 }
 
 static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
-    xpc_object_t connection = xpc_service_create("com.apple.coremedia.videodecodeservice");
+    // Diagnostic only: probe once per process so a fault in this path cannot
+    // take vcamd down on every reconnect.
+    if (!__sync_bool_compare_and_swap(&gVCAMRTSPDecodeServiceProbed, 0, 1)) {
+        return;
+    }
+    xpc_object_t connection =
+        xpc_connection_create("com.apple.coremedia.videodecodeservice", NULL);
     if (connection == NULL) {
-        [VCAMConfiguration appendProcessLog:@"[DEBUG-vtprobe] xpc_service_create returned NULL"];
+        [VCAMConfiguration appendProcessLog:
+            @"[DEBUG-vtprobe] xpc_connection_create returned NULL"];
         return;
     }
     __block NSString *outcome = @"pending";
@@ -463,7 +473,7 @@ static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
             @synchronized ([VCAMRTSPStreamSource class]) { outcome = description; };
         }
     });
-    xpc_connection_activate(connection);
+    xpc_connection_resume(connection);
     [NSThread sleepForTimeInterval:1.5];
     @synchronized ([VCAMRTSPStreamSource class]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
