@@ -185,9 +185,12 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("commitConfiguration", src)
         self.assertIn("videoSupportedFrameRateRanges", src)
         self.assertIn("activeFormat", src)
-        # 设备锁必须带超时：无限 lockForConfiguration 在前一 custom 曝光请求
-        # pending 时永久阻塞（三跑真机实证 restoreA/biasDown 缺失、队列冻结连锁）。
-        self.assertIn("tryLockForConfigurationWithTime", src)
+        # 设备锁操作必须排队在专用队列且不得同步等待：无限 lockForConfiguration
+        # 在前一 custom 曝光请求 pending 时永久阻塞（三跑真机实证 sessionQueue
+        # 冻结、exposure 窗连锁缺失）；tryLockForConfigurationWithTime: 在 CI
+        # 的 16.5 SDK ObjC 头不可见（同 maxAvailableTorchLevel 教训）。
+        self.assertIn("deviceOpQueue", src)
+        self.assertNotIn("tryLockForConfigurationWithTime", src)
         # 曝光请求发起即返回（异步 completion 观察），不得同步等待信号量。
         self.assertNotIn("dispatch_semaphore", src)
 

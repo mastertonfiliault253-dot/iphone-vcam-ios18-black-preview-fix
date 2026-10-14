@@ -101,6 +101,9 @@ static NSString *tmpPathNamed(NSString *name) {
 @property(nonatomic, assign) int lumaFrameCounter;
 @property(nonatomic, strong) NSMutableArray *lumaSamples;  // {t,luma,win} 仅 sampleQueue
 @property(nonatomic, copy) NSString *lumaWindowLabel;      // 非 nil 时覆盖 win 标签（exposure 窗）
+// 设备锁操作专用串行队列：见 setRearExposurePulse——"lock→请求→unlock" 在此排队，
+// 一个被 pending 锁阻塞的 op 只挂住本队列，不冻结 sessionQueue/sampleQueue。
+@property(nonatomic, strong) dispatch_queue_t deviceOpQueue;
 @end
 
 @implementation ProbeRunner
@@ -118,6 +121,7 @@ static NSString *tmpPathNamed(NSString *name) {
         _lumaSamples = [NSMutableArray array];
         _sessionEvents = [NSMutableArray array];
         _visionQueue = dispatch_queue_create("vcam.probe.vision", DISPATCH_QUEUE_SERIAL);
+        _deviceOpQueue = dispatch_queue_create("vcam.probe.device-op", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -877,69 +881,81 @@ static BOOL pathExists(NSString *p) {
 // —— AE 端到端触发：显式设手动曝光（AVCaptureDevice 公共 API，KYC App 锁曝光同款），
 // 命中 vcam 侧对私有 setter 的控制路径 hook。实际取值钳制到 activeFormat 范围并回报。
 - (void)setRearExposurePulse:(double)isoTarget tag:(NSString *)tag {
+    // 异步设备操作（三跑真机实证的原缺陷修复）：前一个 custom 请求 pending 会
+    // 占住设备配置锁，同步路径下 lockForConfiguration:nil 无限等待，而带超时的
+    // try-lock 变体在 CI 的 16.5 SDK ObjC 头不可见（同 maxAvailableTorchLevel
+    // 教训，不可依赖）——同步执行曾冻结 sessionQueue，
+    // restoreA/biasDown 永无返回、exposure 亮度窗连锁缺失。现在 "lock→请求→
+    // unlock" 排队在 deviceOpQueue：调用方立即返回，pending 锁只挂专用队列，
+    // 请求按序在锁释放后生效。ok=0=已发起未确认（序列化时刻），completion 到达
+    // 后异步再 merge ok=1。目标语义=像 KYC App 一样发起曝光请求并观察画面响应。
     AVCaptureDevice *device = self.rearDevice;
+    if (device == nil) return;
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
     entry[@"requestedISO"] = @(isoTarget);
-    // tryLock 带超时（原 lockForConfiguration:nil 无限等待）：custom 请求 pending
-    // 会占住设备锁——三跑实证 setB 后 restoreA/biasDown 永无返回、sessionQueue
-    // 冻结连带后续 sampleQueue 时序（exposure 窗两次缺失）。等待 completion 的
-    // 同步信号量同被移除：目标只是"像 KYC App 一样发起曝光请求并观察画面响应"，
-    // 不需要同步 API 语义。ok=0 表示发起成功但 completion 未到（序列化时刻），
-    // 到齐后异步再 merge 一份 ok=1。
-    if (![device tryLockForConfigurationWithTime:
-            [NSDate dateWithTimeIntervalSinceNow:2.0]]) {
-        entry[@"lockTimeout"] = @YES;
-        [self mergeExposurePulseEntry:tag entry:entry];
-        return;
-    }
     entry[@"ok"] = @0;
-    @try {
-        CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
-        CMTime maxDuration = device.activeFormat.maxExposureDuration;
-        if (CMTIME_COMPARE_INLINE(duration, >, maxDuration)) { duration = maxDuration; }
-        // ISO 范围用公开属性 minISO/maxISO（iOS 7+；带 Video 前缀的 ISO 属性不存在，真机 KVC 实证）。
-        double minISO = device.activeFormat.minISO;
-        double maxISO = device.activeFormat.maxISO;
-        double iso = isoTarget;
-        if (iso < minISO) { iso = minISO; }
-        if (iso > maxISO) { iso = maxISO; }
-        __weak ProbeRunner *me = self;
-        [device setExposureModeCustomWithDuration:duration ISO:(float)iso
-                                completionHandler:^(CMTime syncTime) {
-            (void)syncTime;
-            ProbeRunner *strongMe = me;
-            if (strongMe == nil) return;
-            entry[@"ok"] = @1;  // 单字段写入；两次 merge 先后快照自洽
-            [strongMe mergeExposurePulseEntry:tag entry:entry];
-        }];
-        entry[@"iso"] = @(iso);
-        entry[@"exposureUs"] = @(round(CMTimeGetSeconds(duration) * 1e6));
-    } @catch (NSException *e) {
-        entry[@"exception"] = e.reason ?: e.name;
-    }
-    [device unlockForConfiguration];
     [self mergeExposurePulseEntry:tag entry:entry];
+    __weak ProbeRunner *me = self;
+    dispatch_async(self.deviceOpQueue, ^{
+        ProbeRunner *strongMe = me;
+        if (strongMe == nil) return;
+        if (![device lockForConfiguration:nil]) {
+            entry[@"lockFail"] = @YES;
+            [strongMe mergeExposurePulseEntry:tag entry:entry];
+            return;
+        }
+        @try {
+            CMTime duration = CMTimeMakeWithSeconds(1.0 / 30.0, NSEC_PER_SEC);
+            CMTime maxDuration = device.activeFormat.maxExposureDuration;
+            if (CMTIME_COMPARE_INLINE(duration, >, maxDuration)) { duration = maxDuration; }
+            // ISO 范围用公开属性 minISO/maxISO（iOS 7+；带 Video 前缀的 ISO 属性不存在，真机 KVC 实证）。
+            double minISO = device.activeFormat.minISO;
+            double maxISO = device.activeFormat.maxISO;
+            double iso = isoTarget;
+            if (iso < minISO) { iso = minISO; }
+            if (iso > maxISO) { iso = maxISO; }
+            [device setExposureModeCustomWithDuration:duration ISO:(float)iso
+                                    completionHandler:^(CMTime syncTime) {
+                (void)syncTime;
+                ProbeRunner *doneMe = me;
+                if (doneMe == nil) return;
+                entry[@"ok"] = @1;  // 单字段写入；两次 merge 先后快照自洽
+                [doneMe mergeExposurePulseEntry:tag entry:entry];
+            }];
+            entry[@"iso"] = @(iso);
+            entry[@"exposureUs"] = @(round(CMTimeGetSeconds(duration) * 1e6));
+        } @catch (NSException *e) {
+            entry[@"exception"] = e.reason ?: e.name;
+        }
+        [device unlockForConfiguration];
+        [strongMe mergeExposurePulseEntry:tag entry:entry];
+    });
 }
 
 - (void)setRearExposureBias:(double)biasEV tag:(NSString *)tag {
+    // 同 setRearExposurePulse：设备锁操作排队在 deviceOpQueue，不阻塞调用方。
     AVCaptureDevice *device = self.rearDevice;
+    if (device == nil) return;
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
     entry[@"biasEV"] = @(biasEV);
-    // 同 setRearExposurePulse：无限锁在前一 custom 请求 pending 时会永久阻塞。
-    if (![device tryLockForConfigurationWithTime:
-            [NSDate dateWithTimeIntervalSinceNow:2.0]]) {
-        entry[@"lockTimeout"] = @YES;
-        [self mergeExposurePulseEntry:tag entry:entry];
-        return;
-    }
-    @try {
-        [device setExposureTargetBias:(float)biasEV completionHandler:nil];
-        entry[@"ok"] = @YES;
-    } @catch (NSException *e) {
-        entry[@"exception"] = e.reason ?: e.name;
-    }
-    [device unlockForConfiguration];
-    [self mergeExposurePulseEntry:tag entry:entry];
+    __weak ProbeRunner *me = self;
+    dispatch_async(self.deviceOpQueue, ^{
+        ProbeRunner *strongMe = me;
+        if (strongMe == nil) return;
+        if (![device lockForConfiguration:nil]) {
+            entry[@"lockFail"] = @YES;
+            [strongMe mergeExposurePulseEntry:tag entry:entry];
+            return;
+        }
+        @try {
+            [device setExposureTargetBias:(float)biasEV completionHandler:nil];
+            entry[@"ok"] = @YES;
+        } @catch (NSException *e) {
+            entry[@"exception"] = e.reason ?: e.name;
+        }
+        [device unlockForConfiguration];
+        [strongMe mergeExposurePulseEntry:tag entry:entry];
+    });
 }
 
 - (void)mergeExposurePulseEntry:(NSString *)tag entry:(NSDictionary *)entry {
