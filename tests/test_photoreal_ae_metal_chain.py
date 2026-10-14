@@ -26,7 +26,9 @@ class PhotorealAEMetalChainTests(unittest.TestCase):
         self.assertIn("setExposureTargetBias:requestID:", source)
         self.assertIn("VCAMInstallAEObservationIfNeeded", source)
         # 数据路径：attachment 键诊断转储 + 候选键防御解析（auto-AE 唯一通道）。
-        self.assertIn("kCGImageAuxiliaryDataInfo", source)
+        # 注意：构建 SDK（16.5）未导出 kCGImageAuxiliaryDataInfo 常量，必须用
+        # 文档钉值的 CFSTR 字符串键（"AuxiliaryData"）。
+        self.assertIn('CFSTR("AuxiliaryData")', source)
         self.assertIn("ae_attach.log", source)
         self.assertIn("VCAMObserveSampleBufferExposure", source)
         # 物理设备实例切换=作废观测（前/后置实例不同）。

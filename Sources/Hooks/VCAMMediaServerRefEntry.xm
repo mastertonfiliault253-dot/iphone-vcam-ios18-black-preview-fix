@@ -1589,8 +1589,10 @@ static void VCAMDumpAttachmentKeys(FILE *file, CFDictionaryRef dict, const char 
         }
         CFStringRef description = CFCopyTypeIDDescription(CFGetTypeID(values[i]));
         char valueClass[64];
+        NSString *className = description != NULL
+            ? (__bridge_transfer NSString *)description : nil;
         snprintf(valueClass, sizeof(valueClass), "%s",
-                 description != NULL ? CFBridgingRelease(description).UTF8String : "unknown");
+                 className != NULL ? className.UTF8String : "unknown");
         fprintf(file, "%s%s (%s)\n", prefix, keyText, valueClass);
         if (depth < 1 && CFGetTypeID(values[i]) == CFDictionaryGetTypeID()) {
             VCAMDumpAttachmentKeys(file, (CFDictionaryRef)values[i], "  ", depth + 1);
@@ -1599,7 +1601,32 @@ static void VCAMDumpAttachmentKeys(FILE *file, CFDictionaryRef dict, const char 
 }
 
 static void VCAMObserveSampleBufferExposure(CMSampleBufferRef sampleBuffer, BOOL withKeyDump) {
-    CFTypeRef attachment = CMGetAttachment(sampleBuffer, kCGImageAuxiliaryDataInfo, NULL);
+    // CI 构建 SDK（16.5）未导出 kCGImageAuxiliaryDataInfo 常量；公开文档钉其
+    // 字符串值为 "AuxiliaryData"，另试 Fig 私有键拼写。哪个命中由 ae_attach.log
+    // 的 aux_present 逐键记录验证（键名最终以真机诊断为权威）。
+    static const CFStringRef attachmentKeyCandidates[] = {
+        CFSTR("AuxiliaryData"),
+        CFSTR("FigAppleSimplifiedCMExifInfo"),
+        CFSTR("kFigAppleSimplifiedCMExifInfo"),
+    };
+    CFTypeRef attachment = NULL;
+    for (size_t i = 0; i < sizeof(attachmentKeyCandidates) / sizeof(attachmentKeyCandidates[0]); i++) {
+        attachment = CMGetAttachment(sampleBuffer, attachmentKeyCandidates[i], NULL);
+        if (attachment != NULL) {
+            if (withKeyDump) {
+                FILE *logFile = fopen("/var/mobile/Library/VirtualCaptureCard/VCAM/ae_attach.log", "a");
+                if (logFile != NULL) {
+                    char keyName[64];
+                    snprintf(keyName, sizeof(keyName), "%s",
+                             ((__bridge NSString *)attachmentKeyCandidates[i]).UTF8String);
+                    fprintf(logFile, "t=%.2f attachment_key=%s\n",
+                            CFAbsoluteTimeGetCurrent(), keyName);
+                    fclose(logFile);
+                }
+            }
+            break;
+        }
+    }
     CFTypeRef root = NULL;
     if (attachment != NULL && CFGetTypeID(attachment) == CFDataGetTypeID()) {
         root = CFPropertyListCreateWithData(kCFAllocatorDefault, (CFDataRef)attachment,
