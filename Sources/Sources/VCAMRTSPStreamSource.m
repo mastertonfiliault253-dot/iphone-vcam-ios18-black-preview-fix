@@ -14,6 +14,35 @@
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 
+// libxpc prototypes for the videodecodeservice reachability probe below.
+// The SDK xpc headers differ and only compile against one side, so the
+// declarations are conditional:
+// - 18.5 SDK: <xpc/xpc.h> maps xpc_object_t to an ObjC class under ARC and
+//   turns xpc_release/xpc_connection_activate into message-send macros, so
+//   the probe must not re-declare them as plain C functions and must not
+//   call xpc_release (ARC manages the connection object).
+// - 16.5 SDK: no <xpc/xpc.h>, so declare the plain-C libxpc prototypes and
+//   the pointer type, plus the XPC_TYPE_* comparators <xpc/xpc.h> defines.
+// xpc_service_create is absent from both SDK headers; it is exported by
+// libxpc in libSystem, so declare it against each side's own type mode.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+xpc_object_t xpc_service_create(const char *name);
+#else
+typedef struct OpaqueXPCObject *xpc_object_t;
+xpc_object_t xpc_service_create(const char *name);
+extern const struct _xpc_type_s _xpc_type_connection;
+extern const struct _xpc_type_s _xpc_type_error;
+#define XPC_TYPE_CONNECTION (&_xpc_type_connection)
+#define XPC_TYPE_ERROR (&_xpc_type_error)
+const void *xpc_get_type(xpc_object_t object);
+void xpc_connection_set_event_handler(xpc_object_t connection,
+                                    void (^handler)(xpc_object_t event));
+void xpc_connection_activate(xpc_object_t object);
+const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
+void xpc_release(xpc_object_t object);
+#endif
+
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
@@ -407,40 +436,6 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     }
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
-
-// One-shot diagnostic for the zero-frame hardware fallback: -12911
-// (kVTVideoDecoderMalfunctionErr) matches the historical device-level
-// failure pattern, so probe whether VideoToolbox's hardware decode XPC
-// service is reachable from this daemon at all. The connection handler
-// reports service_missing / invalidation, which distinguishes "the service
-// cannot be launched or accepted here" from "the service decoded the sample
-// and refused it".
-//
-// SDK xpc headers differ and only compile against one side:
-// - 18.5 SDK: <xpc/xpc.h> maps xpc_object_t to an ObjC class under ARC and
-//   turns xpc_release/xpc_connection_activate into message-send macros, so
-//   the probe must not declare them as plain C functions and must not call
-//   xpc_release (ARC manages the connection object).
-// - 16.5 SDK: no <xpc/xpc.h>, so declare the plain-C libxpc prototypes;
-// xpc_service_create is absent from both SDK headers; it is exported by
-// libxpc in libSystem, so declare it against each side's own type mode.
-#if __has_include(<xpc/xpc.h>)
-#import <xpc/xpc.h>
-xpc_object_t xpc_service_create(const char *name) __attribute__((ns_returns_not_owned));
-#else
-typedef struct OpaqueXPCObject *xpc_object_t;
-xpc_object_t xpc_service_create(const char *name);
-extern const struct _xpc_type_s _xpc_type_connection;
-extern const struct _xpc_type_s _xpc_type_error;
-#define XPC_TYPE_CONNECTION (&_xpc_type_connection)
-#define XPC_TYPE_ERROR (&_xpc_type_error)
-const void *xpc_get_type(xpc_object_t object);
-void xpc_connection_set_event_handler(xpc_object_t connection,
-                                    void (^handler)(xpc_object_t event));
-void xpc_connection_activate(xpc_object_t object);
-const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
-void xpc_release(xpc_object_t object);
-#endif
 
 // XPC_ERROR_KEY_DESCRIPTION is a libxpc data symbol that the iOS SDK stub
 // omits, so the link cannot reference it directly. Resolve it at runtime;
