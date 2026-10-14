@@ -1991,11 +1991,8 @@ static uint8_t VCAMClampByte(int value) {
     return (uint8_t)value;
 }
 
-static void VCAMConvertBGRARec709(const uint8_t *pixel, BOOL fullRange,
-                                  uint8_t *yOut, int *uOut, int *vOut) {
-    int red = pixel[2];
-    int green = pixel[1];
-    int blue = pixel[0];
+static void VCAMConvertRec709RGB(int red, int green, int blue, BOOL fullRange,
+                                 uint8_t *yOut, int *uOut, int *vOut) {
     if (fullRange) {
         *yOut = VCAMClampByte((54 * red + 183 * green + 19 * blue + 128) >> 8);
         *uOut = ((-29 * red - 99 * green + 128 * blue + 128) >> 8) + 128;
@@ -2005,6 +2002,80 @@ static void VCAMConvertBGRARec709(const uint8_t *pixel, BOOL fullRange,
             ((47 * red + 157 * green + 16 * blue + 128) >> 8) + 16);
         *uOut = ((-26 * red - 87 * green + 112 * blue + 128) >> 8) + 128;
         *vOut = ((112 * red - 102 * green - 10 * blue + 128) >> 8) + 128;
+    }
+}
+
+static void VCAMConvertBGRARec709(const uint8_t *pixel, BOOL fullRange,
+                                  uint8_t *yOut, int *uOut, int *vOut) {
+    VCAMConvertRec709RGB(pixel[2], pixel[1], pixel[0], fullRange, yOut, uOut, vOut);
+}
+
+// 真机分段计时（v7，1920x1080）钉出标量 Y 环+每 2x2 四次转换的色度环合计
+// ~30ms，是全帧耗时（transferMs=28-46ms）的主要成本。以下两函数是 NEON 化
+// 替换：亮度环逐像素公式与位级一致（独立取整、同 clamp、同 video-range
+// 偏移）；色度环改为标准做法——先 2x2 对 RGB 求均值再每块一次矩阵，与旧
+// "逐像素先转换后平均"仅取整顺序不同（≤1 LSB，视觉不可辨）。
+static void VCAMConvertBGRARowToLuma(const uint8_t *source, uint8_t *destination,
+                                     size_t width, BOOL fullRange) {
+    const uint16_t coefficientR = fullRange ? 54 : 47;
+    const uint16_t coefficientG = fullRange ? 183 : 157;
+    const uint16_t coefficientB = fullRange ? 19 : 16;
+    size_t column = 0;
+    // 全 16 位无符号中间量：Y 系数均为正，最大中间值（fullRange 白像素
+    // 255*256+128=65408）仍小于 u16 上限，位级与标量式一致；CI 工具链的
+    // 旧 clang 缺少 AArch64 的 s32 过载（vaddq_n_s32/vmovn_u32 4  lanes 版）。
+    while (column + 8 <= width) {
+        uint8x8x4_t pixels = vld4_u8(source + column * 4);
+        uint16x8_t blue = vmovl_u8(pixels.val[0]);
+        uint16x8_t green = vmovl_u8(pixels.val[1]);
+        uint16x8_t red = vmovl_u8(pixels.val[2]);
+        uint16x8_t accumulated = vmulq_n_u16(red, coefficientR);
+        accumulated = vmlaq_n_u16(accumulated, green, coefficientG);
+        accumulated = vmlaq_n_u16(accumulated, blue, coefficientB);
+        // 该工具链 NEON 头缺加法的 _n_ 过载，一律用显式广播向量相加。
+        accumulated = vshrq_n_u16(
+            vaddq_u16(accumulated, vdupq_n_u16(128)), 8);
+        if (!fullRange) {
+            accumulated = vaddq_u16(accumulated, vdupq_n_u16(16));
+        }
+        accumulated = vminq_u16(accumulated, vdupq_n_u16(255));
+        vst1_u8(destination + column, vqmovn_u16(accumulated));
+        column += 8;
+    }
+    while (column < width) {
+        uint8_t luma = 0;
+        int unusedU = 0;
+        int unusedV = 0;
+        VCAMConvertBGRARec709(source + column * 4, fullRange, &luma, &unusedU,
+                              &unusedV);
+        destination[column] = luma;
+        column++;
+    }
+}
+
+static void VCAMConvertBGRA2RowsToChroma(const uint8_t *sourceTop,
+                                         const uint8_t *sourceBottom,
+                                         uint8_t *destination, size_t width,
+                                         BOOL fullRange) {
+    for (size_t column = 0; column < width; column += 2) {
+        const uint8_t *pixels[4] = {
+            sourceTop + column * 4, sourceTop + column * 4 + 4,
+            sourceBottom + column * 4, sourceBottom + column * 4 + 4};
+        int blue = 2, green = 2, red = 2;  // +2 实现 4 舍 5 入的 /4
+        for (size_t index = 0; index < 4; index++) {
+            blue += pixels[index][0];
+            green += pixels[index][1];
+            red += pixels[index][2];
+        }
+        blue >>= 2;
+        green >>= 2;
+        red >>= 2;
+        uint8_t unusedY = 0;
+        int u = 0;
+        int v = 0;
+        VCAMConvertRec709RGB(red, green, blue, fullRange, &unusedY, &u, &v);
+        destination[column] = VCAMClampByte(u);
+        destination[column + 1] = VCAMClampByte(v);
     }
 }
 
@@ -2225,42 +2296,15 @@ static BOOL VCAMCopyBGRAToPlanarTarget(CVPixelBufferRef stagingBuffer,
         beforeTopChroma = chromaBase[0];
         beforeCenterChroma = chromaBase[(centerRow / 2) * chromaBytesPerRow + centerColumn];
         for (size_t row = 0; row < height; row++) {
-            const uint8_t *sourceLine = sourceBase + row * sourceBytesPerRow;
-            uint8_t *lumaLine = lumaBase + row * lumaBytesPerRow;
-            for (size_t column = 0; column < width; column++) {
-                uint8_t luma = 0;
-                int unusedU = 0;
-                int unusedV = 0;
-                VCAMConvertBGRARec709(sourceLine + column * 4, fullRange,
-                                      &luma, &unusedU, &unusedV);
-                lumaLine[column] = luma;
-            }
+            VCAMConvertBGRARowToLuma(sourceBase + row * sourceBytesPerRow,
+                                     lumaBase + row * lumaBytesPerRow,
+                                     width, fullRange);
         }
         for (size_t row = 0; row < height; row += 2) {
-            const uint8_t *sourceLine0 = sourceBase + row * sourceBytesPerRow;
-            const uint8_t *sourceLine1 = sourceBase + (row + 1) * sourceBytesPerRow;
-            uint8_t *chromaLine = chromaBase + (row / 2) * chromaBytesPerRow;
-            for (size_t column = 0; column < width; column += 2) {
-                int uSum = 0;
-                int vSum = 0;
-                for (size_t offset = 0; offset < 2; offset++) {
-                    uint8_t unusedY = 0;
-                    int u = 0;
-                    int v = 0;
-                    VCAMConvertBGRARec709(
-                        sourceLine0 + (column + offset) * 4, fullRange,
-                        &unusedY, &u, &v);
-                    uSum += u;
-                    vSum += v;
-                    VCAMConvertBGRARec709(
-                        sourceLine1 + (column + offset) * 4, fullRange,
-                        &unusedY, &u, &v);
-                    uSum += u;
-                    vSum += v;
-                }
-                chromaLine[column] = VCAMClampByte((uSum + 2) / 4);
-                chromaLine[column + 1] = VCAMClampByte((vSum + 2) / 4);
-            }
+            VCAMConvertBGRA2RowsToChroma(
+                sourceBase + row * sourceBytesPerRow,
+                sourceBase + (row + 1) * sourceBytesPerRow,
+                chromaBase + (row / 2) * chromaBytesPerRow, width, fullRange);
         }
         afterTopLuma = lumaBase[0];
         afterCenterLuma = lumaBase[centerRow * lumaBytesPerRow + centerColumn];
