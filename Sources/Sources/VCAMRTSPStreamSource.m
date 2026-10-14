@@ -40,6 +40,9 @@ const void *xpc_get_type(xpc_object_t object);
 void xpc_connection_set_event_handler(xpc_object_t connection,
                                     void (^handler)(xpc_object_t event));
 void xpc_connection_resume(xpc_object_t connection);
+void xpc_connection_send_message(xpc_object_t connection, xpc_object_t message);
+xpc_object_t xpc_dictionary_create(const char *key1, const char *key2,
+                                   unsigned long long flags);
 const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
 void xpc_release(xpc_object_t object);
 #endif
@@ -474,7 +477,16 @@ static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
         }
     });
     xpc_connection_resume(connection);
-    [NSThread sleepForTimeInterval:1.5];
+    // A resumed connection only reports events once traffic starts, so send
+    // a benign empty request to force the connection attempt.
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    if (request != NULL) {
+        xpc_connection_send_message(connection, request);
+#if !__has_include(<xpc/xpc.h>)
+        xpc_release(request);
+#endif
+    }
+    [NSThread sleepForTimeInterval:3.0];
     @synchronized ([VCAMRTSPStreamSource class]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"[DEBUG-vtprobe] videodecodeservice probe %@", outcome]];
