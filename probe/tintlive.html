@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>三色 + 相机实时对照</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: #808080; }
+  #panel { position: fixed; left: 0; top: 0; right: 0; height: 50%;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; gap: 12px; }
+  #mode { font: bold 30px monospace; color: #fff; text-shadow: 0 0 6px #000; }
+  #hint { font: 13px monospace; color: #fff; text-shadow: 0 0 4px #000; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button { font: bold 15px monospace; padding: 13px 14px; border-radius: 10px;
+           border: 2px solid #000; background: #fff; color: #000; }
+  #cam { position: fixed; left: 8px; top: 8px; z-index: 3;
+         padding: 10px 12px; font: bold 14px monospace; }
+  video { position: fixed; left: 0; bottom: 0; width: 100%; height: 50%;
+          object-fit: cover; background: #000; }
+  #vlabel { position: fixed; left: 8px; bottom: 8px; z-index: 3;
+            font: 12px monospace; color: #fff; text-shadow: 0 0 4px #000; }
+</style>
+<button id="cam">START CAM</button>
+<div id="panel">
+  <div id="mode">NEUTRAL</div>
+  <div class="btnrow">
+    <button data-color="#d01010" data-name="RED">红</button>
+    <button data-color="#10a810" data-name="GREEN">绿</button>
+    <button data-color="#2020d0" data-name="BLUE">蓝</button>
+    <button data-color="#808080" data-name="NEUTRAL">灰</button>
+  </div>
+  <div class="btnrow">
+    <button id="auto">AUTO CYCLE</button>
+  </div>
+  <div id="hint">相机画面在下半屏：切换颜色后画面会按屏幕色染色。<br>同色持续约 20-60s 会被基线吸收（正常），AUTO 循环可持续看到效果。</div>
+</div>
+<video id="v" autoplay playsinline muted></video>
+<div id="vlabel"></div>
+<script>
+// 实时对照页：上半屏纯色（供 SpringBoard 采屏器取屏幕平均色），
+// 下半屏虚拟相机画面（供肉眼直接观察 cameracaptured 染色结果）。
+// 染色只在"颜色相对基线快速变化"时触发，AUTO 用中性灰间隔保证每段都构成脉冲。
+var NEUTRAL = '#808080';
+var autoTimer = null, autoStep = 0;
+var CYCLE = [['#d01010', 'RED', 3000], ['#808080', 'NEUTRAL', 1500],
+             ['#10a810', 'GREEN', 3000], ['#808080', 'NEUTRAL', 1500],
+             ['#2020d0', 'BLUE', 3000], ['#808080', 'NEUTRAL', 1500]];
+function setColor(color, name) {
+  document.body.style.background = color;
+  document.getElementById('mode').textContent = name + ' ' + color;
+}
+function stopAuto() {
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+  document.getElementById('auto').textContent = 'AUTO CYCLE';
+}
+function scheduleNext() {
+  var step = CYCLE[autoStep % CYCLE.length];
+  autoStep++;
+  setColor(step[0], step[1]);
+  autoTimer = setTimeout(scheduleNext, step[2]);
+}
+document.querySelectorAll('button[data-color]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    stopAuto();
+    setColor(b.getAttribute('data-color'), b.getAttribute('data-name'));
+  });
+});
+document.getElementById('auto').addEventListener('click', function () {
+  if (autoTimer) { stopAuto(); setColor(NEUTRAL, 'NEUTRAL'); return; }
+  this.textContent = 'AUTO ON';
+  autoStep = 0;
+  scheduleNext();
+});
+document.getElementById('cam').addEventListener('click', function () {
+  var self = this;
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+    .then(function (stream) {
+      document.getElementById('v').srcObject = stream;
+      self.textContent = 'CAM ON';
+    })
+    .catch(function (e) { self.textContent = 'ERR ' + e.name; });
+});
+setInterval(function () {
+  document.getElementById('vlabel').textContent =
+    'camera feed  ' + new Date().toTimeString().slice(0, 8);
+}, 500);
+</script>
