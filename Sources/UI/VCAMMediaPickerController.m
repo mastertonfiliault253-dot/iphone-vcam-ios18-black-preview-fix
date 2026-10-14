@@ -199,7 +199,8 @@ static BOOL VCAMProviderScreenCapture(int *rgbOut, NSString **failureReasonOut) 
         // 诊断需要真实返回类型/数量：selector 存在不代表签名或返回形制符合预期。
         unsigned long count = 0;
         if ([providers respondsToSelector:@selector(count)]) {
-            count = (unsigned long)[(id <NSObject>)providers count];
+            count = (unsigned long)((NSUInteger (*)(id, SEL))objc_msgSend)(
+                providers, @selector(count));
         }
         if (failureReasonOut) {
             *failureReasonOut = [NSString stringWithFormat:
