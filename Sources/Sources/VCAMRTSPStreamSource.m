@@ -414,12 +414,11 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 // service is reachable from this daemon at all. The connection handler
 // reports service_missing / invalidation, which distinguishes "the service
 // cannot be launched or accepted here" from "the service decoded the sample
-// and refused it". The iOS SDK ships no <xpc/xpc.h>, so declare the small
-// set of libxpc public prototypes the probe needs; libSystem re-exports
-// libxpc, so the symbols link against the already-loaded Foundation stack.
-#if __has_include(<xpc/xpc.h>)
-#import <xpc/xpc.h>
-#else
+// and refused it". Do not import <xpc/xpc.h>: under ARC the SDK header maps
+// xpc_object_t to an ObjC class and xpc_release to a -release message send,
+// and neither the 16.5 nor the 18.5 SDK declares xpc_service_create, so use
+// the plain-C libxpc prototypes below instead. libSystem re-exports libxpc,
+// so these symbols link against the already-loaded Foundation stack.
 typedef struct OpaqueXPCObject *xpc_object_t;
 typedef const struct _xpc_type_s *xpc_type_t;
 extern const struct _xpc_type_s _xpc_type_connection;
@@ -433,7 +432,6 @@ void xpc_connection_set_event_handler(xpc_object_t connection,
 void xpc_connection_activate(xpc_object_t object);
 const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
 void xpc_release(xpc_object_t object);
-#endif
 
 // XPC_ERROR_KEY_DESCRIPTION is a libxpc data symbol that the iOS SDK stub
 // omits, so the link cannot reference it directly. Resolve it at runtime;
