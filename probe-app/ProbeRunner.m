@@ -601,8 +601,11 @@ static BOOL pathExists(NSString *p) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 3) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me beginRearTorchPhase]; });
+    // +24（原 +22）：exposure 窗在 t0+18.5 关窗汇总，与 finishProbe 仅隔 0.5s 时
+    // dispatch_after 抖动会让汇总晚于报告序列化（20:39/20:48 两跑 lumaWindow_exposure
+    // 均缺失实证），留 2.5s 余量。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 22) * NSEC_PER_SEC)),
+                                 (int64_t)((kLowPhaseSeconds + kHighPhaseSeconds + 24) * NSEC_PER_SEC)),
                    self.sampleQueue, ^{ [me finishProbe]; });
 }
 
@@ -895,7 +898,11 @@ static BOOL pathExists(NSString *p) {
         dispatch_semaphore_t done = dispatch_semaphore_create(0);
         [device setExposureModeCustomWithDuration:duration ISO:(float)iso
                                 completionHandler:^(CMTime syncTime) { (void)syncTime; dispatch_semaphore_signal(done); }];
-        long waited = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
+        // 5s（原 2s）：2s 下 setB(ISO 800) 两跑均超时 ok=0 而 setA(400) 秒回——
+        // 第二次 custom 请求需等前一次应用+AE 收敛，2s 不够；超时还会让设备配置锁
+        // 被 pending 请求占住，连带 restoreA 的 lockForConfiguration 永久阻塞
+        //（两跑 restoreA/biasDown 均缺失的根因）。
+        long waited = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
         entry[@"ok"] = @(waited == 0);
         entry[@"iso"] = @(iso);
         entry[@"exposureUs"] = @(round(CMTimeGetSeconds(duration) * 1e6));

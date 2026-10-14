@@ -256,7 +256,7 @@ class AppContractTests(unittest.TestCase):
         self.assertIn("level-fallback", src)
         # 时序契约：后置阶段在高低两阶段之后、finishProbe 之前；两偏移成对出现。
         self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 3)", src)
-        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 22)", src)
+        self.assertIn("(kLowPhaseSeconds + kHighPhaseSeconds + 24)", src)
         # 亮度采样必须先于 phase<0 早退（否则后置阶段采不到帧）。
         self.assertLess(src.index("if (self.lumaWindowActive &&"),
                         src.index("if (self.phase < 0) { return; }"))

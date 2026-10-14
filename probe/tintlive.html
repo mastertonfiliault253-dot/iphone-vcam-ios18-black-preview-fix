@@ -71,15 +71,18 @@ document.getElementById('auto').addEventListener('click', function () {
   autoStep = 0;
   scheduleNext();
 });
-document.getElementById('cam').addEventListener('click', function () {
-  var self = this;
+function startCamera() {
+  var self = document.getElementById('cam');
   navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
     .then(function (stream) {
       document.getElementById('v').srcObject = stream;
       self.textContent = 'CAM ON';
     })
     .catch(function (e) { self.textContent = 'ERR ' + e.name; });
-});
+}
+document.getElementById('cam').addEventListener('click', startCamera);
+// autocam=1：页面加载即开摄像头（性能采窗用，免 VNC 手动点按）。
+if (new URLSearchParams(location.search).get('autocam') === '1') { startCamera(); }
 setInterval(function () {
   document.getElementById('vlabel').textContent =
     'camera feed  ' + new Date().toTimeString().slice(0, 8);
