@@ -13,7 +13,7 @@
 #include <notify.h>
 #include <unistd.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include <mach/vm_map.h>
 
 static char g_lastOutputSignature[768] = {0};
 static int g_sigaddrToken = -1;
@@ -249,8 +249,9 @@ static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
 // （2026-10-15 cameracaptured SIGSEGV 即发生于此：class_copyMethodList 返回
 // 快照之后 captureSource_setPropertyInternal 变动了 method list，
 // method_getName 吐出垃圾 SEL 0x2，snprintf("%s") 解引用崩溃）。
-// 所有外来指针改经 mach_vm_read_overwrite 读本任务地址空间：悬垂指针
+// 所有外来指针改经 vm_read_overwrite 读本任务地址空间：悬垂指针
 // 变成内核错误返回，而不是在相机服务里炸出 SIGSEGV。
+// （不用 mach_vm_*：iOS SDK 的 mach/mach_vm.h 直接 #error unsupported。）
 static BOOL VCAMReadCStringSafely(const void *src, char *dst, size_t cap) {
     if (dst == NULL || cap < 2) return NO;
     dst[0] = '\0';
@@ -261,10 +262,10 @@ static BOOL VCAMReadCStringSafely(const void *src, char *dst, size_t cap) {
         uintptr_t pageEnd = (current & ~(uintptr_t)0xFFF) + 0x1000;
         size_t room = (size_t)(pageEnd - current);
         size_t want = room < (cap - filled - 1) ? room : (cap - filled - 1);
-        mach_vm_size_t done = 0;
-        if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)current,
-                                   want, (mach_vm_address_t)(dst + filled),
-                                   &done) != KERN_SUCCESS || done == 0) {
+        vm_size_t done = 0;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)current,
+                              want, (vm_address_t)(dst + filled),
+                              &done) != KERN_SUCCESS || done == 0) {
             break;
         }
         filled += (size_t)done;
@@ -304,10 +305,10 @@ static void VCAMLogRuntimeMethodsOnce(Class klass, NSString *tag) {
         // 先把条目整体拷到栈上，再对拷来的指针做安全字符串读，
         // 避免 libobjc 对 raw entry 直接解引用踩到正在变动的 method list。
         uintptr_t entry[3] = {0};
-        mach_vm_size_t entryBytes = 0;
-        if (mach_vm_read_overwrite(mach_task_self(),
-                (mach_vm_address_t)(uintptr_t)methods[index], sizeof(entry),
-                (mach_vm_address_t)entry, &entryBytes) != KERN_SUCCESS ||
+        vm_size_t entryBytes = 0;
+        if (vm_read_overwrite(mach_task_self(),
+                (vm_address_t)(uintptr_t)methods[index], sizeof(entry),
+                (vm_address_t)entry, &entryBytes) != KERN_SUCCESS ||
             entryBytes != sizeof(entry)) {
             continue;
         }
