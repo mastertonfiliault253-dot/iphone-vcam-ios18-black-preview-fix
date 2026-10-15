@@ -2,63 +2,38 @@
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import "../Daemon/VCAMPixelConverter.h"
 #import "../Shared/VCAMSharedFrame.h"
+#import "../Shared/VCAMSurfaceBroker.h"
 #import <QuartzCore/QuartzCore.h>
-#import <dlfcn.h>
 #import <errno.h>
 #import <math.h>
 #import <stdarg.h>
 #import <stdio.h>
 #import <stdlib.h>
 
+#include <dispatch/dispatch.h>
+#include <stdatomic.h>
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
-
-// libxpc prototypes for the videodecodeservice reachability probe below.
-// The SDK xpc headers differ and only compile against one side, so the
-// declarations are conditional:
-// - 18.5 SDK: <xpc/xpc.h> maps xpc_object_t to an ObjC class under ARC and
-//   turns xpc_release into a message-send macro, so the probe must not
-//   re-declare them as plain C functions and must not call xpc_release
-//   (ARC manages the connection object).
-// - 16.5 SDK: no <xpc/xpc.h>, so declare the plain-C libxpc prototypes and
-//   the pointer type, plus the XPC_TYPE_* comparators <xpc/xpc.h> defines.
-// The probe uses the classic xpc_connection_create()/xpc_connection_resume()
-// client API. The newer xpc_service_create() form is absent from both SDK
-// headers and faulted on iOS 18.3 in _xpc_api_misuse from
-// xpc_connection_set_event_handler (vcamd SIGTRAP), so it is not used.
-#if __has_include(<xpc/xpc.h>)
-#import <xpc/xpc.h>
-#else
-typedef struct OpaqueXPCObject *xpc_object_t;
-xpc_object_t xpc_connection_create(const char *name, xpc_object_t endpoint);
-extern const struct _xpc_type_s _xpc_type_connection;
-extern const struct _xpc_type_s _xpc_type_error;
-#define XPC_TYPE_CONNECTION (&_xpc_type_connection)
-#define XPC_TYPE_ERROR (&_xpc_type_error)
-const void *xpc_get_type(xpc_object_t object);
-void xpc_connection_set_event_handler(xpc_object_t connection,
-                                    void (^handler)(xpc_object_t event));
-void xpc_connection_resume(xpc_object_t connection);
-void xpc_connection_send_message(xpc_object_t connection, xpc_object_t message);
-xpc_object_t xpc_dictionary_create(const char *key1, const char *key2,
-                                   unsigned long long flags);
-const char *xpc_dictionary_get_string(xpc_object_t dictionary, const char *key);
-void xpc_release(xpc_object_t object);
-#endif
 
 static NSDictionary<NSString *, id> *VCAMRTSPPerformance;
 static volatile int gFFmpegDiagnosticCount = 0;
 static char gFFmpegLastMessage[1024] = {0};
 static int gFFmpegLastMessageCount = 0;
-// RTSP prefers a direct VTDecompressionSession over the proven FFmpeg
-// software decoder. Sessions that start a VT session but never yield a
-// decoded frame (the historical -12780 device-level failure mode) set this
-// flag so later reconnects go straight to software instead of retrying
-// hardware in a loop within this process.
+// RTSP prefers remote hardware decode: vcamd demuxes and pushes compressed
+// access units to the SpringBoard service (the E9 case shows the daemon
+// context cannot run VideoToolbox itself). When no peer is available, the
+// in-daemon direct-VT decoder is the second choice; sessions that start a
+// VT session but never yield a decoded frame (the historical -12780
+// device-level failure mode) set this flag so later reconnects go straight
+// to software instead of retrying hardware in a loop within this process.
 static volatile int gVCAMRTSPHardwareSessionsDisabled = 0;
-// Guards the one-shot videodecodeservice reachability probe below.
-static volatile int gVCAMRTSPDecodeServiceProbed = 0;
+// Set after a remote hardware session fails (unreachable, rejected or
+// zero-frame) so reconnects stop paying the remote retry cost in-process.
+static volatile int gVCAMRTSPRemoteHardwareDisabled = 0;
+// Mirrors the broker's remote-decoder peer registration events.
+static _Atomic(int) gVCAMRTSPRemotePeerAvailable = 0;
 
 // Beyond this age the last decoded frame counts as lost and the source
 // reports no video. Same window as VCAMOBSStreamSource.
@@ -161,6 +136,17 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
     BOOL _softwareConversionScheduled;
+    // Remote hardware decode state. remoteFrames holds
+    // NSValue(CVPixelBufferRef) entries wrapped from returned IOSurfaces;
+    // all fields are guarded by @synchronized(self).
+    NSMutableArray *remoteFrames;
+    dispatch_semaphore_t remoteAckSemaphore;
+    dispatch_semaphore_t remoteWindowSemaphore;
+    BOOL remoteAckArrived;
+    BOOL remoteAckAccepted;
+    uint64_t remoteActiveEpoch;
+    NSUInteger remoteAUsSent;
+    NSUInteger remoteFramesReceived;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -193,6 +179,9 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         _usesRTSPTransport = !isHLS;
         _decodeQueue = dispatch_queue_create("com.codex.vcam.stream.decode", DISPATCH_QUEUE_SERIAL);
         _conversionQueue = dispatch_queue_create("com.codex.vcam.stream.convert", DISPATCH_QUEUE_SERIAL);
+        remoteFrames = [NSMutableArray array];
+        remoteAckSemaphore = dispatch_semaphore_create(0);
+        remoteWindowSemaphore = dispatch_semaphore_create(0);
     }
     return self;
 }
@@ -216,6 +205,18 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         avformat_network_init();
         av_log_set_callback(VCAMFFmpegDiagnosticLog);
     });
+    // Route remote-decoder protocol events into this instance (daemon-only
+    // broker role). The handler runs on the broker's serial queue.
+    __weak typeof(self) weakEventSelf = self;
+    VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
+        ^(VCAMRemoteDecoderEvent event, uint64_t epoch, IOSurfaceRef surface) {
+            VCAMRTSPStreamSource *target = weakEventSelf;
+            if (target == nil) {
+                if (surface != NULL) CFRelease(surface);
+                return;
+            }
+            [target handleRemoteDecoderEvent:event epoch:epoch surface:surface];
+        });
     self.running = YES;
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.decodeQueue, ^{ [weakSelf decodeReconnectLoop]; });
@@ -246,6 +247,13 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         _lastDisplayFrameSequence = 0;
         _lastRenderedFrameSequence = 0;
         if (_pendingSoftwareFrame != NULL) av_frame_free(&_pendingSoftwareFrame);
+        for (NSValue *value in remoteFrames) {
+            CVPixelBufferRelease((CVPixelBufferRef)value.pointerValue);
+        }
+        [remoteFrames removeAllObjects];
+        remoteActiveEpoch = 0;
+        remoteAUsSent = 0;
+        remoteFramesReceived = 0;
     }
 }
 
@@ -443,58 +451,233 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     return [self enqueueLatestSoftwareFrame:decodedFrame];
 }
 
-// XPC_ERROR_KEY_DESCRIPTION is a libxpc data symbol that the iOS SDK stub
-// omits, so the link cannot reference it directly. Resolve it at runtime;
-// the fallback literal is the symbol's own value on the device.
-static const char *VCAMXPCErrorKeyDescription(void) {
-    const char *key = (const char *)dlsym(RTLD_DEFAULT, "XPC_ERROR_KEY_DESCRIPTION");
-    return key ?: "XPC_ERROR_KEY_DESCRIPTION";
+// Remote hardware decode: demux stays here, VideoToolbox runs in the
+// injected SpringBoard process (docs VIDEOTOOLBOX case E9). Broker events
+// arrive on the broker's serial queue; the session loop below is the only
+// consumer of the wrapped frames.
+enum {
+    VCAMRTSPRemoteMaxOutstanding = 4,
+    VCAMRTSPRemoteMaxFrames = 16,
+};
+
+- (void)handleRemoteDecoderEvent:(VCAMRemoteDecoderEvent)event
+                           epoch:(uint64_t)epoch
+                         surface:(IOSurfaceRef)surface {
+    switch (event) {
+        case VCAMRemoteDecoderEventPeerAvailable:
+            atomic_store_explicit(&gVCAMRTSPRemotePeerAvailable, 1,
+                                  memory_order_release);
+            return;
+        case VCAMRemoteDecoderEventPeerLost:
+            atomic_store_explicit(&gVCAMRTSPRemotePeerAvailable, 0,
+                                  memory_order_release);
+            break;
+        case VCAMRemoteDecoderEventOpenAccepted:
+        case VCAMRemoteDecoderEventOpenRejected: {
+            @synchronized (self) {
+                if (epoch == remoteActiveEpoch && !remoteAckArrived) {
+                    remoteAckArrived = YES;
+                    remoteAckAccepted =
+                        event == VCAMRemoteDecoderEventOpenAccepted;
+                }
+            }
+            dispatch_semaphore_signal(remoteAckSemaphore);
+            return;
+        }
+        case VCAMRemoteDecoderEventFailure:
+            break;
+        case VCAMRemoteDecoderEventFrame: {
+            if (surface == NULL) return;
+            CVPixelBufferRef pixelBuffer = NULL;
+            CFDictionaryRef attributes = (__bridge CFDictionaryRef)@{
+                (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+            };
+            CVReturn result = CVPixelBufferCreateWithIOSurface(
+                kCFAllocatorDefault, surface, attributes, &pixelBuffer);
+            CFRelease(surface);
+            if (result != kCVReturnSuccess || pixelBuffer == NULL) {
+                @synchronized (self) {
+                    if (epoch == remoteActiveEpoch) {
+                        [VCAMConfiguration appendProcessLog:[NSString
+                            stringWithFormat:
+                                @"%@ remote frame wrap failed result=%d",
+                                self.streamName, (int)result]];
+                    }
+                }
+                return;
+            }
+            @synchronized (self) {
+                if (epoch != remoteActiveEpoch || !self.running) {
+                    CVPixelBufferRelease(pixelBuffer);
+                    return;
+                }
+                remoteFramesReceived += 1;
+                while (remoteFrames.count >= VCAMRTSPRemoteMaxFrames) {
+                    NSValue *stale = remoteFrames.firstObject;
+                    CVPixelBufferRelease(
+                        (CVPixelBufferRef)[stale pointerValue]);
+                    [remoteFrames removeObjectAtIndex:0];
+                }
+                [remoteFrames addObject:
+                    [NSValue valueWithPointer:pixelBuffer]];
+            }
+            dispatch_semaphore_signal(remoteWindowSemaphore);
+            return;
+        }
+    }
+    // PeerLost/Failure for the active session: unblock both waits so the
+    // session loop can fall back immediately instead of timing out.
+    @synchronized (self) {
+        if (epoch == remoteActiveEpoch || event == VCAMRemoteDecoderEventPeerLost) {
+            if (!remoteAckArrived) {
+                remoteAckArrived = YES;
+                remoteAckAccepted = NO;
+            }
+        }
+    }
+    dispatch_semaphore_signal(remoteAckSemaphore);
+    dispatch_semaphore_signal(remoteWindowSemaphore);
 }
 
-static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
-    // Diagnostic only: probe once per process so a fault in this path cannot
-    // take vcamd down on every reconnect.
-    if (!__sync_bool_compare_and_swap(&gVCAMRTSPDecodeServiceProbed, 0, 1)) {
-        return;
-    }
-    xpc_object_t connection =
-        xpc_connection_create("com.apple.coremedia.videodecodeservice", NULL);
-    if (connection == NULL) {
-        [VCAMConfiguration appendProcessLog:
-            @"[DEBUG-vtprobe] xpc_connection_create returned NULL"];
-        return;
-    }
-    __block NSString *outcome = @"pending";
-    xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-        if (xpc_get_type(event) == XPC_TYPE_CONNECTION) {
-            @synchronized ([VCAMRTSPStreamSource class]) { outcome = @"connected"; };
-        } else if (xpc_get_type(event) == XPC_TYPE_ERROR) {
-            const char *reason = xpc_dictionary_get_string(event,
-                                                           VCAMXPCErrorKeyDescription());
-            NSString *description = [NSString stringWithFormat:@"error=%s",
-                                     reason ?: "(none)"];
-            @synchronized ([VCAMRTSPStreamSource class]) { outcome = description; };
+- (void)drainRemoteFramesCounting:(NSUInteger *)framesReceived {
+    while (YES) {
+        CVPixelBufferRef pixelBuffer = NULL;
+        @synchronized (self) {
+            if (remoteFrames.count == 0) return;
+            pixelBuffer = (CVPixelBufferRef)[remoteFrames.firstObject pointerValue];
+            [remoteFrames removeObjectAtIndex:0];
         }
-    });
-    xpc_connection_resume(connection);
-    // A resumed connection only reports events once traffic starts, so send
-    // a benign empty request to force the connection attempt.
-    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
-    if (request != NULL) {
-        xpc_connection_send_message(connection, request);
-#if !__has_include(<xpc/xpc.h>)
-        xpc_release(request);
-#endif
+        [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
+        CVPixelBufferRelease(pixelBuffer);
+        if (framesReceived != NULL) *framesReceived += 1;
     }
-    [NSThread sleepForTimeInterval:3.0];
-    @synchronized ([VCAMRTSPStreamSource class]) {
+}
+
+// Drains one RTSP session through the SpringBoard-hosted hardware decoder.
+// Returns YES when at least one frame was published. Any failure (no peer,
+// rejected/late open-ack, transport loss, zero-frame stall) returns NO so
+// the caller falls back to the in-daemon paths.
+- (BOOL)decodePacketsWithRemoteDecode:(AVPacket *)packet
+                       formatContext:(AVFormatContext *)formatContext
+                         videoStream:(int)videoStreamIndex
+                              stream:(AVStream *)stream
+                               codec:(const char *)codecName
+                        parameterData:(const uint8_t *)parameterData
+                            extraSize:(int)extraSize
+                                width:(int)width
+                               height:(int)height {
+    uint64_t epoch = 0;
+    do {
+        arc4random_buf(&epoch, sizeof(epoch));
+    } while (epoch == 0);
+    @synchronized (self) {
+        for (NSValue *value in remoteFrames) {
+            CVPixelBufferRelease((CVPixelBufferRef)value.pointerValue);
+        }
+        [remoteFrames removeAllObjects];
+        remoteAckArrived = NO;
+        remoteAckAccepted = NO;
+        remoteActiveEpoch = epoch;
+        remoteAUsSent = 0;
+        remoteFramesReceived = 0;
+    }
+    if (!VCAMSurfaceBrokerPushRemoteDecoderOpen(
+            epoch, codecName, width, height, parameterData,
+            (size_t)extraSize)) {
+        @synchronized (self) { remoteActiveEpoch = 0; }
+        return NO;
+    }
+    if (dispatch_semaphore_wait(remoteAckSemaphore,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC))) != 0) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-            @"[DEBUG-vtprobe] videodecodeservice probe %@", outcome]];
+            @"%@ remote hardware decode open timed out", self.streamName]];
+        VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);
+        @synchronized (self) { remoteActiveEpoch = 0; }
+        return NO;
     }
-#if !__has_include(<xpc/xpc.h>)
-    // Under the ObjC-class xpc types ARC releases the connection itself.
-    xpc_release(connection);
-#endif
+    @synchronized (self) {
+        if (!remoteAckAccepted) {
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ remote hardware decode rejected", self.streamName]];
+            remoteActiveEpoch = 0;
+        }
+    }
+    @synchronized (self) {
+        if (remoteActiveEpoch != epoch) {
+            VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);
+            return NO;
+        }
+    }
+
+    BOOL producedFrame = NO;
+    BOOL waitingForKeyFrame = YES;
+    NSUInteger remotePacketsWithoutFrame = 0;
+    while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStreamIndex) {
+            BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            if (waitingForKeyFrame && !isKeyFrame) {
+                av_packet_unref(packet);
+                continue;
+            }
+            waitingForKeyFrame = NO;
+            // Flow control: keep at most VCAMRTSPRemoteMaxOutstanding
+            // access units unclaimed by the SpringBoard decoder so a slow
+            // decoder backpressures the RTSP socket instead of the queue.
+            while (self.running) {
+                NSUInteger outstanding = 0;
+                @synchronized (self) {
+                    if (remoteActiveEpoch != epoch) outstanding = 0;
+                    else outstanding = remoteAUsSent > remoteFramesReceived
+                        ? remoteAUsSent - remoteFramesReceived : 0;
+                }
+                if (outstanding < VCAMRTSPRemoteMaxOutstanding) break;
+                if (dispatch_semaphore_wait(remoteWindowSemaphore,
+                        dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(500 * NSEC_PER_MSEC))) != 0) {
+                    @synchronized (self) {
+                        if (remoteActiveEpoch != epoch) {
+                            av_packet_unref(packet);
+                            goto remoteLoopEnd;
+                        }
+                    }
+                }
+            }
+            CMTime presentationTime = VCAMRTSPPacketTime(packet, stream);
+            if (!VCAMSurfaceBrokerPushRemoteDecoderAU(
+                    epoch, packet->data, (size_t)packet->size,
+                    CMTimeGetSeconds(presentationTime), isKeyFrame)) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ remote hardware decode transport lost",
+                    self.streamName]];
+                av_packet_unref(packet);
+                break;
+            }
+            remotePacketsWithoutFrame += 1;
+            @synchronized (self) { remoteAUsSent += 1; }
+            NSUInteger drained = 0;
+            [self drainRemoteFramesCounting:&drained];
+            if (drained > 0) {
+                producedFrame = YES;
+                remotePacketsWithoutFrame = 0;
+            }
+            if (remotePacketsWithoutFrame >= 300) {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ remote hardware decoder produced no frames packets=300; ending session",
+                    self.streamName]];
+                break;
+            }
+        }
+        av_packet_unref(packet);
+    }
+remoteLoopEnd:
+    VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);
+    @synchronized (self) {
+        if (remoteActiveEpoch == epoch) remoteActiveEpoch = 0;
+    }
+    NSUInteger trailing = 0;
+    [self drainRemoteFramesCounting:&trailing];
+    if (trailing > 0) producedFrame = YES;
+    return producedFrame;
 }
 
 // Drains one RTSP session through a direct VTDecompressionSession. Returns
@@ -620,17 +803,64 @@ static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
     fflush(stderr);
     [VCAMConfiguration appendProcessLog:sessionLine];
 
-    // Prefer decoding the demuxed packets through the direct-VT decoder that
-    // local media playback already uses in production. FFmpeg's VideoToolbox
-    // hwaccel wrapper historically produced zero frames on RTSP, so this path
-    // bypasses it; init failure or a zero-frame session falls through to the
-    // FFmpeg software decoder below.
+    // Preferred path: push the demuxed access units to the SpringBoard
+    // remote decoder (VideoToolbox only works from an app process; E9).
+    const char *remoteCodecName = NULL;
+    if (stream->codecpar->codec_id == AV_CODEC_ID_H264) {
+        remoteCodecName = "h264";
+    } else if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
+        remoteCodecName = "hevc";
+    }
+    if (gVCAMRTSPRemoteHardwareDisabled == 0 && remoteCodecName != NULL &&
+        atomic_load_explicit(&gVCAMRTSPRemotePeerAvailable,
+                             memory_order_acquire) == 1 &&
+        stream->codecpar->extradata != NULL &&
+        stream->codecpar->extradata_size > 0) {
+        AVPacket *remotePacket = av_packet_alloc();
+        BOOL remoteProduced = NO;
+        if (remotePacket != NULL) {
+            remoteProduced = [self decodePacketsWithRemoteDecode:remotePacket
+                                                  formatContext:formatContext
+                                                    videoStream:videoStream
+                                                         stream:stream
+                                                          codec:remoteCodecName
+                                                  parameterData:stream->codecpar->extradata
+                                                      extraSize:stream->codecpar->extradata_size
+                                                          width:stream->codecpar->width
+                                                         height:stream->codecpar->height];
+            av_packet_free(&remotePacket);
+        }
+        if (remoteProduced) {
+            producedFrame = YES;
+            goto cleanup;
+        }
+        if (self.running) {
+            gVCAMRTSPRemoteHardwareDisabled = 1;
+            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                @"%@ remote hardware decode disabled; trying in-daemon paths",
+                self.streamName]];
+        }
+    }
+
+    // Second choice: decode the demuxed packets through the direct-VT decoder
+    // that local media playback already uses in production. FFmpeg's
+    // VideoToolbox hwaccel wrapper historically produced zero frames on RTSP,
+    // so this path bypasses it; init failure or a zero-frame session falls
+    // through to the FFmpeg software decoder below.
     if (gVCAMRTSPHardwareSessionsDisabled == 0 &&
         (stream->codecpar->codec_id == AV_CODEC_ID_H264 ||
          stream->codecpar->codec_id == AV_CODEC_ID_HEVC) &&
         stream->codecpar->extradata != NULL && stream->codecpar->extradata_size > 0) {
+        VCAMVideoCodecType codecType =
+            stream->codecpar->codec_id == AV_CODEC_ID_H264 ?
+                VCAMVideoCodecTypeH264 : VCAMVideoCodecTypeHEVC;
         VCAMHardwareVideoDecoder *hardwareDecoder =
-            [[VCAMHardwareVideoDecoder alloc] initWithCodecParameters:stream->codecpar];
+            [[VCAMHardwareVideoDecoder alloc]
+                initWithCodecType:codecType
+                   parameterData:stream->codecpar->extradata
+                          length:(size_t)stream->codecpar->extradata_size
+                           width:stream->codecpar->width
+                          height:stream->codecpar->height];
         NSError *hardwareError = nil;
         if (hardwareDecoder != nil && [hardwareDecoder start:&hardwareError]) {
             AVPacket *hardwarePacket = av_packet_alloc();
@@ -655,7 +885,6 @@ static void VCAMRTSPProbeVideoDecodeServiceXPC(void) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
                     @"%@ hardware decode disabled; using FFmpeg software decoder",
                     self.streamName]];
-                VCAMRTSPProbeVideoDecodeServiceXPC();
             }
         } else {
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:

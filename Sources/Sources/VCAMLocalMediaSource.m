@@ -846,8 +846,15 @@ static void VCAMLocalCloseMediaFile(AVFormatContext **format) {
         return NO;
     }
     AVStream *stream = format->streams[videoIndex];
+    VCAMVideoCodecType codecType =
+        stream->codecpar->codec_id == AV_CODEC_ID_H264 ?
+            VCAMVideoCodecTypeH264 : VCAMVideoCodecTypeHEVC;
     VCAMHardwareVideoDecoder *decoder = [[VCAMHardwareVideoDecoder alloc]
-        initWithCodecParameters:stream->codecpar];
+        initWithCodecType:codecType
+           parameterData:stream->codecpar->extradata
+                  length:(size_t)stream->codecpar->extradata_size
+                   width:stream->codecpar->width
+                  height:stream->codecpar->height];
     NSError *decoderError = nil;
     if (decoder == nil || ![decoder start:&decoderError]) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:

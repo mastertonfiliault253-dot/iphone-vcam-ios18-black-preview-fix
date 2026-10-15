@@ -3,7 +3,6 @@
 
 #import <VideoToolbox/VideoToolbox.h>
 
-#include <libavcodec/avcodec.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -552,24 +551,26 @@ static void VCAMHardwareDecoderCallback(void *refcon,
     [self stop];
 }
 
-- (nullable instancetype)initWithCodecParameters:(AVCodecParameters *)parameters {
+- (nullable instancetype)initWithCodecType:(VCAMVideoCodecType)type
+                            parameterData:(const uint8_t *)parameterData
+                                   length:(size_t)length
+                                    width:(int)width
+                                   height:(int)height {
     self = [super init];
     if (self == nil) return nil;
-    if (parameters == NULL || parameters->extradata == NULL ||
-        parameters->extradata_size <= 0 ||
-        (parameters->codec_id != AV_CODEC_ID_H264 &&
-         parameters->codec_id != AV_CODEC_ID_HEVC)) {
+    if (parameterData == NULL || length <= 0 ||
+        (type != VCAMVideoCodecTypeH264 && type != VCAMVideoCodecTypeHEVC)) {
         return nil;
     }
-    if (parameters->width <= 0 || parameters->height <= 0) return nil;
+    if (width <= 0 || height <= 0) return nil;
 
-    const uint8_t *extra = parameters->extradata;
-    int extraSize = parameters->extradata_size;
+    const uint8_t *extra = parameterData;
+    int extraSize = (int)length;
     OSStatus status = noErr;
-    _isHEVC = parameters->codec_id == AV_CODEC_ID_HEVC;
-    _width = parameters->width;
-    _height = parameters->height;
-    if (parameters->codec_id == AV_CODEC_ID_H264) {
+    _isHEVC = type == VCAMVideoCodecTypeHEVC;
+    _width = width;
+    _height = height;
+    if (type == VCAMVideoCodecTypeH264) {
         BOOL annexB = extraSize >= 4 &&
             VCAMIsAnnexBStartCode(extra, (size_t)extraSize, 0, NULL);
         if (annexB) {

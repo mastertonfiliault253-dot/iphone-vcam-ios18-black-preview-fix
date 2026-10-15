@@ -65,4 +65,59 @@ bool VCAMSurfaceBrokerCreateHLSProxySession(const char *upstreamURL,
 /// second so SpringBoard never waits indefinitely on its main thread.
 bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low);
 
+// ---------------------------------------------------------------------------
+// Remote hardware decode (RTSP): the vcamd daemon cannot reach the system
+// video decode service (docs VIDEOTOOLBOX case E9, -12911), so vcamd keeps
+// the RTSP demuxer and pushes compressed access units to the injected
+// SpringBoard service, which decodes them with VideoToolbox in an app
+// process and sends the resulting IOSurfaces back.
+
+// Client role, called only by the injected SpringBoard remote-decode
+// service. Registers handlers for the pushed session messages, connects, and
+// re-registers automatically if the connection is re-established.
+typedef void (^VCAMRemoteDecodeOpenHandler)(uint64_t epoch, const char *codec,
+                                           int width, int height,
+                                           const void *parameterData,
+                                           size_t length);
+typedef void (^VCAMRemoteDecodeAUHandler)(uint64_t epoch, const void *bytes,
+                                         size_t length,
+                                         double presentationSeconds,
+                                         BOOL isKeyFrame);
+typedef void (^VCAMRemoteDecodeCloseHandler)(uint64_t epoch);
+void VCAMSurfaceBrokerStartRemoteDecoderClient(
+    VCAMRemoteDecodeOpenHandler openHandler,
+    VCAMRemoteDecodeAUHandler auHandler,
+    VCAMRemoteDecodeCloseHandler closeHandler);
+void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted);
+void VCAMSurfaceBrokerSendRemoteDecoderFrame(uint64_t epoch,
+                                             IOSurfaceRef surface);
+void VCAMSurfaceBrokerSendRemoteDecoderError(uint64_t epoch,
+                                             const char *reason);
+
+// vcamd-only role (like VCAMSurfaceBrokerStartServer): routes decoder
+// protocol messages into the daemon pipeline and pushes session traffic to
+// the registered SpringBoard peer. Other processes must not call these.
+typedef NS_ENUM(NSInteger, VCAMRemoteDecoderEvent) {
+    VCAMRemoteDecoderEventPeerAvailable,
+    VCAMRemoteDecoderEventPeerLost,
+    VCAMRemoteDecoderEventOpenAccepted,
+    VCAMRemoteDecoderEventOpenRejected,
+    /// The handler owns the surface reference (+1).
+    VCAMRemoteDecoderEventFrame,
+    VCAMRemoteDecoderEventFailure,
+};
+void VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
+    void (^_Nullable handler)(VCAMRemoteDecoderEvent event, uint64_t epoch,
+                              IOSurfaceRef _Nullable surface));
+BOOL VCAMSurfaceBrokerRemoteDecoderPeerAvailable(void);
+BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
+                                           int width, int height,
+                                           const void *parameterData,
+                                           size_t length);
+BOOL VCAMSurfaceBrokerPushRemoteDecoderAU(uint64_t epoch, const void *bytes,
+                                         size_t length,
+                                         double presentationSeconds,
+                                         BOOL isKeyFrame);
+void VCAMSurfaceBrokerEndRemoteDecoderSession(uint64_t epoch);
+
 NS_ASSUME_NONNULL_END

@@ -330,16 +330,24 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("NULL,", create)
         self.assertNotIn("ownedBytes", decoder)
 
-    def test_rtsp_prefers_direct_vt_with_software_fallback(self) -> None:
+    def test_rtsp_prefers_remote_hardware_with_local_and_software_fallback(self) -> None:
         rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        # Direct-VT is the preferred decode path (same proven decoder class as
-        # local media playback) with a zero-frame self-healing fallback to the
-        # FFmpeg software decoder. The FFmpeg VideoToolbox hwaccel wrapper
-        # remains banned: it historically produced zero frames on RTSP.
+        # Decode preference order: SpringBoard-hosted hardware decode (the
+        # E9 case shows VideoToolbox cannot run from the daemon context),
+        # then the in-daemon direct-VT decoder (same proven decoder class as
+        # local media playback), then the FFmpeg software decoder. Each
+        # hardware path self-heals with a zero-frame gate. The FFmpeg
+        # VideoToolbox hwaccel wrapper remains banned: it historically
+        # produced zero frames on RTSP.
+        self.assertIn("VCAMSurfaceBrokerPushRemoteDecoderOpen", rtsp)
+        self.assertIn("VCAMSurfaceBrokerPushRemoteDecoderAU", rtsp)
+        self.assertIn("decodePacketsWithRemoteDecode", rtsp)
+        self.assertIn("gVCAMRTSPRemoteHardwareDisabled", rtsp)
+        self.assertIn("remote hardware decoder produced no frames packets=300", rtsp)
         self.assertIn("VCAMHardwareVideoDecoder", rtsp)
-        self.assertIn("[[VCAMHardwareVideoDecoder alloc] initWithCodecParameters:stream->codecpar]", rtsp)
+        self.assertIn("initWithCodecType:codecType", rtsp)
         self.assertIn("decodePacketsWithHardwareSession", rtsp)
         self.assertIn("hardware decode disabled; using FFmpeg software decoder", rtsp)
         self.assertIn("gVCAMRTSPHardwareSessionsDisabled", rtsp)
@@ -441,6 +449,10 @@ class HardwareDecoderTests(unittest.TestCase):
 
 
     def test_daemon_is_the_only_rtsp_host(self) -> None:
+        # The RTSP demuxer and frame-publishing entry stay in the daemon.
+        # SpringBoard may link the FFmpeg-free hardware decoder plus the
+        # small remote-decode bridge module (docs VIDEOTOOLBOX E9), but it
+        # must not gain RTSP session or FFmpeg code of its own.
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         bridge = (ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m").read_text(
             encoding="utf-8"
@@ -455,7 +467,14 @@ class HardwareDecoderTests(unittest.TestCase):
         springboard_files = makefile.split("VCAMSpringBoardClient_FILES =", 1)[1].split(
             "VCAMSpringBoardClient_CFLAGS", 1
         )[0]
-        self.assertNotIn("VCAMHardwareVideoDecoder.m", springboard_files)
+        self.assertIn("Sources/SpringBoard/VCAMSpringBoardRemoteDecoder.m", springboard_files)
+        self.assertIn("Sources/Daemon/VCAMHardwareVideoDecoder.m", springboard_files)
+        self.assertNotIn("VCAMRTSPStreamSource.m", springboard_files)
+        self.assertNotIn("libavcodec", springboard_files)
+        daemon_files = makefile.split("vcamd_FILES =", 1)[1].split(
+            "vcamd_ARCHS", 1
+        )[0]
+        self.assertIn("Sources/Sources/VCAMRTSPStreamSource.m", daemon_files)
         self.assertNotIn("VCAMSpringBoardRTSP", bridge)
         self.assertNotIn("VCAMSpringBoardRTSPMarker", producer)
         self.assertNotIn("VCAMSpringBoardRTSPMarker", pipeline)
@@ -463,6 +482,37 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("[[VCAMRTSPStreamSource alloc]", producer)
         self.assertFalse((ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.h").exists())
         self.assertFalse((ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRTSPSource.m").exists())
+
+    def test_remote_decode_protocol_matches_both_broker_sides(self) -> None:
+        # The client half lives in the shared broker, the server half in the
+        # daemon broker server, and the SpringBoard bridge must speak the
+        # same command names.
+        broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        server = (
+            ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m"
+        ).read_text(encoding="utf-8")
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRemoteDecoder.m"
+        ).read_text(encoding="utf-8")
+        for command in (
+            "rtsp-hw-ready",
+            "rtsp-hw-open",
+            "rtsp-hw-au",
+            "rtsp-hw-close",
+        ):
+            self.assertIn(command, broker)
+            self.assertIn(command, server)
+        for command in ("rtsp-hw-open-ack", "rtsp-hw-frame", "rtsp-hw-error"):
+            self.assertIn(command, broker)
+            self.assertIn(command, server)
+        self.assertIn("VCAMSurfaceBrokerStartRemoteDecoderClient", bridge)
+        self.assertIn("VCAMSurfaceBrokerSendRemoteDecoderFrame", bridge)
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMSurfaceBrokerSetRemoteDecoderEventHandler", stream)
 
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")

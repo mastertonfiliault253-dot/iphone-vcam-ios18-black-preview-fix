@@ -52,9 +52,16 @@ extern void xpc_dictionary_set_fd(xpc_object_t dictionary, const char *key,
                                   int descriptor);
 extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
                                      xpc_object_t value);
-extern void xpc_release(xpc_object_t object);
+extern xpc_object_t xpc_data_create(const void *bytes, size_t length);
+void xpc_dictionary_set_data(xpc_object_t dictionary, const char *key,
+                             const void *bytes, size_t length);
+void xpc_dictionary_set_double(xpc_object_t dictionary, const char *key,
+                               double value);
+void xpc_retain(xpc_object_t object);
+void xpc_release(xpc_object_t object);
 extern const struct _xpc_type_s _xpc_type_connection;
 extern const struct _xpc_type_s _xpc_type_dictionary;
+extern const struct _xpc_type_s _xpc_type_error;
 #endif
 
 #if VCAM_HAS_SYSTEM_XPC && defined(OS_OBJECT_USE_OBJC) && OS_OBJECT_USE_OBJC
@@ -65,6 +72,9 @@ extern const struct _xpc_type_s _xpc_type_dictionary;
 
 extern int proc_name(int pid, void *buffer, uint32_t bufferSize);
 extern int proc_pidpath(int pid, void *buffer, uint32_t bufferSize);
+
+extern IOSurfaceRef _Nullable IOSurfaceLookupFromXPCObject(xpc_object_t object)
+    CF_RETURNS_RETAINED;
 
 static BOOL VCAMPeerIsPlatformBinary(pid_t pid) {
     // csops is unreliable under a jailbreak: queries can fail or return a
@@ -96,6 +106,14 @@ static xpc_type_t VCAMXPCTypeDictionary(void) {
     return XPC_TYPE_DICTIONARY;
 #else
     return (xpc_type_t)&_xpc_type_dictionary;
+#endif
+}
+
+static xpc_type_t VCAMXPCTypeError(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_ERROR;
+#else
+    return (xpc_type_t)&_xpc_type_error;
 #endif
 }
 
@@ -326,11 +344,182 @@ static bool VCAMSurfaceBrokerConsumeConfigurationToken(uint64_t high,
     return false;
 }
 
+// Remote hardware decode session state (see the "Remote hardware decode"
+// block in VCAMSurfaceBroker.h). Only one SpringBoard decoder peer is
+// tracked; its connection stays alive while its event handler block holds
+// the peer reference, so storing the value here does not own it.
+static xpc_connection_t VCAMRemoteDecoderPeer;
+static uint64_t VCAMRemoteDecoderSessionEpoch;
+static _Atomic(uint64_t) VCAMRemoteDecoderFrames;
+static void (^VCAMRemoteDecodeEventHandler)(VCAMRemoteDecoderEvent,
+                                           uint64_t, IOSurfaceRef);
+
+static void VCAMRemoteDecoderNotify(VCAMRemoteDecoderEvent event,
+                                    uint64_t epoch, IOSurfaceRef surface) {
+    void (^handler)(VCAMRemoteDecoderEvent, uint64_t, IOSurfaceRef) =
+        VCAMRemoteDecodeEventHandler;
+    if (handler != nil) {
+        handler(event, epoch, surface);
+    } else if (surface != NULL) {
+        CFRelease(surface);
+    }
+}
+
+static void VCAMRemoteDecoderLosePeer(void) {
+    if (VCAMRemoteDecoderPeer == NULL) return;
+    VCAMRemoteDecoderPeer = NULL;
+    VCAMRemoteDecoderSessionEpoch = 0;
+    fprintf(stderr, "vcamd remote decoder peer lost\n");
+    fflush(stderr);
+    VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventPeerLost, 0, NULL);
+}
+
+void VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
+    void (^_Nullable handler)(VCAMRemoteDecoderEvent event, uint64_t epoch,
+                              IOSurfaceRef _Nullable surface)) {
+    VCAMRemoteDecodeEventHandler = [handler copy];
+}
+
+BOOL VCAMSurfaceBrokerRemoteDecoderPeerAvailable(void) {
+    return VCAMRemoteDecoderPeer != NULL;
+}
+
+static BOOL VCAMRemoteDecoderSendToPeer(xpc_object_t message) {
+    if (VCAMRemoteDecoderPeer == NULL) {
+        VCAMXPCRelease(message);
+        return NO;
+    }
+    xpc_connection_send_message(VCAMRemoteDecoderPeer, message);
+    VCAMXPCRelease(message);
+    return YES;
+}
+
+BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
+                                           int width, int height,
+                                           const void *parameterData,
+                                           size_t length) {
+    if (epoch == 0 || codec == NULL || width <= 0 || height <= 0 ||
+        parameterData == NULL || length == 0 ||
+        VCAMRemoteDecoderSessionEpoch != 0) {
+        return NO;
+    }
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-open");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    xpc_dictionary_set_string(message, "codec", codec);
+    xpc_dictionary_set_uint64(message, "width", (uint64_t)width);
+    xpc_dictionary_set_uint64(message, "height", (uint64_t)height);
+    xpc_dictionary_set_data(message, "parameterData", parameterData, length);
+    if (!VCAMRemoteDecoderSendToPeer(message)) return NO;
+    VCAMRemoteDecoderSessionEpoch = epoch;
+    fprintf(stderr, "vcamd remote decode open epoch=%llu codec=%s %dx%d\n",
+            (unsigned long long)epoch, codec, width, height);
+    fflush(stderr);
+    return YES;
+}
+
+BOOL VCAMSurfaceBrokerPushRemoteDecoderAU(uint64_t epoch, const void *bytes,
+                                         size_t length,
+                                         double presentationSeconds,
+                                         BOOL isKeyFrame) {
+    if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch ||
+        bytes == NULL || length == 0) {
+        return NO;
+    }
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-au");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    xpc_dictionary_set_data(message, "data", bytes, length);
+    xpc_dictionary_set_double(message, "presentationSeconds",
+                              presentationSeconds);
+    xpc_dictionary_set_uint64(message, "isKeyFrame", isKeyFrame ? 1 : 0);
+    return VCAMRemoteDecoderSendToPeer(message);
+}
+
+void VCAMSurfaceBrokerEndRemoteDecoderSession(uint64_t epoch) {
+    if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch) return;
+    VCAMRemoteDecoderSessionEpoch = 0;
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-close");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    VCAMRemoteDecoderSendToPeer(message);
+}
+
 static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                                             xpc_object_t message) {
+    if (xpc_get_type(message) == VCAMXPCTypeError()) {
+        if (peer == VCAMRemoteDecoderPeer) VCAMRemoteDecoderLosePeer();
+        return;
+    }
     if (xpc_get_type(message) != VCAMXPCTypeDictionary()) return;
     const char *command = xpc_dictionary_get_string(message, "command");
     if (command == NULL) return;
+    if (strcmp(command, "rtsp-hw-ready") == 0) {
+        // Only the injected SpringBoard service may offer hardware decode.
+        if (VCAMSurfaceBrokerIdentityForPeer(peer) !=
+            VCAMSurfaceBrokerPeerIdentitySpringBoard) return;
+        if (peer != VCAMRemoteDecoderPeer) {
+            VCAMRemoteDecoderPeer = peer;
+            VCAMRemoteDecoderSessionEpoch = 0;
+            fprintf(stderr, "vcamd remote decoder peer ready pid=%d\n",
+                    VCAMXPCConnectionGetPID(peer));
+            fflush(stderr);
+            VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventPeerAvailable,
+                                    0, NULL);
+        }
+        return;
+    }
+    if (strcmp(command, "rtsp-hw-open-ack") == 0 ||
+        strcmp(command, "rtsp-hw-frame") == 0 ||
+        strcmp(command, "rtsp-hw-error") == 0 ||
+        strcmp(command, "rtsp-hw-close") == 0) {
+        if (peer != VCAMRemoteDecoderPeer) return;
+        uint64_t epoch = xpc_dictionary_get_uint64(message, "epoch");
+        if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch) return;
+        if (strcmp(command, "rtsp-hw-open-ack") == 0) {
+            VCAMRemoteDecoderNotify(
+                xpc_dictionary_get_uint64(message, "accepted") != 0
+                    ? VCAMRemoteDecoderEventOpenAccepted
+                    : VCAMRemoteDecoderEventOpenRejected,
+                epoch, NULL);
+            return;
+        }
+        if (strcmp(command, "rtsp-hw-error") == 0) {
+            fprintf(stderr, "vcamd remote decode error epoch=%llu reason=%s\n",
+                    (unsigned long long)epoch,
+                    xpc_dictionary_get_string(message, "reason") ?: "(none)");
+            fflush(stderr);
+            VCAMRemoteDecoderSessionEpoch = 0;
+            VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFailure, epoch, NULL);
+            return;
+        }
+        if (strcmp(command, "rtsp-hw-close") == 0) {
+            VCAMRemoteDecoderSessionEpoch = 0;
+            VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventPeerLost,
+                                    epoch, NULL);
+            return;
+        }
+        xpc_object_t surfaceObject =
+            xpc_dictionary_get_value(message, "surface");
+        IOSurfaceRef surface = surfaceObject == NULL
+            ? NULL : IOSurfaceLookupFromXPCObject(surfaceObject);
+        if (surface == NULL) {
+            VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFailure,
+                                    epoch, NULL);
+            return;
+        }
+        uint64_t frames = atomic_fetch_add_explicit(
+            &VCAMRemoteDecoderFrames, 1, memory_order_relaxed);
+        if (frames < 4) {
+            fprintf(stderr,
+                    "vcamd remote decode frame epoch=%llu %zux%zu\n",
+                    (unsigned long long)epoch,
+                    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+            fflush(stderr);
+        }
+        VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFrame, epoch, surface);
+        return;
+    }
     if (strcmp(command, "config-auth") == 0) {
         // Config tokens are single-purpose, 10-second-lifetime and only
         // unlock configuration reads/writes through the SpringBoard broker.

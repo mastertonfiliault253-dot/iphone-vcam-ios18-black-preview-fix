@@ -1,5 +1,6 @@
 #import "../Core/VCAMConfiguration.h"
 #import "../SpringBoard/VCAMSpringBoardMediaBridge.h"
+#import "../SpringBoard/VCAMSpringBoardRemoteDecoder.h"
 #import "../UI/VCAMMediaPickerController.h"
 #import "../Shared/VCAMProcessIdentity.h"
 
@@ -34,11 +35,10 @@ static void VCAMWriteClientProof(void) {
                        dispatch_get_main_queue(), ^{
             [[VCAMSpringBoardMediaBridge sharedBridge] start];
         });
-        // One-shot: prove whether direct VT hardware decode works from the
-        // GUI app process at all (vcamd's daemon context failed -12911).
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [[VCAMSpringBoardMediaBridge sharedBridge] runVideoToolboxHardwareSelfTest];
+        // RTSP hardware decode service: vcamd demuxes, this process decodes
+        // (VideoToolbox cannot run from the daemon context; E9 case).
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[VCAMSpringBoardRemoteDecoder sharedDecoder] start];
         });
     }
 }

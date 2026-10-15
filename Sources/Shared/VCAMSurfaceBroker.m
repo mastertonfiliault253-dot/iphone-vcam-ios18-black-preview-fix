@@ -48,9 +48,21 @@ extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
                                       const char *value);
 extern void xpc_dictionary_set_uint64(xpc_object_t dictionary, const char *key,
                                       uint64_t value);
+extern void xpc_dictionary_set_double(xpc_object_t dictionary, const char *key,
+                                      double value);
+extern double xpc_dictionary_get_double(xpc_object_t dictionary,
+                                        const char *key);
 extern void xpc_dictionary_set_value(xpc_object_t dictionary, const char *key,
                                      xpc_object_t value);
-extern void xpc_release(xpc_object_t object);
+extern xpc_object_t xpc_data_create(const void *bytes, size_t length);
+const void *xpc_data_get_bytes_ptr(xpc_object_t data);
+size_t xpc_data_get_length(xpc_object_t data);
+void xpc_dictionary_set_data(xpc_object_t dictionary, const char *key,
+                             const void *bytes, size_t length);
+const void *xpc_dictionary_get_data(xpc_object_t dictionary, const char *key,
+                                    size_t *length);
+void xpc_retain(xpc_object_t object);
+void xpc_release(xpc_object_t object);
 extern const struct _xpc_type_s _xpc_type_dictionary;
 #endif
 
@@ -76,6 +88,18 @@ static xpc_type_t VCAMXPCTypeDictionary(void) {
     return XPC_TYPE_DICTIONARY;
 #else
     return (xpc_type_t)&_xpc_type_dictionary;
+#endif
+}
+
+#if !VCAM_HAS_SYSTEM_XPC
+extern const struct _xpc_type_s _xpc_type_connection;
+#endif
+
+static xpc_type_t VCAMXPCTypeConnection(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_CONNECTION;
+#else
+    return (xpc_type_t)&_xpc_type_connection;
 #endif
 }
 
@@ -438,4 +462,122 @@ bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low) {
         request, "hls-proxy-invalidate", NULL, NULL);
     VCAMXPCRelease(request);
     return accepted;
+}
+
+// ---------------------------------------------------------------------------
+// Remote hardware decode client role (injected SpringBoard service only).
+// A dedicated connection keeps decode-session traffic off the publisher and
+// subscriber connections; the server pushes rtsp-hw-open/rtsp-hw-au/
+// rtsp-hw-close and this side answers with open-ack/frame/error.
+
+static xpc_connection_t VCAMRemoteDecoderConnection;
+static dispatch_once_t VCAMRemoteDecoderOnce;
+static VCAMRemoteDecodeOpenHandler VCAMRemoteDecodeOpen;
+static VCAMRemoteDecodeAUHandler VCAMRemoteDecodeAU;
+static VCAMRemoteDecodeCloseHandler VCAMRemoteDecodeClose;
+
+static void VCAMRemoteDecoderSendReady(void) {
+    if (VCAMRemoteDecoderConnection == NULL) return;
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-ready");
+    xpc_connection_send_message(VCAMRemoteDecoderConnection, message);
+    VCAMXPCRelease(message);
+}
+
+void VCAMSurfaceBrokerStartRemoteDecoderClient(
+    VCAMRemoteDecodeOpenHandler openHandler,
+    VCAMRemoteDecodeAUHandler auHandler,
+    VCAMRemoteDecodeCloseHandler closeHandler) {
+    dispatch_once(&VCAMRemoteDecoderOnce, ^{
+        VCAMRemoteDecodeOpen = [openHandler copy];
+        VCAMRemoteDecodeAU = [auHandler copy];
+        VCAMRemoteDecodeClose = [closeHandler copy];
+        dispatch_queue_t queue = dispatch_queue_create(
+            "com.codex.vcam.surface.decoder", DISPATCH_QUEUE_SERIAL);
+        VCAMRemoteDecoderConnection = VCAMXPCMachServiceCreate(
+            VCAMSurfaceBrokerService, queue, VCAMXPCMachServicePrivileged);
+        if (VCAMRemoteDecoderConnection == NULL) return;
+        xpc_connection_set_event_handler(VCAMRemoteDecoderConnection,
+                                          ^(xpc_object_t event) {
+            if (xpc_get_type(event) == VCAMXPCTypeConnection()) {
+                // Re-announce after the connection (re-)establishes.
+                VCAMRemoteDecoderSendReady();
+                return;
+            }
+            if (xpc_get_type(event) != VCAMXPCTypeDictionary()) return;
+            const char *command = xpc_dictionary_get_string(event, "command");
+            if (command == NULL) return;
+            uint64_t epoch = xpc_dictionary_get_uint64(event, "epoch");
+            if (strcmp(command, "rtsp-hw-open") == 0) {
+                size_t parameterLength = 0;
+                const void *parameterData = xpc_dictionary_get_data(
+                    event, "parameterData", &parameterLength);
+                const char *codec = xpc_dictionary_get_string(event, "codec");
+                if (VCAMRemoteDecodeOpen != nil && codec != NULL &&
+                    parameterData != NULL && parameterLength > 0) {
+                    VCAMRemoteDecodeOpen(
+                        epoch, codec,
+                        (int)xpc_dictionary_get_uint64(event, "width"),
+                        (int)xpc_dictionary_get_uint64(event, "height"),
+                        parameterData, parameterLength);
+                }
+            } else if (strcmp(command, "rtsp-hw-au") == 0) {
+                size_t dataLength = 0;
+                const void *data = xpc_dictionary_get_data(
+                    event, "data", &dataLength);
+                if (VCAMRemoteDecodeAU != nil && data != NULL &&
+                    dataLength > 0) {
+                    VCAMRemoteDecodeAU(
+                        epoch, data, dataLength,
+                        xpc_dictionary_get_double(event, "presentationSeconds"),
+                        xpc_dictionary_get_uint64(event, "isKeyFrame") != 0);
+                }
+            } else if (strcmp(command, "rtsp-hw-close") == 0) {
+                if (VCAMRemoteDecodeClose != nil) {
+                    VCAMRemoteDecodeClose(epoch);
+                }
+            }
+        });
+        xpc_connection_resume(VCAMRemoteDecoderConnection);
+    });
+}
+
+void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted) {
+    if (VCAMRemoteDecoderConnection == NULL || epoch == 0) return;
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-open-ack");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    xpc_dictionary_set_uint64(message, "accepted", accepted ? 1 : 0);
+    xpc_connection_send_message(VCAMRemoteDecoderConnection, message);
+    VCAMXPCRelease(message);
+}
+
+void VCAMSurfaceBrokerSendRemoteDecoderFrame(uint64_t epoch,
+                                             IOSurfaceRef surface) {
+    if (VCAMRemoteDecoderConnection == NULL || epoch == 0 || surface == NULL) {
+        return;
+    }
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_object_t object = IOSurfaceCreateXPCObject(surface);
+    if (object == NULL) {
+        VCAMXPCRelease(message);
+        return;
+    }
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-frame");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    xpc_dictionary_set_value(message, "surface", object);
+    VCAMXPCRelease(object);
+    xpc_connection_send_message(VCAMRemoteDecoderConnection, message);
+    VCAMXPCRelease(message);
+}
+
+void VCAMSurfaceBrokerSendRemoteDecoderError(uint64_t epoch,
+                                             const char *reason) {
+    if (VCAMRemoteDecoderConnection == NULL || epoch == 0) return;
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "command", "rtsp-hw-error");
+    xpc_dictionary_set_uint64(message, "epoch", epoch);
+    xpc_dictionary_set_string(message, "reason", reason ?: "(unspecified)");
+    xpc_connection_send_message(VCAMRemoteDecoderConnection, message);
+    VCAMXPCRelease(message);
 }

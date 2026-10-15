@@ -25,14 +25,18 @@ VCAMMediaServerClient_FILES = \
 VCAMMediaServerClient_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type -Wno-deprecated-declarations -DVCAM_WITH_CONTROL_UI=0 $(VCAM_MODULE_CACHE_FLAGS)
 VCAMMediaServerClient_FRAMEWORKS = Accelerate CoreImage CoreMedia CoreVideo Foundation IOSurface ImageIO Metal Security VideoToolbox
 
-# SpringBoard owns the broker, source-sized static-image publisher, and native
-# AVPlayer bridge for local video/HLS.
+# SpringBoard owns the broker, source-sized static-image publisher, native
+# AVPlayer bridge for local video/HLS, and the RTSP remote hardware decoder
+# (VCAMHardwareVideoDecoder is FFmpeg-free so it links here; the demuxer
+# stays in vcamd).
 # Filtered Camera/browser hosts run only the white-dot UI/panel; none of these
 # processes hooks camera frames.
 VCAMSpringBoardClient_FILES = \
 	Sources/Hooks/VCAMSpringBoardEntry.xm \
 	Sources/Hooks/VCAMSpringBoardDiagnosticsStubs.m \
 	Sources/SpringBoard/VCAMSpringBoardMediaBridge.m \
+	Sources/SpringBoard/VCAMSpringBoardRemoteDecoder.m \
+	Sources/Daemon/VCAMHardwareVideoDecoder.m \
 	Sources/Core/VCAMConfiguration.m \
 	$(VCAM_UI_FILES) \
 	$(VCAM_SHARED_FILES)

@@ -105,11 +105,10 @@ class SpringBoardMediaBridgeTests(unittest.TestCase):
         self.assertIn("VCAMSharedSurfaceWriterCopyNextPixelBuffer", source)
         self.assertIn("VCAMSharedSurfaceWriterPublish", source)
         self.assertIn("springboard HLS health", source)
-        # Direct VTDecompressionSession use is allowed only inside the
-        # one-shot -runVideoToolboxHardwareSelfTest diagnostic; the
-        # HLS/publish pipeline must keep decoding through AVPlayer.
-        preflight = source.split("VCAMSpringBoardVTSelfTestState", 1)[0]
-        self.assertNotIn("VTDecompressionSession", preflight)
+        # This bridge decodes only through AVPlayer; direct
+        # VTDecompressionSession use belongs to the remote-decode service
+        # module (VCAMSpringBoardRemoteDecoder + VCAMHardwareVideoDecoder).
+        self.assertNotIn("VTDecompressionSession", source)
         self.assertNotIn("avcodec_", source)
 
     def test_failed_hls_item_reconnects_with_bounded_backoff(self) -> None:
