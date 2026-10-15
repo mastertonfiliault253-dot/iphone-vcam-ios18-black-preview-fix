@@ -12,11 +12,20 @@
 // what this self-test needs.
 #if __has_include(<xpc/xpc.h>)
 #import <xpc/xpc.h>
+// Same release policy as the shared broker sources: with the system XPC
+// headers the object is ARC-managed; only the header-less toolchain needs
+// the explicit C call.
+#if defined(OS_OBJECT_USE_OBJC) && OS_OBJECT_USE_OBJC
+#define VCAMSelfTestXPCRelease(object) ((void)(object))
+#else
+#define VCAMSelfTestXPCRelease(object) xpc_release(object)
+#endif
 #else
 typedef void *xpc_object_t;
 typedef const void *xpc_type_t;
 extern xpc_type_t xpc_get_type(xpc_object_t object);
 void xpc_release(xpc_object_t object);
+#define VCAMSelfTestXPCRelease(object) xpc_release(object)
 #endif
 
 extern xpc_object_t IOSurfaceCreateXPCObject(IOSurfaceRef surface);
@@ -55,7 +64,7 @@ static void VCAMSpringBoardSurfaceSelfTest(void) {
         @"imported=%d",
         probe != NULL, typeC, right != MACH_PORT_NULL, decoded != NULL]];
     if (decoded != NULL) CFRelease(decoded);
-    if (encoded != NULL) xpc_release(encoded);
+    if (encoded != NULL) VCAMSelfTestXPCRelease(encoded);
     if (probe != NULL) CFRelease(probe);
 }
 
