@@ -634,23 +634,18 @@ void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted) {
     VCAMXPCRelease(message);
 }
 
-void VCAMSurfaceBrokerSendRemoteDecoderFrameData(
-    uint64_t epoch, const void *plane0, uint32_t rowBytes0,
-    const void *plane1, uint32_t rowBytes1, uint32_t height) {
-    if (VCAMRemoteDecoderConnection == NULL || epoch == 0 ||
-        plane0 == NULL || plane1 == NULL || rowBytes0 == 0 ||
-        rowBytes1 == 0 || height == 0) {
+void VCAMSurfaceBrokerSendRemoteDecoderFrame(uint64_t epoch, uint32_t width,
+                                             uint32_t height) {
+    if (VCAMRemoteDecoderConnection == NULL || epoch == 0 || width == 0 ||
+        height == 0) {
         return;
     }
+    // Completion-only message: the pixels went into the shared-frame ring
+    // buffer in this process, so ~3.1MB never touches XPC or the kernel.
     xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_string(message, "command", "rtsp-hw-frame");
     xpc_dictionary_set_uint64(message, "epoch", epoch);
-    xpc_dictionary_set_data(message, "plane0", plane0,
-                            (size_t)rowBytes0 * (size_t)height);
-    xpc_dictionary_set_data(message, "plane1", plane1,
-                            (size_t)rowBytes1 * (size_t)(height / 2));
-    xpc_dictionary_set_uint64(message, "rowBytes0", rowBytes0);
-    xpc_dictionary_set_uint64(message, "rowBytes1", rowBytes1);
+    xpc_dictionary_set_uint64(message, "width", width);
     xpc_dictionary_set_uint64(message, "height", height);
     xpc_connection_send_message(VCAMRemoteDecoderConnection, message);
     VCAMXPCRelease(message);

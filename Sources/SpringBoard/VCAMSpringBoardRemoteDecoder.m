@@ -2,9 +2,11 @@
 
 #import "../Core/VCAMConfiguration.h"
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
+#import "../Shared/VCAMSharedFrame.h"
 #import "../Shared/VCAMSurfaceBroker.h"
 
 #import <IOSurface/IOSurfaceRef.h>
+#import <VideoToolbox/VideoToolbox.h>
 #include <mach/mach.h>
 
 // Same conditional-headers pattern as the shared broker sources: the Linux
@@ -80,6 +82,17 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     uint64_t activeEpoch;
     NSUInteger failureCount;
     NSUInteger loggedFrames;
+    // Direct publication. The daemon no longer receives NV12 planes over
+    // XPC: every decoded frame is resized into the fixed shared-frame
+    // canvas and published into the shared mmap ring buffer here, and the
+    // daemon gets a completion event instead. That removes both 3.1MB
+    // copies per frame (XPC serialization/deserialization) from vcamd,
+    // which is what its measured ~58% single-core was made of. The writer,
+    // transfer session and canvas pool persist for the process lifetime:
+    // the mmap file and the canvas size never change between sessions.
+    VCAMSharedFrameWriter *sharedFrameWriter;
+    VTPixelTransferSessionRef pixelTransferSession;
+    CVPixelBufferPoolRef canvasPool;
 }
 @end
 
@@ -163,6 +176,11 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
         VCAMSurfaceBrokerSendRemoteDecoderOpenAck(epoch, NO);
         return;
     }
+    if (![self prepareDirectPublication]) {
+        [created stop];
+        VCAMSurfaceBrokerSendRemoteDecoderOpenAck(epoch, NO);
+        return;
+    }
     decoder = created;
     activeEpoch = epoch;
     failureCount = 0;
@@ -172,6 +190,96 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
         (unsigned long long)epoch, codec, width, height]];
     VCAMSpringBoardSurfaceSelfTest();
     VCAMSurfaceBrokerSendRemoteDecoderOpenAck(epoch, YES);
+}
+
+// Lazily builds the direct-publication pipeline (shared-frame mmap writer,
+// NV12 pixel transfer session, fixed-canvas buffer pool). Failure means the
+// shared file is not usable yet (e.g. its header was never initialized), so
+// the open is refused and the daemon falls back to its own decode paths.
+- (BOOL)prepareDirectPublication {
+    if (sharedFrameWriter == NULL) {
+        sharedFrameWriter = VCAMSharedFrameWriterCreate();
+        if (sharedFrameWriter == NULL) {
+            [VCAMConfiguration appendProcessLog:
+                @"springboard remote decoder shared frame writer unavailable"];
+            return NO;
+        }
+    }
+    if (pixelTransferSession == NULL) {
+        VTPixelTransferSessionRef session = NULL;
+        if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &session) != noErr ||
+            session == NULL) {
+            [VCAMConfiguration appendProcessLog:
+                @"springboard remote decoder pixel transfer unavailable"];
+            return NO;
+        }
+        // Match the daemon renderer's RTSP policy: uniform scale into the
+        // fixed canvas, rotation/mirror handled at the RTSP push end.
+        VTSessionSetProperty(session, kVTPixelTransferPropertyKey_ScalingMode,
+                             kVTScalingMode_Normal);
+        VTSessionSetProperty(session, kVTPixelTransferPropertyKey_RealTime,
+                             kCFBooleanTrue);
+        pixelTransferSession = session;
+    }
+    if (canvasPool == NULL) {
+        CVPixelBufferPoolRef pool = NULL;
+        NSDictionary *poolAttributes = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @3,
+        };
+        NSDictionary *pixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey:
+                @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (id)kCVPixelBufferWidthKey: @((int)VCAMSharedFrameWidth),
+            (id)kCVPixelBufferHeightKey: @((int)VCAMSharedFrameHeight),
+        };
+        if (CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                    (__bridge CFDictionaryRef)poolAttributes,
+                                    (__bridge CFDictionaryRef)pixelAttributes,
+                                    &pool) != kCVReturnSuccess ||
+            pool == NULL) {
+            [VCAMConfiguration appendProcessLog:
+                @"springboard remote decoder canvas pool unavailable"];
+            return NO;
+        }
+        canvasPool = pool;
+    }
+    return YES;
+}
+
+// Resizes one decoded frame into the fixed shared-frame canvas and writes it
+// into the mmap ring buffer (flock-serialized three-slot rotation shared with
+// the daemon and the mediaserverd consumer). BT.709 attachments plus the
+// hardware-decode class marker are set so the shared writer records them in
+// the slot metadata exactly as the daemon's render path did.
+- (BOOL)publishFrameToSharedRing:(CVPixelBufferRef)frame {
+    CVPixelBufferRef canvas = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, canvasPool,
+                                           &canvas) != kCVReturnSuccess ||
+        canvas == NULL) {
+        return NO;
+    }
+    if (VTPixelTransferSessionTransferImage(pixelTransferSession, frame,
+                                            canvas) != noErr) {
+        CVPixelBufferRelease(canvas);
+        return NO;
+    }
+    CVBufferSetAttachment(canvas, kCVImageBufferColorPrimariesKey,
+                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(canvas, kCVImageBufferTransferFunctionKey,
+                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(canvas, kCVImageBufferYCbCrMatrixKey,
+                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(canvas, CFSTR("com.codex.vcam.decodeHardware"),
+                          kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
+    if (!VCAMSharedFrameWriterPublish(sharedFrameWriter, canvas)) {
+        CVPixelBufferRelease(canvas);
+        return NO;
+    }
+    CVPixelBufferRelease(canvas);
+    return YES;
 }
 
 - (void)decodeEpoch:(uint64_t)epoch
@@ -210,24 +318,29 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
             [self stopActiveSession:"pixel format"];
             return;
         }
-        CVPixelBufferLockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
-        const void *plane0 = CVPixelBufferGetBaseAddressOfPlane(frame, 0);
-        const void *plane1 = CVPixelBufferGetBaseAddressOfPlane(frame, 1);
-        uint32_t rowBytes0 =
-            (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(frame, 0);
-        uint32_t rowBytes1 =
-            (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(frame, 1);
-        uint32_t height = (uint32_t)CVPixelBufferGetHeight(frame);
-        if (plane0 != NULL && plane1 != NULL && loggedFrames < 4) {
+        uint32_t frameWidth = (uint32_t)CVPixelBufferGetWidth(frame);
+        uint32_t frameHeight = (uint32_t)CVPixelBufferGetHeight(frame);
+        // Direct publish: resize into the fixed canvas and write the mmap
+        // ring buffer in this process, then notify the daemon. If writing
+        // fails the session ends so the daemon's fallback paths take over.
+        if (![self publishFrameToSharedRing:frame]) {
+            VCAMSurfaceBrokerSendRemoteDecoderError(
+                activeEpoch, "shared frame publish failed");
+            CVPixelBufferRelease(frame);
+            [self stopActiveSession:"mmap publish"];
+            return;
+        }
+        if (loggedFrames < 4) {
             loggedFrames += 1;
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"springboard remote decoder frame epoch=%llu rows=%u,%u h=%u",
-                (unsigned long long)epoch, rowBytes0, rowBytes1, height]];
+                @"springboard remote decoder frame epoch=%llu wrote=%ux%u "
+                @"canvas=%ux%u",
+                (unsigned long long)epoch, frameWidth, frameHeight,
+                (unsigned int)VCAMSharedFrameWidth,
+                (unsigned int)VCAMSharedFrameHeight]];
         }
-        VCAMSurfaceBrokerSendRemoteDecoderFrameData(activeEpoch, plane0,
-                                                    rowBytes0, plane1,
-                                                    rowBytes1, height);
-        CVPixelBufferUnlockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
+        VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, frameWidth,
+                                                frameHeight);
         CVPixelBufferRelease(frame);
     }
     if (failureCount >= VCAMRemoteDecodeMaxFailures) {

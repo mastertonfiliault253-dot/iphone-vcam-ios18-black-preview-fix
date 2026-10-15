@@ -511,19 +511,23 @@ class HardwareDecoderTests(unittest.TestCase):
             self.assertIn(command, broker)
             self.assertIn(command, server)
         self.assertIn("VCAMSurfaceBrokerStartRemoteDecoderClient", bridge)
-        self.assertIn("VCAMSurfaceBrokerSendRemoteDecoderFrameData", bridge)
-        # The frame return channel is a pixel data plane, not an IOSurface:
-        # the device rejects IOSurfaceCreate for every non-GUI-session
-        # process, so vcamd can never materialize a surface. The contract is
-        # the NV12 plane keys, and vcamd assembles a CPU-pool CVPixelBuffer.
-        self.assertIn('xpc_dictionary_set_data(message, "plane0"', broker)
-        self.assertIn('xpc_dictionary_set_data(message, "plane1"', broker)
-        self.assertIn('xpc_dictionary_get_data(message, "plane0"', server)
+        # The frame return channel is completion-only, not an IOSurface and
+        # not a pixel plane: the device rejects IOSurfaceCreate for every
+        # non-GUI-session process (docs E10), and copying 3.1MB into and out
+        # of XPC at 30fps was the bulk of vcamd's measured decode-path CPU.
+        # SpringBoard publishes the frame into the shared-frame mmap ring
+        # buffer itself; the message carries only the decoded source size.
         self.assertIn(
-            "VCAMSurfaceBrokerSendRemoteDecoderFrameData(activeEpoch, plane0,",
+            "VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, frameWidth,",
             bridge,
         )
-        self.assertIn("CVPixelBufferGetBaseAddressOfPlane(frame, 0)", bridge)
+        for source_name, source in (("broker", broker), ("bridge", bridge),
+                                    ("server", server)):
+            self.assertNotIn("SendRemoteDecoderFrameData", source)
+            self.assertNotIn('"plane0"', source)
+        self.assertIn('xpc_dictionary_set_uint64(message, "width", width)',
+                      broker)
+        self.assertIn('xpc_dictionary_get_uint64(message, "width")', server)
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
@@ -576,16 +580,33 @@ class HardwareDecoderTests(unittest.TestCase):
         # failed".
         self.assertIn("peer error, rebuild scheduled", broker)
 
-    def test_remote_frame_assembly_recycles_buffers_through_a_pool(self) -> None:
-        # A fresh 3.1MB CVPixelBufferCreate/free per returned frame at 30fps
-        # measured ~51% single-core in vcamd and tripped the device
-        # cpu_resource report; the assembly path must borrow from a
-        # size-keyed CVPixelBufferPool instead.
+    def test_remote_decoder_publishes_frames_into_shared_mmap_directly(self) -> None:
+        # 0.8.113/0.8.114 measured vcamd at ~58% self-CPU on the NV12 data
+        # plane: XPC serialization, kernel delivery, assembly and rendering
+        # moved the same 3.1MB per frame. Since 0.8.115 SpringBoard resizes
+        # each decoded frame into the fixed canvas (pooled VTPixelTransfer)
+        # and writes the shared-frame mmap ring buffer in its own process,
+        # leaving the daemon only demuxing plus a lightweight completion
+        # event. The daemon must never assemble remote pixel payloads again.
+        bridge = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRemoteDecoder.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("VCAMSharedFrameWriterCreate", bridge)
+        self.assertIn("VCAMSharedFrameWriterPublish(", bridge)
+        self.assertIn("VTPixelTransferSessionTransferImage", bridge)
+        self.assertIn("CVPixelBufferPoolCreatePixelBuffer", bridge)
+        # The published frame must carry the hardware-decode class marker so
+        # the shared writer records it in the slot metadata (panel/consumer
+        # keep seeing "hardware decode" for the remote path).
+        self.assertIn("com.codex.vcam.decodeHardware", bridge)
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("CVPixelBufferPoolCreatePixelBuffer", stream)
-        self.assertIn("remotePixelPool", stream)
+        self.assertNotIn("remotePixelPool", stream)
+        self.assertNotIn("payload->plane0", stream)
+        # First-frame and perf diagnostics must stay reachable from the
+        # completion events (analyzer and panel contract).
+        self.assertIn("noteRemoteHardwareFrameCompletionWidth", stream)
 
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")

@@ -540,9 +540,9 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         strcmp(command, "rtsp-hw-frame") == 0 ||
         strcmp(command, "rtsp-hw-error") == 0 ||
         strcmp(command, "rtsp-hw-close") == 0) {
-        // First-look diagnostics: an IOSurface-bearing frame message can die
-        // in XPC transport without any visible event, so log arrival before
-        // any gate decides silently.
+        // First-look diagnostics: a frame message can die in XPC transport
+        // without any visible event, so log arrival before any gate decides
+        // silently.
         if (VCAMRemoteDecoderLoggedInbound < 4) {
             VCAMRemoteDecoderLoggedInbound += 1;
             fprintf(stderr, "vcamd remote decoder inbound command=%s pid=%d epoch=%llu\n",
@@ -594,24 +594,15 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                                     epoch, NULL);
             return;
         }
-        size_t planeLength0 = 0, planeLength1 = 0;
-        const void *plane0 =
-            xpc_dictionary_get_data(message, "plane0", &planeLength0);
-        const void *plane1 =
-            xpc_dictionary_get_data(message, "plane1", &planeLength1);
-        uint64_t rowBytes0 = xpc_dictionary_get_uint64(message, "rowBytes0");
-        uint64_t rowBytes1 = xpc_dictionary_get_uint64(message, "rowBytes1");
+        uint64_t width = xpc_dictionary_get_uint64(message, "width");
         uint64_t height = xpc_dictionary_get_uint64(message, "height");
-        if (plane0 == NULL || plane1 == NULL || rowBytes0 == 0 ||
-            rowBytes1 == 0 || height == 0 ||
-            planeLength0 < rowBytes0 * height ||
-            planeLength1 < rowBytes1 * (height / 2)) {
-            // The frame carried no usable pixel planes; visible once per
+        if (width == 0 || height == 0) {
+            // The completion carried no usable source size; visible once per
             // session instead of silently dropping.
             if (VCAMRemoteDecoderLoggedSurfaceFailure < 4) {
                 VCAMRemoteDecoderLoggedSurfaceFailure += 1;
                 fprintf(stderr,
-                        "vcamd remote decode frame data missing epoch=%llu\n",
+                        "vcamd remote decode frame metadata missing epoch=%llu\n",
                         (unsigned long long)epoch);
                 fflush(stderr);
             }
@@ -623,18 +614,14 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
             &VCAMRemoteDecoderFrames, 1, memory_order_relaxed);
         if (frames < 4) {
             fprintf(stderr,
-                    "vcamd remote decode frame epoch=%llu rows=%llu,%llu h=%llu\n",
+                    "vcamd remote decode frame epoch=%llu size=%llux%llu\n",
                     (unsigned long long)epoch,
-                    (unsigned long long)rowBytes0,
-                    (unsigned long long)rowBytes1,
+                    (unsigned long long)width,
                     (unsigned long long)height);
             fflush(stderr);
         }
         VCAMRemoteDecoderFramePayload payload = {
-            .plane0 = plane0,
-            .plane1 = plane1,
-            .rowBytes0 = (uint32_t)rowBytes0,
-            .rowBytes1 = (uint32_t)rowBytes1,
+            .width = (uint32_t)width,
             .height = (uint32_t)height,
         };
         VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFrame, epoch, &payload);

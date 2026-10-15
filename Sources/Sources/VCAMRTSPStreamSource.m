@@ -136,14 +136,13 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
     BOOL _softwareConversionScheduled;
-    // Remote hardware decode state. remoteFrames holds NSValue(CVPixelBufferRef)
-    // CPU-pool NV12 buffers assembled from the SpringBoard decoder's
-    // pixel-plane messages. The return channel is pixel data because the
-    // device rejects IOSurfaceCreate for non-GUI-session processes, so an
-    // IOSurface can never exist in this daemon (docs E9 + probe); CoreVideo's
-    // CPU pixel pool needs no IOSurface and is available here.
+    // Remote hardware decode state. SpringBoard resizes and publishes each
+    // decoded frame into the shared-frame ring buffer itself (the device
+    // rejects IOSurfaceCreate for non-GUI processes, docs E9/E10, and the
+    // ring buffer file is writable by both sides), so no frame buffers and
+    // no pixel payloads live here anymore: the daemon only counts
+    // completion events for flow control and diagnostics.
     // All fields are guarded by @synchronized(self).
-    NSMutableArray *remoteFrames;
     int remoteWidth;
     int remoteHeight;
     dispatch_semaphore_t remoteAckSemaphore;
@@ -159,14 +158,6 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     // at VCAMRTSPRemoteMaxOutstanding and the session never reaches the
     // zero-frame fallback.
     NSUInteger remoteFailures;
-    // NV12 assembly buffers recycled through a CVPixelBufferPool: a fresh
-    // 3.1MB CVPixelBufferCreate/free per frame at 30fps churns CPU enough to
-    // trip the device cpu_resource report. Buffers released from remoteFrames
-    // land back in the pool; the pool is rebuilt when the stream size
-    // changes. Guarded by @synchronized(self) like the fields above.
-    CVPixelBufferPoolRef remotePixelPool;
-    int remotePoolWidth;
-    int remotePoolHeight;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -199,7 +190,6 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         _usesRTSPTransport = !isHLS;
         _decodeQueue = dispatch_queue_create("com.codex.vcam.stream.decode", DISPATCH_QUEUE_SERIAL);
         _conversionQueue = dispatch_queue_create("com.codex.vcam.stream.convert", DISPATCH_QUEUE_SERIAL);
-        remoteFrames = [NSMutableArray array];
         remoteAckSemaphore = dispatch_semaphore_create(0);
         remoteWindowSemaphore = dispatch_semaphore_create(0);
     }
@@ -266,16 +256,6 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         _lastDisplayFrameSequence = 0;
         _lastRenderedFrameSequence = 0;
         if (_pendingSoftwareFrame != NULL) av_frame_free(&_pendingSoftwareFrame);
-        for (NSValue *value in remoteFrames) {
-            CVPixelBufferRelease((CVPixelBufferRef)value.pointerValue);
-        }
-        [remoteFrames removeAllObjects];
-        if (remotePixelPool != NULL) {
-            CVPixelBufferPoolRelease(remotePixelPool);
-            remotePixelPool = NULL;
-        }
-        remotePoolWidth = 0;
-        remotePoolHeight = 0;
         remoteActiveEpoch = 0;
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
@@ -499,7 +479,6 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 // consumer of the wrapped frames.
 enum {
     VCAMRTSPRemoteMaxOutstanding = 4,
-    VCAMRTSPRemoteMaxFrames = 16,
 };
 
 - (void)handleRemoteDecoderEvent:(VCAMRemoteDecoderEvent)event
@@ -539,108 +518,19 @@ enum {
                 }
             }
             if (width <= 0 || height <= 0 ||
+                (int)payload->width != width ||
                 (int)payload->height != height) {
                 return;
             }
-            // Assemble a CPU-backed NV12 buffer (CoreVideo's CPU pixel pool
-            // is reachable in this daemon; only IOSurface is not) and copy
-            // the planes. The row bytes of the local buffer may differ from
-            // the decoder's; copy the common prefix per row.
-            CVPixelBufferRef pixelBuffer = NULL;
-            CVReturn result = kCVReturnSuccess;
+            // SpringBoard has already resized the frame into the fixed
+            // shared-frame canvas and written it into the mmap ring buffer
+            // in its own process, so the completion event only releases one
+            // flow-control credit and drives the first/perf diagnostics.
             @synchronized (self) {
-                if (remotePixelPool == NULL || remotePoolWidth != width ||
-                    remotePoolHeight != height) {
-                    NSDictionary *poolAttributes = @{
-                        (id)kCVPixelBufferPoolMinimumBufferCountKey: @4,
-                    };
-                    NSDictionary *pixelAttributes = @{
-                        (id)kCVPixelBufferPixelFormatTypeKey:
-                            @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-                        (id)kCVPixelBufferWidthKey: @(width),
-                        (id)kCVPixelBufferHeightKey: @(height),
-                    };
-                    CVPixelBufferPoolRef replacementPool = NULL;
-                    CVReturn poolStatus = CVPixelBufferPoolCreate(
-                        kCFAllocatorDefault,
-                        (__bridge CFDictionaryRef)poolAttributes,
-                        (__bridge CFDictionaryRef)pixelAttributes,
-                        &replacementPool);
-                    if (poolStatus == kCVReturnSuccess &&
-                        replacementPool != NULL) {
-                        if (remotePixelPool != NULL) {
-                            CVPixelBufferPoolRelease(remotePixelPool);
-                        }
-                        remotePixelPool = replacementPool;
-                        remotePoolWidth = width;
-                        remotePoolHeight = height;
-                    }
-                }
-                if (remotePixelPool != NULL) {
-                    result = CVPixelBufferPoolCreatePixelBuffer(
-                        kCFAllocatorDefault, remotePixelPool, &pixelBuffer);
-                } else {
-                    // Pool creation failed (memory pressure): keep the
-                    // per-frame direct create so the pipeline still emits.
-                    result = CVPixelBufferCreate(
-                        kCFAllocatorDefault, (size_t)width, (size_t)height,
-                        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-                        NULL, &pixelBuffer);
-                }
-            }
-            if (result != kCVReturnSuccess || pixelBuffer == NULL) {
-                @synchronized (self) {
-                    if (epoch == remoteActiveEpoch) {
-                        [VCAMConfiguration appendProcessLog:[NSString
-                            stringWithFormat:
-                                @"%@ remote frame buffer create failed result=%d",
-                                self.streamName, (int)result]];
-                    }
-                }
-                return;
-            }
-            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-            void *dst0 = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
-            void *dst1 = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
-            size_t dstRow0 =
-                CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
-            size_t dstRow1 =
-                CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
-            if (dst0 == NULL || dst1 == NULL) {
-                CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-                CVPixelBufferRelease(pixelBuffer);
-                return;
-            }
-            size_t row0 = payload->rowBytes0 < dstRow0
-                ? payload->rowBytes0 : dstRow0;
-            size_t row1 = payload->rowBytes1 < dstRow1
-                ? payload->rowBytes1 : dstRow1;
-            for (int y = 0; y < height; y++) {
-                memcpy((uint8_t *)dst0 + (size_t)y * dstRow0,
-                     (const uint8_t *)payload->plane0 + (size_t)y * payload->rowBytes0,
-                     row0);
-            }
-            for (int y = 0; y < height / 2; y++) {
-                memcpy((uint8_t *)dst1 + (size_t)y * dstRow1,
-                     (const uint8_t *)payload->plane1 + (size_t)y * payload->rowBytes1,
-                     row1);
-            }
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-            @synchronized (self) {
-                if (epoch != remoteActiveEpoch || !self.running) {
-                    CVPixelBufferRelease(pixelBuffer);
-                    return;
-                }
+                if (epoch != remoteActiveEpoch || !self.running) return;
                 remoteFramesReceived += 1;
-                while (remoteFrames.count >= VCAMRTSPRemoteMaxFrames) {
-                    NSValue *stale = remoteFrames.firstObject;
-                    CVPixelBufferRelease(
-                        (CVPixelBufferRef)[stale pointerValue]);
-                    [remoteFrames removeObjectAtIndex:0];
-                }
-                [remoteFrames addObject:
-                    [NSValue valueWithPointer:pixelBuffer]];
             }
+            [self noteRemoteHardwareFrameCompletionWidth:width height:height];
             dispatch_semaphore_signal(remoteWindowSemaphore);
             return;
         }
@@ -663,17 +553,74 @@ enum {
     dispatch_semaphore_signal(remoteWindowSemaphore);
 }
 
-- (void)drainRemoteFramesCounting:(NSUInteger *)framesReceived {
-    while (YES) {
-        CVPixelBufferRef pixelBuffer = NULL;
-        @synchronized (self) {
-            if (remoteFrames.count == 0) return;
-            pixelBuffer = (CVPixelBufferRef)[remoteFrames.firstObject pointerValue];
-            [remoteFrames removeObjectAtIndex:0];
+// Diagnostics for the direct-publish remote path: the pixels were written
+// into the shared ring buffer by SpringBoard itself, so the first-frame and
+// analyzer-facing perf lines are emitted from the completion event. The
+// session dimensions stand in for the decoded pixel buffer and the stored
+// canvas format (video-range NV12) for the buffer's pixel format; the line
+// shapes stay identical to acceptDecodedPixelBuffer's.
+- (void)noteRemoteHardwareFrameCompletionWidth:(int)width height:(int)height {
+    CFAbsoluteTime now = CACurrentMediaTime();
+    BOOL logFirstDecodedFrame = NO;
+    NSDictionary *snapshot = nil;
+    @synchronized (self) {
+        _latestFrameHostTime = now;
+        _latestFrameSequence += 1;
+        _diagnosticFrames += 1;
+        if (!_loggedFirstDecodedFrame) {
+            _loggedFirstDecodedFrame = YES;
+            logFirstDecodedFrame = YES;
         }
-        [self acceptDecodedPixelBuffer:pixelBuffer hardware:YES];
-        CVPixelBufferRelease(pixelBuffer);
-        if (framesReceived != NULL) *framesReceived += 1;
+        if (_diagnosticLastFrameTime > 0 && _diagnosticFrameIntervalCount < 256) {
+            _diagnosticFrameIntervals[_diagnosticFrameIntervalCount++] =
+                (now - _diagnosticLastFrameTime) * 1000.0;
+        }
+        _diagnosticLastFrameTime = now;
+        if (_diagnosticWindowStart == 0) _diagnosticWindowStart = now;
+        CFTimeInterval elapsed = now - _diagnosticWindowStart;
+        if (elapsed >= 1.0) {
+            double p95Milliseconds = 0;
+            if (_diagnosticFrameIntervalCount > 0) {
+                qsort(_diagnosticFrameIntervals, _diagnosticFrameIntervalCount,
+                      sizeof(_diagnosticFrameIntervals[0]), VCAMCompareRTSPInterval);
+                NSUInteger p95Index = (NSUInteger)ceil(_diagnosticFrameIntervalCount * 0.95) - 1;
+                p95Milliseconds = _diagnosticFrameIntervals[p95Index];
+            }
+            snapshot = @{
+                @"source": self.streamName,
+                @"sourceFPS": @((double)_diagnosticFrames / elapsed),
+                @"sourceFrameP95Ms": @(p95Milliseconds),
+                @"sourceWidth": @(width),
+                @"sourceHeight": @(height),
+                @"sourcePixelFormat": @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                @"frameSequence": @(_latestFrameSequence),
+            };
+            _diagnosticWindowStart = now;
+            _diagnosticFrames = 0;
+            _diagnosticFrameIntervalCount = 0;
+        }
+    }
+    if (logFirstDecodedFrame) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ first %@ pixel buffer format=%08x size=%zux%zu",
+            self.streamName, @"hardware",
+            (unsigned int)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            (size_t)width, (size_t)height]];
+    }
+    if (snapshot != nil) {
+        VCAMPublishRTSPPerformance(snapshot);
+        // The snapshot only feeds the panel; mirror a one-line per-second
+        // summary to the process log so source throughput on real hardware
+        // can be compared across decode paths without opening the UI
+        // (same shape as the local-media perf line).
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vcamdiag] rtsp perf hardware=%d fps=%.2f p95Ms=%.3f size=%llu,%llu frameSequence=%llu",
+            1,
+            [snapshot[@"sourceFPS"] doubleValue],
+            [snapshot[@"sourceFrameP95Ms"] doubleValue],
+            [snapshot[@"sourceWidth"] unsignedLongLongValue],
+            [snapshot[@"sourceHeight"] unsignedLongLongValue],
+            [snapshot[@"frameSequence"] unsignedLongLongValue]]];
     }
 }
 
@@ -695,10 +642,6 @@ enum {
         arc4random_buf(&epoch, sizeof(epoch));
     } while (epoch == 0);
     @synchronized (self) {
-        for (NSValue *value in remoteFrames) {
-            CVPixelBufferRelease((CVPixelBufferRef)value.pointerValue);
-        }
-        [remoteFrames removeAllObjects];
         remoteAckArrived = NO;
         remoteAckAccepted = NO;
         remoteActiveEpoch = epoch;
@@ -739,6 +682,7 @@ enum {
     BOOL producedFrame = NO;
     BOOL waitingForKeyFrame = YES;
     NSUInteger remotePacketsWithoutFrame = 0;
+    NSUInteger lastFramesReceived = 0;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         if (packet->stream_index == videoStreamIndex) {
             BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
@@ -784,11 +728,15 @@ enum {
             }
             remotePacketsWithoutFrame += 1;
             @synchronized (self) { remoteAUsSent += 1; }
-            NSUInteger drained = 0;
-            [self drainRemoteFramesCounting:&drained];
-            if (drained > 0) {
+            // Completions land on the broker queue; any growth of the
+            // completion counter since the previous packet proves the
+            // decoder is producing published frames.
+            NSUInteger received = 0;
+            @synchronized (self) { received = remoteFramesReceived; }
+            if (received != lastFramesReceived) {
                 producedFrame = YES;
                 remotePacketsWithoutFrame = 0;
+                lastFramesReceived = received;
             }
             if (remotePacketsWithoutFrame >= 300) {
                 [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
@@ -800,13 +748,13 @@ enum {
         av_packet_unref(packet);
     }
 remoteLoopEnd:
+    @synchronized (self) {
+        if (remoteFramesReceived != lastFramesReceived) producedFrame = YES;
+    }
     VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);
     @synchronized (self) {
         if (remoteActiveEpoch == epoch) remoteActiveEpoch = 0;
     }
-    NSUInteger trailing = 0;
-    [self drainRemoteFramesCounting:&trailing];
-    if (trailing > 0) producedFrame = YES;
     return producedFrame;
 }
 

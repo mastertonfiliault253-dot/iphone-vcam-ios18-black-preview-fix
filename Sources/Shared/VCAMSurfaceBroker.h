@@ -95,12 +95,14 @@ void VCAMSurfaceBrokerStartRemoteDecoderClient(
     VCAMRemoteDecodeAUHandler auHandler,
     VCAMRemoteDecodeCloseHandler closeHandler);
 void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted);
-// Sends one decoded NV12 frame: two planes (luma, interleaved chroma) with
-// their row bytes. Only two-plane video ranges are supported; any other
-// format must be rejected by the caller with an error.
-void VCAMSurfaceBrokerSendRemoteDecoderFrameData(
-    uint64_t epoch, const void *plane0, uint32_t rowBytes0,
-    const void *plane1, uint32_t rowBytes1, uint32_t height);
+// Frame completion. SpringBoard resizes the decoded frame into the fixed
+// shared-frame canvas and publishes it into the shared-frame mmap ring
+// buffer itself (docs E9/E10: only data copies, no IOSurface), so this
+// message carries just the decoded source size: enough for the daemon to
+// release one flow-control credit and drive its first/perf diagnostics.
+// No pixel bytes cross XPC anymore.
+void VCAMSurfaceBrokerSendRemoteDecoderFrame(uint64_t epoch, uint32_t width,
+                                             uint32_t height);
 void VCAMSurfaceBrokerSendRemoteDecoderError(uint64_t epoch,
                                              const char *reason);
 
@@ -108,10 +110,9 @@ void VCAMSurfaceBrokerSendRemoteDecoderError(uint64_t epoch,
 // protocol messages into the daemon pipeline and pushes session traffic to
 // the registered SpringBoard peer. Other processes must not call these.
 typedef struct VCAMRemoteDecoderFramePayload {
-    const void *_Nullable plane0;
-    const void *_Nullable plane1;
-    uint32_t rowBytes0;
-    uint32_t rowBytes1;
+    // Decoded source size of one published frame; the pixels never travel
+    // over XPC because SpringBoard writes the shared ring buffer directly.
+    uint32_t width;
     uint32_t height;
 } VCAMRemoteDecoderFramePayload;
 
@@ -120,8 +121,8 @@ typedef NS_ENUM(NSInteger, VCAMRemoteDecoderEvent) {
     VCAMRemoteDecoderEventPeerLost,
     VCAMRemoteDecoderEventOpenAccepted,
     VCAMRemoteDecoderEventOpenRejected,
-    /// payload is borrowed and valid only for the synchronous handler call;
-    /// consumers must copy the pixels if they outlive the callback.
+    /// Frame completion: SpringBoard has already published the frame into
+    /// the shared ring buffer; payload carries only the decoded source size.
     VCAMRemoteDecoderEventFrame,
     VCAMRemoteDecoderEventFailure,
 };
