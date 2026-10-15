@@ -1475,11 +1475,26 @@ static int VCAMReplacedSetExposureBiasD(id receiver, SEL selector, double biasEV
         ? VCAMOriginalSetExposureBiasD(receiver, selector, biasEV, requestID) : 0;
 }
 
+// 对照实验开关（2026-10-15 真机定性）：iOS 18.3.1 上 CMCapture 的
+// captureSource_setPropertyInternal 以内部句柄（非 ObjC 对象）作 receiver 直接
+// 触达这些 setter，MSHookMessageEx 替换后包装函数在入口对 receiver 做 retain
+// 即 SIGSEGV（当日 11:05–13:35 七次崩溃偏移一致 0x8D48=Bias 包装入口；崩溃循环
+// 触发 launchd 限流 flashlight 服务 → SpringBoard 120s 看门狗 → Safe Mode）。
+// 对照包关闭 custom/bias 两个显式 setter 观测；AE 终值仍由 attachment 数据
+// 通道覆盖（路线 A-2 第二条通道），torch 观测保留（10-14 已真机验证且无崩溃记录）。
+static const BOOL VCAMAESetterObservationUnsafe = YES;
+
 static void VCAMInstallAEObservationIfNeeded(void) {
     static BOOL installed = NO;
     if (installed) return;
     Class deviceClass = objc_getClass("BWFigVideoCaptureDevice");
     if (deviceClass == NULL) return;
+    if (VCAMAESetterObservationUnsafe) {
+        installed = YES;
+        VCAMRefLog("ae control setter observation skipped: "
+                   "receiver-dispatch unsafe on iOS18 (attachment path retained)");
+        return;
+    }
     SEL customSelector = sel_registerName(
         "setExposureModeCustomWithExposureDuration:minFrameRate:maxFrameRate:ISO:requestID:");
     Method customMethod = class_getInstanceMethod(deviceClass, customSelector);

@@ -210,7 +210,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.110+ios18-review-fixes";
+    return "com.codex.vcam/0.8.111+ae-setter-skip";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
