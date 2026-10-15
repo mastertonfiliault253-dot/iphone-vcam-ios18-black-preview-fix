@@ -689,6 +689,69 @@ IMG_0062/0063；修复=probe 补 selector 重出 CI，属 probe 代码非 vcam �
 - 冷却复测仍 503（详见 11.8 第 5 条），疑因由"短时限流"修正为"anisette 数据旧/账号风控
   长冷却"，工具替代候选（iMazing/3uTools 或 jb 探针兜底）待用户裁决。
 
+#### 11.5.2 面板 GUI 与三色点代测结果（VNC+DVT 代操作，2026-10-16 03:40–04:25，tmp/u-panel/）
+
+**三色点三态**（判定代码 `VCAMMediaPickerController.m:1179-1193`，见 10.3）：
+- **绿**：RTSP 新鲜流下多次目视（`dot-green-home.png` 桌面球+绿点、恢复观看态各帧），
+  伴随 perf 行 fps≈30 新鲜——PASS。
+- **灰**：面板"恢复真实相机"（enabled=False 落盘 `loadCurrent final enabled=0 source=3`）
+  →`dot-gray-after-restore.png`：灰球+白空心点（像素统计 12382 灰 / 0 绿 / 0 橙）+取景器
+  真实噪点+状态卡红行"未收到推流"——**PASS（实证图）**。
+- **橙**：断流场景（停 mediamtx）**不可再现**——active 态+断流时 gate/broker 快照仍报
+  receiving（卡显"已收到推流（系统原生播放，33860800 ms 前）"）→点保持绿。橙分支在现
+  环境无法到达，登记为缺陷 G（见下），不按 PASS 记。
+
+**面板控件实按生效**（坐标一律从 VNC 帧/ canvas 帧 PIL 同帧实测后点击）：
+- 恢复真实相机→alert"VCAM 已恢复真实相机"+"好"；启用虚拟相机→alert"虚拟相机已启用"，
+  随后 vcam-app.log `vcamd RTSP source started for consumer`+perf 恢复 30 fps（自动重连
+  RTSP 会话，新 session frameSequence 从 0 起）——**两按钮全链路（alert/落盘/gate/demand
+  门控/数据面）实测闭环**。
+- 状态卡：源行（rtsp/local 切换显示一致）、旋转、实测 fps、授权行（有效期至 2099-12-31）、
+  推流状态行绿↔红随态变化——PASS。
+- 镜像/填充/调光按钮完整渲染可点；调光渲染目视与"复制设备 ID"粘贴验证未完成（通道拥塞，
+  如实未完成）。文件导入正例：Files picker 拉起（"最近项目"空态截图）后取消，未选文件；
+  大小/扩展名负例未做。**收藏 CRUD：面板无对应控件**（savedStreams 仅存配置无 UI，P3）。
+
+**旧判定根因修正（重要）**：
+1. **缺陷 E 撤销**："面板下半命中错位"非面板缺陷。双根因：① TrollVNC rfb 触摸事件积压
+   乱序重放（drag 一次即瘫痪 pointer 注入数分钟，page reload 可恢复 click；drag 全程不稳）；
+   ② **权威配置路径=`/var/mobile/Media/VCAM/com.codex.vcam.plist`（`configurationPath`，
+   `VCAMConfiguration.m:581-583`；读取顺序 Media→Library/Preferences→storage legacy）**，
+   前段写的 `VirtualCaptureCard/VCAM/com.codex.vcam.plist` 是 legacy 副本。写对文件+
+   坐标同帧实测后，二屏全部按钮一次即中（`loadCurrent final` 即时落盘为证）。
+2. **缺陷 G 精确化（P2 保留）**：虚绿根因=`VCAMSharedFramePreviewView.m:96+` 的 broker
+   preview snapshot fallback **不过期**+gate notify state 在断流时不复位；enabled=False 后
+   卡正确显红证明"未收到推流"判定路径存在，虚报仅限"enabled=True 断流+快照残留"场景；
+   状态卡陈旧毫秒数（33860800 ms）同根因（原 P3 并入）。
+3. **缺陷 H 新增（P2 候选）**：host（Camera）退出时面板未关、panelOpen/preview 订阅不复位
+   →桌面悬浮球永久 hidden=1（`installButton host=SBHomeScreenWindow ... hidden=1` 04:21:43），
+   vcamd RTSP demand 被 writer consumer 持续续租→**Camera 退出 2 分钟后仍 30 fps 满帧拉流**
+   （perf 04:22–04:24 frameSequence 35816→38475，无 suspended）。对照：03:07 干净态下面板
+   已关时 kill Camera→`suspended no consumer` 正常——demand 状态机本身完好，触发条件是
+   面板关闭状态泄漏。
+4. 曾记"球关面板后短暂隐身"=缺陷 H 同症状（panelOpen 未复位而非瞬态）。
+5. 双实例 vcamd、锁屏无点不重复：锁屏因 TrollVNC 锁屏停服+DVT 返回锁定前帧，**目视不可达**，
+   维持代码级事实（L1149-1169 locked→hidden）+"未目视"判定。
+
+**省电/demand 三态日志闭环**（佐证组1-4 判据）：`resumed for consumer`(03:06:06)→
+`suspended no consumer`(03:07:28 kill Camera 后)→`resumed`(03:14:55)→`started for
+consumer`(03:48:57 vcamd 重启后)——started/suspended/resumed 三态均有真机记录。
+
+**VNC 代测方法论教训**（后续 GUI 轮沿用）：
+- **canvas 直读**：browser screenshot surface 超时时用 `canvas.toDataURL` 导出 932x2018 帧，
+  坐标换算 `x_css=155.078+px*969.86/932, y_css=py*2100/2018`；DVT 帧与 VNC 帧存在时差/
+  空间差，**禁止混用两源坐标**。
+- TrollVNC(trollvncserver -s 0.75)：drag 后 pointer 注入瘫痪，恢复手段=kill trollvncserver
+  （launchd 自动拉起）+page reload；每次 click 后等 ≥30 s 再发下一事件（防积压乱序）。
+- iOS 18 `killall Camera` 假成功需 `kill -9`；vcam 日志两域：demand/配置行在
+  `.../Application Support/VCAM/vcam-app.log`（appendProcessLog），demux/perf 在
+  `/var/tmp/vcamd.log`+同 vcam-app.log（两处皆有）。
+
+**用户观看态收尾快照**：权威 plist source=rtsp enabled=True rotation=0（rotation 复位自
+测试值 270）；mediamtx(30956)+ffmpeg lat **1280x720@30**（原 1920x1080，本轮推流器重建为
+720p，硬解 30 fps 满帧验证通过，分辨率差如实登记）；Camera 前台+面板 overlay+取景器彩条
+目视（`user-state-restore.png`）。
+
 ### 11.6 审查 P2/P3 与本轮新 findings 入册（未修，附钉点）
 
 | finding | 优先级 | 钉点/证据 | 说明 |
