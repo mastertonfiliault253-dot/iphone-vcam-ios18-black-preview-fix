@@ -811,9 +811,16 @@ remoteLoopEnd:
     } else if (stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
         remoteCodecName = "hevc";
     }
-    if (gVCAMRTSPRemoteHardwareDisabled == 0 && remoteCodecName != NULL &&
+    // The SpringBoard peer usually registers long before this source exists,
+    // so the PeerAvailable event was delivered with no handler attached.
+    // Consult the broker's live state as well; the atomic flag still tracks
+    // mid-session peer loss.
+    BOOL remotePeerReady =
         atomic_load_explicit(&gVCAMRTSPRemotePeerAvailable,
-                             memory_order_acquire) == 1 &&
+                             memory_order_acquire) == 1 ||
+        VCAMSurfaceBrokerRemoteDecoderPeerAvailable();
+    if (gVCAMRTSPRemoteHardwareDisabled == 0 && remoteCodecName != NULL &&
+        remotePeerReady &&
         stream->codecpar->extradata != NULL &&
         stream->codecpar->extradata_size > 0) {
         AVPacket *remotePacket = av_packet_alloc();

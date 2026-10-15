@@ -539,6 +539,11 @@ void VCAMSurfaceBrokerStartRemoteDecoderClient(
             }
         });
         xpc_connection_resume(VCAMRemoteDecoderConnection);
+        // Announce immediately: a mach-service client buffers messages sent
+        // right after resume until the connection lands (the publisher and
+        // subscriber connections above rely on the same behavior). The
+        // connection event re-announce only covers later reconnects.
+        VCAMRemoteDecoderSendReady();
     });
 }
 

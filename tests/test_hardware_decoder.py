@@ -345,6 +345,9 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMSurfaceBrokerPushRemoteDecoderAU", rtsp)
         self.assertIn("decodePacketsWithRemoteDecode", rtsp)
         self.assertIn("gVCAMRTSPRemoteHardwareDisabled", rtsp)
+        # The peer usually registers before this source exists, so the gate
+        # must consult the broker's live state, not just delivered events.
+        self.assertIn("VCAMSurfaceBrokerRemoteDecoderPeerAvailable", rtsp)
         self.assertIn("remote hardware decoder produced no frames packets=300", rtsp)
         self.assertIn("VCAMHardwareVideoDecoder", rtsp)
         self.assertIn("initWithCodecType:codecType", rtsp)
@@ -513,6 +516,10 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("VCAMSurfaceBrokerSetRemoteDecoderEventHandler", stream)
+        # A mach-service client only buffers messages sent right after resume;
+        # waiting for the connection event to announce never fires the first
+        # time, so the client must announce immediately as well.
+        self.assertIn("xpc_connection_resume(VCAMRemoteDecoderConnection);\n        // Announce immediately", broker)
 
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
