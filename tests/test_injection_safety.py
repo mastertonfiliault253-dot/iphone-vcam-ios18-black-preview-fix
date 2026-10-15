@@ -83,6 +83,7 @@ class InjectionSafetyTests(unittest.TestCase):
             implementation,
         )
         self.assertIn("0x5b387630", implementation)
+        self.assertIn("0x5b386630", implementation)
         self.assertIn("0x7d387630", implementation)
         self.assertIn("VTPixelTransferSessionTransferImage", implementation)
         self.assertIn("kVTScalingMode_Normal", implementation)

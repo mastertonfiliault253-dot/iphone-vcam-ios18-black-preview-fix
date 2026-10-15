@@ -416,6 +416,7 @@ static BOOL VCAMFormatIsCompressedVideoRange(OSType format) {
         format == kCVPixelFormatType_Lossy_420YpCbCr10PackedBiPlanarVideoRange ||
         format == (OSType)0x70343230 || // iOS 16.1 Camera preview 'p420'
         format == (OSType)0x5b387630 || // observed private compressed '[8v0'
+        format == (OSType)0x5b386630 || // iOS 18.3.1 front Camera preview '[8f0'
         format == (OSType)0x7d387630 || // observed private compressed '}8v0'
         format == (OSType)0x26386630 || // observed private bi-planar '&8f0'
         format == (OSType)0x26786630 || // iOS 16.1 deferred photo '&xf0'
