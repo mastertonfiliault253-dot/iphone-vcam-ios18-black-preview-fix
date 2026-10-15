@@ -237,13 +237,11 @@ static BOOL VCAMPreviewGetBrokerMetadata(
         _brokerImageView.hidden = YES;
         _brokerImageView.accessibilityIdentifier = @"vcam-broker-preview";
         [self addSubview:_brokerImageView];
-        _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
-        if (@available(iOS 15.0, *)) {
-            _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(10, 15, 15);
-        } else {
-            _displayLink.preferredFramesPerSecond = 15;
-        }
-        [_displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+        // The display link is (re)created in -didMoveToWindow: CADisplayLink
+        // retains its target, so a link attached in -initWithFrame: would pin
+        // this view to the run loop forever — the control panel builds a new
+        // preview on every open and each leaked instance kept two pixel
+        // pools plus a 15 Hz tick alive until SpringBoard restarted.
     }
     return self;
 }
@@ -255,6 +253,27 @@ static BOOL VCAMPreviewGetBrokerMetadata(
     if (_pixelBufferPool != NULL) CVPixelBufferPoolRelease(_pixelBufferPool);
     if (_nv12PixelBufferPool != NULL) CVPixelBufferPoolRelease(_nv12PixelBufferPool);
     if (_formatDescription != NULL) CFRelease(_formatDescription);
+}
+
+// Tear the ticker down while off-window (panel dismissed): dealloc cannot
+// run while the run loop still retains the display link (target:self).
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window != nil) {
+        if (self.displayLink != nil) return;
+        CADisplayLink *displayLink =
+            [CADisplayLink displayLinkWithTarget:self selector:@selector(displayTick:)];
+        if (@available(iOS 15.0, *)) {
+            displayLink.preferredFrameRateRange = CAFrameRateRangeMake(10, 15, 15);
+        } else {
+            displayLink.preferredFramesPerSecond = 15;
+        }
+        self.displayLink = displayLink;
+        [displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else {
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+    }
 }
 
 - (void)requestBrokerPreviewIfNeeded {

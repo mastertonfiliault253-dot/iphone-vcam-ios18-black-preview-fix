@@ -210,7 +210,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.115+sb-direct-frame-publish";
+    return "com.codex.vcam/0.8.116+u-round-review-fixes";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
@@ -292,6 +292,7 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
     static VCAMSharedFrameReader *frameReader;
     static VCAMSharedSurfaceReader *surfaceReader;
     static CVPixelBufferPoolRef framePool;
+    static CVPixelBufferPoolRef framePoolNV12;
     static CIContext *context;
     static CGColorSpaceRef colorSpace;
     static dispatch_once_t onceToken;
@@ -310,6 +311,20 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
                                 (__bridge CFDictionaryRef)poolAttributes,
                                 (__bridge CFDictionaryRef)pixelAttributes,
                                 &framePool);
+        // SpringBoard's RTSP direct publisher writes video-range NV12 into
+        // the ring; the reader lays bytes out by the *destination* format, so
+        // an NV12 session must copy into an NV12 destination or the snapshot
+        // JPEG is BGRA-misread noise (VCAMSharedFramePreviewView does the
+        // same destination selection for its live path).
+        NSDictionary *nv12PixelAttributes = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (id)kCVPixelBufferWidthKey: @(VCAMSharedFrameWidth),
+            (id)kCVPixelBufferHeightKey: @(VCAMSharedFrameHeight),
+        };
+        CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                (__bridge CFDictionaryRef)poolAttributes,
+                                (__bridge CFDictionaryRef)nv12PixelAttributes,
+                                &framePoolNV12);
         context = [CIContext contextWithOptions:@{
             kCIContextUseSoftwareRenderer: @NO,
         }];
@@ -358,8 +373,13 @@ static NSDictionary<NSString *, id> *VCAMCreateBrokerPreviewSnapshot(void) {
         }
     }
     if (!useSurface) {
-        if (framePool == NULL || CVPixelBufferPoolCreatePixelBuffer(
-                kCFAllocatorDefault, framePool, &pixelBuffer) !=
+        CVPixelBufferPoolRef pool = framePool;
+        if (frameMetadata.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+            frameMetadata.pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+            pool = framePoolNV12;
+        }
+        if (pool == NULL || CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault, pool, &pixelBuffer) !=
                 kCVReturnSuccess) return nil;
         ownsPixelBuffer = YES;
         if (!VCAMSharedFrameReaderCopyLatest(

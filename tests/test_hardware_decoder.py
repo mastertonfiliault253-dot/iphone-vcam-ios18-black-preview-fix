@@ -608,6 +608,40 @@ class HardwareDecoderTests(unittest.TestCase):
         # completion events (analyzer and panel contract).
         self.assertIn("noteRemoteHardwareFrameCompletionWidth", stream)
 
+    def test_remote_decode_flow_control_survives_stale_events(self) -> None:
+        # U-round code review (P1 x2): (a) the ack semaphore is instance-
+        # persistent and a late event from the previous session used to let
+        # the open wait return without remoteAckArrived, which read as
+        # "rejected" and permanently disabled remote decode for the process
+        # (software decode costs ~97% single-core); (b) a completion whose
+        # reported size mismatched the session dimensions was dropped without
+        # reclaiming its AU credit, so a systematic mismatch deadlocked the
+        # window gate at VCAMRTSPRemoteMaxOutstanding before the zero-frame
+        # fallback could run. Both invariants are pinned here.
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        open_block = stream.split("- (BOOL)decodePacketsWithRemoteDecode", 1)[1].split(
+            "BOOL producedFrame = NO;", 1
+        )[0]
+        # The wait loop may only trust remoteAckArrived, never a bare
+        # semaphore hit.
+        self.assertIn("ackArrived = remoteAckArrived;", open_block)
+        self.assertNotIn(
+            "(int64_t)(3 * NSEC_PER_SEC))) != 0) {", open_block
+        )
+        handler = stream.split("- (void)handleRemoteDecoderEvent", 1)[1]
+        frame_block = handler.split("case VCAMRemoteDecoderEventFrame:", 1)[1].split(
+            "SpringBoard has already resized", 1
+        )[0]
+        self.assertIn(
+            "if (epoch == remoteActiveEpoch) remoteFailures += 1;",
+            frame_block,
+        )
+        self.assertIn(
+            "dispatch_semaphore_signal(remoteWindowSemaphore);", frame_block
+        )
+
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
         linux_build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(

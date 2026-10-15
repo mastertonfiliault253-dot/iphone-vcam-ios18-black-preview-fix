@@ -425,6 +425,14 @@ class PackagingArchitectureTests(unittest.TestCase):
         self.assertIn("isMediaWorkerHost", configuration)
         self.assertIn("self.isWriteBrokerHost || self.isMediaWorkerHost", configuration)
         self.assertIn("VCAMLocalDecoderModeSinglePlayer", configuration)
+        # U-round P1: the broker preview snapshot copies the mmap ring by the
+        # destination format, so an NV12 (RTSP direct-publish) session needs
+        # an NV12 destination pool selected from the reported metadata or the
+        # snapshot JPEG is BGRA-misread noise.
+        self.assertIn("framePoolNV12", configuration)
+        self.assertIn(
+            "kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", configuration
+        )
 
     def test_springboard_contains_preview_but_no_source_decoder(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

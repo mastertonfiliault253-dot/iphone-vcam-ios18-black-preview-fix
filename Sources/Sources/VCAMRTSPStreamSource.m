@@ -520,6 +520,16 @@ enum {
             if (width <= 0 || height <= 0 ||
                 (int)payload->width != width ||
                 (int)payload->height != height) {
+                // An unreadable completion proves no published frame for the
+                // AU that owes this event, and the field comment above is
+                // explicit: AUs that never yield a frame must still reclaim
+                // their flow-control credit, or the window gate deadlocks at
+                // VCAMRTSPRemoteMaxOutstanding and the session never reaches
+                // the zero-frame fallback.
+                @synchronized (self) {
+                    if (epoch == remoteActiveEpoch) remoteFailures += 1;
+                }
+                dispatch_semaphore_signal(remoteWindowSemaphore);
                 return;
             }
             // SpringBoard has already resized the frame into the fixed
@@ -657,8 +667,27 @@ enum {
         @synchronized (self) { remoteActiveEpoch = 0; }
         return NO;
     }
-    if (dispatch_semaphore_wait(remoteAckSemaphore,
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC))) != 0) {
+    // The ack semaphore is instance-persistent and a mach event from the
+    // previous session (a late open-ack or a PeerLost tail signal) can leave
+    // it signalled with no ack ever arriving for this epoch. Treat only
+    // remoteAckArrived as evidence and consume residual signals by looping:
+    // a bare semaphore hit let a stale count read as "rejected", which fell
+    // to the software decoder and permanently disabled remote decode for the
+    // process (self-cpu ~97%).
+    BOOL ackArrived = NO;
+    @synchronized (self) { ackArrived = remoteAckArrived; }
+    CFAbsoluteTime ackDeadline = CACurrentMediaTime() + 3.0;
+    while (!ackArrived) {
+        CFAbsoluteTime remaining = ackDeadline - CACurrentMediaTime();
+        if (remaining <= 0) break;
+        if (dispatch_semaphore_wait(remoteAckSemaphore,
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(remaining * NSEC_PER_SEC))) != 0) {
+            break;
+        }
+        @synchronized (self) { ackArrived = remoteAckArrived; }
+    }
+    if (!ackArrived) {
         [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
             @"%@ remote hardware decode open timed out", self.streamName]];
         VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);

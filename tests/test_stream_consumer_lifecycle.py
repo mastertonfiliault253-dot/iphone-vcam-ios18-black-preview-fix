@@ -112,6 +112,14 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
         self.assertIn("preview.window == nil", preview)
         self.assertIn("preview.hidden", preview)
         self.assertIn("preview.alpha <= 0.01", preview)
+        # U-round P1: CADisplayLink retains its target, so the ticker must be
+        # torn down when the panel view leaves the window — dealloc never runs
+        # while the run loop holds the link, and the control panel creates a
+        # new preview view on every open.
+        self.assertIn("- (void)didMoveToWindow", preview)
+        self.assertIn("self.displayLink = nil;", preview)
+        display_link_setup = preview.split("- (void)didMoveToWindow", 1)[1]
+        self.assertIn("addToRunLoop", display_link_setup)
         display_tick = preview.split("- (void)displayTick:", 1)[1]
         self.assertIn("VCAMPreviewSignalsConsumerDemand(self)", display_tick)
 
