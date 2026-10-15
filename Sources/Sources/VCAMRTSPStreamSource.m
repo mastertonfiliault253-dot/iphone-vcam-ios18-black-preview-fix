@@ -147,6 +147,12 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     uint64_t remoteActiveEpoch;
     NSUInteger remoteAUsSent;
     NSUInteger remoteFramesReceived;
+    // AU credit reclaimed on decode/transport failures: an access unit that
+    // never yields a frame (e.g. the server cannot import its IOSurface)
+    // must still release its flow-control slot or the window gate deadlocks
+    // at VCAMRTSPRemoteMaxOutstanding and the session never reaches the
+    // zero-frame fallback.
+    NSUInteger remoteFailures;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -254,6 +260,7 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         remoteActiveEpoch = 0;
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
+        remoteFailures = 0;
     }
 }
 
@@ -526,9 +533,13 @@ enum {
         }
     }
     // PeerLost/Failure for the active session: unblock both waits so the
-    // session loop can fall back immediately instead of timing out.
+    // session loop can fall back immediately instead of timing out. Count
+    // the failed access unit against its flow-control credit too, otherwise
+    // a stream that fails every import (surface import errors) would keep
+    // the window gate permanently full.
     @synchronized (self) {
         if (epoch == remoteActiveEpoch || event == VCAMRemoteDecoderEventPeerLost) {
+            remoteFailures += 1;
             if (!remoteAckArrived) {
                 remoteAckArrived = YES;
                 remoteAckAccepted = NO;
@@ -580,6 +591,7 @@ enum {
         remoteActiveEpoch = epoch;
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
+        remoteFailures = 0;
     }
     if (!VCAMSurfaceBrokerPushRemoteDecoderOpen(
             epoch, codecName, width, height, parameterData,
@@ -627,8 +639,11 @@ enum {
                 NSUInteger outstanding = 0;
                 @synchronized (self) {
                     if (remoteActiveEpoch != epoch) outstanding = 0;
-                    else outstanding = remoteAUsSent > remoteFramesReceived
-                        ? remoteAUsSent - remoteFramesReceived : 0;
+                    else {
+                        NSUInteger claimed = remoteFramesReceived + remoteFailures;
+                        outstanding = remoteAUsSent > claimed
+                            ? remoteAUsSent - claimed : 0;
+                    }
                 }
                 if (outstanding < VCAMRTSPRemoteMaxOutstanding) break;
                 if (dispatch_semaphore_wait(remoteWindowSemaphore,

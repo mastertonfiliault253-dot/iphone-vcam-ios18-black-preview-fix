@@ -76,6 +76,9 @@ extern int proc_pidpath(int pid, void *buffer, uint32_t bufferSize);
 extern IOSurfaceRef _Nullable IOSurfaceLookupFromXPCObject(xpc_object_t object)
     CF_RETURNS_RETAINED;
 
+// Present in libSystem but undeclared in this SDK's XPC headers.
+extern const char *xpc_type_get_name(xpc_type_t type);
+
 static BOOL VCAMPeerIsPlatformBinary(pid_t pid) {
     // csops is unreliable under a jailbreak: queries can fail or return a
     // patched status without the platform flag, which would reject legitimate
@@ -351,6 +354,21 @@ static bool VCAMSurfaceBrokerConsumeConfigurationToken(uint64_t high,
 static xpc_connection_t VCAMRemoteDecoderPeer;
 static uint64_t VCAMRemoteDecoderSessionEpoch;
 static _Atomic(uint64_t) VCAMRemoteDecoderFrames;
+// First-look diagnostics are session-scoped (reset when a new decode epoch
+// opens): a process-lifetime cap hid the second session's truth behind the
+// first session's log budget.
+static int VCAMRemoteDecoderLoggedInbound;
+static int VCAMRemoteDecoderLoggedNonPeer;
+static int VCAMRemoteDecoderLoggedStale;
+static int VCAMRemoteDecoderLoggedSurfaceFailure;
+
+static void VCAMRemoteDecoderResetSessionDiagnostics(void) {
+    VCAMRemoteDecoderLoggedInbound = 0;
+    VCAMRemoteDecoderLoggedNonPeer = 0;
+    VCAMRemoteDecoderLoggedStale = 0;
+    VCAMRemoteDecoderLoggedSurfaceFailure = 0;
+    atomic_store_explicit(&VCAMRemoteDecoderFrames, 0, memory_order_relaxed);
+}
 static void (^VCAMRemoteDecodeEventHandler)(VCAMRemoteDecoderEvent,
                                            uint64_t, IOSurfaceRef);
 
@@ -412,6 +430,7 @@ BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
     xpc_dictionary_set_data(message, "parameterData", parameterData, length);
     if (!VCAMRemoteDecoderSendToPeer(message)) return NO;
     VCAMRemoteDecoderSessionEpoch = epoch;
+    VCAMRemoteDecoderResetSessionDiagnostics();
     fprintf(stderr, "vcamd remote decode open epoch=%llu codec=%s %dx%d\n",
             (unsigned long long)epoch, codec, width, height);
     fflush(stderr);
@@ -476,18 +495,16 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         // First-look diagnostics: an IOSurface-bearing frame message can die
         // in XPC transport without any visible event, so log arrival before
         // any gate decides silently.
-        static int loggedInbound;
-        if (loggedInbound < 4) {
-            loggedInbound += 1;
+        if (VCAMRemoteDecoderLoggedInbound < 4) {
+            VCAMRemoteDecoderLoggedInbound += 1;
             fprintf(stderr, "vcamd remote decoder inbound command=%s pid=%d epoch=%llu\n",
                     command, VCAMXPCConnectionGetPID(peer),
                     xpc_dictionary_get_uint64(message, "epoch"));
             fflush(stderr);
         }
         if (peer != VCAMRemoteDecoderPeer) {
-            static int loggedNonPeer;
-            if (loggedNonPeer < 3) {
-                loggedNonPeer += 1;
+            if (VCAMRemoteDecoderLoggedNonPeer < 3) {
+                VCAMRemoteDecoderLoggedNonPeer += 1;
                 fprintf(stderr, "vcamd remote decoder non-peer %s pid=%d\n",
                         command, VCAMXPCConnectionGetPID(peer));
                 fflush(stderr);
@@ -496,9 +513,8 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         }
         uint64_t epoch = xpc_dictionary_get_uint64(message, "epoch");
         if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch) {
-            static int loggedStale;
-            if (loggedStale < 3) {
-                loggedStale += 1;
+            if (VCAMRemoteDecoderLoggedStale < 3) {
+                VCAMRemoteDecoderLoggedStale += 1;
                 fprintf(stderr,
                         "vcamd remote decoder stale %s epoch=%llu active=%llu\n",
                         command, (unsigned long long)epoch,
@@ -535,6 +551,19 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         IOSurfaceRef surface = surfaceObject == NULL
             ? NULL : IOSurfaceLookupFromXPCObject(surfaceObject);
         if (surface == NULL) {
+            // The reverse-direction IOSurface import was a silent failure
+            // point: inbound frame messages arrived but every one died here
+            // with no explanation. Log what the dictionary actually carried.
+            if (VCAMRemoteDecoderLoggedSurfaceFailure < 4) {
+                VCAMRemoteDecoderLoggedSurfaceFailure += 1;
+                fprintf(stderr,
+                        "vcamd remote decode surface import failed epoch=%llu hasObject=%d xpcType=%s\n",
+                        (unsigned long long)epoch, surfaceObject != NULL,
+                        surfaceObject != NULL
+                            ? xpc_type_get_name(xpc_get_type(surfaceObject))
+                            : "(absent)");
+                fflush(stderr);
+            }
             VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFailure,
                                     epoch, NULL);
             return;
