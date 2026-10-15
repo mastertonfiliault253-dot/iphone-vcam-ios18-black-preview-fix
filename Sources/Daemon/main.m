@@ -6,6 +6,7 @@
 #import <string.h>
 #import <stdatomic.h>
 #import <unistd.h>
+#import <sys/resource.h>
 
 #import "VCAMFrameProducer.h"
 #import "VCAMHLSLoopbackProxy.h"
@@ -179,8 +180,37 @@ static void VCAMEnsureSurfaceWriter(uint32_t width, uint32_t height,
     }
 }
 
+// 设备没有 top/ps CPU（实测该 ps 的 TIME 列恒 0、无 top/pmset），getrusage
+// 自报是唯一可靠的 CPU 来源（同 cameracaptured 侧结论）。60s 窗口自报 vcamd
+// 自身 CPU，用于硬解数据面改动前后对比；行首带 vcamd 前缀且不含 "rtsp "，
+// 避免被 analyze-stream-lifecycle 的活动判据误捕。
+static void VCAMSampleSelfCPUWindow(void) {
+    static int64_t windowStartMs = 0;
+    static double windowStartCPUSeconds = 0.0;
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return;
+    double cpuSeconds = (double)usage.ru_utime.tv_sec + (double)usage.ru_utime.tv_usec / 1e6 +
+                        (double)usage.ru_stime.tv_sec + (double)usage.ru_stime.tv_usec / 1e6;
+    int64_t nowMs = (int64_t)(CFAbsoluteTimeGetCurrent() * 1000.0);
+    if (windowStartMs == 0) {
+        windowStartMs = nowMs;
+        windowStartCPUSeconds = cpuSeconds;
+        return;
+    }
+    if (nowMs - windowStartMs < 60000) return;
+    double elapsedSeconds = (double)(nowMs - windowStartMs) / 1000.0;
+    double cpuDelta = cpuSeconds - windowStartCPUSeconds;
+    fprintf(stderr, "vcamd self-cpu window elapsedS=%.0f cpuS=%.1f pct=%.1f\n",
+            elapsedSeconds, cpuDelta,
+            elapsedSeconds > 0 ? 100.0 * cpuDelta / elapsedSeconds : 0.0);
+    fflush(stderr);
+    windowStartMs = nowMs;
+    windowStartCPUSeconds = cpuSeconds;
+}
+
 static void VCAMPublishTick(void) {
     @autoreleasepool {
+        VCAMSampleSelfCPUWindow();
         if (VCAMDaemonRuntimeIsAtLeastIOS18() &&
             [VCAMProducer requiresConsumerDemand] &&
             atomic_load_explicit(&VCAMDynamicConsumerActive,

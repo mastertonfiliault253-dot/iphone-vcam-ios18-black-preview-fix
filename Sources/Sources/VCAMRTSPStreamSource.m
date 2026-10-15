@@ -159,6 +159,14 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     // at VCAMRTSPRemoteMaxOutstanding and the session never reaches the
     // zero-frame fallback.
     NSUInteger remoteFailures;
+    // NV12 assembly buffers recycled through a CVPixelBufferPool: a fresh
+    // 3.1MB CVPixelBufferCreate/free per frame at 30fps churns CPU enough to
+    // trip the device cpu_resource report. Buffers released from remoteFrames
+    // land back in the pool; the pool is rebuilt when the stream size
+    // changes. Guarded by @synchronized(self) like the fields above.
+    CVPixelBufferPoolRef remotePixelPool;
+    int remotePoolWidth;
+    int remotePoolHeight;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -262,6 +270,12 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
             CVPixelBufferRelease((CVPixelBufferRef)value.pointerValue);
         }
         [remoteFrames removeAllObjects];
+        if (remotePixelPool != NULL) {
+            CVPixelBufferPoolRelease(remotePixelPool);
+            remotePixelPool = NULL;
+        }
+        remotePoolWidth = 0;
+        remotePoolHeight = 0;
         remoteActiveEpoch = 0;
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
@@ -528,15 +542,52 @@ enum {
                 (int)payload->height != height) {
                 return;
             }
-            // Assemble a CPU-pool NV12 buffer (CoreVideo's CPU pixel pool is
-            // reachable in this daemon; only IOSurface is not) and copy the
-            // planes. The row bytes of the local buffer may differ from the
-            // decoder's; copy the common prefix per row.
+            // Assemble a CPU-backed NV12 buffer (CoreVideo's CPU pixel pool
+            // is reachable in this daemon; only IOSurface is not) and copy
+            // the planes. The row bytes of the local buffer may differ from
+            // the decoder's; copy the common prefix per row.
             CVPixelBufferRef pixelBuffer = NULL;
-            CVReturn result = CVPixelBufferCreate(
-                kCFAllocatorDefault, (size_t)width, (size_t)height,
-                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-                NULL, &pixelBuffer);
+            CVReturn result = kCVReturnSuccess;
+            @synchronized (self) {
+                if (remotePixelPool == NULL || remotePoolWidth != width ||
+                    remotePoolHeight != height) {
+                    NSDictionary *poolAttributes = @{
+                        (id)kCVPixelBufferPoolMinimumBufferCountKey: @4,
+                    };
+                    NSDictionary *pixelAttributes = @{
+                        (id)kCVPixelBufferPixelFormatTypeKey:
+                            @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                        (id)kCVPixelBufferWidthKey: @(width),
+                        (id)kCVPixelBufferHeightKey: @(height),
+                    };
+                    CVPixelBufferPoolRef replacementPool = NULL;
+                    CVReturn poolStatus = CVPixelBufferPoolCreate(
+                        kCFAllocatorDefault,
+                        (__bridge CFDictionaryRef)poolAttributes,
+                        (__bridge CFDictionaryRef)pixelAttributes,
+                        &replacementPool);
+                    if (poolStatus == kCVReturnSuccess &&
+                        replacementPool != NULL) {
+                        if (remotePixelPool != NULL) {
+                            CVPixelBufferPoolRelease(remotePixelPool);
+                        }
+                        remotePixelPool = replacementPool;
+                        remotePoolWidth = width;
+                        remotePoolHeight = height;
+                    }
+                }
+                if (remotePixelPool != NULL) {
+                    result = CVPixelBufferPoolCreatePixelBuffer(
+                        kCFAllocatorDefault, remotePixelPool, &pixelBuffer);
+                } else {
+                    // Pool creation failed (memory pressure): keep the
+                    // per-frame direct create so the pipeline still emits.
+                    result = CVPixelBufferCreate(
+                        kCFAllocatorDefault, (size_t)width, (size_t)height,
+                        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                        NULL, &pixelBuffer);
+                }
+            }
             if (result != kCVReturnSuccess || pixelBuffer == NULL) {
                 @synchronized (self) {
                     if (epoch == remoteActiveEpoch) {
