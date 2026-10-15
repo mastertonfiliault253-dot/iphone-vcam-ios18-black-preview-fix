@@ -136,10 +136,16 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     NSUInteger _diagnosticFrameIntervalCount;
     AVFrame *_pendingSoftwareFrame;
     BOOL _softwareConversionScheduled;
-    // Remote hardware decode state. remoteFrames holds
-    // NSValue(CVPixelBufferRef) entries wrapped from returned IOSurfaces;
-    // all fields are guarded by @synchronized(self).
+    // Remote hardware decode state. remoteFrames holds NSValue(CVPixelBufferRef)
+    // CPU-pool NV12 buffers assembled from the SpringBoard decoder's
+    // pixel-plane messages. The return channel is pixel data because the
+    // device rejects IOSurfaceCreate for non-GUI-session processes, so an
+    // IOSurface can never exist in this daemon (docs E9 + probe); CoreVideo's
+    // CPU pixel pool needs no IOSurface and is available here.
+    // All fields are guarded by @synchronized(self).
     NSMutableArray *remoteFrames;
+    int remoteWidth;
+    int remoteHeight;
     dispatch_semaphore_t remoteAckSemaphore;
     dispatch_semaphore_t remoteWindowSemaphore;
     BOOL remoteAckArrived;
@@ -215,13 +221,12 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     // broker role). The handler runs on the broker's serial queue.
     __weak typeof(self) weakEventSelf = self;
     VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
-        ^(VCAMRemoteDecoderEvent event, uint64_t epoch, IOSurfaceRef surface) {
+        ^(VCAMRemoteDecoderEvent event, uint64_t epoch,
+          const VCAMRemoteDecoderFramePayload *payload) {
             VCAMRTSPStreamSource *target = weakEventSelf;
-            if (target == nil) {
-                if (surface != NULL) CFRelease(surface);
-                return;
-            }
-            [target handleRemoteDecoderEvent:event epoch:epoch surface:surface];
+            if (target == nil) return;
+            [target handleRemoteDecoderEvent:event epoch:epoch
+                                     payload:payload];
         });
     self.running = YES;
     __weak typeof(self) weakSelf = self;
@@ -261,6 +266,8 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
         remoteFailures = 0;
+        remoteWidth = 0;
+        remoteHeight = 0;
     }
 }
 
@@ -469,7 +476,8 @@ enum {
 
 - (void)handleRemoteDecoderEvent:(VCAMRemoteDecoderEvent)event
                            epoch:(uint64_t)epoch
-                         surface:(IOSurfaceRef)surface {
+                          payload:(const VCAMRemoteDecoderFramePayload * _Nullable)
+                              payload {
     switch (event) {
         case VCAMRemoteDecoderEventPeerAvailable:
             atomic_store_explicit(&gVCAMRTSPRemotePeerAvailable, 1,
@@ -494,25 +502,65 @@ enum {
         case VCAMRemoteDecoderEventFailure:
             break;
         case VCAMRemoteDecoderEventFrame: {
-            if (surface == NULL) return;
+            if (payload == NULL) return;
+            int width = 0, height = 0;
+            @synchronized (self) {
+                if (epoch == remoteActiveEpoch) {
+                    width = remoteWidth;
+                    height = remoteHeight;
+                }
+            }
+            if (width <= 0 || height <= 0 ||
+                (int)payload->height != height) {
+                return;
+            }
+            // Assemble a CPU-pool NV12 buffer (CoreVideo's CPU pixel pool is
+            // reachable in this daemon; only IOSurface is not) and copy the
+            // planes. The row bytes of the local buffer may differ from the
+            // decoder's; copy the common prefix per row.
             CVPixelBufferRef pixelBuffer = NULL;
-            CFDictionaryRef attributes = (__bridge CFDictionaryRef)@{
-                (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-            };
-            CVReturn result = CVPixelBufferCreateWithIOSurface(
-                kCFAllocatorDefault, surface, attributes, &pixelBuffer);
-            CFRelease(surface);
+            CVReturn result = CVPixelBufferCreate(
+                kCFAllocatorDefault, (size_t)width, (size_t)height,
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                NULL, &pixelBuffer);
             if (result != kCVReturnSuccess || pixelBuffer == NULL) {
                 @synchronized (self) {
                     if (epoch == remoteActiveEpoch) {
                         [VCAMConfiguration appendProcessLog:[NSString
                             stringWithFormat:
-                                @"%@ remote frame wrap failed result=%d",
+                                @"%@ remote frame buffer create failed result=%d",
                                 self.streamName, (int)result]];
                     }
                 }
                 return;
             }
+            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+            void *dst0 = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+            void *dst1 = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+            size_t dstRow0 =
+                CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+            size_t dstRow1 =
+                CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+            if (dst0 == NULL || dst1 == NULL) {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+                CVPixelBufferRelease(pixelBuffer);
+                return;
+            }
+            size_t row0 = payload->rowBytes0 < dstRow0
+                ? payload->rowBytes0 : dstRow0;
+            size_t row1 = payload->rowBytes1 < dstRow1
+                ? payload->rowBytes1 : dstRow1;
+            for (int y = 0; y < height; y++) {
+                memcpy((uint8_t *)dst0 + (size_t)y * dstRow0,
+                     (const uint8_t *)payload->plane0 + (size_t)y * payload->rowBytes0,
+                     row0);
+            }
+            for (int y = 0; y < height / 2; y++) {
+                memcpy((uint8_t *)dst1 + (size_t)y * dstRow1,
+                     (const uint8_t *)payload->plane1 + (size_t)y * payload->rowBytes1,
+                     row1);
+            }
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
             @synchronized (self) {
                 if (epoch != remoteActiveEpoch || !self.running) {
                     CVPixelBufferRelease(pixelBuffer);
@@ -592,6 +640,8 @@ enum {
         remoteAUsSent = 0;
         remoteFramesReceived = 0;
         remoteFailures = 0;
+        remoteWidth = width;
+        remoteHeight = height;
     }
     if (!VCAMSurfaceBrokerPushRemoteDecoderOpen(
             epoch, codecName, width, height, parameterData,

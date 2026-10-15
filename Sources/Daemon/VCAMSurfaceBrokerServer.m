@@ -407,16 +407,23 @@ static void VCAMRemoteDecoderResetSessionDiagnostics(void) {
     atomic_store_explicit(&VCAMRemoteDecoderFrames, 0, memory_order_relaxed);
 }
 static void (^VCAMRemoteDecodeEventHandler)(VCAMRemoteDecoderEvent,
-                                           uint64_t, IOSurfaceRef);
+                                           uint64_t,
+                                           const VCAMRemoteDecoderFramePayload
+                                           * _Nullable);
 
-static void VCAMRemoteDecoderNotify(VCAMRemoteDecoderEvent event,
-                                    uint64_t epoch, IOSurfaceRef surface) {
-    void (^handler)(VCAMRemoteDecoderEvent, uint64_t, IOSurfaceRef) =
+static void VCAMRemoteDecoderNotify(
+    VCAMRemoteDecoderEvent event, uint64_t epoch,
+    const VCAMRemoteDecoderFramePayload * _Nullable payload) {
+    // The borrowed payload is valid for the synchronous call; consumers
+    // copy the pixels they outlive (the RTSP source copies into an owned
+    // AVFrame). No surface references cross this boundary anymore: the
+    // device rejects IOSurfaceCreate for non-GUI-session processes, so
+    // vcamd can never hold one (docs VIDEOTOOLBOX case E9 + probe).
+    void (^handler)(VCAMRemoteDecoderEvent, uint64_t,
+                    const VCAMRemoteDecoderFramePayload * _Nullable) =
         VCAMRemoteDecodeEventHandler;
     if (handler != nil) {
-        handler(event, epoch, surface);
-    } else if (surface != NULL) {
-        CFRelease(surface);
+        handler(event, epoch, payload);
     }
 }
 
@@ -431,7 +438,8 @@ static void VCAMRemoteDecoderLosePeer(void) {
 
 void VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
     void (^_Nullable handler)(VCAMRemoteDecoderEvent event, uint64_t epoch,
-                              IOSurfaceRef _Nullable surface)) {
+                              const VCAMRemoteDecoderFramePayload * _Nullable
+                              payload)) {
     VCAMRemoteDecodeEventHandler = [handler copy];
 }
 
@@ -584,27 +592,20 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                                     epoch, NULL);
             return;
         }
-        xpc_object_t surfaceObject =
-            xpc_dictionary_get_value(message, "surface");
-        IOSurfaceRef surface = surfaceObject == NULL
-            ? NULL : IOSurfaceLookupFromXPCObject(surfaceObject);
-        if (surface == NULL) {
-            // The reverse-direction IOSurface import was a silent failure
-            // point: inbound frame messages arrived but every one died here
-            // with no explanation. Log what the dictionary actually carried.
+        const void *plane0 = xpc_dictionary_get_data(message, "plane0");
+        const void *plane1 = xpc_dictionary_get_data(message, "plane1");
+        uint64_t rowBytes0 = xpc_dictionary_get_uint64(message, "rowBytes0");
+        uint64_t rowBytes1 = xpc_dictionary_get_uint64(message, "rowBytes1");
+        uint64_t height = xpc_dictionary_get_uint64(message, "height");
+        if (plane0 == NULL || plane1 == NULL || rowBytes0 == 0 ||
+            rowBytes1 == 0 || height == 0) {
+            // The frame carried no usable pixel planes; visible once per
+            // session instead of silently dropping.
             if (VCAMRemoteDecoderLoggedSurfaceFailure < 4) {
                 VCAMRemoteDecoderLoggedSurfaceFailure += 1;
-                const char *typeName = surfaceObject != NULL
-                    ? xpc_type_get_name(xpc_get_type(surfaceObject))
-                    : "(absent)";
                 fprintf(stderr,
-                        "vcamd remote decode surface import failed epoch=%llu hasObject=%d xpcType=%s machRight=%d\n",
-                        (unsigned long long)epoch, surfaceObject != NULL,
-                        typeName,
-                        surfaceObject != NULL &&
-                            strcmp(typeName, "mach send right") == 0 &&
-                            xpc_mach_send_get_right(surfaceObject) !=
-                                MACH_PORT_NULL);
+                        "vcamd remote decode frame data missing epoch=%llu\n",
+                        (unsigned long long)epoch);
                 fflush(stderr);
             }
             VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFailure,
@@ -615,12 +616,21 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
             &VCAMRemoteDecoderFrames, 1, memory_order_relaxed);
         if (frames < 4) {
             fprintf(stderr,
-                    "vcamd remote decode frame epoch=%llu %zux%zu\n",
+                    "vcamd remote decode frame epoch=%llu rows=%llu,%llu h=%llu\n",
                     (unsigned long long)epoch,
-                    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+                    (unsigned long long)rowBytes0,
+                    (unsigned long long)rowBytes1,
+                    (unsigned long long)height);
             fflush(stderr);
         }
-        VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFrame, epoch, surface);
+        VCAMRemoteDecoderFramePayload payload = {
+            .plane0 = plane0,
+            .plane1 = plane1,
+            .rowBytes0 = (uint32_t)rowBytes0,
+            .rowBytes1 = (uint32_t)rowBytes1,
+            .height = (uint32_t)height,
+        };
+        VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFrame, epoch, &payload);
         return;
     }
     if (strcmp(command, "config-auth") == 0) {

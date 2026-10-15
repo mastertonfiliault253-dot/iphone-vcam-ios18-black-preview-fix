@@ -511,11 +511,25 @@ class HardwareDecoderTests(unittest.TestCase):
             self.assertIn(command, broker)
             self.assertIn(command, server)
         self.assertIn("VCAMSurfaceBrokerStartRemoteDecoderClient", bridge)
-        self.assertIn("VCAMSurfaceBrokerSendRemoteDecoderFrame", bridge)
+        self.assertIn("VCAMSurfaceBrokerSendRemoteDecoderFrameData", bridge)
+        # The frame return channel is a pixel data plane, not an IOSurface:
+        # the device rejects IOSurfaceCreate for every non-GUI-session
+        # process, so vcamd can never materialize a surface. The contract is
+        # the NV12 plane keys, and vcamd assembles a CPU-pool CVPixelBuffer.
+        self.assertIn('xpc_dictionary_set_data(message, "plane0"', broker)
+        self.assertIn('xpc_dictionary_set_data(message, "plane1"', broker)
+        self.assertIn('xpc_dictionary_get_data(message, "plane0"', server)
+        self.assertIn(
+            "VCAMSurfaceBrokerSendRemoteDecoderFrameData(activeEpoch, plane0,",
+            bridge,
+        )
+        self.assertIn("CVPixelBufferGetBaseAddressOfPlane(frame, 0)", bridge)
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
         self.assertIn("VCAMSurfaceBrokerSetRemoteDecoderEventHandler", stream)
+        self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", stream)
+        self.assertNotIn("CVPixelBufferCreateWithIOSurface", stream)
         # A mach-service client only buffers messages sent right after resume
         # and re-establishes lazily on traffic; this connection idles between
         # RTSP sessions, so it must announce immediately and rebuild the

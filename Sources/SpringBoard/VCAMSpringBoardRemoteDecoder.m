@@ -193,18 +193,41 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     CVPixelBufferRef frame = NULL;
     CMTime outputTime = kCMTimeInvalid;
     while ((frame = [decoder copyNextOutputFrame:&outputTime]) != NULL) {
-        IOSurfaceRef surface = CVPixelBufferGetIOSurface(frame);
-        if (surface != NULL && loggedFrames < 4) {
+        OSType format = CVPixelBufferGetPixelFormatType(frame);
+        size_t planes = CVPixelBufferGetPlaneCount(frame);
+        if (format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+            format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+            VCAMSurfaceBrokerSendRemoteDecoderError(
+                activeEpoch, "unsupported pixel format");
+            CVPixelBufferRelease(frame);
+            [self stopActiveSession:"pixel format"];
+            return;
+        }
+        if (planes != 2) {
+            VCAMSurfaceBrokerSendRemoteDecoderError(
+                activeEpoch, "unsupported plane count");
+            CVPixelBufferRelease(frame);
+            [self stopActiveSession:"pixel format"];
+            return;
+        }
+        CVPixelBufferLockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
+        const void *plane0 = CVPixelBufferGetBaseAddressOfPlane(frame, 0);
+        const void *plane1 = CVPixelBufferGetBaseAddressOfPlane(frame, 1);
+        uint32_t rowBytes0 =
+            (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(frame, 0);
+        uint32_t rowBytes1 =
+            (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(frame, 1);
+        uint32_t height = (uint32_t)CVPixelBufferGetHeight(frame);
+        if (plane0 != NULL && plane1 != NULL && loggedFrames < 4) {
             loggedFrames += 1;
             [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"springboard remote decoder frame epoch=%llu %zux%zu",
-                (unsigned long long)epoch,
-                (size_t)CVPixelBufferGetWidth(frame),
-                (size_t)CVPixelBufferGetHeight(frame)]];
+                @"springboard remote decoder frame epoch=%llu rows=%u,%u h=%u",
+                (unsigned long long)epoch, rowBytes0, rowBytes1, height]];
         }
-        if (surface != NULL) {
-            VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, surface);
-        }
+        VCAMSurfaceBrokerSendRemoteDecoderFrameData(activeEpoch, plane0,
+                                                    rowBytes0, plane1,
+                                                    rowBytes1, height);
+        CVPixelBufferUnlockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
         CVPixelBufferRelease(frame);
     }
     if (failureCount >= VCAMRemoteDecodeMaxFailures) {

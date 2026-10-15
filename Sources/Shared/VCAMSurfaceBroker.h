@@ -70,7 +70,13 @@ bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low);
 // video decode service (docs VIDEOTOOLBOX case E9, -12911), so vcamd keeps
 // the RTSP demuxer and pushes compressed access units to the injected
 // SpringBoard service, which decodes them with VideoToolbox in an app
-// process and sends the resulting IOSurfaces back.
+// process and sends the decoded pixels back.
+//
+// The return channel is a pixel data plane, not an IOSurface: the device
+// rejects IOSurfaceCreate for every non-GUI-session process (probe:
+// vcamd selftest created=0, standalone probe under ssh create=0), so a
+// surface reference could never materialize in vcamd even though its mach
+// right transports fine. SpringBoard copies NV12 planes into the message.
 
 // Client role, called only by the injected SpringBoard remote-decode
 // service. Registers handlers for the pushed session messages, connects, and
@@ -89,26 +95,40 @@ void VCAMSurfaceBrokerStartRemoteDecoderClient(
     VCAMRemoteDecodeAUHandler auHandler,
     VCAMRemoteDecodeCloseHandler closeHandler);
 void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted);
-void VCAMSurfaceBrokerSendRemoteDecoderFrame(uint64_t epoch,
-                                             IOSurfaceRef surface);
+// Sends one decoded NV12 frame: two planes (luma, interleaved chroma) with
+// their row bytes. Only two-plane video ranges are supported; any other
+// format must be rejected by the caller with an error.
+void VCAMSurfaceBrokerSendRemoteDecoderFrameData(
+    uint64_t epoch, const void *plane0, uint32_t rowBytes0,
+    const void *plane1, uint32_t rowBytes1, uint32_t height);
 void VCAMSurfaceBrokerSendRemoteDecoderError(uint64_t epoch,
                                              const char *reason);
 
 // vcamd-only role (like VCAMSurfaceBrokerStartServer): routes decoder
 // protocol messages into the daemon pipeline and pushes session traffic to
 // the registered SpringBoard peer. Other processes must not call these.
+typedef struct VCAMRemoteDecoderFramePayload {
+    const void *_Nullable plane0;
+    const void *_Nullable plane1;
+    uint32_t rowBytes0;
+    uint32_t rowBytes1;
+    uint32_t height;
+} VCAMRemoteDecoderFramePayload;
+
 typedef NS_ENUM(NSInteger, VCAMRemoteDecoderEvent) {
     VCAMRemoteDecoderEventPeerAvailable,
     VCAMRemoteDecoderEventPeerLost,
     VCAMRemoteDecoderEventOpenAccepted,
     VCAMRemoteDecoderEventOpenRejected,
-    /// The handler owns the surface reference (+1).
+    /// payload is borrowed and valid only for the synchronous handler call;
+    /// consumers must copy the pixels if they outlive the callback.
     VCAMRemoteDecoderEventFrame,
     VCAMRemoteDecoderEventFailure,
 };
 void VCAMSurfaceBrokerSetRemoteDecoderEventHandler(
     void (^_Nullable handler)(VCAMRemoteDecoderEvent event, uint64_t epoch,
-                              IOSurfaceRef _Nullable surface));
+                              const VCAMRemoteDecoderFramePayload * _Nullable
+                              payload));
 BOOL VCAMSurfaceBrokerRemoteDecoderPeerAvailable(void);
 BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
                                            int width, int height,
