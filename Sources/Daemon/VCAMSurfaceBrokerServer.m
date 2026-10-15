@@ -473,9 +473,40 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
         strcmp(command, "rtsp-hw-frame") == 0 ||
         strcmp(command, "rtsp-hw-error") == 0 ||
         strcmp(command, "rtsp-hw-close") == 0) {
-        if (peer != VCAMRemoteDecoderPeer) return;
+        // First-look diagnostics: an IOSurface-bearing frame message can die
+        // in XPC transport without any visible event, so log arrival before
+        // any gate decides silently.
+        static int loggedInbound;
+        if (loggedInbound < 4) {
+            loggedInbound += 1;
+            fprintf(stderr, "vcamd remote decoder inbound command=%s pid=%d epoch=%llu\n",
+                    command, VCAMXPCConnectionGetPID(peer),
+                    xpc_dictionary_get_uint64(message, "epoch"));
+            fflush(stderr);
+        }
+        if (peer != VCAMRemoteDecoderPeer) {
+            static int loggedNonPeer;
+            if (loggedNonPeer < 3) {
+                loggedNonPeer += 1;
+                fprintf(stderr, "vcamd remote decoder non-peer %s pid=%d\n",
+                        command, VCAMXPCConnectionGetPID(peer));
+                fflush(stderr);
+            }
+            return;
+        }
         uint64_t epoch = xpc_dictionary_get_uint64(message, "epoch");
-        if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch) return;
+        if (epoch == 0 || epoch != VCAMRemoteDecoderSessionEpoch) {
+            static int loggedStale;
+            if (loggedStale < 3) {
+                loggedStale += 1;
+                fprintf(stderr,
+                        "vcamd remote decoder stale %s epoch=%llu active=%llu\n",
+                        command, (unsigned long long)epoch,
+                        (unsigned long long)VCAMRemoteDecoderSessionEpoch);
+                fflush(stderr);
+            }
+            return;
+        }
         if (strcmp(command, "rtsp-hw-open-ack") == 0) {
             VCAMRemoteDecoderNotify(
                 xpc_dictionary_get_uint64(message, "accepted") != 0
