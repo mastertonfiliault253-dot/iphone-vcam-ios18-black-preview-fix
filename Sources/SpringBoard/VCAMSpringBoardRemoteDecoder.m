@@ -4,6 +4,61 @@
 #import "../Daemon/VCAMHardwareVideoDecoder.h"
 #import "../Shared/VCAMSurfaceBroker.h"
 
+#import <IOSurface/IOSurfaceRef.h>
+#include <mach/mach.h>
+
+// Same conditional-headers pattern as the shared broker sources: the Linux
+// iPhoneOS 16.5 SDK has no <xpc/xpc.h> for tweak targets, so declare only
+// what this self-test needs.
+#if __has_include(<xpc/xpc.h>)
+#import <xpc/xpc.h>
+#else
+typedef void *xpc_object_t;
+typedef const void *xpc_type_t;
+extern xpc_type_t xpc_get_type(xpc_object_t object);
+void xpc_release(xpc_object_t object);
+#endif
+
+extern xpc_object_t IOSurfaceCreateXPCObject(IOSurfaceRef surface);
+extern IOSurfaceRef _Nullable IOSurfaceLookupFromXPCObject(xpc_object_t object)
+    CF_RETURNS_RETAINED;
+// Present in libSystem but undeclared in this SDK's XPC headers.
+extern const char *xpc_type_get_name(xpc_type_t type);
+extern mach_port_t xpc_mach_send_get_right(xpc_object_t object);
+
+// Mirror of the vcamd-side probe: round-trip a private surface through the
+// exact IOSurface<->XPC pair used for remote frames. The vcamd import of
+// SB-created decoder surfaces returns NULL, so this establishes the pair is
+// healthy in the SpringBoard context and isolates the failure to the
+// cross-process import.
+static void VCAMSpringBoardSurfaceSelfTest(void) {
+    static BOOL tested;
+    if (tested) return;
+    tested = YES;
+    NSDictionary *properties = @{
+        (id)kIOSurfaceWidth: @64,
+        (id)kIOSurfaceHeight: @64,
+        (id)kIOSurfaceBytesPerElement: @4,
+    };
+    IOSurfaceRef probe =
+        IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+    xpc_object_t encoded =
+        probe != NULL ? IOSurfaceCreateXPCObject(probe) : NULL;
+    mach_port_t right = encoded != NULL ? xpc_mach_send_get_right(encoded)
+                                        : MACH_PORT_NULL;
+    IOSurfaceRef decoded = encoded != NULL
+        ? IOSurfaceLookupFromXPCObject(encoded) : NULL;
+    const char *typeC = encoded != NULL
+        ? xpc_type_get_name(xpc_get_type(encoded)) : "(none)";
+    [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+        @"springboard surface selftest created=%d xpcType=%s machRight=%d "
+        @"imported=%d",
+        probe != NULL, typeC, right != MACH_PORT_NULL, decoded != NULL]];
+    if (decoded != NULL) CFRelease(decoded);
+    if (encoded != NULL) xpc_release(encoded);
+    if (probe != NULL) CFRelease(probe);
+}
+
 // Consecutive failed submissions end the session so a stuck decoder cannot
 // spin the RTSP pipeline; vcamd then falls back to its software decoder.
 enum { VCAMRemoteDecodeMaxFailures = 8 };
@@ -106,6 +161,7 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
         @"springboard remote decoder open accepted epoch=%llu codec=%s %dx%d",
         (unsigned long long)epoch, codec, width, height]];
+    VCAMSpringBoardSurfaceSelfTest();
     VCAMSurfaceBrokerSendRemoteDecoderOpenAck(epoch, YES);
 }
 

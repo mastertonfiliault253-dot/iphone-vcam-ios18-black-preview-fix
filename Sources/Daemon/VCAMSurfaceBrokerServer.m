@@ -75,9 +75,46 @@ extern int proc_pidpath(int pid, void *buffer, uint32_t bufferSize);
 
 extern IOSurfaceRef _Nullable IOSurfaceLookupFromXPCObject(xpc_object_t object)
     CF_RETURNS_RETAINED;
+extern xpc_object_t IOSurfaceCreateXPCObject(IOSurfaceRef surface);
 
 // Present in libSystem but undeclared in this SDK's XPC headers.
 extern const char *xpc_type_get_name(xpc_type_t type);
+extern mach_port_t xpc_mach_send_get_right(xpc_object_t object);
+
+// One-shot in-process probe of the exact IOSurface<->XPC pair every remote
+// frames use. Real device: SB-created surfaces arrive here as an XPC
+// "mach send right" and import as NULL, while the same pair in the frame
+// publish direction (vcamd create -> SpringBoard import) works. This tells
+// whether the pair itself is dead in the vcamd context or only imports of
+// foreign surfaces fail.
+static void VCAMRemoteDecoderSurfaceSelfTest(void) {
+    static BOOL tested;
+    if (tested) return;
+    tested = YES;
+    NSDictionary *properties = @{
+        (id)kIOSurfaceWidth: @64,
+        (id)kIOSurfaceHeight: @64,
+        (id)kIOSurfaceBytesPerElement: @4,
+    };
+    IOSurfaceRef probe =
+        IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+    xpc_object_t encoded =
+        probe != NULL ? IOSurfaceCreateXPCObject(probe) : NULL;
+    mach_port_t right = encoded != NULL ? xpc_mach_send_get_right(encoded)
+                                        : MACH_PORT_NULL;
+    IOSurfaceRef decoded = encoded != NULL
+        ? IOSurfaceLookupFromXPCObject(encoded) : NULL;
+    fprintf(stderr,
+            "vcamd surface selftest created=%d xpc=%d xpcType=%s machRight=%d imported=%d\n",
+            probe != NULL, encoded != NULL,
+            encoded != NULL
+                ? xpc_type_get_name(xpc_get_type(encoded)) : "(none)",
+            right != MACH_PORT_NULL, decoded != NULL);
+    fflush(stderr);
+    if (decoded != NULL) CFRelease(decoded);
+    if (encoded != NULL) VCAMXPCRelease(encoded);
+    if (probe != NULL) CFRelease(probe);
+}
 
 static BOOL VCAMPeerIsPlatformBinary(pid_t pid) {
     // csops is unreliable under a jailbreak: queries can fail or return a
@@ -431,6 +468,7 @@ BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
     if (!VCAMRemoteDecoderSendToPeer(message)) return NO;
     VCAMRemoteDecoderSessionEpoch = epoch;
     VCAMRemoteDecoderResetSessionDiagnostics();
+    VCAMRemoteDecoderSurfaceSelfTest();
     fprintf(stderr, "vcamd remote decode open epoch=%llu codec=%s %dx%d\n",
             (unsigned long long)epoch, codec, width, height);
     fflush(stderr);
@@ -556,12 +594,17 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
             // with no explanation. Log what the dictionary actually carried.
             if (VCAMRemoteDecoderLoggedSurfaceFailure < 4) {
                 VCAMRemoteDecoderLoggedSurfaceFailure += 1;
+                const char *typeName = surfaceObject != NULL
+                    ? xpc_type_get_name(xpc_get_type(surfaceObject))
+                    : "(absent)";
                 fprintf(stderr,
-                        "vcamd remote decode surface import failed epoch=%llu hasObject=%d xpcType=%s\n",
+                        "vcamd remote decode surface import failed epoch=%llu hasObject=%d xpcType=%s machRight=%d\n",
                         (unsigned long long)epoch, surfaceObject != NULL,
-                        surfaceObject != NULL
-                            ? xpc_type_get_name(xpc_get_type(surfaceObject))
-                            : "(absent)");
+                        typeName,
+                        surfaceObject != NULL &&
+                            strcmp(typeName, "mach send right") == 0 &&
+                            xpc_mach_send_get_right(surfaceObject) !=
+                                MACH_PORT_NULL);
                 fflush(stderr);
             }
             VCAMRemoteDecoderNotify(VCAMRemoteDecoderEventFailure,
