@@ -118,6 +118,20 @@ static xpc_connection_t VCAMXPCMachServiceCreate(
     return createFunction != NULL ? createFunction(name, queue, flags) : NULL;
 }
 
+// xpc_connection_is_valid is public API but absent from the Linux iPhoneOS
+// 16.5 stub library, so resolve it the same way as the mach-service creator.
+static BOOL VCAMXPCConnectionIsValid(xpc_connection_t connection) {
+    static BOOL (*isValidFunction)(xpc_connection_t);
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *symbol = dlsym(RTLD_DEFAULT, "xpc_connection_is_valid");
+        memcpy(&isValidFunction, &symbol, sizeof(isValidFunction));
+    });
+    // Without the symbol we cannot tell peer death from an ordinary event;
+    // treat connections as valid (announce) rather than rebuild endlessly.
+    return isValidFunction != NULL ? (isValidFunction(connection) ? YES : NO) : YES;
+}
+
 static xpc_connection_t VCAMPublisherConnection;
 static dispatch_once_t VCAMPublisherOnce;
 
@@ -472,6 +486,7 @@ bool VCAMSurfaceBrokerInvalidateHLSProxySession(uint64_t high, uint64_t low) {
 
 static xpc_connection_t VCAMRemoteDecoderConnection;
 static dispatch_once_t VCAMRemoteDecoderOnce;
+static dispatch_queue_t VCAMRemoteDecoderQueue;
 static VCAMRemoteDecodeOpenHandler VCAMRemoteDecodeOpen;
 static VCAMRemoteDecodeAUHandler VCAMRemoteDecodeAU;
 static VCAMRemoteDecodeCloseHandler VCAMRemoteDecodeClose;
@@ -484,6 +499,8 @@ static void VCAMRemoteDecoderSendReady(void) {
     VCAMXPCRelease(message);
 }
 
+static void VCAMRemoteDecoderEstablishConnection(void);
+
 void VCAMSurfaceBrokerStartRemoteDecoderClient(
     VCAMRemoteDecodeOpenHandler openHandler,
     VCAMRemoteDecodeAUHandler auHandler,
@@ -492,18 +509,36 @@ void VCAMSurfaceBrokerStartRemoteDecoderClient(
         VCAMRemoteDecodeOpen = [openHandler copy];
         VCAMRemoteDecodeAU = [auHandler copy];
         VCAMRemoteDecodeClose = [closeHandler copy];
-        dispatch_queue_t queue = dispatch_queue_create(
+        VCAMRemoteDecoderQueue = dispatch_queue_create(
             "com.codex.vcam.surface.decoder", DISPATCH_QUEUE_SERIAL);
-        VCAMRemoteDecoderConnection = VCAMXPCMachServiceCreate(
-            VCAMSurfaceBrokerService, queue, VCAMXPCMachServicePrivileged);
-        if (VCAMRemoteDecoderConnection == NULL) return;
-        xpc_connection_set_event_handler(VCAMRemoteDecoderConnection,
-                                          ^(xpc_object_t event) {
-            if (xpc_get_type(event) == VCAMXPCTypeConnection()) {
+        VCAMRemoteDecoderEstablishConnection();
+    });
+}
+
+// A mach-service client only re-establishes lazily once it sends traffic,
+// and this connection idles between RTSP sessions. When vcamd restarts,
+// the server side drops every registered peer, so the cancelled connection
+// must be rebuilt (and immediately re-announced) or no future session can
+// use the remote decoder.
+static void VCAMRemoteDecoderEstablishConnection(void) {
+    xpc_connection_t connection = VCAMXPCMachServiceCreate(
+        VCAMSurfaceBrokerService, VCAMRemoteDecoderQueue,
+        VCAMXPCMachServicePrivileged);
+    if (connection == NULL) return;
+    xpc_connection_t staleConnection = VCAMRemoteDecoderConnection;
+    VCAMRemoteDecoderConnection = connection;
+    VCAMXPCRelease(staleConnection);
+    xpc_connection_set_event_handler(connection,
+                                      ^(xpc_object_t event) {
+        if (xpc_get_type(event) == VCAMXPCTypeConnection()) {
+            if (VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)) {
                 // Re-announce after the connection (re-)establishes.
                 VCAMRemoteDecoderSendReady();
-                return;
+            } else {
+                VCAMRemoteDecoderEstablishConnection();
             }
+            return;
+        }
             if (xpc_get_type(event) != VCAMXPCTypeDictionary()) return;
             const char *command = xpc_dictionary_get_string(event, "command");
             if (command == NULL) return;
@@ -537,14 +572,12 @@ void VCAMSurfaceBrokerStartRemoteDecoderClient(
                     VCAMRemoteDecodeClose(epoch);
                 }
             }
-        });
-        xpc_connection_resume(VCAMRemoteDecoderConnection);
-        // Announce immediately: a mach-service client buffers messages sent
-        // right after resume until the connection lands (the publisher and
-        // subscriber connections above rely on the same behavior). The
-        // connection event re-announce only covers later reconnects.
-        VCAMRemoteDecoderSendReady();
     });
+    xpc_connection_resume(connection);
+    // Announce immediately: a mach-service client buffers messages sent
+    // right after resume until the connection lands (the publisher and
+    // subscriber connections above rely on the same behavior).
+    VCAMRemoteDecoderSendReady();
 }
 
 void VCAMSurfaceBrokerSendRemoteDecoderOpenAck(uint64_t epoch, BOOL accepted) {

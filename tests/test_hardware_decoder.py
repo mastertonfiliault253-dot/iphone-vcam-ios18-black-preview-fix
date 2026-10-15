@@ -516,10 +516,13 @@ class HardwareDecoderTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("VCAMSurfaceBrokerSetRemoteDecoderEventHandler", stream)
-        # A mach-service client only buffers messages sent right after resume;
-        # waiting for the connection event to announce never fires the first
-        # time, so the client must announce immediately as well.
-        self.assertIn("xpc_connection_resume(VCAMRemoteDecoderConnection);\n        // Announce immediately", broker)
+        # A mach-service client only buffers messages sent right after resume
+        # and re-establishes lazily on traffic; this connection idles between
+        # RTSP sessions, so it must announce immediately and rebuild the
+        # connection when the peer (vcamd) went away.
+        self.assertIn("xpc_connection_resume(connection);\n    // Announce immediately", broker)
+        self.assertIn("VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)", broker)
+        self.assertIn("VCAMRemoteDecoderEstablishConnection();", broker)
 
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
