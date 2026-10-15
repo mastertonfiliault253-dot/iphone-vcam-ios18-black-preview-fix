@@ -519,7 +519,31 @@ dropped=1、exposure 窗缺失根因样本）、234315（v3：exposure 四段+�
 
 **运维记录**：真机两次 Safe Mode（SpringBoard 自测崩溃循环），解法=Exit Safe Mode 按钮；rootless 用户空间重启用 `launchctl reboot userspace`（ssh 直调 ldrestart 报 144 entitlement）。dpkg postinst 会重启 vcamd（安装即生效）。
 
-## 资产与报告索引
+## 10.9 Q 轮：方案 B 全链路真机闭环——IOSurface 边界定性与数据面协议（2026-10-15 中午）
+
+用户选定 B（vcamd demux + SpringBoard VT 硬解）。本轮完成实现、根因链定性、数据面协议改造与端到端验收。
+
+**新根因（决定性）**：本机 iOS 18.3.1 对**任何非 GUI session 进程**拒绝 IOSurface——
+- vcamd 进程内 self-test（7be80aa 起）：`vcamd surface selftest created=0 xpc=(none) machRight=0 imported=0`；
+- 独立探针程序（WSL theos clang arm64 + 设备 `ldid -S`）在 ssh 上下文同样 `create=0`；
+- SB 创建的 surface XPC 对象类型为 `xpcType=mach send right`，mach right 可完整到达 vcamd（`machRight=1`），但 `IOSurfaceLookupFromXPCObject` 恒 NULL（帧发布通道一直成功仅因 vcamd 只透传不 import）。
+与 E9 -12911（daemon 内 VT 失败）同族的"非 GUI 进程图形资源不可用"边界。
+
+**流控死锁真因（已修复）**：remote 失败 AU 不回收窗口额度，`outstanding = AUsSent − framesReceived` 恒满 → 会话卡死在第 5 个 AU 的 window wait，永不到 300 包回退点，相机永久黑屏。修复=引入 `remoteFailures` 计数（Failure/PeerLost 对 active epoch +1）并从 outstanding 中减去。回退链真机已完整证实：remote 300 包 → in-daemon HW 300 包 → 软解出帧（相机不再永久黑）。
+
+**数据面协议（a28c641/dc7c56e）**：回传通道从 IOSurface XPC 改 NV12 像素数据——SB `xpc_dictionary_set_data` plane0/plane1 + rowBytes/height（仅支持 420v/420f 两平面，其余回 `unsupported pixel format`）；vcamd 侧校验长度后以 **CoreVideo CPU 池 `CVPixelBufferCreate`**（无需 IOSurface，软解路径已证明该池在 vcamd 可用）逐行 memcpy 组装 NV12 帧入既有 remoteFrames 队列；handler 事件签名从 IOSurfaceRef 改 borrowed `VCAMRemoteDecoderFramePayload`。契约钉点同步（plane keys、拒绝 `CVPixelBufferCreateWithIOSurface`、真实 `xpc_dictionary_get_data` 3 参数签名）。
+
+**验收证据（0.8.110 CI run 38681284217，装机+用户空间重启）**：
+- 12:20:52.669 `rtsp session start` → 12:20:53.335 `VT using hardware decoder=1` → **12:20:53.450 `rtsp first hardware pixel buffer format=34323076 size=1920x1080`**，本次会话无回退链（数据面直通）。
+- vcamd 侧 `vcamd remote decode frame epoch=… rows=1920,1920 h=1080`；noVNC 取景器目视为推流 testsrc2 竖条彩条，画面持续有帧。
+- 新增 `[DEBUG-vcamdiag] rtsp perf hardware/fps/p95Ms` 每秒一行（63059f2，形态与 local-media perf 行一致；快照原先只喂面板无法真机对比）。稳态 12:31–12:33：**hardware=1 fps 28.1–31.5（≈30 = 推流满帧）**，frameSequence 每秒 +30 连续无跳变（87s 内 1467→4080=2613 帧=满帧无持续丢帧），p95Ms 典型 44–58 ms（含 XPC 两跳 + 4MB NV12 memcpy 的帧间隔抖动）。
+- 首帧口径：session start → first hardware pixel buffer = 0.78 s（含 RTSP 握手/解码初始化）。
+
+**未测项如实入册**：端到端（推流时间戳→VNC 显示）与软解基线 0.575 s 的口径对比未做（现推流内容无时钟锚，且需要同一 VNC 链路人工读数）；数据面 CPU 增量未采样（设备 ps 对 vcamd/Camera 不累计 cpu time）；软解同窗对照不可执行（无 remote 硬解配置开关，回退仅在链路失败时自动触发，历史 29.4 fps 为旧版无 perf 日志时的口径）。
+
+**省电确认（用户要求）**：`kill -9` Camera 进程后，vcam-app perf 行停止（最后 12:33:17）、vcamd 仅剩会话收尾 `stale rtsp-hw-frame … active=0`，无新帧拉取；主机侧 ffmpeg/mediamtx 已终止，8554 无监听。
+
+**运维配方（本轮新增）**：noVNC 页断开停在连接屏 → `location.reload()` 带 autoconnect 自动重连；熄屏唤醒 = `#noVNC_keyboardinput` dispatch KeyboardEvent key='Power'；锁屏时 VNC 内上滑手势无效 → 直接 `uiopen "camera://"` 拉相机即可（同时解锁）；CI artifact 下载 URL 用 `archive_download_url` 的 `/actions/artifacts/<id>/zip` 形式（`/actions/runs/<run>/artifacts/<id>/zip` 报 404）；curl exit 35（SSL）重试即过；Windows Git Bash 无 dpkg-deb，deb 解包/校验放 WSL。
 - 回传资产（vcam-on）：probe/uploads/clip.mp4（v4 源端到端）、photo.jpg。
 - 探针报告：report_20261013_124150.json（R3，环境修复后仍零帧）；
   report_20261013_193304.json（I 轮 Persona 复刻版，无帧依赖段全通）；

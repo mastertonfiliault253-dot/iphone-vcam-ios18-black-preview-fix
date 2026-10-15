@@ -312,6 +312,15 @@ AVFoundation 压缩样本读取配方（自测第一、二版崩溃教训，均�
 
 对实现的含义：RTSP 硬件解码要工作，VT 解码必须发生在 GUI app 进程（历史注释 “production RTSP path: VT hardware decode runs in an app process” 与本次一致）。候选架构两条：B）`vcamd` 只做 demux，把压缩 access unit 送到已注入的 GUI 进程解码（保低延迟，改动大）；D′）`vcamd` 把 RTSP 重封为 LL-HLS，交给现有 SpringBoard AVPlayer 硬件路径（改动小，但端到端延迟升至约 1–2 s，与低延迟目标冲突）。当前 FFmpeg 软件解码在真机实测端到端约 0.575 s、29.4 fps，仍作为默认路径。
 
+### E10：非 GUI 进程的 IOSurface 边界（已完成，定性并给出数据面回退配方）
+
+E9 之后按用户选择实现 B（架构见 docs/kyc/VCAM-RETEST-REPORT-ZH.md §10.9）。解码帧回传最初设计为 IOSurface XPC（`IOSurfaceCreateXPCObject` → 对端 `IOSurfaceLookupFromXPCObject`），真机上 vcamd 侧 import 恒失败，补两侧进程内 self-test 后定性：
+
+- vcamd 内自测：`IOSurfaceCreate` 属性含 `IOSurfaceWidth/Height` 即 `created=0`（`vcamd surface selftest created=0 … imported=0`）；独立小探针（WSL theos clang `-target arm64-apple-ios16.0`，产物需设备 `ldid -S` 否则 SIGKILL）在 ssh（非 GUI session）上下文同样 `create=0`。即本机 iOS 18.3.1 对任何非 GUI session 进程拒绝创建 IOSurface，与 E9 的 daemon VT 限制同族。
+- SpringBoard 侧自测 `created=1 … imported=1`（GUI 进程完全可用）；SB 发出的 surface XPC 对象 `xpc_type_get_name` = `mach send right`，`xpc_mach_send_get_right` 可完整到达 vcamd（`machRight=1`），但 Lookup 恒 NULL。帧发布通道此前一直“成功”是因为 vcamd 只透传不 import。
+
+数据面回退配方（已实现、真机闭环）：回传消息不用 IOSurface，携带 NV12 两平面裸数据（`xpc_dictionary_set_data` plane0/plane1 + rowBytes/height，仅支持 420v/420f）；接收端用 CPU 池 `CVPixelBufferCreate`（不带 IOSurface 属性）逐行 memcpy 组装——CoreVideo CPU 池在非 GUI 进程可用（FFmpeg 软解路径早已证明）。代价是每帧约 4 MB 的 XPC 拷贝与一次 memcpy，稳态实测仍为推流满帧（1080p30 数据面无持续丢帧，见 §10.9 性能行）。
+
 ## 采用建议
 
 1. 保留当前 direct-VT 主路径；E0、E1、E1b 和固定单 slice 均已失败，不再叠加输出属性。
