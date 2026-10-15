@@ -44,6 +44,8 @@ extern uint64_t xpc_dictionary_get_uint64(xpc_object_t dictionary,
                                           const char *key);
 extern xpc_object_t _Nullable xpc_dictionary_get_value(xpc_object_t dictionary,
                                                         const char *key);
+const void *xpc_dictionary_get_data(xpc_object_t dictionary, const char *key,
+                                    size_t *length);
 extern void xpc_dictionary_set_string(xpc_object_t dictionary, const char *key,
                                       const char *value);
 extern void xpc_dictionary_set_uint64(xpc_object_t dictionary, const char *key,
@@ -592,13 +594,18 @@ static void VCAMSurfaceBrokerHandleMessage(xpc_connection_t peer,
                                     epoch, NULL);
             return;
         }
-        const void *plane0 = xpc_dictionary_get_data(message, "plane0");
-        const void *plane1 = xpc_dictionary_get_data(message, "plane1");
+        size_t planeLength0 = 0, planeLength1 = 0;
+        const void *plane0 =
+            xpc_dictionary_get_data(message, "plane0", &planeLength0);
+        const void *plane1 =
+            xpc_dictionary_get_data(message, "plane1", &planeLength1);
         uint64_t rowBytes0 = xpc_dictionary_get_uint64(message, "rowBytes0");
         uint64_t rowBytes1 = xpc_dictionary_get_uint64(message, "rowBytes1");
         uint64_t height = xpc_dictionary_get_uint64(message, "height");
         if (plane0 == NULL || plane1 == NULL || rowBytes0 == 0 ||
-            rowBytes1 == 0 || height == 0) {
+            rowBytes1 == 0 || height == 0 ||
+            planeLength0 < rowBytes0 * height ||
+            planeLength1 < rowBytes1 * (height / 2)) {
             // The frame carried no usable pixel planes; visible once per
             // session instead of silently dropping.
             if (VCAMRemoteDecoderLoggedSurfaceFailure < 4) {
