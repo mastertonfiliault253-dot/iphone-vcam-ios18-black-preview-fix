@@ -421,7 +421,21 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
             (unsigned int)CVPixelBufferGetPixelFormatType(pixelBuffer),
             CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer)]];
     }
-    if (snapshot != nil) VCAMPublishRTSPPerformance(snapshot);
+    if (snapshot != nil) {
+        VCAMPublishRTSPPerformance(snapshot);
+        // The snapshot only feeds the panel; mirror a one-line per-second
+        // summary to the process log so source throughput on real hardware
+        // can be compared across decode paths without opening the UI
+        // (same shape as the local-media perf line).
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"[DEBUG-vcamdiag] rtsp perf hardware=%d fps=%.2f p95Ms=%.3f size=%llu,%llu frameSequence=%llu",
+            (int)hardware,
+            [snapshot[@"sourceFPS"] doubleValue],
+            [snapshot[@"sourceFrameP95Ms"] doubleValue],
+            [snapshot[@"sourceWidth"] unsignedLongLongValue],
+            [snapshot[@"sourceHeight"] unsignedLongLongValue],
+            [snapshot[@"frameSequence"] unsignedLongLongValue]]];
+    }
 }
 
 - (CVPixelBufferRef)copyBGRAFromSoftwareFrame:(AVFrame *)frame {

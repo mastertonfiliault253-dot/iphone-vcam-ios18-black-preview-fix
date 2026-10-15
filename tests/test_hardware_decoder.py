@@ -530,6 +530,13 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMSurfaceBrokerSetRemoteDecoderEventHandler", stream)
         self.assertIn("kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange", stream)
         self.assertNotIn("CVPixelBufferCreateWithIOSurface", stream)
+        # Through throughput regression is only verifiable on real hardware,
+        # so the per-second snapshot must reach the process log; a panel-only
+        # snapshot cannot be diffed against the software-decode path.
+        self.assertIn(
+            "[DEBUG-vcamdiag] rtsp perf hardware=%d fps=%.2f p95Ms=%.3f",
+            stream,
+        )
         # A mach-service client only buffers messages sent right after resume
         # and re-establishes lazily on traffic; this connection idles between
         # RTSP sessions, so it must announce immediately and rebuild the
