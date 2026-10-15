@@ -526,7 +526,13 @@ static void VCAMRemoteDecoderScheduleReconnect(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
                    VCAMRemoteDecoderQueue, ^{
         reconnectPending = NO;
-        if (VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)) return;
+        // Rebuild unconditionally, never gated on validity: killing vcamd
+        // delivers an interruption to the client, and an interrupted
+        // mach-service connection keeps reporting xpc_connection_is_valid
+        // == true forever (its send right stays bound to the dead task's
+        // port). A validity gate here starved every rebuild in field
+        // testing; only a fresh connection re-resolves the service name
+        // and reaches the replacement daemon.
         VCAMRemoteDecoderEstablishConnection();
     });
 }
@@ -570,8 +576,10 @@ static void VCAMRemoteDecoderEstablishConnection(void) {
             return;
         }
         if (xpc_get_type(event) == VCAMXPCTypeError()) {
-            // vcamd died or restarted: rebuild this idle client connection
-            // so the next vcamd boot sees a fresh rtsp-hw-ready peer.
+            // vcamd died or restarted: this is the only event a client ever
+            // sees for it, and an interruption leaves the connection object
+            // "valid", so the rebuild is scheduled instead of gated.
+            NSLog(@"vcam sb decoder client: peer error, rebuild scheduled");
             VCAMRemoteDecoderScheduleReconnect();
             return;
         }

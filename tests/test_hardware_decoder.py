@@ -560,6 +560,21 @@ class HardwareDecoderTests(unittest.TestCase):
         # entirely gone every fresh connection errors at once, and an
         # immediate rebuild would hot-spin the decoder queue.
         self.assertIn("VCAMRemoteDecoderScheduleReconnect", broker)
+        # The scheduled rebuild may not be gated on xpc_connection_is_valid:
+        # a mach-service interruption (vcamd killed) keeps reporting the old
+        # connection as valid forever, and the gate starved the rebuild in
+        # field testing on 0.8.113 (SpringBoard peer never returned).
+        self.assertNotIn(
+            "if (VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)) return;",
+            broker,
+        )
+        self.assertIn(
+            "VCAMRemoteDecoderEstablishConnection();\n    });", broker
+        )
+        # The error branch must be observable from the device log so a
+        # future regression can tell "event never arrived" from "rebuild
+        # failed".
+        self.assertIn("peer error, rebuild scheduled", broker)
 
     def test_remote_frame_assembly_recycles_buffers_through_a_pool(self) -> None:
         # A fresh 3.1MB CVPixelBufferCreate/free per returned frame at 30fps

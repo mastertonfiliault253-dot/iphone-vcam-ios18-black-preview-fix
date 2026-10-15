@@ -210,7 +210,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.113+hw-decode-hardening";
+    return "com.codex.vcam/0.8.114+sb-peer-reconnect-fix";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
