@@ -103,6 +103,18 @@ static xpc_type_t VCAMXPCTypeConnection(void) {
 #endif
 }
 
+#if !VCAM_HAS_SYSTEM_XPC
+extern const struct _xpc_type_s _xpc_type_error;
+#endif
+
+static xpc_type_t VCAMXPCTypeError(void) {
+#if VCAM_HAS_SYSTEM_XPC
+    return XPC_TYPE_ERROR;
+#else
+    return (xpc_type_t)&_xpc_type_error;
+#endif
+}
+
 typedef xpc_connection_t (*VCAMXPCMachServiceCreateFunction)(
     const char *name, dispatch_queue_t _Nullable targetQueue, uint64_t flags);
 
@@ -501,6 +513,24 @@ static void VCAMRemoteDecoderSendReady(void) {
 
 static void VCAMRemoteDecoderEstablishConnection(void);
 
+// XPC surfaces connection loss/interruption as an error-type event, never a
+// connection-type one (only the listener receives those), so the error
+// branch in the event handler below is the only path that sees vcamd
+// restarts. The reconnect is delayed one second and de-duplicated: with the
+// service entirely gone every fresh connection errors immediately, and an
+// immediate rebuild would hot-spin the queue.
+static void VCAMRemoteDecoderScheduleReconnect(void) {
+    static BOOL reconnectPending;
+    if (reconnectPending) return;
+    reconnectPending = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
+                   VCAMRemoteDecoderQueue, ^{
+        reconnectPending = NO;
+        if (VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)) return;
+        VCAMRemoteDecoderEstablishConnection();
+    });
+}
+
 void VCAMSurfaceBrokerStartRemoteDecoderClient(
     VCAMRemoteDecodeOpenHandler openHandler,
     VCAMRemoteDecodeAUHandler auHandler,
@@ -537,6 +567,12 @@ static void VCAMRemoteDecoderEstablishConnection(void) {
             } else {
                 VCAMRemoteDecoderEstablishConnection();
             }
+            return;
+        }
+        if (xpc_get_type(event) == VCAMXPCTypeError()) {
+            // vcamd died or restarted: rebuild this idle client connection
+            // so the next vcamd boot sees a fresh rtsp-hw-ready peer.
+            VCAMRemoteDecoderScheduleReconnect();
             return;
         }
             if (xpc_get_type(event) != VCAMXPCTypeDictionary()) return;

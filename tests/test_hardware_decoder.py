@@ -545,6 +545,33 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn("VCAMXPCConnectionIsValid(VCAMRemoteDecoderConnection)", broker)
         self.assertIn("VCAMRemoteDecoderEstablishConnection();", broker)
 
+    def test_remote_decoder_client_rebuilds_after_vcamd_restart(self) -> None:
+        # A mach-service client reports connection loss as an error-type
+        # event, never a connection-type one (only listeners receive those).
+        # Without an explicit error-event branch the "rebuild" call was dead
+        # code and a SpringBoard peer could never re-register after a vcamd
+        # restart, forcing a SpringBoard restart for every daemon bounce.
+        broker = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("static xpc_type_t VCAMXPCTypeError(void)", broker)
+        self.assertIn("xpc_get_type(event) == VCAMXPCTypeError()", broker)
+        # The rebuild must be delayed and de-duplicated: with the service
+        # entirely gone every fresh connection errors at once, and an
+        # immediate rebuild would hot-spin the decoder queue.
+        self.assertIn("VCAMRemoteDecoderScheduleReconnect", broker)
+
+    def test_remote_frame_assembly_recycles_buffers_through_a_pool(self) -> None:
+        # A fresh 3.1MB CVPixelBufferCreate/free per returned frame at 30fps
+        # measured ~51% single-core in vcamd and tripped the device
+        # cpu_resource report; the assembly path must borrow from a
+        # size-keyed CVPixelBufferPool instead.
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CVPixelBufferPoolCreatePixelBuffer", stream)
+        self.assertIn("remotePixelPool", stream)
+
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
         linux_build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(
