@@ -12,6 +12,8 @@
 #include <string.h>
 #include <notify.h>
 #include <unistd.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 
 static char g_lastOutputSignature[768] = {0};
 static int g_sigaddrToken = -1;
@@ -243,6 +245,38 @@ static BOOL VCAMStringMatches(NSString *value, NSString *expected) {
         [value isEqualToString:expected];
 }
 
+// 诊断探针专用安全读：被探测的类可能正处于 CMCapture 属性机制的修改瞬间
+// （2026-10-15 cameracaptured SIGSEGV 即发生于此：class_copyMethodList 返回
+// 快照之后 captureSource_setPropertyInternal 变动了 method list，
+// method_getName 吐出垃圾 SEL 0x2，snprintf("%s") 解引用崩溃）。
+// 所有外来指针改经 mach_vm_read_overwrite 读本任务地址空间：悬垂指针
+// 变成内核错误返回，而不是在相机服务里炸出 SIGSEGV。
+static BOOL VCAMReadCStringSafely(const void *src, char *dst, size_t cap) {
+    if (dst == NULL || cap < 2) return NO;
+    dst[0] = '\0';
+    uintptr_t current = (uintptr_t)src;
+    if (current < 0x1000) return NO;
+    size_t filled = 0;
+    while (filled + 1 < cap) {
+        uintptr_t pageEnd = (current & ~(uintptr_t)0xFFF) + 0x1000;
+        size_t room = (size_t)(pageEnd - current);
+        size_t want = room < (cap - filled - 1) ? room : (cap - filled - 1);
+        mach_vm_size_t done = 0;
+        if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)current,
+                                   want, (mach_vm_address_t)(dst + filled),
+                                   &done) != KERN_SUCCESS || done == 0) {
+            break;
+        }
+        filled += (size_t)done;
+        if (memchr(dst + (filled - done), '\0', done) != NULL) {
+            return strlen(dst) > 0;
+        }
+        current += (uintptr_t)done;
+    }
+    dst[filled < cap ? filled : cap - 1] = '\0';
+    return NO;
+}
+
 // SumUp's still callback reaches the private camera graph through more than
 // one sink on iOS 16.1. Keep this probe read-only: method names identify the
 // actual terminal without changing the fail-closed replacement policy.
@@ -257,19 +291,43 @@ static void VCAMLogRuntimeMethodsOnce(Class klass, NSString *tag) {
         if ([loggedClasses containsObject:classKey]) return;
         [loggedClasses addObject:classKey];
     }
+    char tagText[64] = {0};
+    char classText[192] = {0};
+    VCAMReadCStringSafely(tag.UTF8String, tagText, sizeof(tagText));
+    VCAMReadCStringSafely(NSStringFromClass(klass).UTF8String, classText,
+                          sizeof(classText));
     unsigned int count = 0;
     Method *methods = class_copyMethodList(klass, &count);
+    if (methods == NULL) return;
     for (unsigned int index = 0; index < count; index++) {
-        SEL selector = method_getName(methods[index]);
-        const char *name = selector == NULL ? "(none)" : sel_getName(selector);
+        // method_t 布局：{ SEL name; const char *types; IMP imp; }。
+        // 先把条目整体拷到栈上，再对拷来的指针做安全字符串读，
+        // 避免 libobjc 对 raw entry 直接解引用踩到正在变动的 method list。
+        uintptr_t entry[3] = {0};
+        mach_vm_size_t entryBytes = 0;
+        if (mach_vm_read_overwrite(mach_task_self(),
+                (mach_vm_address_t)(uintptr_t)methods[index], sizeof(entry),
+                (mach_vm_address_t)entry, &entryBytes) != KERN_SUCCESS ||
+            entryBytes != sizeof(entry)) {
+            continue;
+        }
+        char nameText[128] = {0};
+        char typesText[96] = {0};
+        if (!VCAMReadCStringSafely((const void *)entry[0], nameText,
+                                   sizeof(nameText))) {
+            continue;
+        }
+        if (!VCAMReadCStringSafely((const void *)entry[1], typesText,
+                                   sizeof(typesText))) {
+            continue;
+        }
         char message[320] = {0};
         snprintf(message, sizeof(message),
                  "runtime methods tag=%s class=%s selector=%s types=%s",
-                 tag.UTF8String, NSStringFromClass(klass).UTF8String, name,
-                 method_getTypeEncoding(methods[index]));
+                 tagText, classText, nameText, typesText);
         VCAMRefLog(message);
     }
-    if (methods != NULL) free(methods);
+    free(methods);
 }
 
 // Bounded schema-only probe: never print attachment values or encoded data.
