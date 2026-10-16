@@ -1048,3 +1048,34 @@ opening session` → peer 就绪 → `11:53:09 rtsp first hardware pixel buffer`
   持续 `kex_exchange_identification: read: Connection reset by peer`（TCP 可连、服务端立即
   reset，≥25 分钟未恢复，cause 未定位）；noVNC :5801=200、SB tweak 注入正常（浮动球在场），
   越狱环境存活。观看态不受影响；后续依赖 SSH 的操作需等 sshd 恢复或人工介入复核。
+
+### 11.14 缺陷 K（候选）：远端硬解握手 stale-ack 竞态 → 进程级软解闩锁（2026-10-16 晚间现场发现）
+
+**现象**（用户报告"RTSP 为什么又变成软件解码"）：18:2x 起 `rtsp perf hardware=0` fps≈22、
+self-cpu 22~60%，取景器帧率低于推流端速率。
+
+**证据链**（vcamd.log 完整生命周期 + 崩溃目录）：
+- 16:06 发生**计划外 userspace panic/重启**（`userspace-panic-1792138003.ips`；SB 一连串
+  `ctor` 重建 pid 6702→7279→7679），vcamd 16:17 重启进新用户空间，开机瞬间网络未就绪
+  （`Network is unreachable` 数次）。
+- 首个会话（/lat 1080x1454）远端握手：`remote decode open epoch=16365103857179144208` →
+  `inbound rtsp-hw-open-ack pid=6702 epoch=16365103857179144208` → **`stale rtsp-hw-open-ack
+  ... active=0`**——ack 的 epoch 与刚发送的 open **完全一致**却被判 stale（处理器读到活动
+  epoch 仍是 0，open 的登记与 ack 处理存在先后竞态）→ 远端路径判失败。随后 daemon 内
+  direct-VT 尝试：`VTDecompressionSessionCreate status=0` 但每个回调 `status=-12911`
+  （非 GUI 进程限制，E10）→ 零帧。
+- 两次失败各自置位进程级闩锁（`gVCAMRTSPRemoteHardwareDisabled=1`、
+  `gVCAMRTSPHardwareSessionsDisabled=1`；其 app.log 记录行在 17:13 前已被有界裁剪）。
+  **之后所有会话（含 18:21 mediamtx 重启后的 /live 重连、RtspVncTool 1080x1920）静默跳过
+  两条硬解路径直达 FFmpeg 软解**——闩锁只在 vcamd 重启时复位。
+- 排除项：codec=h264 ✓、extradata=51B 在场 ✓、peer 就在线（`peer ready pid=7679`，deferral
+  门未触发）、与 /lat→/live 换路无关。
+
+**运维恢复（已执行）**：`killall -9 vcamd`（launchd 自愈）→ 新生命周期 `open epoch≡ack epoch`
+被接受（无 stale）→ `rtsp-hw-frame` 连续 → `perf hardware=1` 恢复。当前帧率≈18-20fps 为
+**推流端（RtspVncTool）速率上限**，非 vcam 限制。
+
+**代码修复候选（未实施，待裁决）**：①单次远端握手失败不应闩锁进程级禁用（改按会话重试 +
+退避，或失败阈值），避免"一次竞态判决终身软解"；②ack 处理器对 epoch 相符但 active 未登记的
+early-ack 容忍（或 open 先行登记 pending epoch 再发送）。属 §11.6 P2"单向降级"的直接根因
+收敛。
