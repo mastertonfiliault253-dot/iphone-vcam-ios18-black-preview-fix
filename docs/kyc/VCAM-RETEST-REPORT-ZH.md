@@ -872,3 +872,112 @@ exposure 窗裁决、attachment 逐帧方差、obs=-1 只读核查随探针数�
   切回后置双截图亦不同（`tmp/vnc-0117-rear-a/b.png`）。遗留观察：前置下虚拟画面是否应
   水平镜像（人像直觉）未定产品口径，本轮按"画面实时=PASS"判定，镜像语义列为待用户裁决项。
 **因此 §11 的"完整功能验收"在当前时点 = 五源+架构层全部通过、面板与探针电池两段未完项如实挂起。**
+
+### 11.10 修复轮：缺陷 G/H/I 闭环（0.8.118+stall-black-lease-panelopen-agetext，用户指令"修掉"）
+
+**缺陷 I 定性修正（先于修复，真机实证）**：11.5.2 曾把"断流画面"归因 broker 快照不过期；
+本轮用 `enabled=NO` 对照实验钉死真象——断流后取景器显示的是**镜头所对真实场景**：
+
+- 证据链：①hook 断流后 5 小时持续走 fail-closed 黑分支（`vcam-ref.log` 15513 进程
+  `virtual frame stale; rendering black` %300 节流连打到 09:39，新 cameracaptured 18356
+  首帧即黑）；②无任何 `render fail`（rendered=YES 恒成立）；③黑帧送达后取景器仍显示
+  环境内容，`enabled=NO`（虚拟关）取景器画面与断流态**逐像素同构**（竖条纹=镜头前
+  环境），灰点+卡"虚拟相机已关闭"时仍同图；④p95 渲染 180~220 ms 的替换链把"黑"送达
+  了 target，但 **iOS 18.3.1 预览显示链上黑替换帧不再上屏，pass-through 的真实帧上屏**
+  （远程直写架构下 hook 内黑 fail-closed 的送达边界，未再深挖显示侧根因）。
+- 结论：0.8.117 的"断流=旧帧定格/真实场景外露"观感 = hook 黑路径不可达 + 旧帧被
+  bootstrap/冻结复用两路径的显示结果；G 的"虚绿"（local 强制 receiving 的巨型 age）
+  与 I 的"断流不黑"是两个独立问题，均已修。
+
+**三处修复**（一次提交 7f8e3b1，契约测试 294 全绿，WSL 编译检查通过，CI run 38838623473）：
+
+| 修复 | 位置 | 语义 |
+|---|---|---|
+| H① demand lease | `Sources/Daemon/main.m` PublishTick | 删除 `transportConsumerActive` 续租：lease 只随帧级 Darwin notify（tweak 每帧/面板预览每拍）推进，lease 过期 3s 即 `setConsumerDemandActive:NO` 挂起 RTSP。writer consumer 注册不随进程退出清除，旧逻辑下 Camera 退出后永不挂起（perf 04:22-04:24 满帧实证） |
+| H② panelOpen 泄漏 | `Sources/UI/VCAMMediaPickerController.m` installButtonWhenWindowIsReady | `self.panel.view.window == nil && presentingViewController == nil` 时清引用+log `ui stale panel reference cleared`——scrim 点击/宿主拆除等关闭路径不走 dismissPanelThen，残留引用曾令桌面球永久 hidden（04:21:43 hidden=1 实证） |
+| I 断流黑屏 | `Sources/Sources/VCAMRTSPStreamSource.m` | vcamd RTSP 源新增 1Hz stall watchdog：`start:` 起、`stop` 停；无完成帧超 2.5s（与消费端冻结窗同判据；404 重连/零帧会话/解码停摆全覆盖）即以 video-range NV12 黑帧（Y=16,UV=128，BT.709+硬件解码标记同真实帧口径）向共享环 1Hz 写占位帧，复用真帧同一条真机验证过的替换链路；真帧恢复自动停发（log `rtsp stream stalled over 2.5s; publishing black placeholder frames` / `rtsp frames resumed; ...`）。**副作用=断流时环时间戳持续推进**：三色点绿+卡"已收到推流（X ms 前）"（语义="vcam 正在输出黑帧"，非"源在推流"，如实记录） |
+| G 帧龄显示 | `Sources/UI/VCAMMediaPickerController.m` currentStatus | "已收到推流（…，N ms 前）"按量级换算 `<60s→ms / <60min→分钟前 / 否则→小时前`，杜绝"33860800 ms 前"式荒谬值 |
+
+**契约钉点**：`test_stream_consumer_lifecycle.py`（`transportConsumerActive` 改 assertNotIn
+回归钉 + 新增 `test_rtsp_stall_publishes_black_placeholder_frames`）、
+`test_media_picker_integration.py`（新增 stale-panel 钉 + "分钟前/小时前"钉）、
+`test_hardware_decoder.py`（黑占位日志对 `'@"rtsp '` HLS 硬编码钉显式豁免）。
+本地 294 全绿（基线 292 +2 新增）；WSL `Rootless compile check passed`。
+
+**真机回归（0.8.118 装机后，2026-10-16 10:14–10:24，全部通过；dpkg `-l` 显示
+`ii com.codex.vcam 0.8.118+stall-black-lease-panelopen-agetext`，userspace 重启后
+vcamd 18771 拉起）**：
+
+1. **① 断流黑屏（用户验收判据）= PASS**：主机推流停态下 `uiopen camera://` 前台，
+   `10:17:19.480 vcamd RTSP source started for consumer`→404 快速重试→
+   `10:17:22.496 rtsp stream stalled over 2.5s; publishing black placeholder frames`；
+   VNC canvas 帧（`tmp/u-panel/vnc-black-08118.png`）取景器中央 730800 像素**全为
+   rgb(0,0,0)**、目视纯黑无竖条纹无环境光外露——对照 0.8.117 的同场景真实场景外露，
+   缺陷 I 闭环。
+2. **② 恢复推流自动停发 = PASS**：重建 lat 推流（face.mov 1080p30，WinGet ffmpeg，
+   源/脚本移至 ASCII 路径 `C:\Users\Administrator\vcam-push\`——后台任务 shell 中文路径
+   损坏 + drawtext 转义破坏，故本轮去时间戳水印，如实登记）后 vcamd 退避重连，
+   `10:21:48.063 rtsp first hardware pixel buffer size=1080x1454` +
+   `10:21:48.064 rtsp frames resumed; black placeholder frames stopped`，perf
+   `hardware=1 fps≈30` 满帧，VNC 目视取景器恢复人脸视频（`vnc-resumed-08118.png`）。
+3. **③ H① demand 挂起 = PASS**：`kill -9 Camera` 回桌面后约 3 秒（3s lease 窗）即
+   `10:22:39.747 vcamd RTSP source suspended no consumer`，主机 netstat 手机→8554 无
+   活跃连接（仅 TIME_WAIT 残留）——对照 0.8.117 同场景 5 小时不挂起。
+4. **④ H② 桌面球恢复 + ⑥ 橙态新路径 = PASS（同帧）**：`10:22:36.2 installButton
+   host=SBHomeScreenWindow` 后桌面悬浮球可见（对照旧缺陷"退出 Camera 后球永久 hidden"），
+   点色=**橙**：suspend 停发占位帧→环自然过期→橙分支在现环境首次可达（旧缺陷 G 时代
+   橙态"不可再现"的根因即 demand 泄漏，随之闭环）（`vnc-home-08118.png`）。
+5. **⑤ G 文案分级 = 代码级闭环，卡全文未目视**：三档换算由
+   `test_media_picker_integration.py` 钉死；旧"33860800 ms 前"场景已被 H① 架构性消除
+   （断流→3s 挂起→环过期→receiving=NO→卡转红"未收到推流"，巨型毫秒数不再出现），
+   新鲜流下 ageMs 恒为个位毫秒。面板展开点击 3 次未命中（TrollVNC pointer 慢性不稳，
+   §11.5.2 既有定性），卡片全行文本目视未完成，如实挂起。注：屏顶黄徽章"5 秒"经
+   源树排查（全库无"秒"格式串）确认是 **Camera 自拍定时器**，与 vcam 面板/推流无关。
+
+### 11.11 U 轮总结（组3 收尾：验收面全景与遗留清单）
+
+U 轮（0.8.115→0.8.118，2026-10-15 深夜~10-16 上午）完成度：
+
+- **五源功能验收**（11.2）：local 视频/图片、camera 直通、rtsp 硬解、HLS、OBS 全 PASS；
+  RTSP 直写架构 self-cpu 2.1~5.5%（OBS 82~96% 为已知 P2）。
+- **联动与运行时**：demand 三态（started/resumed/suspended）真机日志闭环；screen-tint
+  三色调光端到端（N 轮）+P0 闪光联动（M 轮）沿用加固；快速路径 p50 14ms 档（v8）达标；
+  缺陷 A/B（GOP 爆发→解码挂死链）定性闭环。
+- **面板/GUI**（11.5.2）：三色点绿/灰实证 PASS；恢复/启用按钮全链 PASS；缺陷 E 撤销
+  （VNC 事件积压+plist 路径双根因）；橙态当时不可再现 → 由 0.8.118 的 I 修复改变语义
+  （见 11.10 副作用），**修复后橙态新路径 = 断消费者 suspend 后环自然过期**（回归待证）。
+- **探针电池**（组2）：std 探针真签名跑通（11.5.1），零帧定性数据背书；exposure 窗裁决
+  完成；obs=-1 维持只读定性；probe 拍照档发现缺陷 D（probe 侧 delegate 缺失，未修）。
+- **审查**（组A）：P2×2/P3×3 入册（11.6），无一在 0.8.118 范围（与 G/H/I 无关）。
+- **修复轮**（本轮）：G/H/I 修复+装机+回归（11.10）；缺陷 C 已于 0.8.117 闭环（11.9）。
+- **未闭环如实保留**：收藏 CRUD 无 UI（P3）、大小/扩展名负例与文件导入正例未做（GUI 通道
+  拥塞）、调光渲染目视与复制设备 ID 粘贴未完成、锁屏无点目视不可达（代码级事实维持）、
+  缺陷 D（probe 侧）、jb 通道零帧未钉（11.7）。
+- 计划 18 项未测清单：本轮闭环 14 项，上述 4 项如实挂起。
+
+### 11.12 KYC 通过成功率预估（模型估计，非实测）
+
+**口径**：设备 iPhone XS Max/iOS 18.3.1 rootless；方案=Safari Web KYC（规避原生 SDK 的
+S10-1 注入/指纹面）+ vcam 虚拟相机 + 预录人脸源视频（30fps 真实动作素材）。11 检测点
+现状取自 §11.7 与《DETECTION-POINTS-CHECKLIST》10-13 基线 + M/N/O 轮加固。**以下数字是
+按独立闸门概率折算的模型估计，全部不可本地实测（真实厂商服务端未接入）**。
+
+- **场景 A：被动 liveness 为主的流程**（无随机主动挑战，仅静默 PAD/光活体）：
+  - 达标项：S4-1 时序、S2/S3 枚举/能力、S6 证件、S8 EXIF、S10-2 Web 无 jb 面（全低）。
+  - 主要闸门：S4-2 内容运动（素材侧可控，前提=持续真实微动作素材）；S4-3 噪声/ISP 指纹
+    （残余 45-65%，商用模型敏感度未知）；S5-1 光活体（P0 联动+三色调光已达标，torch
+    耦合强度为残余 RISK）；S5-3 被动 PAD/deepfake 模型（**未测**，对无光学路径帧流的
+    判定是最大不确定项）；S9-1 IMU（手持场景矛盾信号，Web 路径启用比例未知）；
+    per_frame_exposure/face_meta metadata 缺失（RISK）。
+  - 预估：闸门近似独立连乘，S5-3×S4-3×S9-1 联合通过率主导 → **保守 30~40%，中性 45~60%**。
+- **场景 B：随机主动挑战**（转头/眨眼/读数，Persona/Sumsub 默认形态）：预录不可实时响应，
+  挑战命中需人工实时换源或多动作素材对赌（命中≈挑战空间倒数） → **15~30%**。
+- **场景 C：原生 SDK KYC App**（非 Safari）：S10-1 越狱/注入可检出（dyld env/image 清单）
+  + PFDL/DeviceDetect 设备指纹 + 零帧通道未钉 → **≈0~5%**（除非另装设备身份伪装栈，
+  见 Shadow/RSTLite 记忆口径）。
+- 关键假设与失效风险：①S5-3 商用 PAD 对 vcam 替换帧的判定是单点最大权重，若某厂商 PAD
+  对该纹理宽容，场景 A 可上探 70%；②任何厂商若强制挑战+IMU 双闸门，落入场景 B 下限；
+  ③预估不含 Sideloadly 签名链路可用性（11.8 503 冷却期风险）。
+- **提高通过率的既定动作**（素材/内容工程，不改 vcam 包）：真实人脸 30fps 原生帧率源
+  （勿插帧）、持续微动作（眨眼 14-17 次/分）、拍摄侧叠加真实环境光变化以喂饱 S5-1/S4-3、
+  流程期间手机固定避免 IMU 大动作；若厂商可选 passive 模式优先选 passive。
