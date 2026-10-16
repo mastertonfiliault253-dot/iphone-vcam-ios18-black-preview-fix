@@ -78,6 +78,27 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
         self.assertNotIn("stallPlaceholder", source)
         self.assertNotIn("placeholder frames", source)
 
+    def test_rtsp_defers_session_open_until_remote_peer_returns(self) -> None:
+        # V 轮：常开源会在 postinst respring 窗口里抢跑；缺远端解码 peer 时
+        # 必须推迟开会话，否则会话终身软解（P2 单向降级 ~88% CPU）。
+        source = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMRTSPRemotePeerWaitSeconds", source)
+        self.assertIn("peerDeferralSeconds", source)
+        self.assertIn(
+            "rtsp waiting for remote decoder peer before opening session", source
+        )
+        loop = source.split("- (void)decodeReconnectLoop", 1)[1].split(
+            "- (void)acceptDecodedPixelBuffer", 1
+        )[0]
+        defer_gate = loop.split("BOOL producedFrame = NO;", 1)[0]
+        self.assertIn("VCAMSurfaceBrokerRemoteDecoderPeerAvailable()", defer_gate)
+        self.assertIn("gVCAMRTSPRemotePeerAvailable", defer_gate)
+        self.assertIn("self.usesRTSPTransport", defer_gate)
+        produced_branch = loop.split("if (producedFrame) {", 1)[1].split("}", 2)[0]
+        self.assertIn("peerDeferralSeconds = 0", produced_branch)
+
     def test_hls_resume_rebuilds_live_player_before_generic_stall_timeout(self) -> None:
         bridge = (
             ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardMediaBridge.m"

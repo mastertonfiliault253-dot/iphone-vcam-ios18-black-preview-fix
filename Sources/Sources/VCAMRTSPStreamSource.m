@@ -38,6 +38,10 @@ static _Atomic(int) gVCAMRTSPRemotePeerAvailable = 0;
 // Beyond this age the last decoded frame counts as lost and the source
 // reports no video. Same window as VCAMOBSStreamSource.
 static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;
+// V 轮：常开源可能在 SpringBoard 重启窗口（postinst respring）里抢先开会话，
+// 此时远端解码 peer 尚未回注。缺 peer 时先推迟开会话，最多等这么久再按
+// 旧降级链（daemon VT → FFmpeg 软解）开会，保证 tweak 真死时仍有画面。
+static const NSUInteger VCAMRTSPRemotePeerWaitSeconds = 180;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
@@ -327,7 +331,29 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 
 - (void)decodeReconnectLoop {
     NSUInteger consecutiveFailures = 0;
+    NSUInteger peerDeferralSeconds = 0;
+    BOOL peerDeferralLogged = NO;
     while (self.running) {
+        // V 轮：常开源的首个会话可能落在 SpringBoard 重启窗口里（postinst
+        // 会 killall -9 SpringBoard，ElleKit 重注入 + broker 重注册需数十秒）。
+        // 缺 peer 时若照常开会话，remote 路径被跳过、daemon 内 direct-VT 因
+        // -12911 失败，会话终身卡在 FFmpeg 软解（remote 只在会话开头尝试）
+        // =P2 单向降级 ~88% CPU。这里先推迟开会话（1s 一查，不读流不产生
+        // TCP 背压），超出预算才按旧降级链开会，保证 tweak 真死时仍出帧。
+        if (self.usesRTSPTransport && gVCAMRTSPRemoteHardwareDisabled == 0 &&
+            peerDeferralSeconds < VCAMRTSPRemotePeerWaitSeconds &&
+            !atomic_load_explicit(&gVCAMRTSPRemotePeerAvailable,
+                                  memory_order_acquire) &&
+            !VCAMSurfaceBrokerRemoteDecoderPeerAvailable()) {
+            if (!peerDeferralLogged) {
+                peerDeferralLogged = YES;
+                [VCAMConfiguration appendProcessLog:
+                    @"rtsp waiting for remote decoder peer before opening session"];
+            }
+            peerDeferralSeconds++;
+            [NSThread sleepForTimeInterval:1.0];
+            continue;
+        }
         BOOL producedFrame = NO;
         @autoreleasepool {
             producedFrame = [self decodeOneFFmpegSession];
@@ -335,6 +361,8 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
         if (!self.running) break;
         if (producedFrame) {
             consecutiveFailures = 0;
+            peerDeferralSeconds = 0;
+            peerDeferralLogged = NO;
             [NSThread sleepForTimeInterval:0.5];
             continue;
         }

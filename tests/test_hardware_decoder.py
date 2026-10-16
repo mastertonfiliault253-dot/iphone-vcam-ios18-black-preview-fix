@@ -437,7 +437,12 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertIn('av_dict_set(options, "rw_timeout", "3000000", 0)', stream)
         self.assertIn("if (self.usesRTSPTransport)", stream)
         self.assertNotIn('@"%@ hardware first-frame size=', stream)
-        self.assertNotIn('@"rtsp ', stream)
+        # V 轮 peer-deferral 日志走硬编码 "rtsp " 前缀（grep 友好，与
+        # streamName 复用无关）；其余硬编码 "rtsp " 仍禁止（HLS 回滚复用
+        # 本类时必须走 streamName）。
+        stream_without_peer_wait = stream.replace(
+            '@"rtsp waiting for remote decoder peer', '@"')
+        self.assertNotIn('@"rtsp ', stream_without_peer_wait)
         self.assertNotIn("self.softwareFallbackActive", stream)
         self.assertNotIn("hardwareRetryDeadline", stream)
         self.assertNotIn("decodeOneFFmpegSessionUsingHardware", stream)
