@@ -29,9 +29,17 @@ static int gFFmpegLastMessageCount = 0;
 // device-level failure mode) set this flag so later reconnects go straight
 // to software instead of retrying hardware in a loop within this process.
 static volatile int gVCAMRTSPHardwareSessionsDisabled = 0;
-// Set after a remote hardware session fails (unreachable, rejected or
-// zero-frame) so reconnects stop paying the remote retry cost in-process.
+// Set after VCAMRTSPRemoteHardwareFailureLimit consecutive remote hardware
+// failures (unreachable, rejected or zero-frame) so a persistently broken
+// peer stops costing a retry on every reconnect. Defect K (2026-10-16): the
+// original one-shot latch let a single transient handshake failure — the
+// broker-side epoch race — force software decode for the rest of the
+// process, observable as "RTSP 又变成软件解码" until a vcamd restart.
 static volatile int gVCAMRTSPRemoteHardwareDisabled = 0;
+// Consecutive remote failures; any session that publishes frames via the
+// remote path clears it (see the success branch in decodeOneFFmpegSession).
+static volatile int gVCAMRTSPRemoteHardwareFailureCount = 0;
+enum { VCAMRTSPRemoteHardwareFailureLimit = 3 };
 // Mirrors the broker's remote-decoder peer registration events.
 static _Atomic(int) gVCAMRTSPRemotePeerAvailable = 0;
 
@@ -974,13 +982,29 @@ remoteLoopEnd:
         }
         if (remoteProduced) {
             producedFrame = YES;
+            gVCAMRTSPRemoteHardwareFailureCount = 0;
             goto cleanup;
         }
         if (self.running) {
-            gVCAMRTSPRemoteHardwareDisabled = 1;
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"%@ remote hardware decode disabled; trying in-daemon paths",
-                self.streamName]];
+            // Defect K (2026-10-16): latching the process-wide disable on the
+            // first failure turned one transient handshake hiccup into
+            // software decode for the rest of the process (until a vcamd
+            // restart). Count consecutive failures instead and disable only
+            // once the remote path looks persistently broken; the success
+            // branch above clears the count.
+            gVCAMRTSPRemoteHardwareFailureCount += 1;
+            if (gVCAMRTSPRemoteHardwareFailureCount >=
+                    VCAMRTSPRemoteHardwareFailureLimit) {
+                gVCAMRTSPRemoteHardwareDisabled = 1;
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ remote hardware decode disabled after %d consecutive failures",
+                    self.streamName, VCAMRTSPRemoteHardwareFailureLimit]];
+            } else {
+                [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+                    @"%@ remote hardware decode attempt failed (%d/%d); next reconnect retries it",
+                    self.streamName, gVCAMRTSPRemoteHardwareFailureCount,
+                    VCAMRTSPRemoteHardwareFailureLimit]];
+            }
         }
     }
 

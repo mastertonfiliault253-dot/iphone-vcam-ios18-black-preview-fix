@@ -349,6 +349,25 @@ class HardwareDecoderTests(unittest.TestCase):
         # must consult the broker's live state, not just delivered events.
         self.assertIn("VCAMSurfaceBrokerRemoteDecoderPeerAvailable", rtsp)
         self.assertIn("remote hardware decoder produced no frames packets=300", rtsp)
+        # Defect K (2026-10-16): the process-wide remote disable must not latch
+        # on a single failure. A consecutive-failure counter gates it and any
+        # frame-publishing remote session clears it; the broker must register
+        # the epoch before the open can reach SpringBoard, or a fast matching
+        # ack is judged stale (active=0) and one race poisons the whole process.
+        self.assertIn("gVCAMRTSPRemoteHardwareFailureCount", rtsp)
+        self.assertIn("VCAMRTSPRemoteHardwareFailureLimit", rtsp)
+        self.assertIn("gVCAMRTSPRemoteHardwareFailureCount >=", rtsp)
+        self.assertIn("remote hardware decode disabled after", rtsp)
+        broker = (ROOT / "Sources" / "Daemon" / "VCAMSurfaceBrokerServer.m").read_text(
+            encoding="utf-8"
+        )
+        open_start = broker.index("BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen")
+        open_body = broker[open_start : broker.index("\n}", open_start)]
+        self.assertLess(
+            open_body.index("VCAMRemoteDecoderSessionEpoch = epoch;"),
+            open_body.index("VCAMRemoteDecoderSendToPeer(message)"),
+        )
+        self.assertIn("VCAMRemoteDecoderSessionEpoch = 0;", open_body)
         self.assertIn("VCAMHardwareVideoDecoder", rtsp)
         self.assertIn("initWithCodecType:codecType", rtsp)
         self.assertIn("decodePacketsWithHardwareSession", rtsp)

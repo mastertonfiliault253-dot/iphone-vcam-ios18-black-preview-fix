@@ -475,9 +475,19 @@ BOOL VCAMSurfaceBrokerPushRemoteDecoderOpen(uint64_t epoch, const char *codec,
     xpc_dictionary_set_uint64(message, "width", (uint64_t)width);
     xpc_dictionary_set_uint64(message, "height", (uint64_t)height);
     xpc_dictionary_set_data(message, "parameterData", parameterData, length);
-    if (!VCAMRemoteDecoderSendToPeer(message)) return NO;
-    VCAMRemoteDecoderSessionEpoch = epoch;
     VCAMRemoteDecoderResetSessionDiagnostics();
+    // Register the epoch BEFORE the message can reach the peer: SpringBoard
+    // answers rtsp-hw-open-ack on its own connection queue, and the inbound
+    // handler must never judge a matching ack stale just because this thread
+    // had not resumed after the send yet (defect K, 2026-10-16: an ack whose
+    // epoch equaled the open's was dropped as "stale ... active=0", and the
+    // client's one-shot failure latch then forced software decode for the
+    // rest of the process).
+    VCAMRemoteDecoderSessionEpoch = epoch;
+    if (!VCAMRemoteDecoderSendToPeer(message)) {
+        VCAMRemoteDecoderSessionEpoch = 0;
+        return NO;
+    }
     VCAMRemoteDecoderSurfaceSelfTest();
     fprintf(stderr, "vcamd remote decode open epoch=%llu codec=%s %dx%d\n",
             (unsigned long long)epoch, codec, width, height);
