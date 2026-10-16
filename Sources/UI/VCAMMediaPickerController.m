@@ -1148,6 +1148,17 @@ static void VCAMSampleSelfCPUWindowForSampler(void) {
     }
     NSDictionary *values = [VCAMConfiguration currentValues];
     BOOL locked = [self isSpringBoardHost] && ![self isSpringBoardUnlocked];
+    // U-round H fix: a scrim tap (or any host-side teardown) can dismiss the
+    // panel without ever running dismissPanelThen, and the host process may
+    // exit while the panel is up; the stale self.panel then keeps panelOpen
+    // YES forever and the floating dot stays hidden with no panel on screen.
+    // A panel whose view has left the window and nobody is presenting is gone.
+    if (self.panel != nil && self.panel.view.window == nil &&
+        self.panel.presentingViewController == nil) {
+        [VCAMConfiguration appendProcessLog:
+            @"ui stale panel reference cleared"];
+        self.panel = nil;
+    }
     BOOL panelOpen = self.panel != nil || [self panelIsPresented];
     // SpringBoard must not render its dot above a foreground injected app
     // (duplicate dots), and the dot must not hover over the open panel and
@@ -1309,8 +1320,20 @@ static void VCAMSampleSelfCPUWindowForSampler(void) {
             // hardware/software claim in the user-visible status.
             playbackKind = @"系统原生播放";
         }
-        streamText = [NSString stringWithFormat:@"已收到推流（%@，%.0f ms 前）",
-            playbackKind, [streamStatus[@"ageMs"] doubleValue]];
+        // U-round G fix: local 源的强制接收判定下帧龄会无限增长（静态图片/停播
+        // 视频仍算活动虚拟流），裸毫秒数会显示成"33860800 ms 前"这类荒谬值；
+        // 按量级换算为人话。
+        double ageMs = [streamStatus[@"ageMs"] doubleValue];
+        NSString *ageText = nil;
+        if (ageMs < 60000.0) {
+            ageText = [NSString stringWithFormat:@"%.0f ms 前", ageMs];
+        } else if (ageMs < 3600000.0) {
+            ageText = [NSString stringWithFormat:@"%.0f 分钟前", ageMs / 60000.0];
+        } else {
+            ageText = [NSString stringWithFormat:@"%.1f 小时前", ageMs / 3600000.0];
+        }
+        streamText = [NSString stringWithFormat:@"已收到推流（%@，%@）",
+            playbackKind, ageText];
     } else {
         streamText = @"未收到推流";
     }

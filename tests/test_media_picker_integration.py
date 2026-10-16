@@ -645,6 +645,19 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("return saved == nil ? YES : saved.boolValue", visibility)
         self.assertIn('visibility[@"global"] = @(!currentlyVisible)', toggle)
 
+    def test_stale_panel_reference_cannot_keep_the_floating_dot_hidden(self) -> None:
+        # U 轮 H：scrim 点击/宿主拆除等途径关闭面板不会经过 dismissPanelThen，
+        # 残留的 self.panel 会让 panelOpen 恒真、悬浮球在屏幕无面板时仍被隐藏。
+        picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
+            encoding="utf-8"
+        )
+        install = picker.split(
+            "- (void)installButtonWhenWindowIsReady {", 1
+        )[1].split("- (void)updateFloatingStatusIndicator", 1)[0]
+        self.assertIn("self.panel.view.window == nil", install)
+        self.assertIn("self.panel.presentingViewController == nil", install)
+        self.assertIn("ui stale panel reference cleared", install)
+
     def test_panel_shows_stream_health_and_hides_injection_targets(self) -> None:
         picker = (ROOT / "Sources" / "UI" / "VCAMMediaPickerController.m").read_text(
             encoding="utf-8"
@@ -658,6 +671,10 @@ class MediaPickerIntegrationTests(unittest.TestCase):
         self.assertIn("streamingStatus", picker)
         self.assertIn("已收到推流", picker)
         self.assertIn("未收到推流", picker)
+        # U 轮 G：帧龄按量级换算（ms/分钟/小时），杜绝"33860800 ms 前"式荒谬显示。
+        self.assertIn("ms 前", picker)
+        self.assertIn("分钟前", picker)
+        self.assertIn("小时前", picker)
         self.assertIn("推流状态", panel)
         self.assertIn("controlPanelDidRequestStatusRefresh", panel)
         self.assertNotIn("仅注入 mediaserverd 与 SpringBoard", picker)

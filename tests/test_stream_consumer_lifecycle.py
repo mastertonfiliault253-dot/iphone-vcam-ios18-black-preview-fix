@@ -60,10 +60,33 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
         publish_tick = main.split("static void VCAMPublishTick(void)", 1)[1].split(
             "static void VCAMScheduleTimer(void)", 1
         )[0]
-        self.assertIn("transportConsumerActive", publish_tick)
+        # U 轮 H：lease 只允许被帧级 Darwin notify 推进；surface writer 的
+        # consumer 注册不随进程退出清除，续租依赖它会令 RTSP 永不挂起。
+        self.assertNotIn("transportConsumerActive", publish_tick)
         self.assertIn("VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter)", publish_tick)
         daemon_start = main.split("int main(int argc, char *argv[])", 1)[1]
         self.assertIn("if (VCAMDaemonRuntimeIsAtLeastIOS18())", daemon_start)
+
+    def test_rtsp_stall_publishes_black_placeholder_frames(self) -> None:
+        # U 轮 I：RTSP 断流后共享环里的旧帧不得被消费端无限期显示。
+        # vcamd 以 2.5s 阈值（与消费端冻结窗同判据）向环写 1Hz 黑占位帧，
+        # 真帧恢复自动停发；仅推流源启用（HLS 有 AVPlayer 自己的生命周期）。
+        source = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMRTSPStallPlaceholderSeconds", source)
+        self.assertIn("startStallPlaceholderWatchdog", source)
+        self.assertIn("publishStallPlaceholderIfNeeded", source)
+        self.assertIn("fillPlaceholderBlackCanvas", source)
+        self.assertIn(
+            "VCAMSharedFrameWriterPublish(stallPlaceholderWriter, canvas)", source
+        )
+        self.assertIn("rtsp frames resumed; black placeholder frames stopped", source)
+        self.assertIn("rtsp stream stalled over", source)
+        watchdog = source.split(
+            "- (void)startStallPlaceholderWatchdog", 1
+        )[1].split("- (BOOL)fillPlaceholderBlackCanvas", 1)[0]
+        self.assertIn("if (!self.usesRTSPTransport) return;", watchdog)
 
     def test_consumer_demand_setter_does_not_recursively_call_itself(self) -> None:
         producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(

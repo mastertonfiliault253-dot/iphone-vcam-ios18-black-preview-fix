@@ -38,6 +38,9 @@ static _Atomic(int) gVCAMRTSPRemotePeerAvailable = 0;
 // Beyond this age the last decoded frame counts as lost and the source
 // reports no video. Same window as VCAMOBSStreamSource.
 static const CFTimeInterval VCAMStaleFrameSeconds = 3.5;
+// U 轮 I：断流黑占位帧接管阈值。与消费端 hook 的冻结窗 2.5s 同判据，
+// 保证最后一帧刚失去新鲜度就由黑帧接手，取景器不再无限期显示旧帧。
+static const CFTimeInterval VCAMRTSPStallPlaceholderSeconds = 2.5;
 
 static void VCAMFFmpegDiagnosticLog(void *context, int level,
                                     const char *format, va_list arguments) {
@@ -158,6 +161,18 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     // at VCAMRTSPRemoteMaxOutstanding and the session never reaches the
     // zero-frame fallback.
     NSUInteger remoteFailures;
+    // U 轮 I：断流黑屏占位。推流断开后共享环里的最后一帧会被消费端当作实时
+    // 画面无限期显示（fail-closed 黑帧路径在 0.8.117 的远程直写架构下不会
+    // 到达取景器）。vcamd 是唯一知道"帧流断了"的位置：会话建立失败（404 重
+    // 试）、连接存活但零帧、解码器停摆都表现为完成事件停止。watchdog 每秒检
+    // 查一次，断流超过阈值就自己向共享环写 1Hz 黑帧（复用正常帧同一条已被
+    // 真机验证的替换链路），真帧恢复时自动停发。仅 RTSP 推流源启用（HLS/本
+    // 地媒体有自己的播放生命周期）。字段由 @synchronized(self) 保护。
+    dispatch_source_t stallPlaceholderTimer;
+    VCAMSharedFrameWriter *stallPlaceholderWriter;
+    CVPixelBufferPoolRef stallPlaceholderCanvasPool;
+    BOOL stallPlaceholderActive;
+    CFTimeInterval stallPlaceholderBaseline;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -227,6 +242,7 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
                                      payload:payload];
         });
     self.running = YES;
+    [self startStallPlaceholderWatchdog];
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.decodeQueue, ^{ [weakSelf decodeReconnectLoop]; });
     return YES;
@@ -246,7 +262,13 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 
 - (void)stop {
     self.running = NO;
+    if (stallPlaceholderTimer != NULL) {
+        dispatch_source_cancel(stallPlaceholderTimer);
+        stallPlaceholderTimer = NULL;
+    }
     @synchronized (self) {
+        stallPlaceholderActive = NO;
+        stallPlaceholderBaseline = 0;
         if (_latestPixelBuffer != NULL) CVPixelBufferRelease(_latestPixelBuffer);
         if (_lastRenderedSample != NULL) CFRelease(_lastRenderedSample);
         _latestPixelBuffer = NULL;
@@ -572,8 +594,13 @@ enum {
 - (void)noteRemoteHardwareFrameCompletionWidth:(int)width height:(int)height {
     CFAbsoluteTime now = CACurrentMediaTime();
     BOOL logFirstDecodedFrame = NO;
+    BOOL logPlaceholderStopped = NO;
     NSDictionary *snapshot = nil;
     @synchronized (self) {
+        if (stallPlaceholderActive) {
+            stallPlaceholderActive = NO;
+            logPlaceholderStopped = YES;
+        }
         _latestFrameHostTime = now;
         _latestFrameSequence += 1;
         _diagnosticFrames += 1;
@@ -617,6 +644,10 @@ enum {
             (unsigned int)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             (size_t)width, (size_t)height]];
     }
+    if (logPlaceholderStopped) {
+        [VCAMConfiguration appendProcessLog:
+            @"rtsp frames resumed; black placeholder frames stopped"];
+    }
     if (snapshot != nil) {
         VCAMPublishRTSPPerformance(snapshot);
         // The snapshot only feeds the panel; mirror a one-line per-second
@@ -631,6 +662,128 @@ enum {
             [snapshot[@"sourceWidth"] unsignedLongLongValue],
             [snapshot[@"sourceHeight"] unsignedLongLongValue],
             [snapshot[@"frameSequence"] unsignedLongLongValue]]];
+    }
+}
+
+// U 轮 I：启动断流黑占位 watchdog（仅 RTSP 推流源）。1s 定时在主队列：
+// 一次 memset + 环写 480x640 NV12 约 ms 级，不会饿死 observer 回调。
+- (void)startStallPlaceholderWatchdog {
+    if (!self.usesRTSPTransport) return;
+    @synchronized (self) {
+        stallPlaceholderActive = NO;
+        stallPlaceholderBaseline = CACurrentMediaTime();
+    }
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
+                                                     0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                              NSEC_PER_SEC, 100 * NSEC_PER_MSEC);
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(timer, ^{
+        [weakSelf publishStallPlaceholderIfNeeded];
+    });
+    @synchronized (self) {
+        if (stallPlaceholderTimer != NULL) {
+            dispatch_source_cancel(stallPlaceholderTimer);
+        }
+        stallPlaceholderTimer = timer;
+    }
+    dispatch_resume(timer);
+}
+
+// 占位画布填充 video-range NV12 黑帧：亮度黑点 Y=16、色度中性 UV=128，
+// 与硬件解码帧同一色彩口径，避免被消费端的 RGB 内容门误判为"无内容"。
+- (BOOL)fillPlaceholderBlackCanvas:(CVPixelBufferRef)canvas {
+    if (CVPixelBufferLockBaseAddress(canvas, 0) != kCVReturnSuccess) return NO;
+    BOOL filled = YES;
+    size_t planes = CVPixelBufferGetPlaneCount(canvas);
+    for (size_t plane = 0; plane < planes; plane++) {
+        uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(canvas, plane);
+        size_t rowBytes = CVPixelBufferGetBytesPerRowOfPlane(canvas, plane);
+        size_t rows = CVPixelBufferGetHeightOfPlane(canvas, plane);
+        if (base == NULL) { filled = NO; break; }
+        const uint8_t fill = plane == 0 ? 16 : 128;
+        for (size_t row = 0; row < rows; row++) {
+            memset(base + row * rowBytes, fill, rowBytes);
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(canvas, 0);
+    return filled;
+}
+
+// 断流时以 1Hz 向共享环写黑帧。真帧恢复由完成事件把 stallPlaceholderActive
+// 复位，本方法下一拍自动停发（环里恢复真帧时间戳推进）。会话从未建立
+// （404 重试）同样适用：baseline 从 start 起算，超窗即黑。
+- (void)publishStallPlaceholderIfNeeded {
+    CVPixelBufferRef canvas = NULL;
+    BOOL published = NO;
+    BOOL transitionedToStall = NO;
+    @synchronized (self) {
+        if (!self.running || !self.usesRTSPTransport) return;
+        CFTimeInterval lastFrame = _latestFrameHostTime != 0
+            ? _latestFrameHostTime : stallPlaceholderBaseline;
+        if (CACurrentMediaTime() - lastFrame < VCAMRTSPStallPlaceholderSeconds) {
+            return;
+        }
+        if (stallPlaceholderWriter == NULL) {
+            stallPlaceholderWriter = VCAMSharedFrameWriterCreate();
+            if (stallPlaceholderWriter == NULL) return;
+        }
+        if (stallPlaceholderCanvasPool == NULL) {
+            CVPixelBufferPoolRef pool = NULL;
+            NSDictionary *poolAttributes = @{
+                (id)kCVPixelBufferPoolMinimumBufferCountKey: @2,
+            };
+            NSDictionary *pixelAttributes = @{
+                (id)kCVPixelBufferPixelFormatTypeKey:
+                    @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                (id)kCVPixelBufferWidthKey: @((int)VCAMSharedFrameWidth),
+                (id)kCVPixelBufferHeightKey: @((int)VCAMSharedFrameHeight),
+            };
+            if (CVPixelBufferPoolCreate(kCFAllocatorDefault,
+                                        (__bridge CFDictionaryRef)poolAttributes,
+                                        (__bridge CFDictionaryRef)pixelAttributes,
+                                        &pool) != kCVReturnSuccess ||
+                pool == NULL) {
+                return;
+            }
+            stallPlaceholderCanvasPool = pool;
+        }
+        if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
+                                               stallPlaceholderCanvasPool,
+                                               &canvas) != kCVReturnSuccess ||
+            canvas == NULL) {
+            return;
+        }
+        if (![self fillPlaceholderBlackCanvas:canvas]) {
+            CVPixelBufferRelease(canvas);
+            canvas = NULL;
+            return;
+        }
+        // 与 SpringBoard 直写真实帧同组 attachments（状态卡的解码方式保持
+        // "硬件解码"，色彩矩阵一致）。
+        CVBufferSetAttachment(canvas, kCVImageBufferColorPrimariesKey,
+                              kCVImageBufferColorPrimaries_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(canvas, kCVImageBufferTransferFunctionKey,
+                              kCVImageBufferTransferFunction_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(canvas, kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(canvas, CFSTR("com.codex.vcam.decodeHardware"),
+                              kCFBooleanTrue, kCVAttachmentMode_ShouldPropagate);
+        published = VCAMSharedFrameWriterPublish(stallPlaceholderWriter, canvas);
+        CVPixelBufferRelease(canvas);
+        canvas = NULL;
+        if (published && !stallPlaceholderActive) {
+            stallPlaceholderActive = YES;
+            transitionedToStall = YES;
+        }
+    }
+    if (transitionedToStall) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"rtsp stream stalled over %.1fs; publishing black placeholder frames",
+            VCAMRTSPStallPlaceholderSeconds]];
     }
 }
 

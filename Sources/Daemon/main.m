@@ -215,18 +215,18 @@ static void VCAMPublishTick(void) {
             [VCAMProducer requiresConsumerDemand] &&
             atomic_load_explicit(&VCAMDynamicConsumerActive,
                                  memory_order_acquire) != 0) {
+            // U-round H fix: the demand lease may only advance on the
+            // frame-level Darwin notifications (the camera hook posts one per
+            // output frame, a visible panel preview posts one per display
+            // tick). The surface writer's consumer registration is not tied to
+            // the consumer's lifetime — a camera/panel process that exits can
+            // leave it set — and renewing the lease from that flag kept RTSP
+            // pulling forever after every real consumer was gone.
             uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-            BOOL transportConsumerActive = VCAMSurfaceWriter != NULL &&
-                VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter);
-            if (transportConsumerActive && now != 0) {
-                atomic_store_explicit(
-                    &VCAMLastDynamicConsumerActivityNanoseconds,
-                    now, memory_order_release);
-            }
             uint64_t lastActivity = atomic_load_explicit(
                 &VCAMLastDynamicConsumerActivityNanoseconds,
                 memory_order_acquire);
-            if (!transportConsumerActive && now != 0 && lastActivity != 0 &&
+            if (now != 0 && lastActivity != 0 &&
                 now >= lastActivity &&
                 now - lastActivity >= VCAMDynamicConsumerLeaseNanoseconds) {
                 atomic_store_explicit(&VCAMDynamicConsumerActive, 0,
