@@ -1079,3 +1079,20 @@ self-cpu 22~60%，取景器帧率低于推流端速率。
 退避，或失败阈值），避免"一次竞态判决终身软解"；②ack 处理器对 epoch 相符但 active 未登记的
 early-ack 容忍（或 open 先行登记 pending epoch 再发送）。属 §11.6 P2"单向降级"的直接根因
 收敛。
+
+**修复已实施并装机验证（0.8.121+remote-handshake-retry，commit 872ce51，CI 38888053173）**：
+- 竞态根因修复：`VCAMSurfaceBrokerPushRemoteDecoderOpen` 改为**先登记
+  `VCAMRemoteDecoderSessionEpoch`（并重置诊断计数）再发送 open**，发送失败回滚为 0——ack
+  到达时匹配条件必已就位，同类 stale 竞态从源头消除（契约测试钉住两语句顺序）。
+- 闩锁语义修复：单次失败不再进程级禁用；改 `gVCAMRTSPRemoteHardwareFailureCount` 连续失败
+  计数，达 `VCAMRTSPRemoteHardwareFailureLimit=3` 才禁用，任何经远端成功出帧的会话清零；
+  失败但未达阈值时日志为 `remote hardware decode attempt failed (N/3); next reconnect
+  retries it`，达阈值时为 `remote hardware decode disabled after 3 consecutive failures`
+  （旧判据行"disabled; trying in-daemon paths"随之作废）。
+- 装机实测（dpkg ii=0.8.121，postinst respring 后新 SB pid=8830）：`peer ready pid=8830` →
+  `remote decode open epoch=E` → `open-ack pid=8830 epoch=E` **被接受（无 stale 行）** →
+  `rtsp-hw-frame` 连续 → `perf hardware=1 fps≈22`（帧率=推流端上限）。契约测试 294 全绿、
+  WSL 编译过；V 轮常开行为未受影响（无相机时满帧仍拉）。
+- 验证边界如实：竞态是时序依赖的，无法确定性复现"修复前必现"；本修复的验证=代码顺序钉死
+  （契约测试）+ 装机后握手路径全链实测本次通过。阈值路径同样无法现场强制触发（需人为制造
+  3 次连续失败），仅代码级+契约级验证。
