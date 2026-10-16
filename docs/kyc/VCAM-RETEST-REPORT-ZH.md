@@ -981,3 +981,62 @@ S10-1 注入/指纹面）+ vcam 虚拟相机 + 预录人脸源视频（30fps 真
 - **提高通过率的既定动作**（素材/内容工程，不改 vcam 包）：真实人脸 30fps 原生帧率源
   （勿插帧）、持续微动作（眨眼 14-17 次/分）、拍摄侧叠加真实环境光变化以喂饱 S5-1/S4-3、
   流程期间手机固定避免 IMU 大动作；若厂商可选 passive 模式优先选 passive。
+
+### 11.13 V 轮：RTSP 源常开需求模型与黑占位机制废除（0.8.119/0.8.120，2026-10-16 中午）
+
+**用户裁决**（需求原文送达 7 次）："之前的关相机就不推流省电改成只要有推流或选中本地文件
+播放就保持，没推流或没播放本地文件时保持默认，不要用做断流黑屏"。追问确认=**彻底去掉黑
+占位机制**（接受断流时取景器回到默认 fallback 画面而非黑屏）。用户推理被证实：副作用
+"断流但 Camera 仍前台时三色点绿 + 卡片已收到推流"的唯一来源就是黑占位帧持续刷新共享环
+时间戳造成的伪新鲜；占位移除后断流 → 环过期 → 橙点 + 卡片红"未收到推流"，副作用自然消除。
+
+**新行为矩阵（RTSP 源）**：
+
+| 状态 | 0.8.118 及以前 | 0.8.119+（V 轮） |
+|---|---|---|
+| 有流 + 有相机消费者 | 拉流 | 拉流（不变） |
+| 有流 + 无相机消费者 | demand lease 到期挂起源（省电） | **继续拉流**（有流即保持） |
+| 无流（404） | 退避重试（无 demand 则不启动） | 退避重试常开（保持默认，廉价等待） |
+| 断流（会话中断） | watchdog 1Hz 写黑占位帧 → 伪绿点 | 环过期 → 橙点 + 卡片红；取景器回默认竖纹 fallback |
+| 本地文件选中 | SpringBoard 媒体桥 AVPlayer 常播（本就不受 demand 门控，`suspendHLSForNoConsumer` 首行 `if (self.localVideo) return;`） | 不变（用户需求天然满足） |
+
+**代码改动**（0.8.119，commit 331163b）：删 consumer demand 门控全套
+（`requiresConsumerDemand`/`setConsumerDemandActive:`/lease 常量/daemon 订阅
+`com.codex.vcam.ios18.frame`/suspended-resumed 日志）；reload 的 RTSP 分支无条件
+`[self newRTSPSource]`；删黑占位 watchdog 三方法 + 5 ivars + `VCAMRTSPStallPlaceholderSeconds`。
+HLS 的 SB-side demand gating 保留未动（现配置源=rtsp，不在本轮范围）。
+
+**缺陷 J（新，常开时序放大 §11.6 P2）+ 修复（0.8.120，commit c98429a）**：dpkg postinst
+故意 `killall -9 SpringBoard cameracaptured`，装机 respring 后 SB remote-decoder peer 重注册
+需数十秒；常开源的首个会话恰好落在这个窗口 → remote 路径被跳过（只在会话开头尝试一次）
+→ daemon direct-VT 因 -12911 必败 → 会话终身卡 FFmpeg 软解，实测 self-cpu **63.1%**
+（§11.6 "单向降级"场景被 always-on 时序确定性地触发）。修复=**peer-deferral 门**：
+`decodeReconnectLoop` 开会话前查 `gVCAMRTSPRemotePeerAvailable` ||
+`VCAMSurfaceBrokerRemoteDecoderPeerAvailable()`，缺 peer 则 1s 一查推迟开会话（不读流、
+无 TCP 背压），预算 `VCAMRTSPRemotePeerWaitSeconds=180` 超时后按旧降级链开会（tweak 真死
+仍出帧）；出帧即复位计数。装机实测：`11:53:06 rtsp waiting for remote decoder peer before
+opening session` → peer 就绪 → `11:53:09 rtsp first hardware pixel buffer`，self-cpu 回
+**6.1%**。
+
+**装机回归（0.8.120+wait-remote-peer 真机，全部 PASS）**：
+1. 关相机仍拉流：无 Camera 进程时 `rtsp perf hardware=1 fps≈30` 连续 + self-cpu 6.1% 窗。
+2. 无流 404 等待：停推流后 `DESCRIBE failed: 404 Not Found` + `rtsp reconnect backing off
+   10 s` 循环，perf 停止，无占位日志（机制已删）。
+3. 恢复即拉：重启 ffmpeg 推流 ~15s 内退避循环自动重连恢复 `hardware=1 fps≈30`（相机不在
+   前台仍满帧=有流即拉不等消费者）。
+4. 开相机零延迟：`uiopen camera://` 后首个 VNC 帧取景器即虚拟人脸画面（源已在拉，无旧
+   ~1.9s 起流延迟；帧级精度，毫秒级未测）。
+5. 断流副作用消除（核心）：Camera 前台停流 ~14s 后三色点**直接转橙**（不再需要退出
+   Camera），取景器回到默认竖纹 fallback 画面，无黑占位；绿点伪新鲜消除。
+   证据帧 `tmp/u-panel/v-camera-open-08120.png`（绿点+人脸）、`v-nostream-camera-08120.png`
+   （橙点+竖纹）。
+- 未验证项如实：断流卡片红文全文未目视（VNC pointer 不稳，面板展开失败，判据=环过期
+  机制 + ①-⑤ 日志链）；本地文件背景播为代码级事实（localVideo return）未切配置实测；
+  HLS SB-side demand 保留后的行为未回归（源未启用）。
+- 验证链：契约测试 294 全绿（demand/占位钉点同步重写 + 新增 peer-wait 钉
+  `test_rtsp_defers_session_open_until_remote_peer_returns`；peer-wait 日志硬编码 `@"rtsp `
+  前缀按 grep 友好纪律在 `test_hardware_decoder.py` 加显式豁免）；WSL 编译过；
+  CI run 38847136882 success（5m2s）；设备 dpkg -l ii=0.8.120。
+- 验收判据更新（后续轮装机适用）：装机后应见 `rtsp waiting for remote decoder peer before
+  opening session` → `rtsp first hardware pixel buffer`；SB tweak 在场时不得出现
+  `hardware decode disabled`/`first software`。
