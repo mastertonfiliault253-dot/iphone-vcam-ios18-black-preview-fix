@@ -1040,3 +1040,11 @@ opening session` → peer 就绪 → `11:53:09 rtsp first hardware pixel buffer`
 - 验收判据更新（后续轮装机适用）：装机后应见 `rtsp waiting for remote decoder peer before
   opening session` → `rtsp first hardware pixel buffer`；SB tweak 在场时不得出现
   `hardware decode disabled`/`first software`。
+- 意外事件记录（2026-10-16 12:0x，验收后）：上一会话遗留的后台 userspace 重启任务恰在此刻
+  结束（exit 255=ssh 会话被重启掐断，属该命令正常现象），触发一次非计划 respring——顺带
+  构成 always-on 模型的一次意外韧性验证：**无任何人工干预**，主机 netstat 见
+  192.168.2.39→:8554 ESTABLISHED（vcamd 退避循环自动重连，ffmpeg 推流侧同在）+ 12:22 noVNC
+  目视浮动球**绿点**（共享环新鲜，全链路恢复）。未解决观察：设备 SSH :22 自该次 respring 后
+  持续 `kex_exchange_identification: read: Connection reset by peer`（TCP 可连、服务端立即
+  reset，≥25 分钟未恢复，cause 未定位）；noVNC :5801=200、SB tweak 注入正常（浮动球在场），
+  越狱环境存活。观看态不受影响；后续依赖 SSH 的操作需等 sshd 恢复或人工介入复核。
