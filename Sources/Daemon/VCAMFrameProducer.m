@@ -55,8 +55,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
 @property(nonatomic, strong, nullable) id<VCAMMediaSource> source;
 @property(nonatomic, strong) dispatch_queue_t stateQueue;
-@property(nonatomic) BOOL consumerDemandActive;
-@property(nonatomic) BOOL rtspHasStartedForConsumer;
 - (VCAMRTSPStreamSource *)newRTSPSource;
 @end
 
@@ -72,8 +70,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
     if (self) {
         _renderer = [VCAMFrameRenderer new];
         _stateQueue = dispatch_queue_create("com.codex.vcamd.producer", DISPATCH_QUEUE_SERIAL);
-        _consumerDemandActive =
-            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 18;
         [self reload];
     }
     return self;
@@ -124,12 +120,15 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
                                                                           renderer:self.renderer];
                 break;
             case VCAMSourceKindRTSP:
-                // RTSP prefers direct-VT hardware decoding inside the stream
-                // source and falls back to the FFmpeg software decoder when a
-                // VT session cannot produce frames on this device.
-                if (self.consumerDemandActive) {
-                    self.source = [self newRTSPSource];
-                }
+                // Direct-VT hardware decoding inside the stream source with an
+                // FFmpeg software fallback. The source is always-on while the
+                // configuration selects RTSP (V-round user decision): an
+                // absent stream keeps the session loop in cheap 404 backoff
+                // retry so a stream that appears is pulling frames without
+                // waiting for a camera consumer, and the shared ring simply
+                // goes stale when the stream is gone (dot turns orange, panel
+                // shows 未收到推流) instead of publishing placeholder frames.
+                self.source = [self newRTSPSource];
                 break;
             case VCAMSourceKindHLS:
                 // SpringBoard owns the production AVPlayer HLS path. Retain
@@ -148,50 +147,6 @@ static BOOL VCAMConfigurationsProduceSameFrames(VCAMConfiguration *left,
             @"vcamd reload source=%ld enabled=%d started=%d error=%@",
             (long)self.configuration.sourceKind, self.configuration.enabled,
             self.source != nil, error.localizedDescription ?: @"(none)"]];
-    });
-}
-
-- (BOOL)requiresConsumerDemand {
-    __block BOOL required = NO;
-    dispatch_sync(self.stateQueue, ^{
-        required = self.configuration.enabled &&
-            self.configuration.sourceKind == VCAMSourceKindRTSP &&
-            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
-    });
-    return required;
-}
-
-- (void)setConsumerDemandActive:(BOOL)active {
-    dispatch_sync(self.stateQueue, ^{
-        BOOL rtsp = self.configuration.enabled &&
-            self.configuration.sourceKind == VCAMSourceKindRTSP &&
-            NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
-        BOOL unchanged = _consumerDemandActive == active;
-        _consumerDemandActive = active;
-        if (!rtsp || (unchanged && !(active && self.source == nil))) return;
-        if (!active) {
-            if (self.source == nil) return;
-            [self.source stop];
-            self.source = nil;
-            [VCAMConfiguration appendProcessLog:
-                @"vcamd RTSP source suspended no consumer"];
-            return;
-        }
-        if (self.source != nil) return;
-        self.source = [self newRTSPSource];
-        NSError *error = nil;
-        if (![self.source start:&error]) self.source = nil;
-        if (self.source != nil) {
-            NSString *message = self.rtspHasStartedForConsumer
-                ? @"vcamd RTSP source resumed for consumer"
-                : @"vcamd RTSP source started for consumer";
-            self.rtspHasStartedForConsumer = YES;
-            [VCAMConfiguration appendProcessLog:message];
-        } else {
-            [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
-                @"vcamd RTSP source start for consumer failed error=%@",
-                error.localizedDescription ?: @"unknown"]];
-        }
     });
 }
 

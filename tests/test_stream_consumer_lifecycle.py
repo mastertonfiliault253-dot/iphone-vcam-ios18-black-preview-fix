@@ -36,7 +36,10 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
             bridge.count('CFSTR("com.codex.vcam.ios18.frame")'), 2
         )
 
-    def test_ios18_rtsp_stops_decoder_after_consumer_lease_and_restarts_on_demand(self) -> None:
+    def test_ios18_rtsp_source_is_always_on_without_consumer_demand(self) -> None:
+        # V 轮需求模型（用户指令）：RTSP 源随配置常开，不再随相机消费者
+        # 起停。无流时源停留在廉价 404 退避重试，共享环自然过期（点橙、卡
+        # 红），不再有 demand lease、挂起/恢复日志或订阅帧 notify。
         main = (ROOT / "Sources" / "Daemon" / "main.m").read_text(
             encoding="utf-8"
         )
@@ -47,57 +50,33 @@ class StreamConsumerLifecycleTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("VCAMDynamicConsumerLeaseNanoseconds", main)
-        self.assertIn('CFSTR("com.codex.vcam.ios18.frame")', main)
-        self.assertIn("VCAMMediaConsumerActivity", main)
-        self.assertIn("setConsumerDemandActive:", header)
-        self.assertIn("setConsumerDemandActive:", producer)
+        self.assertNotIn("requiresConsumerDemand", header)
+        self.assertNotIn("setConsumerDemandActive", header)
+        self.assertNotIn("requiresConsumerDemand", main)
+        self.assertNotIn("setConsumerDemandActive", main)
+        self.assertNotIn("VCAMDynamicConsumerLeaseNanoseconds", main)
+        self.assertNotIn('CFSTR("com.codex.vcam.ios18.frame")', main)
+        self.assertNotIn("demandIdle", main)
+        self.assertNotIn("consumerDemandActive", producer)
+        self.assertNotIn("vcamd RTSP source suspended no consumer", producer)
+        self.assertNotIn("vcamd RTSP source started for consumer", producer)
+        self.assertNotIn("vcamd RTSP source resumed for consumer", producer)
         self.assertIn("VCAMSourceKindRTSP", producer)
-        self.assertIn("vcamd RTSP source suspended no consumer", producer)
-        self.assertIn("vcamd RTSP source resumed for consumer", producer)
-        self.assertIn("operatingSystemVersion.majorVersion >= 18", main)
-        self.assertIn("VCAMScheduleTimer", main)
-        publish_tick = main.split("static void VCAMPublishTick(void)", 1)[1].split(
-            "static void VCAMScheduleTimer(void)", 1
+        rtsp_case = producer.split("case VCAMSourceKindRTSP:", 1)[1].split(
+            "case VCAMSourceKindHLS:", 1
         )[0]
-        # U 轮 H：lease 只允许被帧级 Darwin notify 推进；surface writer 的
-        # consumer 注册不随进程退出清除，续租依赖它会令 RTSP 永不挂起。
-        self.assertNotIn("transportConsumerActive", publish_tick)
-        self.assertIn("VCAMSharedSurfaceWriterHasConsumer(VCAMSurfaceWriter)", publish_tick)
-        daemon_start = main.split("int main(int argc, char *argv[])", 1)[1]
-        self.assertIn("if (VCAMDaemonRuntimeIsAtLeastIOS18())", daemon_start)
+        self.assertIn("self.source = [self newRTSPSource];", rtsp_case)
+        self.assertNotIn("consumerDemand", rtsp_case)
 
-    def test_rtsp_stall_publishes_black_placeholder_frames(self) -> None:
-        # U 轮 I：RTSP 断流后共享环里的旧帧不得被消费端无限期显示。
-        # vcamd 以 2.5s 阈值（与消费端冻结窗同判据）向环写 1Hz 黑占位帧，
-        # 真帧恢复自动停发；仅推流源启用（HLS 有 AVPlayer 自己的生命周期）。
+    def test_rtsp_no_stream_goes_stale_without_placeholder_frames(self) -> None:
+        # V 轮：黑占位帧机制整体移除（用户裁决"不要用断流黑屏"）。断流时
+        # 共享环停止推进并由消费端 TTL 判 stale，不再由 daemon 向环写黑帧。
         source = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"
         )
-        self.assertIn("VCAMRTSPStallPlaceholderSeconds", source)
-        self.assertIn("startStallPlaceholderWatchdog", source)
-        self.assertIn("publishStallPlaceholderIfNeeded", source)
-        self.assertIn("fillPlaceholderBlackCanvas", source)
-        self.assertIn(
-            "VCAMSharedFrameWriterPublish(stallPlaceholderWriter, canvas)", source
-        )
-        self.assertIn("rtsp frames resumed; black placeholder frames stopped", source)
-        self.assertIn("rtsp stream stalled over", source)
-        watchdog = source.split(
-            "- (void)startStallPlaceholderWatchdog", 1
-        )[1].split("- (BOOL)fillPlaceholderBlackCanvas", 1)[0]
-        self.assertIn("if (!self.usesRTSPTransport) return;", watchdog)
-
-    def test_consumer_demand_setter_does_not_recursively_call_itself(self) -> None:
-        producer = (ROOT / "Sources" / "Daemon" / "VCAMFrameProducer.m").read_text(
-            encoding="utf-8"
-        )
-        setter = producer.split(
-            "- (void)setConsumerDemandActive:(BOOL)active {", 1
-        )[1].split("\n}\n", 1)[0]
-
-        self.assertNotIn("self.consumerDemandActive = active", setter)
-        self.assertIn("_consumerDemandActive = active", setter)
+        self.assertNotIn("StallPlaceholder", source)
+        self.assertNotIn("stallPlaceholder", source)
+        self.assertNotIn("placeholder frames", source)
 
     def test_hls_resume_rebuilds_live_player_before_generic_stall_timeout(self) -> None:
         bridge = (

@@ -31,15 +31,7 @@ static BOOL VCAMLoggedNativeSurfaceConsumed;
 static BOOL VCAMLoggedLegacyFallback;
 static BOOL VCAMLoggedStaticNV12Fallback;
 static BOOL VCAMLoggedUnsupportedNativeFormat;
-static const uint64_t VCAMDynamicConsumerLeaseNanoseconds =
-    3ULL * 1000000000ULL;
-static _Atomic(uint64_t) VCAMLastDynamicConsumerActivityNanoseconds;
-static _Atomic(uint32_t) VCAMDynamicConsumerActive;
 static void VCAMScheduleTimer(void);
-
-static BOOL VCAMDaemonRuntimeIsAtLeastIOS18(void) {
-    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 18;
-}
 
 static void VCAMDestroySurfaceWriter(void) {
     if (VCAMSurfaceWriter != NULL) {
@@ -211,32 +203,9 @@ static void VCAMSampleSelfCPUWindow(void) {
 static void VCAMPublishTick(void) {
     @autoreleasepool {
         VCAMSampleSelfCPUWindow();
-        if (VCAMDaemonRuntimeIsAtLeastIOS18() &&
-            [VCAMProducer requiresConsumerDemand] &&
-            atomic_load_explicit(&VCAMDynamicConsumerActive,
-                                 memory_order_acquire) != 0) {
-            // U-round H fix: the demand lease may only advance on the
-            // frame-level Darwin notifications (the camera hook posts one per
-            // output frame, a visible panel preview posts one per display
-            // tick). The surface writer's consumer registration is not tied to
-            // the consumer's lifetime — a camera/panel process that exits can
-            // leave it set — and renewing the lease from that flag kept RTSP
-            // pulling forever after every real consumer was gone.
-            uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-            uint64_t lastActivity = atomic_load_explicit(
-                &VCAMLastDynamicConsumerActivityNanoseconds,
-                memory_order_acquire);
-            if (now != 0 && lastActivity != 0 &&
-                now >= lastActivity &&
-                now - lastActivity >= VCAMDynamicConsumerLeaseNanoseconds) {
-                atomic_store_explicit(&VCAMDynamicConsumerActive, 0,
-                                      memory_order_release);
-                [VCAMProducer setConsumerDemandActive:NO];
-                VCAMDestroySurfaceWriter();
-                VCAMScheduleTimer();
-                return;
-            }
-        }
+        // V-round: the RTSP source is always-on while configured, so there is
+        // no consumer-lease suspend path here anymore. The publish cadence
+        // follows the configured fps only.
         if (![VCAMProducer isEnabled]) {
             VCAMDestroySurfaceWriter();
             return;
@@ -378,11 +347,7 @@ static void VCAMPublishTick(void) {
 }
 
 static void VCAMScheduleTimer(void) {
-    BOOL demandIdle = VCAMDaemonRuntimeIsAtLeastIOS18() &&
-        [VCAMProducer requiresConsumerDemand] &&
-        atomic_load_explicit(&VCAMDynamicConsumerActive,
-                             memory_order_acquire) == 0;
-    NSInteger fps = [VCAMProducer isEnabled] && !demandIdle
+    NSInteger fps = [VCAMProducer isEnabled]
         ? [VCAMProducer preferredFramesPerSecond] : 1;  // 1 Hz when idle
     uint64_t interval = NSEC_PER_SEC / (uint64_t)MAX(1, MIN(60, fps));
     if (VCAMTimer == nil) {
@@ -395,24 +360,6 @@ static void VCAMScheduleTimer(void) {
                               interval, interval / 10);
 }
 
-static void VCAMMediaConsumerActivity(
-    CFNotificationCenterRef center, void *observer, CFStringRef name,
-    const void *object, CFDictionaryRef userInfo) {
-    (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-    if (!VCAMDaemonRuntimeIsAtLeastIOS18()) return;
-    atomic_store_explicit(
-        &VCAMLastDynamicConsumerActivityNanoseconds,
-        VCAMSharedFrameMonotonicNanoseconds(), memory_order_release);
-    if (atomic_exchange_explicit(&VCAMDynamicConsumerActive, 1,
-                                 memory_order_acq_rel) != 0) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if ([VCAMProducer requiresConsumerDemand]) {
-            [VCAMProducer setConsumerDemandActive:YES];
-            VCAMScheduleTimer();
-        }
-    });
-}
-
 static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *observer,
                                      CFStringRef name, const void *object,
                                      CFDictionaryRef userInfo) {
@@ -422,19 +369,6 @@ static void VCAMConfigurationChanged(CFNotificationCenterRef center, void *obser
         // surface; recreating here keeps the one-slot path honest.
         VCAMDestroySurfaceWriter();
         [VCAMProducer reload];
-        BOOL recentDemand = NO;
-        if (VCAMDaemonRuntimeIsAtLeastIOS18() &&
-            [VCAMProducer requiresConsumerDemand]) {
-            uint64_t now = VCAMSharedFrameMonotonicNanoseconds();
-            uint64_t lastActivity = atomic_load_explicit(
-                &VCAMLastDynamicConsumerActivityNanoseconds,
-                memory_order_acquire);
-            recentDemand = now != 0 && lastActivity != 0 && now >= lastActivity &&
-                now - lastActivity < VCAMDynamicConsumerLeaseNanoseconds;
-            [VCAMProducer setConsumerDemandActive:recentDemand];
-        }
-        atomic_store_explicit(&VCAMDynamicConsumerActive,
-                              recentDemand ? 1 : 0, memory_order_release);
         VCAMScheduleTimer();
     });
 }
@@ -461,13 +395,6 @@ int main(int argc, char *argv[]) {
                                         CFSTR("com.codex.vcam/preferences.changed"),
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        if (VCAMDaemonRuntimeIsAtLeastIOS18()) {
-            CFNotificationCenterAddObserver(
-                CFNotificationCenterGetDarwinNotifyCenter(),
-                NULL, VCAMMediaConsumerActivity,
-                CFSTR("com.codex.vcam.ios18.frame"), NULL,
-                CFNotificationSuspensionBehaviorDeliverImmediately);
-        }
         VCAMScheduleTimer();
         [VCAMConfiguration appendProcessLog:@"vcamd started"];
         fprintf(stderr, "vcamd boot step=runloop\n");

@@ -9,8 +9,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)reload;
 - (BOOL)isEnabled;
-- (BOOL)requiresConsumerDemand;
-- (void)setConsumerDemandActive:(BOOL)active;
 - (NSInteger)preferredFramesPerSecond;
 - (BOOL)usesNativeSurfaceTransport;
 - (uint32_t)nativeSurfaceSlotCount;

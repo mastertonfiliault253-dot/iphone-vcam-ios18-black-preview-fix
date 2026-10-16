@@ -210,7 +210,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.118+stall-black-lease-panelopen-agetext";
+    return "com.codex.vcam/0.8.119+always-on-rtsp-no-placeholder";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {
