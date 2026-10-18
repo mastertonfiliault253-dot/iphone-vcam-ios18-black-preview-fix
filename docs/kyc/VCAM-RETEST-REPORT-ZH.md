@@ -1127,3 +1127,12 @@ userspace`、手动 `killall -9 SpringBoard`）均未恢复，无 SpringBoard �
 证据关联（改动只在媒体服务器 hook 的缩放策略；SB dylib 源码未动、无崩溃），但发生在装机
 respring 窗口，原因未定位。**黑边修复的目视验收（Camera/Onfido 预览无黑边）待注入恢复后
 补录**；当前验收状态=代码级（钉点已改）+ 测试/编译/装机通过 + 目视挂起。
+
+**补录（2026-10-18 23:2x，注入自行恢复 + 目视验收通过）**：约 40 分钟后设备自行恢复——
+SSH 轮询第 22 次成功；`/var/tmp/vcam-springboard-client.log` 出现 `pid=5285 ctor`、vcamd
+`remote decoder peer ready pid=5285`、本地源恢复产帧（`springboard local video frame
+decoded/published`，mmap）、桌面浮动球回绿点。随后 `uiopen camera://` 目视：**取景器满幅
+显示人脸视频、左右无黑边**（证据帧 `tmp/kyc-edges/camera-preview-08122-verify.jpg`；上下黑区
+为 Camera 自身工具栏背景，非视频 pad）。**缺陷 L 修复验收闭环**（代码钉点 + 294 测试 + WSL
+编译 + CI + 装机目视）。事故（SB ElleKit 注入与 sshd 子进程链路的暂时失效、~40 分钟后自行
+恢复）根因未定位，与本次改动无证据关联，时间线如上。
