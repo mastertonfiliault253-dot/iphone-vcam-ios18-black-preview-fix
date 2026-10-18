@@ -140,13 +140,14 @@ class MediaServerTargetFillTests(unittest.TestCase):
         implementation = (
             ROOT / "Sources" / "Hooks" / "VCAMMediaServerRefImageUtils.m"
         ).read_text(encoding="utf-8")
+        # 2026-10-16: camera preview no longer letterboxes either — every
+        # terminal shares the full-bleed center crop. Whole-frame fit padded
+        # mismatched-aspect RTSP sources into the app's preview buffer and KYC
+        # document capture showed those pads as black side bars.
         aspect_fit_assignment = implementation.split("BOOL aspectFit =", 1)[1].split(
             ";", 1
         )[0]
-        self.assertEqual(
-            "".join(aspect_fit_assignment.split()),
-            "presentation==VCAMFramePresentationCameraPreviewFit",
-        )
+        self.assertEqual("".join(aspect_fit_assignment.split()), "NO")
         self.assertEqual(
             self.adapter.count(
                 "imageByApplyingTransform:CGAffineTransformMakeScale"

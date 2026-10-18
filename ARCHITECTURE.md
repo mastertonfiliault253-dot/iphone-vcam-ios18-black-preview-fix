@@ -49,8 +49,10 @@ orientation from target dimensions. The explicit iOS 16 WebKit
 `video-converter` terminal alone pre-rotates a portrait source left into its
 landscape storage basis, then center-crops once into the already-negotiated
 target, matching the real camera's full-bleed behavior without stretching or a
-second VCAM scale. Camera preview keeps its existing whole-frame fit and
-recording remains full-bleed.
+second VCAM scale. Camera preview shares the same full-bleed center crop
+(2026-10-16; whole-frame fit padded mismatched-aspect RTSP sources into the
+app's preview buffer and KYC document capture showed the pads as black side
+bars) and recording remains full-bleed.
 At the still-photo terminal, VCAM only aspect-fills the system-negotiated target.
 It does not rotate pixels according to the source or phone posture and does not
 replace orientation metadata the graph already attached; the existing system

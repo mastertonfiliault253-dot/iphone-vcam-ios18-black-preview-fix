@@ -2558,8 +2558,15 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
     OSType targetFormat = CVPixelBufferGetPixelFormatType(targetBuffer);
     BOOL realtimeCompensation =
         presentation != VCAMFramePresentationStillPhotoFill;
-    BOOL aspectFit =
-        presentation == VCAMFramePresentationCameraPreviewFit;
+    // 2026-10-16: the camera-preview terminal joins the full-bleed center
+    // crop used by WebKit, recording and still-photo. Whole-frame fit (an
+    // Aug-11 carry-over) letterboxed any source whose aspect differed from
+    // the app's negotiated preview buffer: KYC document capture (1080x1920
+    // source into a 1242x2688 buffer) showed the pads as black side bars
+    // once the app rotated its doc frame, and the shrunken document also fed
+    // false "Move closer" guidance. A real camera preview never pads; it
+    // center-crops into the negotiated target.
+    BOOL aspectFit = NO;
     BOOL webKitLandscapeStorage =
         presentation == VCAMFramePresentationWebKitFill;
     BOOL compressedTarget = VCAMFormatIsCompressedVideoRange(targetFormat);
@@ -3020,10 +3027,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
         // The producer publishes canonical visual orientation. The real
         // camera graph remains the negotiation shell: target dimensions,
         // pixel format, timing and graph attachments are left untouched.
-        // WebKit, recording and still-photo terminals use the camera graph's
-        // full-bleed center crop. Camera preview alone retains whole-frame fit.
-        // This is the only scale operation: the negotiated target dimensions,
-        // format, timing and attachments remain unchanged downstream.
+        // WebKit, recording, still-photo and camera-preview terminals all use
+        // the camera graph's full-bleed center crop. This is the only scale
+        // operation: the negotiated target dimensions, format, timing and
+        // attachments remain unchanged downstream.
         CGFloat scale = aspectFit
             ? MIN((CGFloat)renderWidth / CGRectGetWidth(image.extent),
                   (CGFloat)renderHeight / CGRectGetHeight(image.extent))
