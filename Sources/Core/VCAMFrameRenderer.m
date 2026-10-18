@@ -204,11 +204,20 @@
                                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
                                     (__bridge CFDictionaryRef)outputAttributes,
                                     &output) == kCVReturnSuccess) {
-                // Rotation and aspect are handled at the RTSP push end; scale
-                // uniformly (stretch) so a 1:1 transfer stays a clean copy.
+                // The panel's 显示方式 controls how a non-canvas-aspect source
+                // fills the canvas (拉伸=fill-stretch, 裁切填满=center crop,
+                // 完整显示=fit with black bars), matching the CG path below and
+                // the SpringBoard remote decoder. Identity-aspect sources are
+                // unaffected by the mode.
+                CFStringRef canvasScalingMode = kVTScalingMode_Normal;
+                if (configuration.contentMode == VCAMContentModeAspectFill) {
+                    canvasScalingMode = kVTScalingMode_Trim;
+                } else if (configuration.contentMode == VCAMContentModeAspectFit) {
+                    canvasScalingMode = kVTScalingMode_Letterbox;
+                }
                 (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
                                            kVTPixelTransferPropertyKey_ScalingMode,
-                                           kVTScalingMode_Normal);
+                                           canvasScalingMode);
                 (void)VTSessionSetProperty((VTPixelTransferSessionRef)_pixelTransferSession,
                                            kVTPixelTransferPropertyKey_RealTime, kCFBooleanTrue);
                 OSStatus transferStatus = VTPixelTransferSessionTransferImage(

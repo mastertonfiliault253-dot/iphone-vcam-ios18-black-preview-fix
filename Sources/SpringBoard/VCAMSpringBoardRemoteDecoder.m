@@ -213,14 +213,26 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
                 @"springboard remote decoder pixel transfer unavailable"];
             return NO;
         }
-        // Match the daemon renderer's RTSP policy: uniform scale into the
-        // fixed canvas, rotation/mirror handled at the RTSP push end.
-        VTSessionSetProperty(session, kVTPixelTransferPropertyKey_ScalingMode,
-                             kVTScalingMode_Normal);
         VTSessionSetProperty(session, kVTPixelTransferPropertyKey_RealTime,
                              kCFBooleanTrue);
         pixelTransferSession = session;
     }
+    // 2026-10-18: the panel's 显示方式 (完整显示/裁切填满/拉伸) already steers
+    // the local/HLS canvas through the Core Image fit/fill path, but this
+    // RTSP remote-decode canvas write had VT Normal (stretch-to-fill)
+    // hard-coded, so the panel control did nothing for RTSP. Re-map on every
+    // open so a panel change lands on the next session; a source whose aspect
+    // matches the fixed 1080x1920 canvas stays an identity transform in
+    // every mode (裁切填满=Trim, 完整显示=Letterbox, 拉伸=Normal).
+    VCAMContentMode contentMode = [VCAMConfiguration loadCurrent].contentMode;
+    CFStringRef scalingMode = kVTScalingMode_Normal;
+    if (contentMode == VCAMContentModeAspectFill) {
+        scalingMode = kVTScalingMode_Trim;
+    } else if (contentMode == VCAMContentModeAspectFit) {
+        scalingMode = kVTScalingMode_Letterbox;
+    }
+    VTSessionSetProperty(pixelTransferSession,
+                         kVTPixelTransferPropertyKey_ScalingMode, scalingMode);
     if (canvasPool == NULL) {
         CVPixelBufferPoolRef pool = NULL;
         NSDictionary *poolAttributes = @{

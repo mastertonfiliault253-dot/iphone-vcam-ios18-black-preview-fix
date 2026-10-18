@@ -368,6 +368,28 @@ class HardwareDecoderTests(unittest.TestCase):
             open_body.index("VCAMRemoteDecoderSendToPeer(message)"),
         )
         self.assertIn("VCAMRemoteDecoderSessionEpoch = 0;", open_body)
+        # 0.8.123: the panel's 显示方式 must steer the RTSP canvas resize the
+        # same way it steers local/HLS: 裁切填满=VT Trim (center crop),
+        # 完整显示=Letterbox (fit + black bars), 拉伸=Normal (stretch-to-fill).
+        remote_decoder = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRemoteDecoder.m"
+        ).read_text(encoding="utf-8")
+        remote_open = remote_decoder[
+            remote_decoder.index("- (BOOL)prepareDirectPublication"):
+            remote_decoder.index("\n}", remote_decoder.index("- (BOOL)prepareDirectPublication"))
+        ]
+        self.assertIn("[VCAMConfiguration loadCurrent].contentMode", remote_open)
+        self.assertIn("kVTScalingMode_Trim", remote_open)
+        self.assertIn("kVTScalingMode_Letterbox", remote_open)
+        self.assertIn("kVTScalingMode_Normal", remote_open)
+        renderer = (ROOT / "Sources" / "Core" / "VCAMFrameRenderer.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "configuration.contentMode == VCAMContentModeAspectFill", renderer
+        )
+        self.assertIn("kVTScalingMode_Trim", renderer)
+        self.assertIn("kVTScalingMode_Letterbox", renderer)
         self.assertIn("VCAMHardwareVideoDecoder", rtsp)
         self.assertIn("initWithCodecType:codecType", rtsp)
         self.assertIn("decodePacketsWithHardwareSession", rtsp)
