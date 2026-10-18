@@ -1096,3 +1096,34 @@ early-ack 容忍（或 open 先行登记 pending epoch 再发送）。属 §11.6
 - 验证边界如实：竞态是时序依赖的，无法确定性复现"修复前必现"；本修复的验证=代码顺序钉死
   （契约测试）+ 装机后握手路径全链实测本次通过。阈值路径同样无法现场强制触发（需人为制造
   3 次连续失败），仅代码级+契约级验证。
+
+### 11.15 缺陷 L：KYC 预览黑边（相机预览路线整帧 fit）修复（0.8.122，2026-10-18 晚）
+
+**现象**（用户报告 + 截图）：Onfido 证件取景页出现左右黑边（证件内容居中、两侧黑条），
+"MOVE CLOSER" 提示并存。
+
+**根因（代码 + vcam-ref.log 证据链）**：相机预览是全管线唯一的"整帧 fit"终端
+（`VCAMMediaServerRefImageUtils.m`：`aspectFit = presentation ==
+VCAMFramePresentationCameraPreviewFit` → `scale=MIN(...)`，短边补黑；WebKit/拍照/录像均已是
+满幅中心裁切）。用户当时的本地 KYC 素材为 480x640（0.75）竖屏视频：① SpringBoard 直写共享
+画布 1080x1920 按保宽高比缩放 → 上下各 240px 黑；② 预览缓冲 1242x2688 再 fit 一层
+（`vcam-ref.log`: route=camera-preview、src=1080x1920、target=1242x2688）；③ 证件模式把画面
+转置显示 → 黑边呈左右分布，且证件在画面中占比变小，疑为 "MOVE CLOSER" 误报诱因之一。
+
+**修复（commit 3175eac，0.8.122+preview-full-bleed）**：预览终端并入满幅中心裁切
+（`aspectFit` 恒 NO，缩放取 MAX、溢出居中裁掉）——与真实相机及 WebKit/拍照/录像一致；源
+aspect 不再需要匹配协商缓冲，任何比例源都不会再出现 pad 黑边（代价=边缘裁切，证件/人脸
+居中场景无影响）。同步：契约测试 `test_mediaserver_target_fill.py` 原"预览=fit"钉点改写为
+`aspectFit=NO` 并注明原因；ARCHITECTURE.md 更正。294 测试全绿、WSL 编译过、CI run
+39136366779 success、dpkg 装机 0.8.122。
+
+**目视验收挂了起**（如实记录，非本修复引入）：装机 postinst respring 之后，设备出现
+**SpringBoard 侧 ElleKit 自动注入缺失**——`/var/tmp/vcam-springboard-client.log` 无新 ctor、
+vcamd 无 `remote decoder peer ready`、浮动球消失、SB 媒体桥停播（本地源因此无帧，取景器
+fail-closed 黑，ref.log 见 `virtual frame stale; rendering black`）。cameracaptured 侧注入
+正常（vcaminjectd/opainject 通道）。三次重启动作（postinst respring、`launchctl reboot
+userspace`、手动 `killall -9 SpringBoard`）均未恢复，无 SpringBoard 崩溃报告、无 Safe Mode
+标记；期间 SSH :22 进入 respring 后拒连窗口（与 10-16 同型症状）。SB 注入缺失与本次改动无
+证据关联（改动只在媒体服务器 hook 的缩放策略；SB dylib 源码未动、无崩溃），但发生在装机
+respring 窗口，原因未定位。**黑边修复的目视验收（Camera/Onfido 预览无黑边）待注入恢复后
+补录**；当前验收状态=代码级（钉点已改）+ 测试/编译/装机通过 + 目视挂起。
