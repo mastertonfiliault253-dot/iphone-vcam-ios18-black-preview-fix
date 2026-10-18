@@ -1102,13 +1102,17 @@ early-ack 容忍（或 open 先行登记 pending epoch 再发送）。属 §11.6
 **现象**（用户报告 + 截图）：Onfido 证件取景页出现左右黑边（证件内容居中、两侧黑条），
 "MOVE CLOSER" 提示并存。
 
-**根因（代码 + vcam-ref.log 证据链）**：相机预览是全管线唯一的"整帧 fit"终端
-（`VCAMMediaServerRefImageUtils.m`：`aspectFit = presentation ==
+**根因（代码 + vcam-ref.log 证据链，10-18 复核修正）**：相机预览是全管线唯一的"整帧 fit"
+终端（`VCAMMediaServerRefImageUtils.m`：`aspectFit = presentation ==
 VCAMFramePresentationCameraPreviewFit` → `scale=MIN(...)`，短边补黑；WebKit/拍照/录像均已是
-满幅中心裁切）。用户当时的本地 KYC 素材为 480x640（0.75）竖屏视频：① SpringBoard 直写共享
-画布 1080x1920 按保宽高比缩放 → 上下各 240px 黑；② 预览缓冲 1242x2688 再 fit 一层
-（`vcam-ref.log`: route=camera-preview、src=1080x1920、target=1242x2688）；③ 证件模式把画面
-转置显示 → 黑边呈左右分布，且证件在画面中占比变小，疑为 "MOVE CLOSER" 误报诱因之一。
+满幅中心裁切）。用户当时的本地 KYC 素材为 480x640（0.75）竖屏视频，黑边**只来自这一层**：
+iOS 18 上本地/HLS 经 SB IOSurface 通道发布**源尺寸**帧（health 行 `size=480x640`，画布不缩放
+不含黑），预览缓冲 1242x2688 整帧 fit 补出黑边（`vcam-ref.log`: route=camera-preview），
+证件模式转置显示 → 黑边呈左右分布，且证件在画面中占比变小，疑为 "MOVE CLOSER" 误报诱因之一。
+（本节初稿曾写"SB 直写画布先 letterbox 一层"，10-18 复核**证伪**：RTSP 远端解码写固定画布用
+`kVTScalingMode_Normal`，Apple 定义为**整体拉伸填充**（不补黑、调整 CA/PAR），项目注释与
+`test_injection_safety.py:89` 钉住该策略="旋转与宽高比在推流端处理（9:16）"——宽高比不匹配的
+RTSP 源会被拉伸变形而非出黑边，属既定策略而非缺陷。）
 
 **修复（commit 3175eac，0.8.122+preview-full-bleed）**：预览终端并入满幅中心裁切
 （`aspectFit` 恒 NO，缩放取 MAX、溢出居中裁掉）——与真实相机及 WebKit/拍照/录像一致；源
