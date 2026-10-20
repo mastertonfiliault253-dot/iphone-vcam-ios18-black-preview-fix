@@ -2458,7 +2458,59 @@ static BOOL VCAMCopyNV12IntoPlanarTargetWithGain(CVPixelBufferRef sourceBuffer,
     return converted;
 }
 
+// Trim 模式的 VTPixelTransferSession：等比铺满裁切（居中），用于把远端解码
+// 发布的固定 1080x1920 NV12 画布缩放写进 App 协商的预览目标缓冲。缓存一个
+// 只读会话即可（RTSP 预览源尺寸恒定；其它尺寸复用同一会话也安全，Trim 语义
+// 与尺寸无关）。RealTime=true 关闭离线画质补偿，优先低延迟。
+static VTPixelTransferSessionRef VCAMScaleTransferSession(void) {
+    static VTPixelTransferSessionRef session;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &session) != noErr) {
+            session = NULL;
+            return;
+        }
+        (void)VTSessionSetProperty(session, kVTPixelTransferPropertyKey_ScalingMode,
+                                   kVTScalingMode_Trim);
+        (void)VTSessionSetProperty(session, kVTPixelTransferPropertyKey_RealTime,
+                                   kCFBooleanTrue);
+    });
+    return session;
+}
 
+// 2026-10-20 发热定位：RTSP 收流时预览目标(1242x2688)与画布(1080x1920)既不同
+// 尺寸又不同 range(420f/420v)，passthrough 直通快速路径(要求源=目标同尺寸同格式)
+// 永不命中，于是每帧走完整 CoreImage 合成，p50 ~45ms、进程 42% CPU，是收流发热
+// 主因。此路径用硬件 Trim 传输一次性把源 NV12 缩放写进全尺寸目标缓冲，绕开
+// CoreImage 与 clamp staging。仅在无 photoreal/tint 增益、无旋转镜像的实时预览
+// 命中，保证与 CI 链像素等价（Trim=等比居中裁切，与 MAX scale 语义一致）。
+// 会话由 render 线程独占（受 VCAMReaderLock 串行化），无需额外锁。
+static BOOL VCAMTransferNV12ScaledWithVT(CVPixelBufferRef source,
+                                         CVPixelBufferRef target) {
+    if (source == NULL || target == NULL) return NO;
+    VTPixelTransferSessionRef session = VCAMScaleTransferSession();
+    if (session == NULL) return NO;
+    OSStatus status = kCVReturnUnsupported;
+    if (@available(iOS 16.0, *)) {
+        status = VTPixelTransferSessionTransferImage(session, source, target);
+    }
+    if (status != noErr) {
+        static volatile int scaleTransferFailures = 0;
+        int failureCount = __sync_add_and_fetch(&scaleTransferFailures, 1);
+        if (failureCount <= 8 || failureCount % 300 == 0) {
+            char message[224] = {0};
+            snprintf(message, sizeof(message),
+                     "scaled NV12 VT transfer failed count=%d status=%d src=%zux%zu target=%zux%zu",
+                     failureCount, (int)status,
+                     CVPixelBufferGetWidth(source), CVPixelBufferGetHeight(source),
+                     CVPixelBufferGetWidth(target), CVPixelBufferGetHeight(target));
+            VCAMRefLog(message);
+        }
+        return NO;
+    }
+    VCAMSetStandardColorAttachments(target);
+    return YES;
+}
 
 static BOOL VCAMTransferBGRAIntoPlanarTarget(CVPixelBufferRef stagingBuffer,
                                               CVPixelBufferRef targetBuffer) {
@@ -3134,7 +3186,27 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             CVPixelBufferGetWidth(ciSourceBuffer) == targetHeight &&
             CVPixelBufferGetHeight(ciSourceBuffer) == targetWidth &&
             (!diagonalActive || localSourceBuffer != NULL);
-        BOOL fastPathActive = passthroughFastPath || rotatedFastPath;
+        // 2026-10-20 发热排查：RTSP 远端解码发布固定 1080x1920 NV12 画布，预览
+        // 终端协商 1242x2688，尺寸与 range(420v/420f) 双重失配使直通快速路径永不
+        // 命中，每帧走完整 CoreImage 合成（真机 p50 45ms、进程 42% self-cpu，
+        // 收流发热主因）。此路径用 Trim 会话把源 NV12 硬件缩放直写全尺寸目标，
+        // 绕开 clamp staging 与 CI；几何=等比居中裁切，与 CI 链 MAX scale 一致。
+        // 任何 photoreal/tint 增益或 WebKit 呈现模式都退回 CI 链保色彩正确；
+        // 连续 3 次传输失败后本进程禁用。
+        BOOL sourceIsNV12Terminal = CVPixelBufferIsPlanar(ciSourceBuffer) &&
+            CVPixelBufferGetPlaneCount(ciSourceBuffer) == 2 &&
+            (CVPixelBufferGetPixelFormatType(ciSourceBuffer) ==
+                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+             CVPixelBufferGetPixelFormatType(ciSourceBuffer) ==
+                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
+        static int scaledVTFailures = 0;  // guarded by VCAMReaderLock
+        BOOL scaledNV12FastPath = !passthroughFastPath && !rotatedFastPath &&
+            scaledVTFailures < 3 && sourceIsNV12Terminal &&
+            !additiveActive && !diagonalActive && realtimeCompensation &&
+            planarTarget && !compressedTarget && !webKitRotatedForStorage &&
+            !webKitFrontPresentation;
+        BOOL fastPathActive =
+            passthroughFastPath || rotatedFastPath || scaledNV12FastPath;
         if (fastPathActive && diagonalActive && sourceIsSameBGRA) {
             VCAMApplyBGRAChannelFactorsInPlace(localSourceBuffer, diagFactor);
         }
@@ -3212,15 +3284,28 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer,
             if (fastCount <= 3 || fastCount % 300 == 0) {
                 char message[200] = {0};
                 snprintf(message, sizeof(message),
-                         "passthrough fast path count=%d rot=%d src=%08x target=%08x size=%zux%zu",
-                         fastCount, (int)rotatedFastPath,
+                         "passthrough fast path count=%d rot=%d scale=%d src=%08x target=%08x size=%zux%zu",
+                         fastCount, (int)rotatedFastPath, (int)scaledNV12FastPath,
                          CVPixelBufferGetPixelFormatType(ciSourceBuffer),
                          targetFormat, targetWidth, targetHeight);
                 VCAMRefLog(message);
             }
             CFAbsoluteTime rotateStarted = CFAbsoluteTimeGetCurrent();
             CFAbsoluteTime transferStarted = rotateStarted;
-            if (rotatedFastPath) {
+            if (scaledNV12FastPath) {
+                rendered =
+                    VCAMTransferNV12ScaledWithVT(ciSourceBuffer, targetBuffer);
+                if (rendered) {
+                    scaledVTFailures = 0;
+                } else {
+                    scaledVTFailures += 1;
+                    if (scaledVTFailures == 3) {
+                        VCAMRefLog("scaled NV12 fast path disabled after 3"
+                                   " consecutive transfer failures; CI chain resumes");
+                    }
+                }
+                transferStarted = CFAbsoluteTimeGetCurrent();
+            } else if (rotatedFastPath) {
                 CVPixelBufferRef rotatedBuffer = NULL;
                 if (VCAMCreateLocalRotatedBGRABuffer(
                         targetWidth, targetHeight,

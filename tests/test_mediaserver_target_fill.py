@@ -400,5 +400,52 @@ class MediaServerTargetFillTests(unittest.TestCase):
         )
 
 
+    def test_preview_uses_hardware_nv12_scale_fast_path_for_mismatched_source(self) -> None:
+        # 2026-10-20 thermal audit: the RTSP remote decoder publishes a fixed
+        # 1080x1920 video-range (420v) NV12 canvas while Camera preview
+        # negotiates a full-range (420f) 1242x2688 target. The passthrough fast
+        # path requires source == target size AND format, so it never fires and
+        # every preview frame fell through to a full Core Image composition at
+        # p50 ~45 ms, pinning cameracaptured at ~42% self-cpu — the dominant
+        # heat source while receiving. The fix scales the NV12 source straight
+        # into the target with a Trim VTPixelTransferSession (aspect-preserving
+        # center crop, geometrically identical to the CI MAX-scale full bleed)
+        # and writes the color attachments, skipping Core Image and the clamp
+        # staging buffer entirely.
+        self.assertIn("static VTPixelTransferSessionRef VCAMScaleTransferSession(void)",
+                      self.implementation)
+        self.assertIn("kVTPixelTransferPropertyKey_ScalingMode", self.implementation)
+        self.assertIn("kVTScalingMode_Trim", self.implementation)
+        self.assertIn("static BOOL VCAMTransferNV12ScaledWithVT", self.implementation)
+        self.assertIn(
+            "VTPixelTransferSessionTransferImage(session, source, target)",
+            self.implementation,
+        )
+        draw = self.implementation.split("BOOL drawReplacementOntoBuffer", 1)[1]
+        # The fast path is gated on the exact mismatch shape (realtime planar,
+        # no additive/diagonal gain, no WebKit rotation/mirror) so every other
+        # consumer keeps the proven Core Image chain, and it disables itself
+        # after repeated transfer failures rather than blacking out.
+        self.assertIn("BOOL scaledNV12FastPath", draw)
+        self.assertIn("scaledVTFailures < 3", draw)
+        self.assertIn("sourceIsNV12Terminal &&", draw)
+        self.assertIn("fastPathActive =\n            passthroughFastPath || rotatedFastPath || scaledNV12FastPath;", draw)
+        self.assertIn("VCAMTransferNV12ScaledWithVT(ciSourceBuffer, targetBuffer)", draw)
+        self.assertIn("scaled NV12 fast path disabled after 3", draw)
+        # The scale branch must let the render task be skipped: the boolean is
+        # decided before CIRenderDestination and folds into fastPathActive,
+        # which is what gates CIRenderTask creation.
+        scale_branch = draw.split("if (scaledNV12FastPath) {", 1)[1].split("} else if (rotatedFastPath)", 1)[0]
+        self.assertIn("scaledVTFailures = 0;", scale_branch)
+        self.assertLess(
+            draw.index("BOOL scaledNV12FastPath"),
+            draw.index("CIRenderDestination *destination"),
+        )
+        self.assertLess(
+            draw.index("fastPathActive ="),
+            draw.index("CIRenderTask *task = fastPathActive ? nil"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,21 @@ static volatile int gVCAMRTSPRemoteHardwareDisabled = 0;
 // remote path clears it (see the success branch in decodeOneFFmpegSession).
 static volatile int gVCAMRTSPRemoteHardwareFailureCount = 0;
 enum { VCAMRTSPRemoteHardwareFailureLimit = 3 };
+// Idle watchdog (2026-10-20 outage): mediamtx keeps an RTSP session alive
+// with protocol keepalives after the publisher is gone. Every keepalive
+// byte resets FFmpeg's socket timer so rw_timeout never trips,
+// av_read_frame blocks forever, and the packets=300 stall guards only
+// advance while packets arrive — vcamd froze at 0.4% self-cpu for half an
+// hour with the stream dead and never reconnected. The packet loops arm a
+// wall-clock deadline per received packet and the FFmpeg interrupt
+// callback aborts the read once it expires, handing control back to the
+// normal reconnect/backoff chain.
+enum {
+    VCAMRTSPIdleWatchdogSeconds = 10,
+    // Budget covering avformat_open_input + stream probe before the
+    // packet-driven refreshes take over.
+    VCAMRTSPSessionOpenBudgetSeconds = 30,
+};
 // Mirrors the broker's remote-decoder peer registration events.
 static _Atomic(int) gVCAMRTSPRemotePeerAvailable = 0;
 
@@ -170,6 +185,11 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
     // at VCAMRTSPRemoteMaxOutstanding and the session never reaches the
     // zero-frame fallback.
     NSUInteger remoteFailures;
+    // Idle watchdog deadline (CACurrentMediaTime seconds). Decode-thread
+    // only: the packet loops arm it, and the FFmpeg interrupt callback —
+    // invoked synchronously on the same thread during av_read_frame —
+    // reads it, so no locking is required.
+    CFTimeInterval idleWatchdogDeadline;
 }
 @property(nonatomic, strong) VCAMConfiguration *configuration;
 @property(nonatomic, strong) VCAMFrameRenderer *renderer;
@@ -180,15 +200,29 @@ static CMTime VCAMRTSPPacketTime(AVPacket *packet, AVStream *stream) {
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL usesRTSPTransport;
 - (BOOL)decodeOneFFmpegSession;
+- (void)armRTSPIdleWatchdog:(CFTimeInterval)seconds;
+- (BOOL)rtspIdleWatchdogExpired;
 @end
 
 static int VCAMRTSPInterruptWhenStopped(void *opaque) {
     VCAMRTSPStreamSource *source =
         (__bridge VCAMRTSPStreamSource *)opaque;
-    return source == nil || !source.running;
+    if (source == nil || !source.running) return 1;
+    // Also abort a silent-but-keepalived session: stop() clears running,
+    // but a dead publisher behind a live server has no stop() — only the
+    // watchdog deadline can end that read.
+    return [source rtspIdleWatchdogExpired] ? 1 : 0;
 }
 
 @implementation VCAMRTSPStreamSource
+
+- (void)armRTSPIdleWatchdog:(CFTimeInterval)seconds {
+    idleWatchdogDeadline = CACurrentMediaTime() + seconds;
+}
+
+- (BOOL)rtspIdleWatchdogExpired {
+    return CACurrentMediaTime() > idleWatchdogDeadline;
+}
 
 - (instancetype)initWithConfiguration:(VCAMConfiguration *)configuration
                               renderer:(VCAMFrameRenderer *)renderer {
@@ -749,6 +783,7 @@ enum {
     NSUInteger remotePacketsWithoutFrame = 0;
     NSUInteger lastFramesReceived = 0;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        [self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds];
         if (packet->stream_index == videoStreamIndex) {
             BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
             if (waitingForKeyFrame && !isKeyFrame) {
@@ -816,6 +851,11 @@ remoteLoopEnd:
     @synchronized (self) {
         if (remoteFramesReceived != lastFramesReceived) producedFrame = YES;
     }
+    if (self.running && [self rtspIdleWatchdogExpired]) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ idle watchdog ended session after %d s without packets",
+            self.streamName, VCAMRTSPIdleWatchdogSeconds]];
+    }
     VCAMSurfaceBrokerEndRemoteDecoderSession(epoch);
     @synchronized (self) {
         if (remoteActiveEpoch == epoch) remoteActiveEpoch = 0;
@@ -836,6 +876,7 @@ remoteLoopEnd:
     BOOL waitingForKeyFrame = YES;
     NSUInteger hardwarePacketsWithoutFrame = 0;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        [self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds];
         if (packet->stream_index == videoStreamIndex) {
             BOOL isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
             // Joining mid-GOP without reference frames only ever yields
@@ -904,6 +945,7 @@ remoteLoopEnd:
     if (formatContext == NULL) goto cleanup;
     formatContext->interrupt_callback.callback = VCAMRTSPInterruptWhenStopped;
     formatContext->interrupt_callback.opaque = (__bridge void *)self;
+    [self armRTSPIdleWatchdog:VCAMRTSPSessionOpenBudgetSeconds];
     // Keep FFmpeg's normal RTP reordering and H.264 reference buffering. The
     // former low-latency combination (nobuffer/low_delay/reorder_queue_size=0)
     // could display error-concealed inter frames after a delayed packet.
@@ -1094,6 +1136,7 @@ remoteLoopEnd:
 
     int dumpedPacketCount = 0;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
+        [self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds];
         if (packet->stream_index == videoStream) {
             if (dumpedPacketCount < 8) {
                 dumpedPacketCount += 1;
@@ -1208,6 +1251,11 @@ remoteLoopEnd:
             }
         }
         av_packet_unref(packet);
+    }
+    if (self.running && [self rtspIdleWatchdogExpired]) {
+        [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
+            @"%@ idle watchdog ended session after %d s without packets",
+            self.streamName, VCAMRTSPIdleWatchdogSeconds]];
     }
 cleanup:
     av_dict_free(&options);

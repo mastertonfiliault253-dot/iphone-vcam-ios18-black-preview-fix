@@ -418,6 +418,51 @@ class HardwareDecoderTests(unittest.TestCase):
         self.assertNotIn("Verify captured RTSP stream decodes with macOS VideoToolbox", workflow)
         self.assertNotIn("vt-test.swift", workflow)
 
+    def test_rtsp_idle_watchdog_aborts_silent_keepalived_session(self) -> None:
+        # 2026-10-20 outage: the publisher died while mediamtx kept the RTSP
+        # session alive with protocol keepalives. Every keepalive byte reset
+        # FFmpeg's socket timer so rw_timeout never tripped, av_read_frame
+        # blocked forever, and the packets=300 stall guards only advance when
+        # packets arrive — vcamd froze at 0.4% self-cpu for half an hour and
+        # never reconnected. The fix is a wall-clock deadline armed per packet
+        # (and per session open) that the FFmpeg interrupt callback checks,
+        # aborting the read so the normal reconnect/backoff chain runs.
+        rtsp = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMRTSPIdleWatchdogSeconds = 10", rtsp)
+        self.assertIn("VCAMRTSPSessionOpenBudgetSeconds = 30", rtsp)
+        interrupt = rtsp.split(
+            "static int VCAMRTSPInterruptWhenStopped", 1
+        )[1].split("@implementation", 1)[0]
+        self.assertIn("rtspIdleWatchdogExpired", interrupt)
+        # The deadline must be armed before open (covers handshake+probe)...
+        self.assertIn(
+            "[self armRTSPIdleWatchdog:VCAMRTSPSessionOpenBudgetSeconds]", rtsp
+        )
+        # ...and refreshed on every received packet in ALL three packet loops
+        # (remote, direct-VT, software): any RTP traffic proves the session is
+        # alive even when only the audio track flows.
+        self.assertEqual(rtsp.count("[self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds]"), 3)
+        remote = rtsp.split(
+            "- (BOOL)decodePacketsWithRemoteDecode", 1
+        )[1].split("- (BOOL)decodePacketsWithHardwareSession", 1)[0]
+        hardware = rtsp.split(
+            "- (BOOL)decodePacketsWithHardwareSession", 1
+        )[1].split("- (BOOL)decodeOneFFmpegSession", 1)[0]
+        software = rtsp.rsplit("- (BOOL)decodeOneFFmpegSession", 1)[1].split(
+            "cleanup:", 1
+        )[0]
+        for name, body in (("remote", remote), ("hardware", hardware), ("software", software)):
+            self.assertIn(
+                "[self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds];",
+                body,
+                msg=f"{name} loop must refresh the idle watchdog",
+            )
+        # A watchdog-ended session is logged so the reconnect cadence is
+        # diagnosable from vcamd.log alone.
+        self.assertIn("idle watchdog ended session after", rtsp)
+
     def test_ffmpeg_upstream_path_passes_demuxed_packets_without_manual_au_filtering(self) -> None:
         stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
             encoding="utf-8"

@@ -1,6 +1,6 @@
 Package: com.codex.vcam
 Name: VCAM Media Bridge
-Version: 0.8.123+panel-scaling-modes
+Version: 0.8.124+rtsp-watchdog-nv12-scale
 Architecture: iphoneos-arm
 Description: System virtual-camera bridge with isolated local, OBS, RTSP and HLS decoding plus UI-only app overlays.
 Maintainer: Local Build
