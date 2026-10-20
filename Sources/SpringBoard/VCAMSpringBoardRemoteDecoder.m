@@ -82,6 +82,9 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     uint64_t activeEpoch;
     NSUInteger failureCount;
     NSUInteger loggedFrames;
+    // How many of the decoder's callback failures have already been paid
+    // back to the daemon as zero-size completions (see decodeEpoch).
+    NSUInteger reportedCallbackFailures;
     // Direct publication. The daemon no longer receives NV12 planes over
     // XPC: every decoded frame is resized into the fixed shared-frame
     // canvas and published into the shared mmap ring buffer here, and the
@@ -185,6 +188,7 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     activeEpoch = epoch;
     failureCount = 0;
     loggedFrames = 0;
+    reportedCallbackFailures = 0;
     [VCAMConfiguration appendProcessLog:[NSString stringWithFormat:
         @"springboard remote decoder open accepted epoch=%llu codec=%s %dx%d",
         (unsigned long long)epoch, codec, width, height]];
@@ -355,6 +359,23 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
         VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, frameWidth,
                                                 frameHeight);
         CVPixelBufferRelease(frame);
+    }
+    // A failed output callback consumed its input access unit but will
+    // never publish a frame for it, so the completion event that AU owes
+    // the daemon would otherwise never arrive. Report a zero-size
+    // completion per unclaimed failure: the daemon's size-mismatch branch
+    // treats it as a failed AU and reclaims its flow-control credit. The
+    // 2026-10-21 field deadlock was exactly this — a mid-stream -12909
+    // reference-missing burst (mediamtx dropped a GOP from an encoder
+    // burst) silently stopped SpringBoard claiming AUs, parking the window
+    // gate at max outstanding while the RTSP publisher kept pushing at
+    // full frame rate; the daemon's decode thread had left av_read_frame,
+    // so the idle watchdog could not arm either. Count-based, so callbacks
+    // that land late are still paid back exactly once on a later packet.
+    NSUInteger callbackFailures = decoder.callbackFailureCount;
+    while (reportedCallbackFailures < callbackFailures) {
+        reportedCallbackFailures += 1;
+        VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, 0, 0);
     }
     if (failureCount >= VCAMRemoteDecodeMaxFailures) {
         VCAMSurfaceBrokerSendRemoteDecoderError(

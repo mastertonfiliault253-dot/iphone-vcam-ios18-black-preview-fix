@@ -549,6 +549,14 @@ static int VCAMRTSPInterruptWhenStopped(void *opaque) {
 // consumer of the wrapped frames.
 enum {
     VCAMRTSPRemoteMaxOutstanding = 4,
+    // 2026-10-21 (0.8.126): maximum time the flow-control window may stay
+    // full with zero claim progress. A completion that never arrives (e.g.
+    // SpringBoard's decode callback failed for the last AU and the report
+    // races the full window) otherwise spins this loop forever: the thread
+    // has left av_read_frame, so the idle watchdog cannot arm, and the
+    // session hangs while the RTSP publisher still pushes at full frame
+    // rate (observed in the field 01:00 after a -12909 burst).
+    VCAMRTSPRemoteCreditStallSeconds = 5,
 };
 
 - (void)handleRemoteDecoderEvent:(VCAMRemoteDecoderEvent)event
@@ -782,6 +790,12 @@ enum {
     BOOL waitingForKeyFrame = YES;
     NSUInteger remotePacketsWithoutFrame = 0;
     NSUInteger lastFramesReceived = 0;
+    // Credit-stall watchdog (see VCAMRTSPRemoteCreditStallSeconds): track
+    // claim progress (frames + failures) and end the session when the
+    // window is full but nothing claims for too long.
+    NSUInteger lastClaimed = 0;
+    CFAbsoluteTime creditStallDeadline =
+        CACurrentMediaTime() + VCAMRTSPRemoteCreditStallSeconds;
     while (self.running && av_read_frame(formatContext, packet) >= 0) {
         [self armRTSPIdleWatchdog:VCAMRTSPIdleWatchdogSeconds];
         if (packet->stream_index == videoStreamIndex) {
@@ -808,11 +822,29 @@ enum {
                 if (dispatch_semaphore_wait(remoteWindowSemaphore,
                         dispatch_time(DISPATCH_TIME_NOW,
                                       (int64_t)(500 * NSEC_PER_MSEC))) != 0) {
+                    NSUInteger claimedNow = 0;
                     @synchronized (self) {
                         if (remoteActiveEpoch != epoch) {
                             av_packet_unref(packet);
                             goto remoteLoopEnd;
                         }
+                        claimedNow = remoteFramesReceived + remoteFailures;
+                    }
+                    if (claimedNow != lastClaimed) {
+                        lastClaimed = claimedNow;
+                        creditStallDeadline = CACurrentMediaTime() +
+                            VCAMRTSPRemoteCreditStallSeconds;
+                    } else if (CACurrentMediaTime() >= creditStallDeadline) {
+                        [VCAMConfiguration appendProcessLog:
+                            [NSString stringWithFormat:
+                                @"%@ remote decode credit stalled: %lu access "
+                                @"units unclaimed for %d s without completions; "
+                                @"ending session",
+                                self.streamName,
+                                (unsigned long)outstanding,
+                                VCAMRTSPRemoteCreditStallSeconds]];
+                        av_packet_unref(packet);
+                        goto remoteLoopEnd;
                     }
                 }
             }

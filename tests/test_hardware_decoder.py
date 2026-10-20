@@ -733,6 +733,71 @@ class HardwareDecoderTests(unittest.TestCase):
             "dispatch_semaphore_signal(remoteWindowSemaphore);", frame_block
         )
 
+    def test_remote_decode_credit_stall_cannot_hang_the_session(self) -> None:
+        # 2026-10-21 field deadlock (0.8.125, 01:00): a mid-stream -12909
+        # reference-missing burst made SpringBoard's decode callback drop AUs
+        # without publishing and without any error event, so their flow-
+        # control credit was never claimed. The daemon's decode thread spun
+        # in the window wait (out of av_read_frame, so the idle watchdog
+        # could not arm) and the session hung with the publisher still at
+        # 30fps. Both halves of the fix are pinned: (a) SpringBoard pays a
+        # zero-size completion for every counted callback failure, which the
+        # daemon's size-mismatch branch (pinned above) reclaims as a failed
+        # AU; (b) the daemon gives up on a window that makes zero claim
+        # progress for VCAMRTSPRemoteCreditStallSeconds and ends the session
+        # into the reconnect backoff — the belt to (a)'s braces, because a
+        # failure on the last AU in a full window has no later packet to
+        # piggyback the report onto.
+        stream = (ROOT / "Sources" / "Sources" / "VCAMRTSPStreamSource.m").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("VCAMRTSPRemoteCreditStallSeconds = 5", stream)
+        wait_block = stream.split("if (outstanding < VCAMRTSPRemoteMaxOutstanding)", 1)[1]
+        self.assertIn("claimedNow = remoteFramesReceived + remoteFailures;", wait_block)
+        self.assertIn("creditStallDeadline", wait_block)
+        self.assertIn(
+            "remote decode credit stalled: %lu access ", wait_block
+        )
+        self.assertIn(
+            "goto remoteLoopEnd;\n                    }\n                }",
+            wait_block,
+        )
+
+        remote = (
+            ROOT / "Sources" / "SpringBoard" / "VCAMSpringBoardRemoteDecoder.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("NSUInteger reportedCallbackFailures;", remote)
+        self.assertIn("reportedCallbackFailures = 0;", remote)
+        self.assertIn(
+            "VCAMSurfaceBrokerSendRemoteDecoderFrame(activeEpoch, 0, 0);", remote
+        )
+        # The payment loop must be count-based against the per-decoder
+        # failure counter (late callbacks still paid exactly once), not a
+        # one-shot flag per packet.
+        self.assertIn(
+            "while (reportedCallbackFailures < callbackFailures) {", remote
+        )
+
+        hardware = (
+            ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.m"
+        ).read_text(encoding="utf-8")
+        hardware_header = (
+            ROOT / "Sources" / "Daemon" / "VCAMHardwareVideoDecoder.h"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "NSUInteger _callbackFailuresTotal;", hardware
+        )
+        self.assertIn(
+            "__sync_add_and_fetch(&decoder->_callbackFailuresTotal, 1);", hardware
+        )
+        self.assertIn(
+            "callbackFailureCount = _callbackFailuresTotal;", hardware
+        )
+        self.assertIn(
+            "@property(nonatomic, readonly) NSUInteger callbackFailureCount;",
+            hardware_header,
+        )
+
     def test_ffmpeg_build_includes_hls_http_and_mpegts(self) -> None:
         build = (ROOT / "scripts" / "build-ffmpeg-ios.sh").read_text(encoding="utf-8")
         linux_build = (ROOT / "scripts" / "build-ffmpeg-ios-linux.sh").read_text(

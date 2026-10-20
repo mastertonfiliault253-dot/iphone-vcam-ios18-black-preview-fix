@@ -469,6 +469,11 @@ typedef struct {
     VTDecompressionSessionRef _session;
     VCAMHardwareFrame _frames[VCAMHardwareMaxFrames];
     NSInteger _frameCount;
+    // Consumed-input AUs whose output callback failed (reference-missing
+    // included). Incremented with __sync atomics from the C callback; read
+    // through -callbackFailureCount by the remote-decode owner to reclaim
+    // the flow-control credit those AUs still owe.
+    NSUInteger _callbackFailuresTotal;
     BOOL _active;
     BOOL _isHEVC;
     int _width;
@@ -477,6 +482,8 @@ typedef struct {
 @end
 
 @implementation VCAMHardwareVideoDecoder
+
+@synthesize callbackFailureCount = _callbackFailuresTotal;
 
 static void VCAMHardwareDecoderCallback(void *refcon,
                                         void *sourceFrameRefCon,
@@ -499,6 +506,12 @@ static void VCAMHardwareDecoderCallback(void *refcon,
         // A missing reference frame is recoverable: the decoder will produce
         // output again once the next keyframe arrives. Treat it as noise
         // instead of a session failure (mirrors FFmpeg's videotoolbox path).
+        // Every failed callback consumed one input access unit that will
+        // never publish a frame; count it per-decoder so the remote-decode
+        // owner can hand that AU's credit back to the daemon.
+        if (decoder != nil) {
+            __sync_add_and_fetch(&decoder->_callbackFailuresTotal, 1);
+        }
         if (status == kVTVideoDecoderReferenceMissingErr) {
             static volatile int referenceMissingCount = 0;
             int count = __sync_add_and_fetch(&referenceMissingCount, 1);

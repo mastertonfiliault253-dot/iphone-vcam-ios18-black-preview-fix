@@ -37,6 +37,14 @@ typedef NS_ENUM(NSInteger, VCAMVideoCodecType) {
 
 @property(nonatomic, readonly) BOOL active;
 
+/// Cumulative output-callback failures (recoverable reference-missing errors
+/// included). A failed callback consumes its input access unit but never
+/// yields a published frame, so the remote-decode owner compares this counter
+/// between packets and reclaims the flow-control credit each AU owes; without
+/// that the vcamd window gate parks at max outstanding while the RTSP
+/// publisher is still running (2026-10-21 field deadlock).
+@property(nonatomic, readonly) NSUInteger callbackFailureCount;
+
 @end
 
 NS_ASSUME_NONNULL_END
