@@ -222,8 +222,9 @@ enum { VCAMRemoteDecodeMaxFailures = 8 };
     // RTSP remote-decode canvas write had VT Normal (stretch-to-fill)
     // hard-coded, so the panel control did nothing for RTSP. Re-map on every
     // open so a panel change lands on the next session; a source whose aspect
-    // matches the fixed 1080x1920 canvas stays an identity transform in
-    // every mode (裁切填满=Trim, 完整显示=Letterbox, 拉伸=Normal).
+    // matches the fixed canvas (1242x2688 since 0.8.125, the recommended
+    // same-size push) stays an identity transform in every mode
+    // (裁切填满=Trim, 完整显示=Letterbox, 拉伸=Normal).
     VCAMContentMode contentMode = [VCAMConfiguration loadCurrent].contentMode;
     CFStringRef scalingMode = kVTScalingMode_Normal;
     if (contentMode == VCAMContentModeAspectFill) {

@@ -210,7 +210,7 @@ static void VCAMAppendDiagnostics(NSString *message) {
 }
 
 const char *VCAMBuildTag(void) {
-    return "com.codex.vcam/0.8.124+rtsp-watchdog-nv12-scale";
+    return "com.codex.vcam/0.8.125+shared-canvas-portrait-aspect";
 }
 
 static BOOL VCAMWriteBrokerMessage(int descriptor, BOOL success, NSString *message) {

@@ -401,10 +401,13 @@ class MediaServerTargetFillTests(unittest.TestCase):
 
 
     def test_preview_uses_hardware_nv12_scale_fast_path_for_mismatched_source(self) -> None:
-        # 2026-10-20 thermal audit: the RTSP remote decoder publishes a fixed
+        # 2026-10-20 thermal audit: the RTSP remote decoder published a fixed
         # 1080x1920 video-range (420v) NV12 canvas while Camera preview
-        # negotiates a full-range (420f) 1242x2688 target. The passthrough fast
-        # path requires source == target size AND format, so it never fires and
+        # negotiated a full-range (420f) 1242x2688 target (the canvas moved to
+        # 1242x2688 in 0.8.125, so a same-size publisher hits scale=1, but any
+        # remaining size/format mismatch still needs this path). The
+        # passthrough fast path requires source == target size AND format, so
+        # it never fired and
         # every preview frame fell through to a full Core Image composition at
         # p50 ~45 ms, pinning cameracaptured at ~42% self-cpu — the dominant
         # heat source while receiving. The fix scales the NV12 source straight

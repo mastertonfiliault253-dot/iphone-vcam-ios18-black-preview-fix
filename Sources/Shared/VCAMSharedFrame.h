@@ -8,8 +8,17 @@
 NS_ASSUME_NONNULL_BEGIN
 
 enum {
-    VCAMSharedFrameWidth = 1080,
-    VCAMSharedFrameHeight = 1920,
+    // Canvas = the XS Max native screen / Camera-preview negotiated geometry
+    // (1242x2688, 9:19.5). Chosen 2026-10-21 so the whole RTSP chain —
+    // publisher (push at the same size), SpringBoard remote-decode canvas
+    // write, and the camera-preview target — is an identity transform: no
+    // stretch into a 9:16 canvas, no center crop back into 9:19.5, no black
+    // bars at any terminal. The shared mmap header validates width/height, so
+    // a device upgrading from the old 1080x1920 layout rebuilds the file on
+    // the first post-upgrade write (postinst restarts every resident peer,
+    // so no mixed-version window outlives the package transaction).
+    VCAMSharedFrameWidth = 1242,
+    VCAMSharedFrameHeight = 2688,
     /// Maximum IOSurface ring depth. Static images use one slot; moving
     /// sources use all three. The legacy mmap fallback remains fixed at three.
     VCAMSharedFrameSlotCount = VCAMSurfaceBrokerVideoSlotCount,

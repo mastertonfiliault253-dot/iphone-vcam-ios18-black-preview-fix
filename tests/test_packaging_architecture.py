@@ -239,6 +239,12 @@ class PackagingArchitectureTests(unittest.TestCase):
         broker_header = (ROOT / "Sources" / "Shared" / "VCAMSurfaceBroker.h").read_text(encoding="utf-8")
         implementation = (ROOT / "Sources" / "Shared" / "VCAMSharedFrame.m").read_text(encoding="utf-8")
         self.assertIn("VCAMSharedFrameSlotCount = VCAMSurfaceBrokerVideoSlotCount", header)
+        # 2026-10-21: the canvas is the XS Max native/preview geometry so a
+        # same-size RTSP publisher is an identity transform end to end (no
+        # 9:16 stretch, no crop back, no black bars). Pin it against a
+        # regression to the legacy 1080x1920 aspect mismatch.
+        self.assertIn("VCAMSharedFrameWidth = 1242", header)
+        self.assertIn("VCAMSharedFrameHeight = 2688", header)
         self.assertIn("VCAMSurfaceBrokerVideoSlotCount = 3", broker_header)
         self.assertIn("mmap", implementation)
         self.assertIn("_Atomic", implementation)
