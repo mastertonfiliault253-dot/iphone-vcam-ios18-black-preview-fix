@@ -8,8 +8,9 @@
 NS_ASSUME_NONNULL_BEGIN
 
 enum {
-    // Canvas = the XS Max native screen / Camera-preview negotiated geometry
-    // (1242x2688, 9:19.5). Chosen 2026-10-21 so the whole RTSP chain —
+    // Canvas = the test device's native screen / Camera-preview negotiated
+    // geometry (1242x2688, 9:19.5; device is iPhone 11 Pro Max = iPhone12,5,
+    // display identical to XS Max). Chosen 2026-10-21 so the whole RTSP chain —
     // publisher (push at the same size), SpringBoard remote-decode canvas
     // write, and the camera-preview target — is an identity transform: no
     // stretch into a 9:16 canvas, no center crop back into 9:19.5, no black

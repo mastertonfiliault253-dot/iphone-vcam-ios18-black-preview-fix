@@ -126,7 +126,7 @@ CI run 38370895770 产物（torch API 修复后）装机，`uiopen --url "vcam-p
 - `cameraProperties`：front=640x480@60fps（min=max=0.0333s 即已锁 30）、rear=1920x1080@30fps，
   含 hasTorch/hasFlash/selectedCameraIndex/client/platform——Persona 同款遥测口径在场；
 - `rearTorch`：`{"off":"ok","rearHasTorch":true,"on":"ok"}`——`setTorchModeOnWithLevel:1.0` 成功无需回退；
-  前置 `torch.supported=false`（XS Max 前置无 torch，Persona 自拍补光走屏幕 flash，与此一致）；
+  前置 `torch.supported=false`（本机 11 Pro Max 前置无 torch，旧文本曾误标 XS Max——两者前置均无 torch，结论不变；Persona 自拍补光走屏幕 flash，与此一致）；
 - `lumaWindow_rear`：`insufficient samples` → NA（零帧通道限制，分析器已按 NA 归因）。
 
 新检测面（同报告实证）：探针进程内同时读到**伪装机型 iPhone14,6/23.6.0**（RSTLite/Shadow 注入改写 uname）
@@ -957,7 +957,7 @@ U 轮（0.8.115→0.8.118，2026-10-15 深夜~10-16 上午）完成度：
 
 ### 11.12 KYC 通过成功率预估（模型估计，非实测）
 
-**口径**：设备 iPhone XS Max/iOS 18.3.1 rootless；方案=Safari Web KYC（规避原生 SDK 的
+**口径**：设备 iPhone 11 Pro Max（iPhone12,5；旧文本曾误标 XS Max，标识 iPhone12,5 经内核 uname 与 ReportCrash 双信源复核为真）/iOS 18.3.1 rootless；方案=Safari Web KYC（规避原生 SDK 的
 S10-1 注入/指纹面）+ vcam 虚拟相机 + 预录人脸源视频（30fps 真实动作素材）。11 检测点
 现状取自 §11.7 与《DETECTION-POINTS-CHECKLIST》10-13 基线 + M/N/O 轮加固。**以下数字是
 按独立闸门概率折算的模型估计，全部不可本地实测（真实厂商服务端未接入）**。
@@ -1157,7 +1157,7 @@ decoded/published`，mmap）、桌面浮动球回绿点。随后 `uiopen camera:
 
 ### 11.17 X 轮：共享画布改竖幅同比例 1242x2688——全链恒等零损失（0.8.125，2026-10-21 凌晨）
 
-**触发**（用户报告）："手机相机显示的画面是左右裁剪的，和推流出去的不一样"；用户自行把 VRTSP 改 1080x1920 后仍有裁切。数学定性：画布是链路唯一固定中间点——推流/取景器为 9:19.5（0.4620），画布为 9:16（0.5625），任何分辨率组合都必在"推流→画布"或"画布→预览"两跳之一付出裁切或变形（0.8.124 的 Trim 快速路径画布→预览 scale=max(1242/1080,2688/1920)=1.4 左右各裁 135px=可见宽度 82.1%，即用户看到的左右裁切）。用户要"一劳永逸、不裁切、KYC 无黑边、画布尺寸不被检测"，唯一零损失方案=全链统一 1242x2688（XS Max 原生/预览协商几何）。**KYC 可见面结论**：画布是 vcamd↔SB 的内部 mmap（`Library/VirtualCaptureCard/VCAM/`），WKWebView/App 沙箱读不到，画布尺寸本身零检测面；真正的风险是内容宽高比真实性（拉伸 22% 会使证件/人脸几何可疑），同比例方案顺带消掉；黑边由 0.8.122 满幅裁切语义消除，与推流分辨率无关。
+**触发**（用户报告）："手机相机显示的画面是左右裁剪的，和推流出去的不一样"；用户自行把 VRTSP 改 1080x1920 后仍有裁切。数学定性：画布是链路唯一固定中间点——推流/取景器为 9:19.5（0.4620），画布为 9:16（0.5625），任何分辨率组合都必在"推流→画布"或"画布→预览"两跳之一付出裁切或变形（0.8.124 的 Trim 快速路径画布→预览 scale=max(1242/1080,2688/1920)=1.4 左右各裁 135px=可见宽度 82.1%，即用户看到的左右裁切）。用户要"一劳永逸、不裁切、KYC 无黑边、画布尺寸不被检测"，唯一零损失方案=全链统一 1242x2688（本机原生/预览协商几何；机型经复核为 iPhone 11 Pro Max=iPhone12,5，早前各节文本误标 "XS Max"，两机型屏幕分辨率相同故全部论证不受影响，2026-10-21 起正名）。**KYC 可见面结论**：画布是 vcamd↔SB 的内部 mmap（`Library/VirtualCaptureCard/VCAM/`），WKWebView/App 沙箱读不到，画布尺寸本身零检测面；真正的风险是内容宽高比真实性（拉伸 22% 会使证件/人脸几何可疑），同比例方案顺带消掉；黑边由 0.8.122 满幅裁切语义消除，与推流分辨率无关。
 
 **改动**（三处代码+测试钉点，296 全绿）：`VCAMSharedFrame.h` enum `VCAMSharedFrameWidth/Height` 1080x1920→**1242x2688**（mmap 全部 layout 常量由宽导出，header 校验 width/height/bpr/slotBytes，升级后首写自动 ftruncate 重建，postinst 重启全部 resident peer 无混版本窗；1242 行宽下 NV12 UV=621 行整数、reader 动态 target bpr 无对齐问题）；`control` + `VCAMBuildTag` 同步 0.8.125+shared-canvas-portrait-aspect；`test_packaging_architecture.py` 钉死 `VCAMSharedFrameWidth = 1242`/`Height = 2688` 防回退。**写入语义无需改**（0.8.123 已把 RemoteDecoder scalingMode 随面板 contentMode 映射，同尺寸源在 Trim/Letterbox/Normal 三档下均为恒等）。
 

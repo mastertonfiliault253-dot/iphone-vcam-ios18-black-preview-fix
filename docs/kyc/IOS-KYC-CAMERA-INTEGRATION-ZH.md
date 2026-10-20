@@ -2,7 +2,7 @@
 
 > 本文回答两个问题：① 0.8.109（ios18 分支）能否支撑"App/浏览器调用相机过 KYC"；
 > ② KYC 真人检测（liveness/PAD）会不会识别出"不是真人"。
-> 证据来源：GitHub 官方 SDK 仓库源码、192.168.2.39（iPhone XS Max / iOS 18.3.1）真机实测。
+> 证据来源：GitHub 官方 SDK 仓库源码、192.168.2.39（iPhone 11 Pro Max / iOS 18.3.1；本机曾长期误标 "XS Max"，2026-10-21 经内核 uname+ReportCrash 双信源正名为 iPhone12,5=11 Pro Max，涉及硬件形态的判断已连带复核）真机实测。
 > 未获取到一手资料的细节均已标注"未核实"。
 
 ## 结论摘要
@@ -99,11 +99,11 @@ Make/Model/DateTime/GPS。即该设备保存照片本来就不写相机 EXIF（�
 | 信息面 | 实测值 | KYC 可用性判定 |
 | --- | --- | --- |
 | UA | `iPhone; CPU iPhone OS 18_7 …` | 与真 iOS 18 设备一致的 Apple 冻结 UA，无法区分真机/越狱机 |
-| platform/vendor/screen | iPhone / Apple / 414×896 dpr=3 | 与 XS Max 逻辑分辨率一致，自洽 |
+| platform/vendor/screen | iPhone / Apple / 414×896 dpr=3 | 与 11 Pro Max 逻辑分辨率一致（XS Max 同值，两口径下均自洽） |
 | WebGL | vendor=`Apple Inc.` renderer=`Apple GPU` | iOS 17+ 真机同样泛化，不暴露芯片 |
 | canvas 指纹 / audio | 正常，48000 Hz | 与真机无差异 |
 | hardwareConcurrency / deviceMemory | 4 / unsupported | Safari 标准行为 |
-| enumerateDevices | Front Camera + 7 个后摄标签（含 Triple/Ultra Wide） | ⚠️ 待对照点：其中 Triple/Dual Wide/Ultra Wide 命名与 XS Max 双摄物理配置不一致。Web 端拿不到硬件型号故无法自相矛盾；但若 KYC 把相机标签清单作为设备指纹跨请求聚类，该集合可作为"这台设备"的稳定标识（而非"不是真人"信号） |
+| enumerateDevices | Front Camera + 7 个后摄标签（含 Triple/Ultra Wide） | 自洽（2026-10-21 正名后原判定点撤销）：iPhone 11 Pro Max 本身即 Wide+Ultra Wide+Tele 三摄，Triple/Ultra Wide 标签与物理配置一致——旧文本判"与 XS Max 双摄不一致"系机型误标造成的假象，当时担心的"标签集合与硬件矛盾"暴露面并不存在。若 KYC 把相机标签清单作为设备指纹跨请求聚类，该集合仍可作为"这台设备"的稳定标识（而非"不是真人"信号） |
 | track settings/capabilities | 完整保留：max 4032×3024、fps max 60、zoom 0-10、whiteBalance | 与真实前置相机能力一致，替换层对能力探测透明 |
 
 **判定：Web KYC 视角下该设备暴露的信息与真机不可区分**；唯一稳定标识价值在相机
@@ -561,7 +561,7 @@ App 看到的设备身份不同：
 
 | 字段 | 注入在位（A/B 及更早） | 移开后（C/D） |
 |---|---|---|
-| uname machine | iPhone14,6（iPhone 13 Pro Max） | iPhone12,5（iPhone XS Max，真实） |
+| uname machine | iPhone14,6（iPhone 13 Pro Max） | iPhone12,5（iPhone 11 Pro Max，真实） |
 | uname release | 23.6.0（iOS 17.6） | 24.3.0（iOS 18.3.1，真实） |
 | identifierForVendor | 570CD830-… | 69CF23FF-… |
 | dyldSuspicious | RSTLite/Shadow/libellekit/… 6 项 | 仅探针自身 1 项 |

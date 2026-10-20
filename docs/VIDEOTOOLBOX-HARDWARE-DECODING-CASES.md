@@ -300,7 +300,7 @@ iPhoneOS 16.5 SDK 明确公开 `VTIsHardwareDecodeSupported`（iOS 11+），但�
 
 ### E9：iOS 18.3.1 `-12911` 与 GUI 进程对照（已完成，定性为 daemon 进程上下文限制）
 
-设备 iPhone XS Max / iOS 18.3.1 rootless，vcam 0.8.110 诊断版（CI `22b430d`/`436bb51`/`21b6916`）。RTSP 源为桌面 MediaMTX + FFmpeg（H.264 High、1920×1080、30 fps），本地文件 `face_1080p30_motion.mov`（H.264 High、1080×1454）用于离线自测。
+设备 iPhone 11 Pro Max（iPhone12,5，旧文本误标 XS Max）/ iOS 18.3.1 rootless，vcam 0.8.110 诊断版（CI `22b430d`/`436bb51`/`21b6916`）。RTSP 源为桌面 MediaMTX + FFmpeg（H.264 High、1920×1080、30 fps），本地文件 `face_1080p30_motion.mov`（H.264 High、1080×1454）用于离线自测。
 
 `vcamd` 侧多轮稳定复现：`VTDecompressionSessionCreate status=0`、`VTIsHardwareDecodeSupported=1`、每个样本 `VTDecompressionSessionDecodeFrame` 提交 `status=0`，但 callback 对全部样本返回 `-12911`（`kVTVideoDecoderMalfunctionErr`）、image buffer 为 NULL；300 包零帧后按设计结束会话、置 `rtsp hardware decode disabled` 并回退 FFmpeg 软件解码。该行为在 `96a3aa6` 与 `22b430d` 两个构建完全一致，与输入内容无关。
 
